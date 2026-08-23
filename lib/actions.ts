@@ -904,7 +904,7 @@ function parseLines(fd: FormData): InvoiceLine[] {
   }
   if (!Array.isArray(parsed)) throw new Error("Could not read the invoice lines");
 
-  return parsed
+  const lines = parsed
     .map((l: any) => ({
       itemId: String(l.itemId ?? ""),
       qty: Number(l.qty),
@@ -912,6 +912,12 @@ function parseLines(fd: FormData): InvoiceLine[] {
       focReasonId: l.focReasonId || null,
     }))
     .filter((l) => l.itemId && l.qty > 0);
+
+  // Blank rows are dropped above; a negative price is a mistake, not a
+  // blank, so it is named rather than passed down to the posting engine.
+  const bad = lines.findIndex((l) => l.unitPrice !== undefined && Number(l.unitPrice) < 0);
+  if (bad >= 0) throw new Error(`Line ${bad + 1}: price cannot be negative`);
+  return lines;
 }
 
 export async function createSalesInvoice(_prev: unknown, fd: FormData): Promise<ActionResult> {
@@ -1137,13 +1143,19 @@ function parseOrderLines(fd: FormData): OrderLine[] {
   }
   if (!Array.isArray(parsed)) throw new Error("Could not read the order lines");
 
-  return parsed
+  const lines = parsed
     .map((l: any) => ({
       itemId: String(l.itemId ?? ""),
       qty: Number(l.qty),
       unitPrice: l.unitPrice ? Number(l.unitPrice) : undefined,
     }))
     .filter((l) => l.itemId && l.qty > 0);
+
+  // Blank rows are dropped above; a negative price is a mistake, not a
+  // blank, so it is named rather than passed down to the posting engine.
+  const bad = lines.findIndex((l) => l.unitPrice !== undefined && Number(l.unitPrice) < 0);
+  if (bad >= 0) throw new Error(`Line ${bad + 1}: price cannot be negative`);
+  return lines;
 }
 
 function parseFulfillmentLines(fd: FormData): FulfillmentLine[] {
@@ -1156,7 +1168,7 @@ function parseFulfillmentLines(fd: FormData): FulfillmentLine[] {
   }
   if (!Array.isArray(parsed)) throw new Error("Could not read the lines");
 
-  return parsed
+  const lines = parsed
     .map((l: any) => ({
       itemId: String(l.itemId ?? ""),
       qty: Number(l.qty),
@@ -1164,6 +1176,12 @@ function parseFulfillmentLines(fd: FormData): FulfillmentLine[] {
       sourceLineId: l.sourceLineId || null,
     }))
     .filter((l) => l.itemId && l.qty > 0);
+
+  // Blank rows are dropped above; a negative cost is a mistake, not a
+  // blank, so it is named rather than passed down to the posting engine.
+  const bad = lines.findIndex((l) => l.unitCost !== undefined && Number(l.unitCost) < 0);
+  if (bad >= 0) throw new Error(`Line ${bad + 1}: cost cannot be negative`);
+  return lines;
 }
 
 export async function createSalesOrder(_prev: unknown, fd: FormData): Promise<ActionResult> {
