@@ -112,13 +112,13 @@ export function CategoryRow({
             <form action={deactFormAction} style={{ display: "inline" }}>
               <input type="hidden" name="id" value={category.id} />
               <input type="hidden" name="return_to" value={returnTo} />
-              <button type="submit" className="ghost tiny">Deactivate</button>
+              <button type="submit" className="warn tiny">Deactivate</button>
             </form>
           )}
           <form action={delFormAction} onSubmit={confirmDelete} style={{ display: "inline" }}>
             <input type="hidden" name="id" value={category.id} />
             <input type="hidden" name="return_to" value={returnTo} />
-            <button type="submit" className="ghost tiny" disabled={delPending}>
+            <button type="submit" className="danger tiny" disabled={delPending}>
               {delPending ? "Deleting…" : "Delete"}
             </button>
           </form>

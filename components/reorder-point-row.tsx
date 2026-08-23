@@ -65,7 +65,7 @@ export function ReorderPointRow({
           <button type="button" className="ghost tiny" onClick={() => setEditing(true)}>Edit</button>
           <form action={delFormAction} onSubmit={confirmDelete} style={{ display: "inline" }}>
             <input type="hidden" name="id" value={point.id} />
-            <button type="submit" className="ghost tiny" disabled={delPending}>
+            <button type="submit" className="danger tiny" disabled={delPending}>
               {delPending ? "Removing…" : "Remove"}
             </button>
           </form>

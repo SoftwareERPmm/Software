@@ -399,19 +399,55 @@ textarea { min-height: 4.6rem; line-height: 1.5; resize: vertical; }
   accent-color: var(--dr); cursor: pointer;
 }
 
+/* Buttons carry four roles, and how early each one announces itself is set by
+   how hard it is to undo. Primary and neutral say nothing until hovered;
+   deactivate colours on approach; delete is the only one that is coloured at
+   rest, because it is the only one that cannot be taken back. Making them all
+   loud would flatten that back into no signal at all. */
 button {
   font-family: inherit; font-size: var(--t-md); font-weight: 500;
   color: var(--surface); background: var(--dr);
   border: 1px solid var(--dr); border-radius: var(--r-md);
   padding: 0.46rem 1rem; cursor: pointer;
-  transition: opacity 150ms;
+  transition: background-color 150ms, border-color 150ms, color 150ms, opacity 150ms;
 }
 button:hover { opacity: 0.88; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button:focus-visible { outline: 2px solid var(--dr); outline-offset: 2px; }
 
+/* Neutral: Edit, Cancel, Open, and the line-remove crosses inside forms —
+   dropping an unsaved row is not destructive and must not look like it. */
 button.ghost { color: var(--ink-soft); background: transparent; border-color: var(--line); }
 button.ghost:hover { background: var(--line-soft); }
+
+/* Deactivate: reversible, so it reads neutral at rest and only warns on
+   approach. Retiring a warehouse is a real decision, not a dangerous one. */
+button.warn { color: var(--ink-soft); background: transparent; border-color: var(--line); }
+button.warn:hover {
+  /* Raw --warn on its own tinted background is 3.74:1, under AA. Pulling it
+     20% toward --ink fixes that in both themes at once: --ink is dark on
+     light and light on dark, so the same mix darkens the amber on white
+     (5.07:1) and lightens it on the dark surface (7.30:1). */
+  color: color-mix(in srgb, var(--warn) 80%, var(--ink));
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  opacity: 1;
+}
+button.warn:focus-visible { outline-color: var(--warn); }
+
+/* Delete: a hard row delete with no undo. Red before it is touched, solid on
+   hover. --surface rather than #fff for the hover label, so it stays legible
+   when --bad lightens in dark mode. */
+button.danger {
+  color: var(--bad); background: transparent;
+  border-color: color-mix(in srgb, var(--bad) 32%, transparent);
+}
+button.danger:hover {
+  color: var(--surface); background: var(--bad); border-color: var(--bad);
+  opacity: 1;
+}
+button.danger:focus-visible { outline-color: var(--bad); }
+
 button.tiny { padding: 0.16rem 0.5rem; font-size: var(--t-sm); }
 
 .actions { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; }

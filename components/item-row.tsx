@@ -136,12 +136,12 @@ export function ItemRow({
           {item.is_active && (
             <form action={deactFormAction} style={{ display: "inline" }}>
               <input type="hidden" name="id" value={item.id} />
-              <button type="submit" className="ghost tiny">Deactivate</button>
+              <button type="submit" className="warn tiny">Deactivate</button>
             </form>
           )}
           <form action={delFormAction} onSubmit={confirmDelete} style={{ display: "inline" }}>
             <input type="hidden" name="id" value={item.id} />
-            <button type="submit" className="ghost tiny" disabled={delPending}>
+            <button type="submit" className="danger tiny" disabled={delPending}>
               {delPending ? "Deleting…" : "Delete"}
             </button>
           </form>
