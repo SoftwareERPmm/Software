@@ -501,6 +501,14 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
     const totalCost = plan.totalCost;
     deliveredValue += totalCost;
 
+    // A delivery carries no price, so unit_price holds the cost the goods
+    // left at — except on a free-of-charge line, where the schema requires a
+    // zero (`foc_reason_id is null or unit_price = 0`): the customer is
+    // charged nothing, and a figure sitting under the Price column of a
+    // giveaway is exactly the confusion that check exists to prevent. The
+    // cost is not lost. It stays in net_amount, which is what the document
+    // total and the journal are both built from, and the stock movement
+    // carries its own unit_cost for FIFO regardless.
     await tx`
       insert into document_line
         (company_id, document_id, line_no, item_id, location_id,
@@ -508,7 +516,8 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
          foc_reason_id, source_line_id)
       values
         (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
-         ${line.qty}, ${item.base_uom_id}, ${line.qty}, ${unitCost}, ${totalCost},
+         ${line.qty}, ${item.base_uom_id}, ${line.qty},
+         ${line.focReasonId ? 0 : unitCost}, ${totalCost},
          ${totalCost}, ${line.focReasonId ?? null}, ${line.sourceLineId ?? null})`;
 
     const [movement] = await tx`
@@ -582,6 +591,27 @@ async function _postSalesInvoice(
   const netTotal = round4(
     input.lines.reduce((s, l) => s + (l.focReasonId ? 0 : l.qty * l.unitPrice), 0)
   );
+
+  // An invoice that bills nothing has no journal entry to write, and until
+  // now it failed several steps later with "Journal entry JE-000005 has no
+  // lines" — true, and useless to whoever is standing at the counter.
+  //
+  // Refusing is the right answer rather than posting a zero document: a
+  // giveaway is already fully accounted for on the delivery, where the cost
+  // leaves inventory for the promotion account. An invoice on top of that
+  // adds no entry, and a posted document that touched no ledger is a thing
+  // to explain later.
+  if (netTotal === 0) {
+    const allFree = input.lines.every((l) => l.focReasonId);
+    throw new Error(
+      allFree
+        ? "Every line here is free of charge, so there is nothing to invoice. " +
+          "Deliver the goods instead — the delivery is what records a giveaway, " +
+          "and it sends the cost to the promotion account rather than to sales."
+        : "This invoice comes to zero, so there is nothing to bill. Enter a price, " +
+          "or mark the lines free of charge and deliver them instead."
+    );
+  }
 
   const [doc] = await tx`
     insert into document

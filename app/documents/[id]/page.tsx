@@ -100,6 +100,24 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
   // clearing-account view, since a delivery never touches GR/IR.
   const needsSalesInvoice = doc.doc_type === "DELIVERY" && doc.status === "POSTED" && !stageDoc["SALES_INVOICE"];
 
+  // A delivery and a stock transfer charge nobody: the figure on the line is
+  // what the goods cost leaving inventory, not what anyone is paying. Calling
+  // that "Price" reads as a bill the customer never received — and a
+  // free-of-charge line, which must carry a zero price, would then look like
+  // it cost the company nothing to give away.
+  const valuedAtCost = doc.doc_type === "DELIVERY" || doc.doc_type === "STOCK_TRANSFER";
+  const valueLabel = valuedAtCost ? "Cost" : "Price";
+
+  // On those documents the per-unit figure is derived from the line's value
+  // rather than read from unit_price, because a free-of-charge line is
+  // required to store a zero there. The goods still cost what they cost, and
+  // net_amount is where that is kept.
+  const unitValue = (l: any) => {
+    if (!valuedAtCost) return l.unit_price;
+    const q = Number(l.base_qty ?? 0);
+    return q === 0 ? l.unit_price : Number(l.net_amount ?? 0) / q;
+  };
+
   let orderLines: {
     lineId: string; itemId: string; itemCode: string; itemName: string;
     remainingQty: number; expectedPrice: number;
@@ -312,7 +330,7 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
                 <thead>
                   <tr>
                     <th>#</th><th>Item</th><th>Description</th><th>Unit</th>
-                    <th className="r">Qty</th><th className="r">Price</th><th className="r">Net</th>
+                    <th className="r">Qty</th><th className="r">{valueLabel}</th><th className="r">Net</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -326,7 +344,7 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
                       </td>
                       <td className="code">{l.uom_code ?? "—"}</td>
                       <td className="r">{qty(l.entered_qty)}</td>
-                      <td className="r">{money(l.unit_price)}</td>
+                      <td className="r">{money(unitValue(l))}</td>
                       <td className="r">{money(l.net_amount)}</td>
                     </tr>
                   ))}
