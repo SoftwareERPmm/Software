@@ -858,17 +858,70 @@ async function _postPurchaseInvoice(
     let grirAmount = stockedNet;
 
     if (input.goodsReceiptId) {
-      const [gr] = await tx`
-        select coalesce(sum(net_amount), 0) as total from document_line
-         where document_id = ${input.goodsReceiptId}`;
-      const receivedValue = round4(Number(gr.total));
-      const variance = round4(stockedNet - receivedValue);
+      // GR/IR is relieved by what this invoice actually bills for, not by the
+      // whole receipt. Taking the receipt's full value meant a supplier
+      // billing 30 of 100 received units cleared all 100: the 70 still
+      // genuinely unbilled were written off to price variance, the payable
+      // that was still owed vanished, and the dashboard reported nothing
+      // awaiting an invoice. A later invoice for the rest then had no receipt
+      // left to match.
+      //
+      // Matched per line, by item, against what remains uninvoiced on the
+      // receipt. Remaining quantity is derived from the invoices already
+      // posted against it rather than stored, same as every other figure here.
+      const receiptLines = await tx`
+        select dl.item_id,
+               sum(dl.base_qty)   as qty,
+               sum(dl.net_amount) as net
+          from document_line dl
+         where dl.document_id = ${input.goodsReceiptId}
+         group by dl.item_id`;
 
+      const invoicedAlready = await tx`
+        select dl.item_id, coalesce(sum(dl.base_qty), 0) as qty
+          from document_line dl
+          join document d on d.id = dl.document_id
+         where d.company_id = ${companyId}
+           and d.doc_type = 'PURCHASE_INVOICE'
+           and d.status = 'POSTED'
+           and d.source_document_id = ${input.goodsReceiptId}
+           and d.id <> ${doc.id}
+         group by dl.item_id`;
+
+      const remainingQty = new Map<string, number>();
+      const receiptCost = new Map<string, number>();
+      for (const r of receiptLines) {
+        const qty = Number(r.qty);
+        const done = Number(invoicedAlready.find((p: any) => p.item_id === r.item_id)?.qty ?? 0);
+        remainingQty.set(r.item_id, round4(qty - done));
+        // Unit cost the goods actually came in at, which is the rate GR/IR
+        // holds them at and therefore the rate they must be relieved at.
+        receiptCost.set(r.item_id, qty > 0 ? round4(Number(r.net) / qty) : 0);
+      }
+
+      let relieved = 0;
+      for (const line of input.lines) {
+        const [it] = await tx`select is_stocked from item where id = ${line.itemId}`;
+        if (!it?.is_stocked) continue;
+        const remaining = remainingQty.get(line.itemId) ?? 0;
+        if (remaining <= 0) continue;
+        // Billing more than was received relieves only what is actually held
+        // in GR/IR; the excess falls into variance below, where it shows up
+        // rather than silently balancing.
+        const matched = Math.min(line.qty, remaining);
+        relieved += matched * (receiptCost.get(line.itemId) ?? 0);
+        remainingQty.set(line.itemId, round4(remaining - matched));
+      }
+      grirAmount = round4(relieved);
+
+      // Whatever the invoice charges beyond the cost of the goods it settles:
+      // a price difference on the matched quantity, or a quantity the receipt
+      // never covered.
+      const variance = round4(stockedNet - grirAmount);
       if (variance !== 0) {
         const pv = await tx`select fn_system_account(${companyId}, 'PURCHASE_PRICE_VARIANCE') as a`;
         journal.push({ accountId: pv[0].a, amount: variance, locationId });
       }
-      grirAmount = receivedValue;
     }
 
     const grir = await tx`select fn_system_account(${companyId}, 'GRIR_CLEARING') as a`;
