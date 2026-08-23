@@ -13,11 +13,13 @@
   --bad:       #B4283C;
   --ghost:     #9AA4B2;
 
-  /* Inter has no Myanmar glyphs, so Burmese falls through to the Noto face
-     loaded in layout.tsx rather than to whatever the OS happens to ship.
-     Order matters: Latin resolves in Inter first, Burmese in Noto. */
-  --sans: var(--font-inter), var(--font-myanmar), system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --mono: var(--font-geist-mono), var(--font-myanmar), ui-monospace, "Cascadia Mono", "SF Mono", "Segoe UI Mono", "Roboto Mono", Menlo, Consolas, monospace;
+  /* Plex Sans and Plex Mono are a designed pair, which matters here because
+     mono carries every label, header and figure — more of the screen than the
+     sans does. Neither has Myanmar glyphs, so Burmese falls through to the
+     Noto face rather than to whatever the OS happens to ship. Order matters:
+     Latin resolves in Plex first, Burmese in Noto. */
+  --sans: var(--font-plex-sans), var(--font-myanmar), system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: var(--font-plex-mono), var(--font-myanmar), ui-monospace, "Cascadia Mono", "SF Mono", "Segoe UI Mono", "Roboto Mono", Menlo, Consolas, monospace;
 
   --s1: 0.35rem; --s2: 0.65rem; --s3: 1rem; --s4: 1.5rem; --s5: 2.25rem; --s6: 3.25rem;
 
@@ -231,9 +233,11 @@ section { display: flex; flex-direction: column; gap: var(--s3); }
 /* ---------------------------------------------------------------- cards -- */
 
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
+/* Full-strength rule, matching the table header beneath it — the soft line
+   let card titles drift into their own content. */
 .card-head {
   padding: var(--s3);
-  border-bottom: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line);
   display: flex; align-items: baseline; justify-content: space-between; gap: var(--s3); flex-wrap: wrap;
 }
 .card-body { padding: var(--s3); }
@@ -244,15 +248,38 @@ section { display: flex; flex-direction: column; gap: var(--s3); }
 /* Tighter than body: a ledger is read as a column of figures, and 1.6
    leading pushes consecutive rows far enough apart to break that scan. */
 table { border-collapse: collapse; width: 100%; font-size: var(--t-md); line-height: var(--lh-snug); }
-th, td { text-align: left; padding: 0.55rem var(--s3); border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
+th, td { text-align: left; padding: 0.55rem var(--s3); white-space: nowrap; }
+
+/* The header is the anchor of a data table, so it carries real weight and a
+   full-strength rule under it — the old 400-weight muted row read as another
+   line of data rather than as the thing labelling it. */
 thead th {
   font-family: var(--mono); font-size: var(--t-2xs); letter-spacing: var(--track-caps);
-  text-transform: uppercase; color: var(--muted); font-weight: 400;
+  text-transform: uppercase; color: var(--ink-soft); font-weight: 600;
   background: var(--surface); position: sticky; top: 0;
+  border-bottom: 1px solid var(--line);
 }
-tbody tr:last-child td { border-bottom: none; }
-tbody tr.link:hover { background: var(--line-soft); cursor: pointer; }
-.activity-row:hover { background: var(--line-soft); }
+
+/* Banding instead of a hairline under every row. Both together is noise, and
+   for tracking a figure across ten columns the band is the stronger cue.
+   Mixed against --ink so it inverts correctly in dark mode. */
+table:not(.linetable) tbody tr:nth-child(even) > td {
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+}
+
+/* Has to beat the band, so it is mixed a step stronger rather than reusing
+   --line-soft, which would vanish on every second row. */
+tbody tr.link:hover > td,
+table:not(.linetable) tbody tr.link:hover > td {
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  cursor: pointer;
+}
+.activity-row:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+
+/* Line-entry tables are forms, not reports: banding behind input rows reads
+   as a validation state, so they keep the original hairlines. */
+.linetable th, .linetable td { border-bottom: 1px solid var(--line-soft); }
+.linetable tbody tr:last-child td { border-bottom: none; }
 td.r, th.r { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--mono); }
 td.code { font-family: var(--mono); font-size: var(--t-sm); }
 td.wrap { white-space: normal; }
