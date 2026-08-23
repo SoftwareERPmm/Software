@@ -2,6 +2,7 @@
 
 import { useActionState, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
+import { ConfirmDelete } from "./confirm-delete";
 
 type Brand = { id: string; code: string; name: string; name_my: string | null; is_active: boolean; items?: number };
 
@@ -30,9 +31,6 @@ export function BrandRow({
     null
   );
 
-  function confirmDelete(e: React.FormEvent<HTMLFormElement>) {
-    if (!confirm(`Delete ${brand.name}? This can't be undone.`)) e.preventDefault();
-  }
 
   if (editing) {
     return (
@@ -89,12 +87,15 @@ export function BrandRow({
               <button type="submit" className="warn tiny">Deactivate</button>
             </form>
           )}
-          <form action={delFormAction} onSubmit={confirmDelete} style={{ display: "inline" }}>
+          <ConfirmDelete
+            action={delFormAction}
+            pending={delPending}
+            error={delState && "error" in delState ? delState.error : null}
+            title={`Delete ${brand.name}?`}
+            detail="This cannot be undone."
+          >
             <input type="hidden" name="id" value={brand.id} />
-            <button type="submit" className="danger tiny" disabled={delPending}>
-              {delPending ? "Deleting…" : "Delete"}
-            </button>
-          </form>
+          </ConfirmDelete>
         </span>
         {delState && "error" in delState && (
           <div className="hint" style={{ color: "var(--bad)" }}>{delState.error}</div>

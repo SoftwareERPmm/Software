@@ -2,6 +2,7 @@
 
 import { useActionState, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
+import { ConfirmDelete } from "./confirm-delete";
 import { ACCOUNT_TYPE_LABEL } from "./account-form";
 
 export type CoaAccount = {
@@ -61,9 +62,6 @@ export function AccountRow({
     (a) => a.id !== account.id && a.account_type === type && a.posting_count === 0
   );
 
-  function confirmDelete(e: React.FormEvent<HTMLFormElement>) {
-    if (!confirm(`Delete ${account.code} ${account.name}? This can't be undone.`)) e.preventDefault();
-  }
 
   if (editing) {
     return (
@@ -179,12 +177,15 @@ export function AccountRow({
           )}
 
           {!locked && account.posting_count === 0 && account.child_count === 0 && (
-            <form action={delFormAction} onSubmit={confirmDelete} style={{ display: "inline" }}>
-              <input type="hidden" name="id" value={account.id} />
-              <button type="submit" className="danger tiny" disabled={delPending}>
-                {delPending ? "Deleting…" : "Delete"}
-              </button>
-            </form>
+            <ConfirmDelete
+            action={delFormAction}
+            pending={delPending}
+            error={delState && "error" in delState ? delState.error : null}
+            title={`Delete ${account.code} ${account.name}?`}
+            detail="This cannot be undone."
+          >
+            <input type="hidden" name="id" value={account.id} />
+          </ConfirmDelete>
           )}
 
           {account.posting_count > 0 && (
