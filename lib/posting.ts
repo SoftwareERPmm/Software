@@ -89,6 +89,74 @@ function round4(n: number) {
   return Math.round(n * 10000) / 10000;
 }
 
+// ------------------------------------------------------------- guards --
+//
+// Every number a caller hands this engine is checked here, not only in the
+// server actions. Those parsers do filter qty > 0, but they are one entry
+// point of several — an import, a CSV load, a background job, a test, a
+// future API all call these functions directly, and none of them should have
+// to remember the rule.
+//
+// What got through before this existed, both proven against a real database:
+// a sales line of 100 units at -5,000 posted Dr AR -500,000 / Cr Revenue
+// 500,000, which is a credit note wearing an invoice's clothes with no
+// reversal behind it. A goods receipt at -5,000 was worse — 100 units on hand
+// carrying -500,000 of value, and that negative unit cost then fed FIFO and
+// every COGS posting drawn from the lot.
+//
+// Infinity was already refused, but by Postgres numeric overflow rather than
+// by anything here, so the user saw a driver error instead of a reason.
+
+function assertFinite(value: number, what: string): void {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`${what} must be a number`);
+  }
+}
+
+/**
+ * Quantities and money on stock-moving lines.
+ *
+ * `signedQty` is for stock adjustments alone, where the sign carries meaning —
+ * positive is stock found, negative is stock lost — so there the rule is only
+ * that it cannot be zero.
+ *
+ * Zero prices stay legal everywhere: a free-of-charge line is a real quantity
+ * at no charge, and the posting matrix sends its cost to promotion expense
+ * rather than COGS.
+ */
+function assertLines(
+  lines: ReadonlyArray<{ qty: number; unitPrice?: number | null; unitCost?: number | null }>,
+  { signedQty = false }: { signedQty?: boolean } = {}
+): void {
+  lines.forEach((line, i) => {
+    const at = `Line ${i + 1}`;
+
+    assertFinite(line.qty, `${at}: quantity`);
+    if (signedQty) {
+      if (line.qty === 0) throw new Error(`${at}: quantity cannot be zero`);
+    } else if (line.qty <= 0) {
+      throw new Error(`${at}: quantity must be more than zero`);
+    }
+
+    for (const [value, name] of [[line.unitPrice, "price"], [line.unitCost, "cost"]] as const) {
+      if (value === undefined || value === null) continue;
+      assertFinite(value, `${at}: ${name}`);
+      if (value < 0) {
+        throw new Error(
+          `${at}: ${name} cannot be negative. Reverse a charge with a return or a credit note, ` +
+            `so the correction is a document of its own rather than a sign flip inside this one.`
+        );
+      }
+    }
+  });
+}
+
+/** A single money figure. `signed` is for voucher lines, where negative is a credit. */
+function assertAmount(value: number, what: string, { signed = false }: { signed?: boolean } = {}): void {
+  assertFinite(value, what);
+  if (!signed && value <= 0) throw new Error(`${what} must be more than zero`);
+}
+
 // ------------------------------------------------------------------ FIFO --
 //
 // Costing is FIFO, per warehouse. Every receipt creates a lot; every issue
@@ -322,6 +390,7 @@ export async function postPurchaseOrder(input: OrderInput) {
 
 async function postOrder(input: OrderInput, docType: "SALES_ORDER" | "PURCHASE_ORDER") {
   if (input.lines.length === 0) throw new Error("An order needs at least one line");
+  assertLines(input.lines);
 
   return sql.begin(async (tx) => {
     const { companyId, partnerId, locationId, docDate, dueDate } = input;
@@ -379,6 +448,7 @@ async function postOrder(input: OrderInput, docType: "SALES_ORDER" | "PURCHASE_O
  */
 async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
   if (input.lines.length === 0) throw new Error("A delivery needs at least one line");
+  assertLines(input.lines);
 
   const { companyId, partnerId, locationId, docDate } = input;
 
@@ -431,6 +501,14 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
     const totalCost = plan.totalCost;
     deliveredValue += totalCost;
 
+    // A delivery carries no price, so unit_price holds the cost the goods
+    // left at — except on a free-of-charge line, where the schema requires a
+    // zero (`foc_reason_id is null or unit_price = 0`): the customer is
+    // charged nothing, and a figure sitting under the Price column of a
+    // giveaway is exactly the confusion that check exists to prevent. The
+    // cost is not lost. It stays in net_amount, which is what the document
+    // total and the journal are both built from, and the stock movement
+    // carries its own unit_cost for FIFO regardless.
     await tx`
       insert into document_line
         (company_id, document_id, line_no, item_id, location_id,
@@ -438,7 +516,8 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
          foc_reason_id, source_line_id)
       values
         (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
-         ${line.qty}, ${item.base_uom_id}, ${line.qty}, ${unitCost}, ${totalCost},
+         ${line.qty}, ${item.base_uom_id}, ${line.qty},
+         ${line.focReasonId ? 0 : unitCost}, ${totalCost},
          ${totalCost}, ${line.focReasonId ?? null}, ${line.sourceLineId ?? null})`;
 
     const [movement] = await tx`
@@ -492,6 +571,7 @@ async function _postSalesInvoice(
   input: SalesInvoiceInput & { deliveryId?: string | null }
 ) {
   if (input.lines.length === 0) throw new Error("An invoice needs at least one line");
+  assertLines(input.lines);
 
   const cashIn = round4(input.cashIn ?? 0);
   if (cashIn > 0 && !input.cashAccountId) {
@@ -511,6 +591,27 @@ async function _postSalesInvoice(
   const netTotal = round4(
     input.lines.reduce((s, l) => s + (l.focReasonId ? 0 : l.qty * l.unitPrice), 0)
   );
+
+  // An invoice that bills nothing has no journal entry to write, and until
+  // now it failed several steps later with "Journal entry JE-000005 has no
+  // lines" — true, and useless to whoever is standing at the counter.
+  //
+  // Refusing is the right answer rather than posting a zero document: a
+  // giveaway is already fully accounted for on the delivery, where the cost
+  // leaves inventory for the promotion account. An invoice on top of that
+  // adds no entry, and a posted document that touched no ledger is a thing
+  // to explain later.
+  if (netTotal === 0) {
+    const allFree = input.lines.every((l) => l.focReasonId);
+    throw new Error(
+      allFree
+        ? "Every line here is free of charge, so there is nothing to invoice. " +
+          "Deliver the goods instead — the delivery is what records a giveaway, " +
+          "and it sends the cost to the promotion account rather than to sales."
+        : "This invoice comes to zero, so there is nothing to bill. Enter a price, " +
+          "or mark the lines free of charge and deliver them instead."
+    );
+  }
 
   const [doc] = await tx`
     insert into document
@@ -634,6 +735,7 @@ export async function postSalesInvoice(input: SalesInvoiceInput & { deliveryId?:
  */
 export async function postSaleWithDelivery(input: SalesInvoiceInput) {
   if (input.lines.length === 0) throw new Error("An invoice needs at least one line");
+  assertLines(input.lines);
 
   return sql.begin(async (tx) => {
     const itemIds = input.lines.map((l) => l.itemId);
@@ -670,6 +772,7 @@ export async function postSaleWithDelivery(input: SalesInvoiceInput) {
  */
 async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
   if (input.lines.length === 0) throw new Error("A goods receipt needs at least one line");
+  assertLines(input.lines);
 
   const { companyId, partnerId, locationId, docDate } = input;
   const receivedAt = input.receivedAt || docDate;
@@ -789,6 +892,7 @@ async function _postPurchaseInvoice(
   input: InvoiceInput & { goodsReceiptId?: string | null; cashOut?: number; cashAccountId?: string | null }
 ) {
   if (input.lines.length === 0) throw new Error("An invoice needs at least one line");
+  assertLines(input.lines);
 
   const cashOut = round4(input.cashOut ?? 0);
   if (cashOut > 0 && !input.cashAccountId) {
@@ -999,6 +1103,7 @@ export async function postPurchaseWithReceipt(
   input: InvoiceInput & { cashOut?: number; cashAccountId?: string | null }
 ) {
   if (input.lines.length === 0) throw new Error("An invoice needs at least one line");
+  assertLines(input.lines);
 
   return sql.begin(async (tx) => {
     const itemIds = input.lines.map((l) => l.itemId);
@@ -1059,6 +1164,8 @@ export type AdjustmentInput = {
 export async function postStockAdjustment(input: AdjustmentInput) {
   const lines = input.lines.filter((l) => l.qty !== 0);
   if (lines.length === 0) throw new Error("An adjustment needs at least one line");
+  // Signed: a stock loss is a negative quantity by design.
+  assertLines(lines, { signedQty: true });
 
   return sql.begin(async (tx) => {
     const { companyId, locationId, docDate } = input;
@@ -1196,6 +1303,7 @@ export type TransferInput = {
 export async function postStockTransfer(input: TransferInput) {
   const lines = input.lines.filter((l) => l.qty > 0);
   if (lines.length === 0) throw new Error("A transfer needs at least one line");
+  assertLines(lines);
   if (input.fromLocationId === input.toLocationId) throw new Error("Choose two different locations");
 
   return sql.begin(async (tx) => {
@@ -1337,6 +1445,7 @@ export type ReturnInput = {
  */
 export async function postSalesReturn(input: ReturnInput) {
   if (input.lines.length === 0) throw new Error("A return needs at least one line");
+  assertLines(input.lines);
 
   return sql.begin(async (tx) => {
     const { companyId, partnerId, locationId, docDate } = input;
@@ -1456,6 +1565,7 @@ export async function postSalesReturn(input: ReturnInput) {
  */
 export async function postPurchaseReturn(input: ReturnInput) {
   if (input.lines.length === 0) throw new Error("A return needs at least one line");
+  assertLines(input.lines);
 
   return sql.begin(async (tx) => {
     const { companyId, partnerId, locationId, docDate } = input;
@@ -1578,6 +1688,16 @@ async function postSettlement(
   input: SettlementInput,
   kind: "SUPPLIER_PAYMENT" | "CUSTOMER_RECEIPT"
 ) {
+  // Checked before the filter, not by it. A negative allocation used to be
+  // dropped silently here, so a payment carrying one posted for less than was
+  // entered and said nothing about it. Zero still just means an untouched row.
+  input.allocations.forEach((a, i) => {
+    assertFinite(a.amount, `Allocation ${i + 1}: amount`);
+    if (a.amount < 0) {
+      throw new Error(`Allocation ${i + 1}: amount cannot be negative`);
+    }
+  });
+
   const lines = input.allocations.filter((a) => a.amount > 0);
   if (lines.length === 0) throw new Error("Enter an amount against at least one invoice");
   if (!input.cashAccountId) throw new Error("Choose which cash or bank account to use");
@@ -1705,6 +1825,10 @@ async function postVoucher(
   input: VoucherInput,
   docType: "CASH_VOUCHER" | "BANK_VOUCHER" | "JOURNAL_VOUCHER" | "CASH_TRANSFER" | "OPENING_BALANCE"
 ) {
+  // Voucher amounts are signed on purpose — positive debit, negative credit —
+  // so only finiteness is checked here. The balance trigger catches the rest.
+  input.lines.forEach((l, i) => assertAmount(l.amount, `Line ${i + 1}: amount`, { signed: true }));
+
   const lines = input.lines.filter((l) => l.accountId && l.amount !== 0);
   if (lines.length < 2) throw new Error("A voucher needs at least two lines");
 
