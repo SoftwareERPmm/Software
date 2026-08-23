@@ -1,5 +1,5 @@
 import { sql } from "@/lib/db";
-import { createCategory, updateCategory, deactivateCategory, deleteCategory } from "@/lib/actions";
+import { createCategory, updateCategory, deactivateCategory, activateCategory, deleteCategory } from "@/lib/actions";
 import { allCategories, childrenOf, levelCounts, branchIds } from "@/lib/tree";
 import { AddCategoryForm } from "@/components/level-form";
 import { CategoryRow } from "@/components/category-row";
@@ -27,6 +27,7 @@ export default async function CategoriesRoot() {
         returnTo="/items/categories"
         updateAction={updateCategory}
         deactivateAction={deactivateCategory}
+        activateAction={activateCategory}
         deleteAction={deleteCategory}
       />
     ),

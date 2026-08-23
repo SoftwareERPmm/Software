@@ -1,5 +1,5 @@
 import { getCompany, getLocations } from "@/lib/queries";
-import { createLocation, updateLocation, deleteLocation, deactivateLocation } from "@/lib/actions";
+import { createLocation, updateLocation, deleteLocation, deactivateLocation, activateLocation } from "@/lib/actions";
 import { AddLocationForm } from "@/components/location-form";
 import { LocationRow } from "@/components/location-row";
 
@@ -93,6 +93,7 @@ export default async function Warehouses() {
                       updateAction={updateLocation}
                       deleteAction={deleteLocation}
                       deactivateAction={deactivateLocation}
+                      activateAction={activateLocation}
                     />
                   ))}
                 </tbody>

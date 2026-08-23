@@ -182,6 +182,23 @@ export async function deactivatePartner(_prev: unknown, fd: FormData): Promise<A
   redirectWithToast("/partners", "Partner deactivated");
 }
 
+/** Puts back what deactivatePartner retired. Reactivating is always safe, so
+ *  unlike deactivation it carries no guard. */
+export async function activatePartner(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose partner" };
+
+    await sql`update business_partner set is_active = true where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/partners");
+  redirectWithToast("/partners", "Partner reactivated");
+}
+
 /** Hard delete only succeeds for a partner with no documents against them. Deactivating is the way to retire one. */
 export async function deletePartner(_prev: unknown, fd: FormData): Promise<ActionResult> {
   try {
@@ -305,6 +322,26 @@ export async function deactivateCategory(_prev: unknown, fd: FormData): Promise<
   revalidatePath("/items/categories");
   revalidatePath(`/items/categories/${id}`);
   redirectWithToast(returnTo, "Category deactivated");
+}
+
+/** Puts back what deactivateCategory retired. Reactivating is always safe, so
+ *  unlike deactivation it carries no guard. */
+export async function activateCategory(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  const returnTo = str(fd, "return_to") || "/items/categories";
+
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose a category" };
+
+    await sql`update item_group set is_active = true where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/items/categories");
+  revalidatePath("/items/subcategories");
+  redirectWithToast(returnTo, "Category reactivated");
 }
 
 /**
@@ -559,6 +596,24 @@ export async function deactivateItem(_prev: unknown, fd: FormData): Promise<Acti
   redirectWithToast("/items", "Item deactivated");
 }
 
+/** Puts back what deactivateItem retired. Reactivating is always safe, so
+ *  unlike deactivation it carries no guard. */
+export async function activateItem(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose an item" };
+
+    await sql`update item set is_active = true where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/items");
+  revalidatePath("/items/stock");
+  redirectWithToast("/items", "Item reactivated");
+}
+
 /** Hard delete only succeeds for an item nothing has ever touched. Deactivating is the way to retire one. */
 export async function deleteItem(_prev: unknown, fd: FormData): Promise<ActionResult> {
   try {
@@ -654,6 +709,23 @@ export async function deactivateBrand(_prev: unknown, fd: FormData): Promise<Act
 
   revalidatePath("/items/brands");
   redirectWithToast("/items/brands", "Brand deactivated");
+}
+
+/** Puts back what deactivateBrand retired. Reactivating is always safe, so
+ *  unlike deactivation it carries no guard. */
+export async function activateBrand(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose a brand" };
+
+    await sql`update brand set is_active = true where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/items/brands");
+  redirectWithToast("/items/brands", "Brand reactivated");
 }
 
 /** Hard delete only succeeds for a brand no item has ever used. Deactivating is the way to retire one. */
@@ -1794,6 +1866,23 @@ export async function deactivateLocation(_prev: unknown, fd: FormData): Promise<
   redirectWithToast("/warehouses", "Warehouse deactivated");
 }
 
+/** Puts back what deactivateLocation retired. Reactivating is always safe, so
+ *  unlike deactivation it carries no guard. */
+export async function activateLocation(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose a warehouse" };
+
+    await sql`update location set is_active = true where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/warehouses");
+  redirectWithToast("/warehouses", "Warehouse reactivated");
+}
+
 /**
  * Hard delete only succeeds for a warehouse nothing has ever touched —
  * transactions are append-only, so a warehouse with history stays as a
@@ -1892,6 +1981,23 @@ export async function deactivateSalesman(_prev: unknown, fd: FormData): Promise<
 
   revalidatePath("/salespersons");
   redirectWithToast("/salespersons", "Salesperson deactivated");
+}
+
+/** Puts back what deactivateSalesman retired. Reactivating is always safe, so
+ *  unlike deactivation it carries no guard. */
+export async function activateSalesman(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose a salesperson" };
+
+    await sql`update salesman set is_active = true where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/salespersons");
+  redirectWithToast("/salespersons", "Salesperson reactivated");
 }
 
 export async function deleteSalesman(_prev: unknown, fd: FormData): Promise<ActionResult> {
@@ -2307,6 +2413,23 @@ export async function deactivateAccount(_prev: unknown, fd: FormData): Promise<A
 
   revalidatePath("/settings/accounts");
   redirectWithToast("/settings/accounts", "Account deactivated");
+}
+
+/** Puts back what deactivateAccount retired. Reactivating is always safe, so
+ *  unlike deactivation it carries no guard. */
+export async function activateAccount(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose an account" };
+
+    await sql`update account set is_active = true where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/settings/accounts");
+  redirectWithToast("/settings/accounts", "Account reactivated");
 }
 
 /**

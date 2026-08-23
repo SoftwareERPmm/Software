@@ -2,6 +2,7 @@
 
 import { useActionState, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
+import { ConfirmDelete } from "./confirm-delete";
 
 type Brand = { id: string; code: string; name: string; name_my: string | null; is_active: boolean; items?: number };
 
@@ -10,11 +11,13 @@ export function BrandRow({
   updateAction,
   deleteAction,
   deactivateAction,
+  activateAction,
 }: {
   brand: Brand;
   updateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   deleteAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   deactivateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
+  activateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
 }) {
   const [editing, setEditing] = useState(false);
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
@@ -25,14 +28,15 @@ export function BrandRow({
     deactivateAction as never,
     null
   );
+  const [, actFormAction] = useActionState<ActionResult | null, FormData>(
+    activateAction as never,
+    null
+  );
   const [delState, delFormAction, delPending] = useActionState<ActionResult | null, FormData>(
     deleteAction as never,
     null
   );
 
-  function confirmDelete(e: React.FormEvent<HTMLFormElement>) {
-    if (!confirm(`Delete ${brand.name}? This can't be undone.`)) e.preventDefault();
-  }
 
   if (editing) {
     return (
@@ -75,7 +79,7 @@ export function BrandRow({
       <td className="wrap">
         {brand.name}
         {brand.name_my && (
-          <div style={{ color: "var(--muted)", fontSize: "0.82rem" }}>{brand.name_my}</div>
+          <div className="subline">{brand.name_my}</div>
         )}
       </td>
       <td className="r">{brand.items || ""}</td>
@@ -83,18 +87,26 @@ export function BrandRow({
       <td>
         <span className="actions">
           <button type="button" className="ghost tiny" onClick={() => setEditing(true)}>Edit</button>
-          {brand.is_active && (
+          {brand.is_active ? (
             <form action={deactFormAction} style={{ display: "inline" }}>
               <input type="hidden" name="id" value={brand.id} />
-              <button type="submit" className="ghost tiny">Deactivate</button>
+              <button type="submit" className="warn tiny">Deactivate</button>
+            </form>
+          ) : (
+            <form action={actFormAction} style={{ display: "inline" }}>
+              <input type="hidden" name="id" value={brand.id} />
+              <button type="submit" className="ghost tiny">Reactivate</button>
             </form>
           )}
-          <form action={delFormAction} onSubmit={confirmDelete} style={{ display: "inline" }}>
+          <ConfirmDelete
+            action={delFormAction}
+            pending={delPending}
+            error={delState && "error" in delState ? delState.error : null}
+            title={`Delete ${brand.name}?`}
+            detail="This cannot be undone."
+          >
             <input type="hidden" name="id" value={brand.id} />
-            <button type="submit" className="ghost tiny" disabled={delPending}>
-              {delPending ? "Deleting…" : "Delete"}
-            </button>
-          </form>
+          </ConfirmDelete>
         </span>
         {delState && "error" in delState && (
           <div className="hint" style={{ color: "var(--bad)" }}>{delState.error}</div>

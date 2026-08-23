@@ -2,6 +2,7 @@
 
 import { useActionState, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
+import { ConfirmDelete } from "./confirm-delete";
 
 type Location = {
   id: string; code: string; name: string; name_my: string | null;
@@ -22,6 +23,7 @@ export function LocationRow({
   updateAction,
   deleteAction,
   deactivateAction,
+  activateAction,
 }: {
   location: Location;
   /** How deep this row sits — 0 for a top-level office, 1 for a warehouse inside it, and so on. */
@@ -31,6 +33,7 @@ export function LocationRow({
   updateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   deleteAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   deactivateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
+  activateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
 }) {
   const [editing, setEditing] = useState(false);
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
@@ -39,6 +42,10 @@ export function LocationRow({
   );
   const [, deactFormAction] = useActionState<ActionResult | null, FormData>(
     deactivateAction as never,
+    null
+  );
+  const [, actFormAction] = useActionState<ActionResult | null, FormData>(
+    activateAction as never,
     null
   );
   const [delState, delFormAction, delPending] = useActionState<ActionResult | null, FormData>(
@@ -50,9 +57,6 @@ export function LocationRow({
   const [parentId, setParentId] = useState(location.parent_id ?? "");
   const offices = locations.filter((l) => !l.is_stock_location && l.id !== location.id);
 
-  function confirmDelete(e: React.FormEvent<HTMLFormElement>) {
-    if (!confirm(`Delete ${location.name}? This can't be undone.`)) e.preventDefault();
-  }
 
   if (editing) {
     return (
@@ -130,7 +134,7 @@ export function LocationRow({
         {depth > 0 && <span style={{ color: "var(--ghost)" }}>{NBSP.repeat(depth * 2)}└ </span>}
         {location.name}
         {location.name_my && (
-          <div style={{ color: "var(--muted)", fontSize: "0.82rem", marginLeft: depth > 0 ? "1.2rem" : 0 }}>
+          <div className="subline" style={{ marginLeft: depth > 0 ? "1.2rem" : 0 }}>
             {location.name_my}
           </div>
         )}
@@ -143,18 +147,26 @@ export function LocationRow({
       <td>
         <span className="actions">
           <button type="button" className="ghost tiny" onClick={() => setEditing(true)}>Edit</button>
-          {location.is_active && (
+          {location.is_active ? (
             <form action={deactFormAction} style={{ display: "inline" }}>
               <input type="hidden" name="id" value={location.id} />
-              <button type="submit" className="ghost tiny">Deactivate</button>
+              <button type="submit" className="warn tiny">Deactivate</button>
+            </form>
+          ) : (
+            <form action={actFormAction} style={{ display: "inline" }}>
+              <input type="hidden" name="id" value={location.id} />
+              <button type="submit" className="ghost tiny">Reactivate</button>
             </form>
           )}
-          <form action={delFormAction} onSubmit={confirmDelete} style={{ display: "inline" }}>
+          <ConfirmDelete
+            action={delFormAction}
+            pending={delPending}
+            error={delState && "error" in delState ? delState.error : null}
+            title={`Delete ${location.name}?`}
+            detail="This cannot be undone."
+          >
             <input type="hidden" name="id" value={location.id} />
-            <button type="submit" className="ghost tiny" disabled={delPending}>
-              {delPending ? "Deleting…" : "Delete"}
-            </button>
-          </form>
+          </ConfirmDelete>
         </span>
         {delState && "error" in delState && (
           <div className="hint" style={{ color: "var(--bad)" }}>{delState.error}</div>

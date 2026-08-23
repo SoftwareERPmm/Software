@@ -2,6 +2,7 @@
 
 import { useActionState, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
+import { ConfirmDelete } from "./confirm-delete";
 import { ACCOUNT_TYPE_LABEL } from "./account-form";
 
 export type CoaAccount = {
@@ -25,6 +26,7 @@ export function AccountRow({
   currencies,
   updateAction,
   deactivateAction,
+  activateAction,
   deleteAction,
 }: {
   account: CoaAccount;
@@ -33,6 +35,7 @@ export function AccountRow({
   currencies: string[];
   updateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   deactivateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
+  activateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   deleteAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
 }) {
   const [editing, setEditing] = useState(false);
@@ -44,6 +47,10 @@ export function AccountRow({
   );
   const [deactState, deactFormAction] = useActionState<ActionResult | null, FormData>(
     deactivateAction as never,
+    null
+  );
+  const [actState, actFormAction] = useActionState<ActionResult | null, FormData>(
+    activateAction as never,
     null
   );
   const [delState, delFormAction, delPending] = useActionState<ActionResult | null, FormData>(
@@ -61,9 +68,6 @@ export function AccountRow({
     (a) => a.id !== account.id && a.account_type === type && a.posting_count === 0
   );
 
-  function confirmDelete(e: React.FormEvent<HTMLFormElement>) {
-    if (!confirm(`Delete ${account.code} ${account.name}? This can't be undone.`)) e.preventDefault();
-  }
 
   if (editing) {
     return (
@@ -154,7 +158,7 @@ export function AccountRow({
       <td className="wrap" style={{ fontWeight: isHeading ? 600 : 400 }}>
         {account.name}
         {account.name_my && (
-          <div style={{ color: "var(--muted)", fontSize: "0.82rem", fontWeight: 400 }}>{account.name_my}</div>
+          <div className="subline" style={{ fontWeight: 400 }}>{account.name_my}</div>
         )}
       </td>
       <td style={{ color: "var(--muted)" }}>{ACCOUNT_TYPE_LABEL[account.account_type] ?? account.account_type}</td>
@@ -174,17 +178,30 @@ export function AccountRow({
           {account.is_active && !locked && (
             <form action={deactFormAction} style={{ display: "inline" }}>
               <input type="hidden" name="id" value={account.id} />
-              <button type="submit" className="ghost tiny">Deactivate</button>
+              <button type="submit" className="warn tiny">Deactivate</button>
+            </form>
+          )}
+
+          {/* No `locked` guard here: the lock exists to stop an account the
+              posting engine needs being retired, so a locked account that is
+              somehow inactive is exactly the one most worth putting back. */}
+          {!account.is_active && (
+            <form action={actFormAction} style={{ display: "inline" }}>
+              <input type="hidden" name="id" value={account.id} />
+              <button type="submit" className="ghost tiny">Reactivate</button>
             </form>
           )}
 
           {!locked && account.posting_count === 0 && account.child_count === 0 && (
-            <form action={delFormAction} onSubmit={confirmDelete} style={{ display: "inline" }}>
-              <input type="hidden" name="id" value={account.id} />
-              <button type="submit" className="ghost tiny" disabled={delPending}>
-                {delPending ? "Deleting…" : "Delete"}
-              </button>
-            </form>
+            <ConfirmDelete
+            action={delFormAction}
+            pending={delPending}
+            error={delState && "error" in delState ? delState.error : null}
+            title={`Delete ${account.code} ${account.name}?`}
+            detail="This cannot be undone."
+          >
+            <input type="hidden" name="id" value={account.id} />
+          </ConfirmDelete>
           )}
 
           {account.posting_count > 0 && (
@@ -194,6 +211,9 @@ export function AccountRow({
           )}
         </span>
 
+        {actState && "error" in actState && (
+          <div className="hint" style={{ color: "var(--bad)" }}>{actState.error}</div>
+        )}
         {deactState && "error" in deactState && (
           <div className="hint" style={{ color: "var(--bad)" }}>{deactState.error}</div>
         )}

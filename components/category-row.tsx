@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useActionState, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
+import { ConfirmDelete } from "./confirm-delete";
 
 type Category = {
   id: string; code: string; name: string; name_my: string | null;
@@ -21,6 +22,7 @@ export function CategoryRow({
   updateAction,
   deleteAction,
   deactivateAction,
+  activateAction,
 }: {
   category: Category;
   returnTo: string;
@@ -31,6 +33,7 @@ export function CategoryRow({
   updateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   deleteAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   deactivateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
+  activateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
 }) {
   const [editing, setEditing] = useState(false);
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
@@ -41,14 +44,15 @@ export function CategoryRow({
     deactivateAction as never,
     null
   );
+  const [, actFormAction] = useActionState<ActionResult | null, FormData>(
+    activateAction as never,
+    null
+  );
   const [delState, delFormAction, delPending] = useActionState<ActionResult | null, FormData>(
     deleteAction as never,
     null
   );
 
-  function confirmDelete(e: React.FormEvent<HTMLFormElement>) {
-    if (!confirm(`Delete ${category.name}? This can't be undone.`)) e.preventDefault();
-  }
 
   if (editing) {
     return (
@@ -95,7 +99,7 @@ export function CategoryRow({
       <td className="wrap">
         <Link href={`/items/categories/${category.id}`}>{category.name}</Link>
         {category.name_my && (
-          <div style={{ color: "var(--muted)", fontSize: "0.82rem" }}>{category.name_my}</div>
+          <div className="subline">{category.name_my}</div>
         )}
         {!category.is_active && <> <span className="pill warn">inactive</span></>}
       </td>
@@ -108,20 +112,29 @@ export function CategoryRow({
         <span className="actions">
           <Link href={`/items/categories/${category.id}`} className="btn ghost tiny">Open &rarr;</Link>
           <button type="button" className="ghost tiny" onClick={() => setEditing(true)}>Edit</button>
-          {category.is_active && (
+          {category.is_active ? (
             <form action={deactFormAction} style={{ display: "inline" }}>
               <input type="hidden" name="id" value={category.id} />
               <input type="hidden" name="return_to" value={returnTo} />
-              <button type="submit" className="ghost tiny">Deactivate</button>
+              <button type="submit" className="warn tiny">Deactivate</button>
+            </form>
+          ) : (
+            <form action={actFormAction} style={{ display: "inline" }}>
+              <input type="hidden" name="id" value={category.id} />
+              <input type="hidden" name="return_to" value={returnTo} />
+              <button type="submit" className="ghost tiny">Reactivate</button>
             </form>
           )}
-          <form action={delFormAction} onSubmit={confirmDelete} style={{ display: "inline" }}>
+          <ConfirmDelete
+            action={delFormAction}
+            pending={delPending}
+            error={delState && "error" in delState ? delState.error : null}
+            title={`Delete ${category.name}?`}
+            detail="This cannot be undone."
+          >
             <input type="hidden" name="id" value={category.id} />
             <input type="hidden" name="return_to" value={returnTo} />
-            <button type="submit" className="ghost tiny" disabled={delPending}>
-              {delPending ? "Deleting…" : "Delete"}
-            </button>
-          </form>
+          </ConfirmDelete>
         </span>
         {delState && "error" in delState && (
           <div className="hint" style={{ color: "var(--bad)" }}>{delState.error}</div>

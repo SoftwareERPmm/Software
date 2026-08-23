@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { sql } from "@/lib/db";
 import { getCompany, getItems, getBrands } from "@/lib/queries";
-import { updateItem, deactivateItem, deleteItem } from "@/lib/actions";
+import { updateItem, deactivateItem, activateItem, deleteItem } from "@/lib/actions";
 import { ItemRow } from "@/components/item-row";
 import { DataTable, type DataRow } from "@/components/data-table";
 
@@ -46,6 +46,7 @@ export default async function Items() {
         uoms={uoms}
         updateAction={updateItem}
         deactivateAction={deactivateItem}
+        activateAction={activateItem}
         deleteAction={deleteItem}
       />
     ),

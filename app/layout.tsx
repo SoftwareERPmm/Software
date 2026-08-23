@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Inter, Geist_Mono } from "next/font/google";
+import { IBM_Plex_Sans, IBM_Plex_Mono, Noto_Sans_Myanmar } from "next/font/google";
 import "./globals.css";
 import Link from "next/link";
 import { getCompany } from "@/lib/queries";
@@ -9,11 +9,37 @@ import {
   LayoutDashboard, ShoppingCart, Package, Wallet, BookOpen, Boxes, Database,
 } from "lucide-react";
 
-const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
-// Vercel's own dashboard/technical typeface — this app leans on mono for
-// every label, pill, and table header, so this one swap touches almost
-// every screen.
-const geistMono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono", display: "swap" });
+// Plex was drawn for enterprise data rather than for marketing pages: open
+// apertures, unambiguous 1/l/I and 0/O, and a lower x-height than Inter, which
+// is what stops a screen of forty ledger rows turning into grey texture.
+const plexSans = IBM_Plex_Sans({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-plex-sans",
+  display: "swap",
+});
+
+// Its own companion mono, not a third voice. This app sets every label, pill,
+// table header and figure in mono, so the pairing carries more of the screen
+// than the sans does — the two need to share proportions and weight.
+const plexMono = IBM_Plex_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  variable: "--font-plex-mono",
+  display: "swap",
+});
+
+// Plex carries no Myanmar glyphs either, so every name_my field would fall through
+// to whatever the OS happened to ship — Myanmar Text on Windows, Myanmar
+// Sangam MN on macOS, something else on a phone. Different machine, different
+// rendering, and none of them matched the Latin face's weight or x-height. Loading this
+// explicitly is what makes Burmese look deliberate rather than accidental.
+const notoMyanmar = Noto_Sans_Myanmar({
+  subsets: ["myanmar"],
+  weight: ["400", "500", "600"],
+  variable: "--font-myanmar",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "Myanmar ERP",
@@ -33,7 +59,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   }
 
   return (
-    <html lang="en" className={`${inter.variable} ${geistMono.variable}`}>
+    <html lang="en" className={`${plexSans.variable} ${plexMono.variable} ${notoMyanmar.variable}`}>
       <body>
         <div className="shell">
           <nav className="sidebar">

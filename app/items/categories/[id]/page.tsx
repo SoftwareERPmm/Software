@@ -4,7 +4,7 @@ import { sql } from "@/lib/db";
 import { money, qty } from "@/lib/db";
 import {
   createCategory, createItem, insertCategoryAbove, moveCategory,
-  updateCategory, deactivateCategory, deleteCategory,
+  updateCategory, deactivateCategory, activateCategory, deleteCategory,
 } from "@/lib/actions";
 import { getBrands } from "@/lib/queries";
 import { allCategories, childrenOf, trail, depthOf, levelCounts, branchIds, levelLabel, levelLabelPlural, MAX_CATEGORY_DEPTH } from "@/lib/tree";
@@ -124,6 +124,7 @@ export default async function CategoryLevel({ params }: { params: Promise<{ id: 
                         returnTo={returnTo}
                         updateAction={updateCategory}
                         deactivateAction={deactivateCategory}
+                        activateAction={activateCategory}
                         deleteAction={deleteCategory}
                       />
                     );
@@ -183,7 +184,7 @@ export default async function CategoryLevel({ params }: { params: Promise<{ id: 
                       <td className="wrap">
                         {i.name}
                         {i.name_my && (
-                          <div style={{ color: "var(--muted)", fontSize: "0.82rem" }}>{i.name_my}</div>
+                          <div className="subline">{i.name_my}</div>
                         )}
                         {!i.is_stocked && <> <span className="pill">service</span></>}
                       </td>

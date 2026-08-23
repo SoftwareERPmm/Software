@@ -1,5 +1,5 @@
 import { sql } from "@/lib/db";
-import { createBrand, updateBrand, deactivateBrand, deleteBrand } from "@/lib/actions";
+import { createBrand, updateBrand, deactivateBrand, activateBrand, deleteBrand } from "@/lib/actions";
 import { AddBrandForm } from "@/components/brand-form";
 import { BrandRow } from "@/components/brand-row";
 import { DataTable, type DataRow } from "@/components/data-table";
@@ -25,6 +25,7 @@ export default async function Brands() {
         brand={b}
         updateAction={updateBrand}
         deactivateAction={deactivateBrand}
+        activateAction={activateBrand}
         deleteAction={deleteBrand}
       />
     ),

@@ -1,6 +1,6 @@
 import { sql } from "@/lib/db";
 import { getCompany, getChartOfAccounts } from "@/lib/queries";
-import { createAccount, updateAccount, deactivateAccount, deleteAccount } from "@/lib/actions";
+import { createAccount, updateAccount, deactivateAccount, activateAccount, deleteAccount } from "@/lib/actions";
 import { AddAccountForm } from "@/components/account-form";
 import { AccountRow, type CoaAccount } from "@/components/account-row";
 
@@ -30,6 +30,7 @@ export default async function ChartOfAccounts() {
           currencies={currencies}
           updateAction={updateAccount}
           deactivateAction={deactivateAccount}
+          activateAction={activateAccount}
           deleteAction={deleteAccount}
         />,
         ...walk(a.id, depth + 1),

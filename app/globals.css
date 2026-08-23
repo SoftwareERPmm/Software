@@ -13,10 +13,41 @@
   --bad:       #B4283C;
   --ghost:     #9AA4B2;
 
-  --sans: var(--font-inter), system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --mono: var(--font-geist-mono), ui-monospace, "Cascadia Mono", "SF Mono", "Segoe UI Mono", "Roboto Mono", Menlo, Consolas, monospace;
+  /* Plex Sans and Plex Mono are a designed pair, which matters here because
+     mono carries every label, header and figure — more of the screen than the
+     sans does. Neither has Myanmar glyphs, so Burmese falls through to the
+     Noto face rather than to whatever the OS happens to ship. Order matters:
+     Latin resolves in Plex first, Burmese in Noto. */
+  --sans: var(--font-plex-sans), var(--font-myanmar), system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: var(--font-plex-mono), var(--font-myanmar), ui-monospace, "Cascadia Mono", "SF Mono", "Segoe UI Mono", "Roboto Mono", Menlo, Consolas, monospace;
 
   --s1: 0.35rem; --s2: 0.65rem; --s3: 1rem; --s4: 1.5rem; --s5: 2.25rem; --s6: 3.25rem;
+
+  /* Type scale. This replaced sixteen ad-hoc sizes that had drifted into
+     pairs the eye cannot separate (0.66/0.68/0.70, 0.87/0.88/0.90) — the
+     sprawl read as sloppiness even when no single value was wrong. Nine
+     steps, in rem so browser zoom and OS text scaling still work. */
+  --t-2xs:  0.6875rem;  /* 11px — uppercase micro labels, table headers */
+  --t-xs:   0.75rem;    /* 12px — pills, tiny buttons */
+  --t-sm:   0.8125rem;  /* 13px — hints, notes, nav items */
+  --t-md:   0.875rem;   /* 14px — tables and dense data, the workhorse */
+  --t-base: 0.9375rem;  /* 15px — body copy, form inputs */
+  --t-lg:   1.0625rem;  /* 17px — card headings */
+  --t-xl:   1.25rem;    /* 20px — voucher totals */
+  --t-2xl:  1.375rem;   /* 22px — KPI figures */
+  --t-3xl:  1.5rem;     /* 24px — page titles */
+
+  /* One tracking value per job, instead of four that drifted 0.06 to 0.12em
+     across labels that are meant to look identical. */
+  --track-caps:    0.1em;
+  --track-tight:  -0.01em;
+  --track-tighter:-0.02em;
+
+  /* Prose wants air; a forty-row ledger wants the rows close enough to scan
+     as a column. One leading value could not serve both. */
+  --lh-tight: 1.25;
+  --lh-snug:  1.45;
+  --lh-base:  1.6;
 
   /* Small elements (pills, tiny buttons) stay crisp; containers (cards,
      toast, dropdowns) get more rounding — that contrast is what reads as
@@ -50,8 +81,8 @@ body {
   background: var(--ground);
   color: var(--ink);
   font-family: var(--sans);
-  font-size: 0.95rem;
-  line-height: 1.6;
+  font-size: var(--t-base);
+  line-height: var(--lh-base);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -77,19 +108,19 @@ a { color: inherit; text-decoration: none; }
 }
 
 .brand { padding: 0 var(--s4); display: flex; flex-direction: column; gap: 2px; }
-.brand-name { font-weight: 600; letter-spacing: -0.01em; font-size: 0.95rem; }
-.brand-sub { font-family: var(--mono); font-size: 0.68rem; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; }
+.brand-name { font-weight: 600; letter-spacing: var(--track-tight); font-size: var(--t-base); }
+.brand-sub { font-family: var(--mono); font-size: var(--t-2xs); color: var(--muted); letter-spacing: var(--track-caps); text-transform: uppercase; }
 
 .navgroup { display: flex; flex-direction: column; gap: 1px; }
 .navlabel {
-  font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.12em;
+  font-family: var(--mono); font-size: var(--t-2xs); letter-spacing: var(--track-caps);
   text-transform: uppercase; color: var(--muted);
   padding: 0 var(--s4) var(--s1);
 }
 .navlink {
   padding: 0.38rem var(--s4) 0.38rem calc(var(--s4) + 0.9rem);
   color: var(--ink-soft);
-  font-size: 0.82rem;
+  font-size: var(--t-sm);
   border-left: 2px solid transparent;
   transition: background-color 150ms, color 150ms;
 }
@@ -101,7 +132,7 @@ a { color: inherit; text-decoration: none; }
    smaller — legible as "part of", not as a sibling section. */
 .navlink[data-sub="true"] {
   padding-left: calc(var(--s4) + 1.9rem);
-  font-size: 0.78rem;
+  font-size: var(--t-sm);
   color: var(--muted);
 }
 .navlink[data-sub="true"]:hover { color: var(--ink); }
@@ -127,15 +158,22 @@ a { color: inherit; text-decoration: none; }
 
 /* ----------------------------------------------------------- typography -- */
 
-h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; margin: 0; }
-h2 { font-size: 1.05rem; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+h1 { font-size: var(--t-3xl); font-weight: 600; letter-spacing: var(--track-tighter); margin: 0; }
+h2 { font-size: var(--t-lg); font-weight: 600; letter-spacing: var(--track-tight); margin: 0; }
 .page-head { display: flex; flex-direction: column; gap: var(--s1); }
-.page-sub { color: var(--muted); font-size: 0.9rem; }
+.page-sub { color: var(--muted); font-size: var(--t-base); }
 .eyebrow {
-  font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.12em;
+  font-family: var(--mono); font-size: var(--t-2xs); letter-spacing: var(--track-caps);
   text-transform: uppercase; color: var(--muted);
 }
 .m { font-family: var(--mono); font-size: 0.88em; }
+
+/* A quieter second line under a primary one: the Burmese name under a Latin
+   name, or the English gloss under Burmese copy. The same three declarations
+   were written inline in thirteen places; as one class the size and leading
+   are set once, which matters now that Burmese resolves in Noto and Latin in
+   Inter, two faces with different optical sizes. */
+.subline { font-size: var(--t-sm); color: var(--muted); line-height: var(--lh-snug); }
 .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
 section { display: flex; flex-direction: column; gap: var(--s3); }
@@ -152,11 +190,11 @@ section { display: flex; flex-direction: column; gap: var(--s3); }
   display: flex; flex-direction: column; gap: var(--s1);
 }
 .kpi-label {
-  font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.1em; text-transform: uppercase;
+  font-family: var(--mono); font-size: var(--t-2xs); letter-spacing: var(--track-caps); text-transform: uppercase;
   color: var(--muted); display: inline-flex; align-items: center; gap: 0.35rem;
 }
-.kpi-value { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 1.35rem; letter-spacing: -0.02em; }
-.kpi-note { font-size: 0.78rem; color: var(--muted); }
+.kpi-value { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: var(--t-2xl); letter-spacing: var(--track-tighter); }
+.kpi-note { font-size: var(--t-sm); color: var(--muted); }
 
 /* Setup checklist. Shown only until a company is trading, so it is allowed
    to be the loudest thing on the dashboard while it lasts. */
@@ -179,7 +217,7 @@ section { display: flex; flex-direction: column; gap: var(--s3); }
 .checklist-body { flex: 1; display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
 .checklist-label { font-weight: 500; }
 .checklist-item[data-done] .checklist-label { color: var(--muted); text-decoration: line-through; }
-.checklist-detail { font-size: 0.82rem; color: var(--muted); }
+.checklist-detail { font-size: var(--t-sm); color: var(--muted); }
 
 /* Neutral counts, deliberately quieter than .kpi/Action required — normal
    in-flight business, not something asking to be looked at. */
@@ -195,9 +233,11 @@ section { display: flex; flex-direction: column; gap: var(--s3); }
 /* ---------------------------------------------------------------- cards -- */
 
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
+/* Full-strength rule, matching the table header beneath it — the soft line
+   let card titles drift into their own content. */
 .card-head {
   padding: var(--s3);
-  border-bottom: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line);
   display: flex; align-items: baseline; justify-content: space-between; gap: var(--s3); flex-wrap: wrap;
 }
 .card-body { padding: var(--s3); }
@@ -205,18 +245,43 @@ section { display: flex; flex-direction: column; gap: var(--s3); }
 /* --------------------------------------------------------------- tables -- */
 
 .tablewrap { overflow-x: auto; }
-table { border-collapse: collapse; width: 100%; font-size: 0.87rem; }
-th, td { text-align: left; padding: 0.55rem var(--s3); border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
+/* Tighter than body: a ledger is read as a column of figures, and 1.6
+   leading pushes consecutive rows far enough apart to break that scan. */
+table { border-collapse: collapse; width: 100%; font-size: var(--t-md); line-height: var(--lh-snug); }
+th, td { text-align: left; padding: 0.55rem var(--s3); white-space: nowrap; }
+
+/* The header is the anchor of a data table, so it carries real weight and a
+   full-strength rule under it — the old 400-weight muted row read as another
+   line of data rather than as the thing labelling it. */
 thead th {
-  font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.1em;
-  text-transform: uppercase; color: var(--muted); font-weight: 400;
+  font-family: var(--mono); font-size: var(--t-2xs); letter-spacing: var(--track-caps);
+  text-transform: uppercase; color: var(--ink-soft); font-weight: 600;
   background: var(--surface); position: sticky; top: 0;
+  border-bottom: 1px solid var(--line);
 }
-tbody tr:last-child td { border-bottom: none; }
-tbody tr.link:hover { background: var(--line-soft); cursor: pointer; }
-.activity-row:hover { background: var(--line-soft); }
+
+/* Banding instead of a hairline under every row. Both together is noise, and
+   for tracking a figure across ten columns the band is the stronger cue.
+   Mixed against --ink so it inverts correctly in dark mode. */
+table:not(.linetable) tbody tr:nth-child(even) > td {
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+}
+
+/* Has to beat the band, so it is mixed a step stronger rather than reusing
+   --line-soft, which would vanish on every second row. */
+tbody tr.link:hover > td,
+table:not(.linetable) tbody tr.link:hover > td {
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  cursor: pointer;
+}
+.activity-row:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+
+/* Line-entry tables are forms, not reports: banding behind input rows reads
+   as a validation state, so they keep the original hairlines. */
+.linetable th, .linetable td { border-bottom: 1px solid var(--line-soft); }
+.linetable tbody tr:last-child td { border-bottom: none; }
 td.r, th.r { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--mono); }
-td.code { font-family: var(--mono); font-size: 0.82rem; }
+td.code { font-family: var(--mono); font-size: var(--t-sm); }
 td.wrap { white-space: normal; }
 tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
 
@@ -226,8 +291,8 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-num
 /* --------------------------------------------------------------- pills --- */
 
 .pill {
-  display: inline-block; font-family: var(--mono); font-size: 0.68rem;
-  letter-spacing: 0.06em; padding: 0.14rem 0.48rem; border-radius: var(--r-sm);
+  display: inline-block; font-family: var(--mono); font-size: var(--t-2xs);
+  letter-spacing: var(--track-caps); padding: 0.14rem 0.48rem; border-radius: var(--r-sm);
   background: color-mix(in srgb, var(--muted) 13%, transparent);
   color: var(--muted); text-transform: uppercase; border: none;
 }
@@ -243,25 +308,25 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-num
 /* -------------------------------------------------------------- health --- */
 
 .health { display: flex; flex-wrap: wrap; gap: var(--s3); align-items: center; }
-.health-item { display: flex; align-items: center; gap: var(--s2); font-size: 0.85rem; }
+.health-item { display: flex; align-items: center; gap: var(--s2); font-size: var(--t-md); }
 .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
 .dot.ok  { background: var(--ok); }
 .dot.bad { background: var(--bad); }
 
 /* ---------------------------------------------------------------- flow --- */
 
-.flow { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); font-family: var(--mono); font-size: 0.78rem; }
+.flow { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); font-family: var(--mono); font-size: var(--t-sm); }
 .flow-node { padding: 0.16rem 0.5rem; border: 1px solid var(--line); border-radius: var(--r-sm); }
 .flow-node.here { border-color: var(--dr); color: var(--dr); background: color-mix(in srgb, var(--dr) 10%, transparent); }
 .flow-arrow { color: var(--muted); }
 
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--s3); align-items: start; }
 
-.kv { display: grid; grid-template-columns: auto 1fr; gap: var(--s1) var(--s3); font-size: 0.87rem; }
-.kv dt { font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); align-self: center; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: var(--s1) var(--s3); font-size: var(--t-md); }
+.kv dt { font-family: var(--mono); font-size: var(--t-2xs); letter-spacing: var(--track-caps); text-transform: uppercase; color: var(--muted); align-self: center; }
 .kv dd { margin: 0; }
 
-.empty { padding: var(--s5) var(--s3); text-align: center; color: var(--muted); font-size: 0.88rem; }
+.empty { padding: var(--s5) var(--s3); text-align: center; color: var(--muted); font-size: var(--t-md); }
 
 /* ---------------------------------------------------------------- forms -- */
 
@@ -270,10 +335,10 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-num
 
 .field { display: flex; flex-direction: column; gap: var(--s1); }
 .field label {
-  font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.1em;
+  font-family: var(--mono); font-size: var(--t-2xs); letter-spacing: var(--track-caps);
   text-transform: uppercase; color: var(--muted);
 }
-.field .hint { font-size: 0.78rem; color: var(--muted); }
+.field .hint { font-size: var(--t-sm); color: var(--muted); }
 
 /* A field the form actually can't be submitted without gets a label that
    says so — full-contrast, bolder, with a mark — instead of reading the
@@ -292,7 +357,7 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-num
 
 input[type="text"], input[type="number"], input[type="date"], input[type="time"], select, textarea {
   font-family: inherit;
-  font-size: 0.9rem;
+  font-size: var(--t-base);
   line-height: 1.3;
   color: var(--ink);
   background: var(--surface);
@@ -328,34 +393,118 @@ textarea { min-height: 4.6rem; line-height: 1.5; resize: vertical; }
 
 .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--s3); }
 
-.check { display: flex; align-items: center; gap: var(--s2); font-size: 0.9rem; cursor: pointer; }
+.check { display: flex; align-items: center; gap: var(--s2); font-size: var(--t-base); cursor: pointer; }
 .check input {
   width: 16px; height: 16px; margin: 0; flex: none;
   accent-color: var(--dr); cursor: pointer;
 }
 
+/* Buttons carry four roles, and how early each one announces itself is set by
+   how hard it is to undo. Primary and neutral say nothing until hovered;
+   deactivate colours on approach; delete is the only one that is coloured at
+   rest, because it is the only one that cannot be taken back. Making them all
+   loud would flatten that back into no signal at all. */
 button {
-  font-family: inherit; font-size: 0.88rem; font-weight: 500;
+  font-family: inherit; font-size: var(--t-md); font-weight: 500;
   color: var(--surface); background: var(--dr);
   border: 1px solid var(--dr); border-radius: var(--r-md);
   padding: 0.46rem 1rem; cursor: pointer;
-  transition: opacity 150ms;
+  transition: background-color 150ms, border-color 150ms, color 150ms, opacity 150ms;
 }
 button:hover { opacity: 0.88; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button:focus-visible { outline: 2px solid var(--dr); outline-offset: 2px; }
 
+/* Neutral: Edit, Cancel, Open, and the line-remove crosses inside forms —
+   dropping an unsaved row is not destructive and must not look like it. */
 button.ghost { color: var(--ink-soft); background: transparent; border-color: var(--line); }
 button.ghost:hover { background: var(--line-soft); }
-button.tiny { padding: 0.16rem 0.5rem; font-size: 0.78rem; }
+
+/* Deactivate: reversible, so it reads neutral at rest and only warns on
+   approach. Retiring a warehouse is a real decision, not a dangerous one. */
+button.warn { color: var(--ink-soft); background: transparent; border-color: var(--line); }
+button.warn:hover {
+  /* Raw --warn on its own tinted background is 3.74:1, under AA. Pulling it
+     20% toward --ink fixes that in both themes at once: --ink is dark on
+     light and light on dark, so the same mix darkens the amber on white
+     (5.07:1) and lightens it on the dark surface (7.30:1). */
+  color: color-mix(in srgb, var(--warn) 80%, var(--ink));
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  opacity: 1;
+}
+button.warn:focus-visible { outline-color: var(--warn); }
+
+/* Delete: a hard row delete with no undo. Red before it is touched, solid on
+   hover. --surface rather than #fff for the hover label, so it stays legible
+   when --bad lightens in dark mode. */
+button.danger {
+  color: var(--bad); background: transparent;
+  border-color: color-mix(in srgb, var(--bad) 32%, transparent);
+}
+button.danger:hover {
+  color: var(--surface); background: var(--bad); border-color: var(--bad);
+  opacity: 1;
+}
+button.danger:focus-visible { outline-color: var(--bad); }
+
+button.tiny { padding: 0.16rem 0.5rem; font-size: var(--t-sm); }
 
 .actions { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; }
+
+/* ------------------------------------------------------ confirm dialog --- */
+
+/* Replaces window.confirm(). <dialog> is doing the work here — focus trap,
+   Esc, inert background — so this is only appearance. */
+.confirm {
+  border: none; padding: 0; background: transparent;
+  max-width: 26rem; width: calc(100% - var(--s4));
+  color: var(--ink);
+}
+.confirm::backdrop {
+  background: rgb(0 0 0 / 0.45);
+  backdrop-filter: blur(2px);
+}
+.confirm-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: var(--s4);
+  box-shadow: 0 24px 60px rgb(0 0 0 / 0.28), 0 4px 12px rgb(0 0 0 / 0.12);
+}
+.confirm-icon {
+  width: 34px; height: 34px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--bad) 14%, transparent);
+  color: var(--bad);
+  margin-bottom: var(--s3);
+}
+.confirm-title { font-size: var(--t-lg); font-weight: 600; letter-spacing: var(--track-tight); margin: 0; }
+/* Wraps, unlike the nowrap that table cells impose — a record name can be long. */
+.confirm-detail {
+  margin: var(--s2) 0 0; color: var(--muted);
+  font-size: var(--t-md); line-height: var(--lh-base); white-space: normal;
+}
+/* Cancel sits left of the destructive action, and is the button focus lands
+   on first, so Enter on an unread dialog backs out rather than deletes. */
+.confirm-actions {
+  display: flex; justify-content: flex-end; gap: var(--s2);
+  margin-top: var(--s4);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .confirm[open] .confirm-panel { animation: confirm-in 160ms cubic-bezier(0.16, 1, 0.3, 1); }
+  @keyframes confirm-in {
+    from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+    to   { opacity: 1; transform: none; }
+  }
+}
 
 .alert {
   border: 1px solid color-mix(in srgb, var(--bad) 45%, transparent);
   background: color-mix(in srgb, var(--bad) 8%, transparent);
   color: var(--bad);
-  border-radius: var(--r-md); padding: var(--s2) var(--s3); font-size: 0.87rem;
+  border-radius: var(--r-md); padding: var(--s2) var(--s3); font-size: var(--t-md);
 }
 
 /* ------------------------------------------------------------- toast --- */
@@ -374,7 +523,7 @@ button.tiny { padding: 0.16rem 0.5rem; font-size: 0.78rem; }
   border: 1px solid color-mix(in srgb, var(--ok) 40%, var(--line));
   border-radius: var(--r-lg); padding: 0.8rem 1.15rem;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.2), 0 3px 10px rgba(0, 0, 0, 0.1);
-  font-size: 0.95rem; font-weight: 500; color: var(--ink);
+  font-size: var(--t-base); font-weight: 500; color: var(--ink);
   white-space: nowrap;
   cursor: pointer; pointer-events: auto;
   animation: toast-in 300ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
@@ -388,7 +537,7 @@ button.tiny { padding: 0.16rem 0.5rem; font-size: 0.78rem; }
   display: inline-flex; align-items: center; justify-content: center;
   width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
   background: var(--ok); color: var(--surface);
-  font-size: 0.75rem; font-weight: 700;
+  font-size: var(--t-xs); font-weight: 700;
 }
 
 @keyframes toast-in {
@@ -406,7 +555,7 @@ button.tiny { padding: 0.16rem 0.5rem; font-size: 0.78rem; }
 }
 
 .linetable td { padding: 0.35rem 0.5rem; vertical-align: middle; }
-.linetable input, .linetable select { padding: 0.3rem 0.45rem; font-size: 0.85rem; min-height: 1.9rem; }
+.linetable input, .linetable select { padding: 0.3rem 0.45rem; font-size: var(--t-md); min-height: 1.9rem; }
 .linetable select { padding-right: 1.7rem; background-position: right 0.5rem center; background-size: 12px; }
 .linetable td.narrow { width: 120px; }
 .linetable td.tight { width: 44px; }
@@ -416,10 +565,10 @@ button.tiny { padding: 0.16rem 0.5rem; font-size: 0.78rem; }
   padding: var(--s3); border-top: 1px solid var(--line);
   font-family: var(--mono); font-variant-numeric: tabular-nums;
 }
-.totalbar .big { font-size: 1.15rem; }
+.totalbar .big { font-size: var(--t-xl); }
 
 .readout {
-  font-family: var(--mono); font-size: 0.85rem;
+  font-family: var(--mono); font-size: var(--t-md);
   padding: 0.46rem 0.6rem; border: 1px solid var(--line);
   border-radius: var(--r-md); background: var(--ground);
 }
@@ -447,9 +596,9 @@ button.tiny { padding: 0.16rem 0.5rem; font-size: 0.78rem; }
 .picker-row:last-child { border-bottom: none; }
 
 .picker-name { flex: 1; }
-.picker-meta { font-family: var(--mono); font-size: 0.75rem; color: var(--muted); white-space: nowrap; }
+.picker-meta { font-family: var(--mono); font-size: var(--t-xs); color: var(--muted); white-space: nowrap; }
 
-.picker-empty { padding: 0.6rem var(--s3); color: var(--muted); font-size: 0.85rem; }
+.picker-empty { padding: 0.6rem var(--s3); color: var(--muted); font-size: var(--t-md); }
 
 .picker-create { color: var(--dr); font-weight: 500; border-top: 1px solid var(--line); }
 
@@ -463,7 +612,7 @@ button.tiny { padding: 0.16rem 0.5rem; font-size: 0.78rem; }
   display: flex; align-items: center; justify-content: space-between;
   width: 100%; background: transparent; border: none; border-radius: 0;
   padding: 0.3rem var(--s4) 0.3rem;
-  font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.1em;
+  font-family: var(--mono); font-size: var(--t-2xs); letter-spacing: var(--track-caps);
   text-transform: uppercase; color: var(--muted); font-weight: 700;
   cursor: pointer;
 }
@@ -473,7 +622,7 @@ button.tiny { padding: 0.16rem 0.5rem; font-size: 0.78rem; }
 .navhead-label { display: flex; align-items: center; gap: 0.5rem; }
 .navicon { display: inline-flex; flex: none; }
 
-.navcaret { transition: transform 150ms; display: inline-block; font-size: 0.9rem; }
+.navcaret { transition: transform 150ms; display: inline-block; font-size: var(--t-base); }
 .navcaret[data-open="true"] { transform: rotate(90deg); }
 
 /* display:none by default; opened by the [data-open] attribute rather
@@ -489,12 +638,12 @@ button.tiny { padding: 0.16rem 0.5rem; font-size: 0.78rem; }
   display: flex; align-items: center; justify-content: space-between;
   width: 100%; background: transparent; border: none; border-radius: 0;
   padding: 0.34rem var(--s4) 0.34rem calc(var(--s4) + 0.9rem);
-  font-size: 0.8rem; font-weight: 500;
+  font-size: var(--t-sm); font-weight: 500;
   color: var(--ink-soft); cursor: pointer;
 }
 .navsubhead:hover { background: var(--line-soft); color: var(--ink); }
 .navsubhead[data-inside="true"] { color: var(--ink); }
-.navsubhead .navcaret { font-size: 0.8rem; }
+.navsubhead .navcaret { font-size: var(--t-sm); }
 
 .navsubitems { display: none; flex-direction: column; gap: 1px; }
 .navsubitems[data-open="true"] { display: flex; }
@@ -515,7 +664,7 @@ button.tiny { padding: 0.16rem 0.5rem; font-size: 0.78rem; }
 
 a.btn {
   display: inline-block;
-  font-family: inherit; font-size: 0.88rem; font-weight: 500;
+  font-family: inherit; font-size: var(--t-md); font-weight: 500;
   color: var(--surface); background: var(--dr);
   border: 1px solid var(--dr); border-radius: var(--r-md);
   padding: 0.46rem 1rem; cursor: pointer;
@@ -528,4 +677,4 @@ a.btn:focus-visible { outline: 2px solid var(--dr); outline-offset: 2px; }
 a.btn.ghost { color: var(--ink-soft); background: transparent; border-color: var(--line); }
 a.btn.ghost:hover { background: var(--line-soft); opacity: 1; }
 
-a.btn.tiny { padding: 0.16rem 0.5rem; font-size: 0.78rem; }
+a.btn.tiny { padding: 0.16rem 0.5rem; font-size: var(--t-sm); }

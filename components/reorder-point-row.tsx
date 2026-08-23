@@ -2,6 +2,7 @@
 
 import { useActionState, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
+import { ConfirmDelete } from "./confirm-delete";
 
 type ReorderPoint = {
   id: string; item_code: string; item_name: string; location_code: string; min_qty: string | number;
@@ -26,9 +27,6 @@ export function ReorderPointRow({
     null
   );
 
-  function confirmDelete(e: React.FormEvent<HTMLFormElement>) {
-    if (!confirm(`Remove the reorder point for ${point.item_name} at ${point.location_code}?`)) e.preventDefault();
-  }
 
   if (editing) {
     return (
@@ -63,12 +61,18 @@ export function ReorderPointRow({
       <td>
         <span className="actions">
           <button type="button" className="ghost tiny" onClick={() => setEditing(true)}>Edit</button>
-          <form action={delFormAction} onSubmit={confirmDelete} style={{ display: "inline" }}>
+          <ConfirmDelete
+            action={delFormAction}
+            pending={delPending}
+            error={delState && "error" in delState ? delState.error : null}
+            title={`Remove the reorder point for ${point.item_name}?`}
+            detail="The item stays; only the reorder threshold at this location is removed."
+            label="Remove"
+            pendingLabel="Removing…"
+            confirmLabel="Remove"
+          >
             <input type="hidden" name="id" value={point.id} />
-            <button type="submit" className="ghost tiny" disabled={delPending}>
-              {delPending ? "Removing…" : "Remove"}
-            </button>
-          </form>
+          </ConfirmDelete>
         </span>
         {delState && "error" in delState && (
           <div className="hint" style={{ color: "var(--bad)" }}>{delState.error}</div>
