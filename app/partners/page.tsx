@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { getCompany, getPartners } from "@/lib/queries";
-import { updatePartner, deactivatePartner, deletePartner } from "@/lib/actions";
+import { updatePartner, deactivatePartner, activatePartner, deletePartner } from "@/lib/actions";
 import { PartnerRow } from "@/components/partner-row";
 import { DataTable, type DataRow } from "@/components/data-table";
 
@@ -40,6 +40,7 @@ export default async function Partners({
         partner={p}
         updateAction={updatePartner}
         deactivateAction={deactivatePartner}
+        activateAction={activatePartner}
         deleteAction={deletePartner}
       />
     ),

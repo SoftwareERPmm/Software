@@ -1,5 +1,5 @@
 import { getCompany, getSalesmen, getLocations } from "@/lib/queries";
-import { createSalesman, updateSalesman, deleteSalesman, deactivateSalesman } from "@/lib/actions";
+import { createSalesman, updateSalesman, deleteSalesman, deactivateSalesman, activateSalesman } from "@/lib/actions";
 import { AddSalesmanForm } from "@/components/salesman-form";
 import { SalesmanRow } from "@/components/salesman-row";
 import { DataTable, type DataRow } from "@/components/data-table";
@@ -37,6 +37,7 @@ export default async function Salespersons() {
         updateAction={updateSalesman}
         deleteAction={deleteSalesman}
         deactivateAction={deactivateSalesman}
+        activateAction={activateSalesman}
       />
     ),
   }));

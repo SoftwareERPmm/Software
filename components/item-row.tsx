@@ -26,6 +26,7 @@ export function ItemRow({
   updateAction,
   deleteAction,
   deactivateAction,
+  activateAction,
 }: {
   item: Item;
   brands: Brand[];
@@ -33,6 +34,7 @@ export function ItemRow({
   updateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   deleteAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   deactivateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
+  activateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
 }) {
   const [editing, setEditing] = useState(false);
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
@@ -41,6 +43,10 @@ export function ItemRow({
   );
   const [, deactFormAction] = useActionState<ActionResult | null, FormData>(
     deactivateAction as never,
+    null
+  );
+  const [, actFormAction] = useActionState<ActionResult | null, FormData>(
+    activateAction as never,
     null
   );
   const [delState, delFormAction, delPending] = useActionState<ActionResult | null, FormData>(
@@ -131,10 +137,15 @@ export function ItemRow({
       <td>
         <span className="actions">
           <button type="button" className="ghost tiny" onClick={() => setEditing(true)}>Edit</button>
-          {item.is_active && (
+          {item.is_active ? (
             <form action={deactFormAction} style={{ display: "inline" }}>
               <input type="hidden" name="id" value={item.id} />
               <button type="submit" className="warn tiny">Deactivate</button>
+            </form>
+          ) : (
+            <form action={actFormAction} style={{ display: "inline" }}>
+              <input type="hidden" name="id" value={item.id} />
+              <button type="submit" className="ghost tiny">Reactivate</button>
             </form>
           )}
           <ConfirmDelete

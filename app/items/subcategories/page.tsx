@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { sql } from "@/lib/db";
 import { allCategories, subcategories, childrenOf, levelCounts, branchIds } from "@/lib/tree";
-import { createCategory, updateCategory, deactivateCategory, deleteCategory } from "@/lib/actions";
+import { createCategory, updateCategory, deactivateCategory, activateCategory, deleteCategory } from "@/lib/actions";
 import { AddCategoryForm } from "@/components/level-form";
 import { CategoryRow } from "@/components/category-row";
 import { DataTable, type DataRow } from "@/components/data-table";
@@ -38,6 +38,7 @@ export default async function Subcategories() {
         returnTo="/items/subcategories"
         updateAction={updateCategory}
         deactivateAction={deactivateCategory}
+        activateAction={activateCategory}
         deleteAction={deleteCategory}
       />
     ),

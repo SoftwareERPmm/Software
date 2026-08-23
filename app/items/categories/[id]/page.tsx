@@ -4,7 +4,7 @@ import { sql } from "@/lib/db";
 import { money, qty } from "@/lib/db";
 import {
   createCategory, createItem, insertCategoryAbove, moveCategory,
-  updateCategory, deactivateCategory, deleteCategory,
+  updateCategory, deactivateCategory, activateCategory, deleteCategory,
 } from "@/lib/actions";
 import { getBrands } from "@/lib/queries";
 import { allCategories, childrenOf, trail, depthOf, levelCounts, branchIds, levelLabel, levelLabelPlural, MAX_CATEGORY_DEPTH } from "@/lib/tree";
@@ -124,6 +124,7 @@ export default async function CategoryLevel({ params }: { params: Promise<{ id: 
                         returnTo={returnTo}
                         updateAction={updateCategory}
                         deactivateAction={deactivateCategory}
+                        activateAction={activateCategory}
                         deleteAction={deleteCategory}
                       />
                     );

@@ -26,6 +26,7 @@ export function AccountRow({
   currencies,
   updateAction,
   deactivateAction,
+  activateAction,
   deleteAction,
 }: {
   account: CoaAccount;
@@ -34,6 +35,7 @@ export function AccountRow({
   currencies: string[];
   updateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   deactivateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
+  activateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   deleteAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
 }) {
   const [editing, setEditing] = useState(false);
@@ -45,6 +47,10 @@ export function AccountRow({
   );
   const [deactState, deactFormAction] = useActionState<ActionResult | null, FormData>(
     deactivateAction as never,
+    null
+  );
+  const [actState, actFormAction] = useActionState<ActionResult | null, FormData>(
+    activateAction as never,
     null
   );
   const [delState, delFormAction, delPending] = useActionState<ActionResult | null, FormData>(
@@ -176,6 +182,16 @@ export function AccountRow({
             </form>
           )}
 
+          {/* No `locked` guard here: the lock exists to stop an account the
+              posting engine needs being retired, so a locked account that is
+              somehow inactive is exactly the one most worth putting back. */}
+          {!account.is_active && (
+            <form action={actFormAction} style={{ display: "inline" }}>
+              <input type="hidden" name="id" value={account.id} />
+              <button type="submit" className="ghost tiny">Reactivate</button>
+            </form>
+          )}
+
           {!locked && account.posting_count === 0 && account.child_count === 0 && (
             <ConfirmDelete
             action={delFormAction}
@@ -195,6 +211,9 @@ export function AccountRow({
           )}
         </span>
 
+        {actState && "error" in actState && (
+          <div className="hint" style={{ color: "var(--bad)" }}>{actState.error}</div>
+        )}
         {deactState && "error" in deactState && (
           <div className="hint" style={{ color: "var(--bad)" }}>{deactState.error}</div>
         )}
