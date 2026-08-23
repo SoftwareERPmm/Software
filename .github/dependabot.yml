@@ -1,0 +1,18 @@
+# The audit's real point was that dependency security has to be continuous
+# rather than a one-time scan. Weekly, grouped so a single PR carries the
+# routine bumps instead of one PR per package.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly

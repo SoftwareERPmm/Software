@@ -4,6 +4,12 @@
 //   node scripts/clear.mjs --all           -- transactions + demo masters
 //   node scripts/clear.mjs --all --confirm -- actually do it
 //
+// Wiping anything other than the database in .env additionally needs the host
+// named, so a pasted production URL cannot destroy the pilot tester's data by
+// accident:
+//
+//   DATABASE_URL="<other>" node scripts/clear.mjs --all --confirm --host=<its host>
+//
 // Always kept: the company, chart of accounts, system accounts, account
 // determination, fiscal calendar, locations, units, price levels, tax codes
 // and FOC reasons. Without those nothing can post.
@@ -34,6 +40,45 @@ if (!url) { console.error("DATABASE_URL is not set"); process.exit(1); }
 const all = process.argv.includes("--all");
 const confirm = process.argv.includes("--confirm");
 const local = url.includes("localhost") || url.includes("127.0.0.1");
+
+/**
+ * Wiping the database named in .env is routine — that is the development
+ * branch, and clearing it is most of what this script is for. Wiping anything
+ * else means a URL was passed on the command line, which is how the pilot
+ * tester's data or the real books would get destroyed by a mispaste.
+ *
+ * A blanket "refuse anything not localhost" rule would be useless here: the
+ * development branch is itself a cloud database, so the override would be
+ * needed daily and would stop being read within a week. Instead the target
+ * host has to be named, which cannot happen by accident.
+ */
+function envFileUrl() {
+  const p = join(root, ".env");
+  if (!existsSync(p)) return null;
+  for (const line of readFileSync(p, "utf8").split("\n")) {
+    const m = line.match(/^\s*DATABASE_URL\s*=\s*(.+?)\s*$/);
+    if (m) return m[1].replace(/^["']|["']$/g, "");
+  }
+  return null;
+}
+
+const targetHost = new URL(url).host;
+const envHost = envFileUrl() ? new URL(envFileUrl()).host : null;
+const isEnvTarget = envHost !== null && targetHost === envHost;
+
+const namedArg = process.argv.find((a) => a.startsWith("--host="));
+const namedHost = namedArg ? namedArg.slice("--host=".length) : null;
+
+if (confirm && !isEnvTarget && namedHost !== targetHost) {
+  console.error(
+    `\n  REFUSING to wipe a database that is not the one in .env.\n\n` +
+    `    target   ${targetHost}\n` +
+    `    .env     ${envHost ?? "(no .env found)"}\n\n` +
+    `  If that is genuinely what you want, name it explicitly:\n\n` +
+    `    --host=${targetHost}\n`
+  );
+  process.exit(1);
+}
 const pooled = url.includes("-pooler.") || url.includes("pgbouncer=true");
 const sql = postgres(url, { ssl: local ? false : "require", prepare: !pooled, onnotice: () => {}, max: 1 });
 
@@ -51,7 +96,16 @@ const MASTER = ["item_alias", "item_uom", "item_reorder", "item_price", "item",
                 "item_group", "business_partner", "salesman", "promotion"];
 
 try {
-  console.log(`\n  ${local ? "LOCAL" : "CLOUD"}  ${new URL(url).host}\n`);
+  // The company name is what actually distinguishes these databases from the
+  // outside — they are otherwise identical and equally empty-looking. Printing
+  // it is the last chance to notice that "MTK Co Ltd" is the tester's live
+  // data and not "MTK Co Ltd — DEV".
+  const [co] = await sql`select name from company`;
+  console.log(
+    `\n  ${local ? "LOCAL" : "CLOUD"}  ${targetHost}` +
+    `\n  company     ${co?.name ?? "(none)"}` +
+    `${isEnvTarget ? "" : "  <- NOT the database in .env"}\n`
+  );
 
   const counts = async () => {
     const rows = await sql`
