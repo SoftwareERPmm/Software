@@ -3,7 +3,13 @@
 An ERP system built for the Myanmar market — inventory, distribution, and
 accounting for trading and distribution companies.
 
-**Status:** design phase. No application code yet.
+**Status:** in pilot. The application is built and running — purchases, sales,
+inventory, and the ledger all post end to end. An outside tester is using it
+against its own database while the books for real use stay empty.
+
+There is deliberately **no authentication yet**: anyone with the deployment URL
+has full access. See [open decisions](docs/03-decisions.md) before putting real
+customer data behind it.
 
 ## Why
 
@@ -53,9 +59,15 @@ is created.
 1. Scope freeze ✅
 2. Document flow map ✅
 3. Posting matrix ✅ — pending accountant review
-4. Data model
-5. Walking skeleton — receive stock, sell it, take payment, produce a trial
+4. Data model ✅
+5. Walking skeleton ✅ — receive stock, sell it, take payment, produce a trial
    balance that balances and a stock ledger that agrees with the GL
 
-Milestone 5 is the gate. If that chain is correct, everything after it is
-addition. If it's wrong, nothing after it can be right.
+Milestone 5 was the gate. If that chain is correct, everything after it is
+addition. If it's wrong, nothing after it can be right. `scripts/test-empty.mjs`
+re-proves the whole chain against an empty database on demand, which is what
+makes it safe to hand a freshly cleared database to someone.
+
+Still open before this is more than a pilot: authentication and permissions,
+and an audit trail over the posting rules — both in
+[open decisions](docs/03-decisions.md).
