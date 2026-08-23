@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Inter, Geist_Mono } from "next/font/google";
+import { Inter, Geist_Mono, Noto_Sans_Myanmar } from "next/font/google";
 import "./globals.css";
 import Link from "next/link";
 import { getCompany } from "@/lib/queries";
@@ -14,6 +14,18 @@ const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "sw
 // every label, pill, and table header, so this one swap touches almost
 // every screen.
 const geistMono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono", display: "swap" });
+
+// Inter carries no Myanmar glyphs, so every name_my field was falling through
+// to whatever the OS happened to ship — Myanmar Text on Windows, Myanmar
+// Sangam MN on macOS, something else on a phone. Different machine, different
+// rendering, and none of them matched Inter's weight or x-height. Loading this
+// explicitly is what makes Burmese look deliberate rather than accidental.
+const notoMyanmar = Noto_Sans_Myanmar({
+  subsets: ["myanmar"],
+  weight: ["400", "500", "600"],
+  variable: "--font-myanmar",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "Myanmar ERP",
@@ -33,7 +45,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   }
 
   return (
-    <html lang="en" className={`${inter.variable} ${geistMono.variable}`}>
+    <html lang="en" className={`${inter.variable} ${geistMono.variable} ${notoMyanmar.variable}`}>
       <body>
         <div className="shell">
           <nav className="sidebar">

@@ -130,7 +130,7 @@ export function LocationRow({
         {depth > 0 && <span style={{ color: "var(--ghost)" }}>{NBSP.repeat(depth * 2)}└ </span>}
         {location.name}
         {location.name_my && (
-          <div style={{ color: "var(--muted)", fontSize: "0.82rem", marginLeft: depth > 0 ? "1.2rem" : 0 }}>
+          <div className="subline" style={{ marginLeft: depth > 0 ? "1.2rem" : 0 }}>
             {location.name_my}
           </div>
         )}

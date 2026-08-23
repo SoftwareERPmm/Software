@@ -100,7 +100,7 @@ export function SalesmanRow({
       <td className="wrap">
         {salesman.name}
         {salesman.name_my && (
-          <div style={{ color: "var(--muted)", fontSize: "0.82rem" }}>{salesman.name_my}</div>
+          <div className="subline">{salesman.name_my}</div>
         )}
       </td>
       <td style={{ color: "var(--muted)" }}>{salesman.phone ?? "—"}</td>

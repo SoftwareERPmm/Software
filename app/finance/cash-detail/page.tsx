@@ -73,7 +73,7 @@ export default async function CashDetail({
                           <td className="wrap">
                             {r.memo ?? "—"}
                             {r.partner_name && (
-                              <div style={{ color: "var(--muted)", fontSize: "0.82rem" }}>
+                              <div className="subline">
                                 {r.partner_name}
                               </div>
                             )}

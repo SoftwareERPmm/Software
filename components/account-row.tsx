@@ -154,7 +154,7 @@ export function AccountRow({
       <td className="wrap" style={{ fontWeight: isHeading ? 600 : 400 }}>
         {account.name}
         {account.name_my && (
-          <div style={{ color: "var(--muted)", fontSize: "0.82rem", fontWeight: 400 }}>{account.name_my}</div>
+          <div className="subline" style={{ fontWeight: 400 }}>{account.name_my}</div>
         )}
       </td>
       <td style={{ color: "var(--muted)" }}>{ACCOUNT_TYPE_LABEL[account.account_type] ?? account.account_type}</td>

@@ -75,7 +75,7 @@ export function BrandRow({
       <td className="wrap">
         {brand.name}
         {brand.name_my && (
-          <div style={{ color: "var(--muted)", fontSize: "0.82rem" }}>{brand.name_my}</div>
+          <div className="subline">{brand.name_my}</div>
         )}
       </td>
       <td className="r">{brand.items || ""}</td>

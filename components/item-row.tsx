@@ -117,7 +117,7 @@ export function ItemRow({
       </td>
       <td className="wrap">
         {item.name}
-        {item.name_my && <div style={{ color: "var(--muted)", fontSize: "0.82rem" }}>{item.name_my}</div>}
+        {item.name_my && <div className="subline">{item.name_my}</div>}
         {!item.is_stocked && <> <span className="pill">service</span></>}
         {!item.is_active && <> <span className="pill warn">inactive</span></>}
       </td>

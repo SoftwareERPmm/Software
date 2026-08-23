@@ -183,7 +183,7 @@ export default async function CategoryLevel({ params }: { params: Promise<{ id: 
                       <td className="wrap">
                         {i.name}
                         {i.name_my && (
-                          <div style={{ color: "var(--muted)", fontSize: "0.82rem" }}>{i.name_my}</div>
+                          <div className="subline">{i.name_my}</div>
                         )}
                         {!i.is_stocked && <> <span className="pill">service</span></>}
                       </td>

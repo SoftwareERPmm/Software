@@ -95,7 +95,7 @@ export function CategoryRow({
       <td className="wrap">
         <Link href={`/items/categories/${category.id}`}>{category.name}</Link>
         {category.name_my && (
-          <div style={{ color: "var(--muted)", fontSize: "0.82rem" }}>{category.name_my}</div>
+          <div className="subline">{category.name_my}</div>
         )}
         {!category.is_active && <> <span className="pill warn">inactive</span></>}
       </td>

@@ -105,7 +105,7 @@ export default async function Stock({
         <td className="wrap">
           {i.name}
           {i.name_my && (
-            <div style={{ color: "var(--muted)", fontSize: "0.82rem" }}>{i.name_my}</div>
+            <div className="subline">{i.name_my}</div>
           )}
         </td>
         <td style={{ color: "var(--muted)" }}>

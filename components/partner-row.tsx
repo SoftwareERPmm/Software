@@ -118,7 +118,7 @@ export function PartnerRow({
       <td className="code">{partner.code}</td>
       <td className="wrap">
         {partner.name}
-        {partner.name_my && <div style={{ color: "var(--muted)", fontSize: "0.82rem" }}>{partner.name_my}</div>}
+        {partner.name_my && <div className="subline">{partner.name_my}</div>}
       </td>
       <td>
         {partner.is_customer && <span className="pill ok">Customer</span>}
