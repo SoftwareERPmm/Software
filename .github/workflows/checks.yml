@@ -1,0 +1,37 @@
+# Runs on every push and PR. main deploys straight to the live site with no
+# review step, so this is the only thing standing between a bad push and the
+# person using the app.
+#
+# Deliberately no `next build` here: it connects to the database to collect
+# page data, which would mean putting a real DATABASE_URL in CI secrets and
+# pointing CI at somebody's data. `tsc --noEmit` catches the same type errors
+# without needing any database at all.
+name: checks
+
+on:
+  push:
+    branches: [main, staging, "feature/**"]
+  pull_request:
+    branches: [main, staging]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      # Fails the run on high or critical only. Moderate and low are reported
+      # but do not block, so routine noise in transitive dependencies cannot
+      # stop a fix from shipping to the pilot.
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
