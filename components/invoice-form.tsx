@@ -10,10 +10,13 @@ type Node = { id: string; code: string; segment: string; name: string; parent_id
 type Partner = { id: string; code: string; name: string; payment_terms_days: number };
 type Location = { id: string; code: string; name: string };
 type CashAccount = { id: string; code: string; name: string };
-type MatchLine = { itemId: string; itemCode: string; itemName: string; qty: number; unitPrice: number };
+type MatchLine = { lineId: string; itemId: string; itemCode: string; itemName: string; qty: number; unitPrice: number };
 type OpenDoc = { id: string; doc_no: string; doc_date: string; partner_id: string; lines: MatchLine[] };
 
-type Line = { key: number; itemId: string; qty: string; unitPrice: string };
+// sourceLineId is set only when the line was prefilled from a goods receipt.
+// It is what lets GR/IR be settled at the rate that particular line came in
+// at, rather than at an average across every line of the same item.
+type Line = { key: number; itemId: string; qty: string; unitPrice: string; sourceLineId?: string };
 
 const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 0 });
 
@@ -81,6 +84,7 @@ export function InvoiceForm({
         itemId: l.itemId,
         qty: String(l.qty),
         unitPrice: String(l.unitPrice),
+        sourceLineId: l.lineId,
       }))
     );
   }
@@ -100,6 +104,7 @@ export function InvoiceForm({
         itemId: l.itemId,
         qty: String(l.qty),
         unitPrice: String(l.unitPrice),
+        sourceLineId: l.lineId,
       }))
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -112,7 +117,13 @@ export function InvoiceForm({
   function pickItem(key: number, itemId: string) {
     const item = byId(itemId);
     const price = !item ? "" : isSales ? item.sale_price : item.next_cost;
-    setLine(key, { itemId, unitPrice: Number(price) > 0 ? String(Number(price)) : "" });
+    // Changing the item detaches the line from the receipt line it was
+    // prefilled from — that reference belonged to the old item.
+    setLine(key, {
+      itemId,
+      unitPrice: Number(price) > 0 ? String(Number(price)) : "",
+      sourceLineId: undefined,
+    });
   }
 
   function pickPartner(id: string) {
@@ -134,7 +145,12 @@ export function InvoiceForm({
   const payload = JSON.stringify(
     lines
       .filter((l) => l.itemId && Number(l.qty) > 0)
-      .map((l) => ({ itemId: l.itemId, qty: Number(l.qty), unitPrice: Number(l.unitPrice) || 0 }))
+      .map((l) => ({
+        itemId: l.itemId,
+        qty: Number(l.qty),
+        unitPrice: Number(l.unitPrice) || 0,
+        sourceLineId: l.sourceLineId,
+      }))
   );
 
   // Warn before submitting rather than after the server rejects it.

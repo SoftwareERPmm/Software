@@ -324,6 +324,7 @@ export async function getOpenGoodsReceipts(companyId: string) {
   return sql`
     select d.id, d.doc_no, d.doc_date, d.partner_id,
            coalesce(json_agg(json_build_object(
+             'lineId', dl.id,
              'itemId', dl.item_id, 'itemCode', i.code, 'itemName', i.name,
              'qty', dl.base_qty, 'unitPrice', dl.unit_price
            ) order by dl.line_no), '[]') as lines
