@@ -1764,6 +1764,25 @@ export async function postSalesReturn(input: ReturnInput) {
       input.lines.reduce((s, l) => s + (l.focReasonId ? 0 : l.qty * l.unitPrice), 0)
     );
 
+    // The sale being reversed decides what the returned goods cost, because
+    // resolveSaleCost reads the FIFO layers the original delivery consumed.
+    // So naming someone else's sale is not a tidiness problem: the same ten
+    // units come back into stock at that sale's cost instead of this one's.
+    // Proven — a customer whose goods cost 900 each returning against a
+    // cheaper customer's delivery brought them back at 100, understating
+    // inventory by 8,000 and over-reversing cost of sales by the same,
+    // while the credit to the customer looked identical either way.
+    if (input.sourceDocumentId) {
+      await requireSource(tx, {
+        id: input.sourceDocumentId,
+        companyId,
+        partnerId,
+        expect: ["SALES_INVOICE", "DELIVERY"],
+        role: "sale this return reverses",
+      });
+      await assertSourceLines(tx, input.sourceDocumentId, input.lines);
+    }
+
     const [doc] = await tx`
       insert into document
         (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
@@ -1880,6 +1899,20 @@ export async function postPurchaseReturn(input: ReturnInput) {
     const docNo = noRows[0].no;
 
     const netTotal = round4(input.lines.reduce((s, l) => s + l.qty * l.unitPrice, 0));
+
+    // Goods go back to the supplier they came from, against the receipt that
+    // brought them in or the invoice that billed for them — the mirror of
+    // the sales return above.
+    if (input.sourceDocumentId) {
+      await requireSource(tx, {
+        id: input.sourceDocumentId,
+        companyId,
+        partnerId,
+        expect: ["PURCHASE_INVOICE", "GOODS_RECEIPT"],
+        role: "purchase this return sends back",
+      });
+      await assertSourceLines(tx, input.sourceDocumentId, input.lines);
+    }
 
     const [doc] = await tx`
       insert into document

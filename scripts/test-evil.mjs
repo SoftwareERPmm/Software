@@ -35,6 +35,7 @@ const {
   postGoodsReceipt, postSalesInvoice, postSaleWithDelivery,
   postPurchaseInvoice, postStockAdjustment, postCashVoucher,
   postCustomerReceipt, postSupplierPayment, postDelivery,
+  postSalesReturn, postPurchaseReturn,
 } = await import("../lib/posting.ts");
 
 const url = process.env.DATABASE_URL;
@@ -419,6 +420,31 @@ try {
   await refuses("a sales invoice cannot bill a goods receipt",
     () => postSalesInvoice({ ...sell, dueDate: null, deliveryId: grOwn.id,
       lines: [{ itemId: item.id, qty: 1, unitPrice: 1500 }] }));
+
+  // A return's source decides what the goods cost coming back, because the
+  // cost is read from the FIFO layers the original delivery consumed. Naming
+  // a cheaper customer's sale brings the same units back at that cost, which
+  // understates inventory and over-reverses cost of sales while the credit to
+  // the customer looks identical.
+  const [cust2] = await sql`
+    insert into business_partner (company_id, code, name, is_customer)
+    values (${co.id}, ${'EV-C2' + Date.now().toString().slice(-4)}, 'Evil Second Customer', true)
+    returning id`;
+  const otherSale = await postSaleWithDelivery({ companyId: co.id, partnerId: cust2.id,
+    locationId: loc.id, docDate: today, dueDate: null,
+    lines: [{ itemId: item.id, qty: 1, unitPrice: 9000 }] });
+
+  await refuses("a return cannot be costed against another customer's sale",
+    () => postSalesReturn({ ...sell, sourceDocumentId: otherSale.id,
+      lines: [{ itemId: item.id, qty: 1, unitPrice: 1500 }] }));
+
+  await refuses("a sales return cannot reverse a goods receipt",
+    () => postSalesReturn({ ...sell, sourceDocumentId: grOwn.id,
+      lines: [{ itemId: item.id, qty: 1, unitPrice: 1500 }] }));
+
+  await refuses("a purchase return cannot send back a sales invoice",
+    () => postPurchaseReturn({ ...buy, sourceDocumentId: anySale.id,
+      lines: [{ itemId: item.id, qty: 1, unitPrice: 1000 }] }));
 
   await allows("while a receipt's own supplier can still bill it",
     () => postPurchaseInvoice({ ...buy, dueDate: null, goodsReceiptId: grOwn.id,
