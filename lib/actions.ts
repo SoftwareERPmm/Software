@@ -1758,11 +1758,12 @@ export async function getFormData() {
     // Shown on the voucher before posting. The real number is taken under a
     // row lock at posting time, so this is a preview and may move if someone
     // else posts first.
-    sql`select coalesce(prefix, 'SI-') || lpad(coalesce(next_value, 1)::text,
-                coalesce(padding, 6), '0') as no
-           from number_series
-          where company_id = ${co} and document_type = 'SALES_INVOICE'
-          limit 1`,
+    //
+    // Asked of the database rather than assembled here: the number carries
+    // the fiscal year, and a second hand-written copy of that format is how
+    // the two drift apart.
+    sql`select fn_peek_document_no(${co}, 'SALES_INVOICE',
+                 fn_fiscal_year_for(${co}, current_date)) as no`,
 
     // Per item, per location — what the company-wide on_hand above can't
     // show: whether the specific warehouse making this sale actually has it.
@@ -1772,7 +1773,9 @@ export async function getFormData() {
   return {
     customers, suppliers, items, locations, groups, uoms,
     salesmen, promotions, cashAccounts, focReasons, itemPrices, priceLevels, openInvoices,
-    nextInvoiceNo: (nextNo[0]?.no as string) ?? "SI-000001",
+    // Null until the first invoice of the year exists, since the format
+    // depends on a series that has not been created yet.
+    nextInvoiceNo: (nextNo[0]?.no as string | null) ?? null,
     stockByLocation,
   };
 }

@@ -143,7 +143,8 @@ try {
   }
 
   // Document numbering starts from 1 again, so the first voucher you enter
-  // is SI-000001 rather than continuing the demo sequence.
+  // is the first of its fiscal year — SI-2627-000001 — rather than
+  // continuing the demo sequence.
   await sql`update number_series set next_value = 1`;
 
   console.log("\n  after:");

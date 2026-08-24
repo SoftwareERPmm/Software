@@ -36,7 +36,7 @@ try {
   const co = await scaffoldCompany({
     code: "TEST", name: "Bootstrap Test Co", baseCurrency: "MMK",
     fiscalYearStartMonth: 4, fiscalYearStart: "2026-04-01",
-    branchName: "Head Office", warehouseName: "Main Warehouse",
+    officeName: "Head Office", warehouseName: "Main Warehouse",
   });
   check("company created", Boolean(co.id));
 
@@ -72,7 +72,10 @@ try {
     docDate: "2026-04-15", dueDate: null,
     lines: [{ itemId: item.id, qty: 10, unitPrice: 1000 }],
   });
-  check("a freshly set up company can post", pi.docNo === "PI-000001", pi.docNo);
+  // The number carries the fiscal year it belongs to, because the count
+  // restarts each year — PI-2627-000001 for an April 2026 to March 2027 year.
+  check("a freshly set up company can post",
+    /^PI-\d{2,4}-000001$/.test(pi.docNo), pi.docNo);
 
   const [tb] = await sql`select coalesce(sum(balance),0) as v from v_trial_balance`;
   check("ledger balances", Math.abs(Number(tb.v)) < 0.0001);
@@ -83,7 +86,7 @@ try {
   try {
     await scaffoldCompany({
       code: "X", name: "Second", baseCurrency: "MMK", fiscalYearStartMonth: 4,
-      fiscalYearStart: "2026-04-01", branchName: "b", warehouseName: "w",
+      fiscalYearStart: "2026-04-01", officeName: "b", warehouseName: "w",
     });
   } catch { refused = true; }
   check("refuses to set up twice", refused);

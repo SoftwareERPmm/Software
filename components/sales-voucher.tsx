@@ -63,7 +63,7 @@ export function SalesVoucher({
   itemPrices: ItemPrice[];
   priceLevels: PriceLevel[];
   openInvoices: OpenInvoice[];
-  nextInvoiceNo: string;
+  nextInvoiceNo: string | null;
   today: string;
   /** Deliveries with no invoice against them yet, so a standalone delivery can be billed after the fact. */
   deliveries?: OpenDelivery[];
@@ -289,7 +289,9 @@ export function SalesVoucher({
                 {activeLevel.name}
               </span>
             )}
-            <span className="m" style={{ color: "var(--muted)" }}>No. {nextInvoiceNo}</span>
+            {nextInvoiceNo && (
+              <span className="m" style={{ color: "var(--muted)" }}>No. {nextInvoiceNo}</span>
+            )}
           </span>
         </div>
         <div className="card-body">
