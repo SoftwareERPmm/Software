@@ -446,9 +446,86 @@ try {
     () => postPurchaseReturn({ ...buy, sourceDocumentId: anySale.id,
       lines: [{ itemId: item.id, qty: 1, unitPrice: 1000 }] }));
 
+  // A return naming a sale is bounded by it. Returned goods come back into
+  // stock at the original sale's cost, so an unbounded return against a
+  // small sale invents inventory value out of a document that never carried
+  // it — fifty units back from a sale of ten.
+  const capSale = await postSaleWithDelivery({ ...sell, dueDate: null,
+    lines: [{ itemId: item.id, qty: 4, unitPrice: 1500 }] });
+
+  await allows("a return within what was sold posts",
+    () => postSalesReturn({ ...sell, sourceDocumentId: capSale.id,
+      lines: [{ itemId: item.id, qty: 4, unitPrice: 1500 }] }));
+
+  await refuses("but nothing beyond it, once it is all back",
+    () => postSalesReturn({ ...sell, sourceDocumentId: capSale.id,
+      lines: [{ itemId: item.id, qty: 1, unitPrice: 1500 }] }));
+
+  const capSale2 = await postSaleWithDelivery({ ...sell, dueDate: null,
+    lines: [{ itemId: item.id, qty: 4, unitPrice: 1500 }] });
+  await refuses("nor by splitting it across two lines of one return",
+    () => postSalesReturn({ ...sell, sourceDocumentId: capSale2.id,
+      lines: [{ itemId: item.id, qty: 3, unitPrice: 1500 },
+              { itemId: item.id, qty: 3, unitPrice: 1500 }] }));
+
   await allows("while a receipt's own supplier can still bill it",
     () => postPurchaseInvoice({ ...buy, dueDate: null, goodsReceiptId: grOwn.id,
       lines: [{ itemId: item.id, qty: 20, unitPrice: 1000 }] }));
+
+  // ---- Reaching into another company -------------------------------------
+
+  console.log("\n  posting into another company's books\n");
+
+  // The app serves one company, so this second one exists only for the
+  // length of these checks and is removed again below. The guards are the
+  // backstop for callers that are not the app, and for the day a second
+  // company is real — by which point there would be books on both sides.
+  const [coB] = await sql`
+    insert into company (code, name, base_currency)
+    values (${'ZZ' + Date.now().toString().slice(-4)}, 'Isolation Test Co', 'MMK')
+    returning id`;
+  const [acctB] = await sql`
+    insert into account (company_id, code, name, account_type, is_postable, is_active)
+    select ${coB.id}, '1110', 'B Cash', a.account_type, true, true
+      from account a where a.company_id = ${co.id} and a.code = '1110' returning id`;
+  const [locB] = await sql`
+    insert into location (company_id, code, name, is_stock_location)
+    values (${coB.id}, 'B-WH', 'B Warehouse', true) returning id`;
+
+  const [ownExpense] = await sql`
+    select id from account where company_id = ${co.id}
+       and is_postable and is_active and code like '6%' limit 1`;
+
+  try {
+    await refuses("a voucher cannot credit another company's account",
+      () => postCashVoucher({ companyId: co.id, docDate: today, memo: "reaching",
+        lines: [{ accountId: ownExpense.id, amount: 50000 },
+                { accountId: acctB.id, amount: -50000 }] }));
+
+    await refuses("stock cannot be moved into another company's warehouse",
+      () => sql`insert into stock_movement
+                  (company_id, item_id, location_id, movement_date, qty, unit_cost, total_cost)
+                values (${co.id}, ${item.id}, ${locB.id}, ${today}, 5, 100, 500)`);
+
+    await refuses("a journal line cannot belong to a different company than its entry",
+      () => sql.begin(async (tx) => {
+        const [fp] = await tx`
+          select id from fiscal_period where company_id = ${co.id}
+             and ${today}::date between start_date and end_date`;
+        const [e] = await tx`
+          insert into journal_entry (company_id, entry_no, entry_date, fiscal_period_id, source_type)
+          values (${co.id}, ${'ISO-' + Date.now()}, ${today}::date, ${fp.id}, 'CASH_VOUCHER')
+          returning id`;
+        await tx`
+          insert into journal_line (company_id, journal_entry_id, line_no, account_id,
+                                    amount, base_amount, currency)
+          values (${coB.id}, ${e.id}, 1, ${ownExpense.id}, 100, 100, 'MMK')`;
+      }));
+  } finally {
+    await sql`delete from location where company_id = ${coB.id}`;
+    await sql`delete from account where company_id = ${coB.id}`;
+    await sql`delete from company where id = ${coB.id}`;
+  }
 
   // ---- Two people at once ------------------------------------------------
 

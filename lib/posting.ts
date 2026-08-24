@@ -234,9 +234,16 @@ async function requireSource(
     throw new Error(`${src.doc_no} is ${src.status} and cannot be continued`);
   }
 
-  if (opts.partnerId && src.partner_id && src.partner_id !== opts.partnerId) {
+  // Deliberately not `src.partner_id && ...`: every type that can be
+  // continued is created by a posting function that requires a partner, so a
+  // null here means something wrote that row outside the engine. Treating
+  // null as "matches anything" would let exactly that row through the one
+  // check meant to catch it.
+  if (opts.partnerId && src.partner_id !== opts.partnerId) {
     throw new Error(
-      `${src.doc_no} belongs to a different partner, so this document cannot continue it`
+      src.partner_id
+        ? `${src.doc_no} belongs to a different partner, so this document cannot continue it`
+        : `${src.doc_no} has no partner recorded, so this document cannot continue it`
     );
   }
 
@@ -276,6 +283,76 @@ async function assertSourceLines(
       throw new Error(`Line ${i + 1} refers to a line for a different item`);
     }
   });
+}
+
+/**
+ * A return that names what it reverses cannot exceed it.
+ *
+ * The source relationship was validated but never the quantity, so fifty
+ * units could be returned against a sale of ten — and since the returned
+ * goods come back into stock at the original sale's cost, that invented
+ * inventory value out of a document that never carried it.
+ *
+ * Counted per item and net of returns already posted against the same
+ * source, so two partial returns are fine and the pair of them cannot
+ * exceed the whole. A return naming no source stays unlimited: goods do
+ * come back with no paperwork behind them, and that is a different
+ * situation from claiming a specific sale said something it did not.
+ */
+async function assertWithinSource(
+  tx: TransactionSql,
+  opts: {
+    companyId: string;
+    sourceId: string;
+    sourceDocNo: string;
+    returnType: "SALES_RETURN" | "PURCHASE_RETURN";
+    lines: ReadonlyArray<{ itemId: string; qty: number }>;
+  }
+): Promise<Map<string, number>> {
+  const original = await tx`
+    select item_id, sum(base_qty) as qty
+      from document_line where document_id = ${opts.sourceId}
+     group by item_id`;
+
+  const returned = await tx`
+    select dl.item_id, coalesce(sum(dl.base_qty), 0) as qty
+      from document_line dl
+      join document d on d.id = dl.document_id
+     where d.company_id = ${opts.companyId}
+       and d.doc_type = ${opts.returnType}
+       and d.status = 'POSTED'
+       and d.source_document_id = ${opts.sourceId}
+     group by dl.item_id`;
+
+  const left = new Map<string, number>();
+  for (const o of original) left.set(o.item_id, Number(o.qty));
+  for (const r of returned) {
+    left.set(r.item_id, round4((left.get(r.item_id) ?? 0) - Number(r.qty)));
+  }
+
+  // This return's own lines count together, so the same item split across
+  // two lines cannot slip past by being under the limit twice.
+  const wanted = new Map<string, number>();
+  for (const line of opts.lines) {
+    wanted.set(line.itemId, round4((wanted.get(line.itemId) ?? 0) + line.qty));
+  }
+
+  for (const [itemId, qty] of wanted) {
+    const available = left.get(itemId) ?? 0;
+    if (qty > available) {
+      const [item] = await tx`select code, name from item where id = ${itemId}`;
+      throw new Error(
+        `${opts.sourceDocNo} has ${available} of ${item?.code ?? "that item"}` +
+          `${item?.name ? ` (${item.name})` : ""} left to return; ${qty} was entered`
+      );
+    }
+  }
+
+  // How much of each item earlier returns already took, which is where this
+  // one starts reading the cost layers.
+  const done = new Map<string, number>();
+  for (const r of returned) done.set(r.item_id, Number(r.qty));
+  return done;
 }
 
 // ------------------------------------------------------- GR/IR matching --
@@ -483,32 +560,89 @@ async function estimateCurrentCost(
  * costed (no delivery, or the item wasn't on it), so the caller can fall
  * back to estimateCurrentCost.
  */
-async function resolveSaleCost(
-  tx: TransactionSql, companyId: string, sourceDocumentId: string, itemId: string
-): Promise<number | null> {
+/**
+ * The cost layers a return brings back, in the order they were issued.
+ *
+ * A delivery can draw from several FIFO layers at once — five units at 100
+ * and five at 900 — and averaging them values every returned unit at 500, a
+ * price nothing was ever bought at. Instead the layers the original delivery
+ * consumed are walked in the order they were consumed, the quantity earlier
+ * returns already took is skipped, and this return takes the next slice.
+ *
+ * First issued is first returned. Which physical unit came back is
+ * unknowable, so the rule is a convention rather than a discovery — but it
+ * is the same convention FIFO already uses going out, it is deterministic,
+ * and returning a whole delivery restores exactly what leaving it cost.
+ */
+type ReturnLayer = { qty: number; unitCost: number };
+
+async function resolveReturnLayers(
+  tx: TransactionSql,
+  companyId: string,
+  sourceDocumentId: string,
+  itemId: string,
+  qty: number,
+  alreadyReturned: number
+): Promise<ReturnLayer[] | null> {
+  const deliveryId = await resolveDeliveryBehind(tx, companyId, sourceDocumentId);
+  if (!deliveryId) return null;
+
+  const consumed = await tx`
+    select c.qty, c.unit_cost
+      from stock_movement sm
+      join stock_lot_consumption c on c.stock_movement_id = sm.id
+      join stock_lot l on l.id = c.lot_id
+     where sm.company_id = ${companyId} and sm.document_id = ${deliveryId}
+       and sm.item_id = ${itemId}
+     order by l.received_date, l.created_at, c.created_at`;
+
+  if (consumed.length === 0) return null;
+
+  let skip = alreadyReturned;
+  let left = qty;
+  const layers: ReturnLayer[] = [];
+
+  for (const c of consumed) {
+    if (left <= 0) break;
+    let available = Number(c.qty);
+
+    if (skip > 0) {
+      const skipped = Math.min(skip, available);
+      skip = round4(skip - skipped);
+      available = round4(available - skipped);
+      if (available <= 0) continue;
+    }
+
+    const take = Math.min(available, left);
+    layers.push({ qty: take, unitCost: Number(c.unit_cost) });
+    left = round4(left - take);
+  }
+
+  // More is being returned than that delivery ever issued. The quantity cap
+  // in assertWithinSource is what normally prevents this; if it is reached
+  // anyway, the remainder has no layer to come back to and the caller falls
+  // back to a current-cost estimate rather than inventing one here.
+  return left > 0 ? null : layers;
+}
+
+/** The delivery that actually moved the goods, given a sale or the delivery itself. */
+async function resolveDeliveryBehind(
+  tx: TransactionSql, companyId: string, sourceDocumentId: string
+): Promise<string | null> {
   const [src] = await tx`
     select doc_type, source_document_id from document
      where id = ${sourceDocumentId} and company_id = ${companyId}`;
   if (!src) return null;
 
-  let deliveryId: string | null = null;
-  if (src.doc_type === "DELIVERY") {
-    deliveryId = sourceDocumentId;
-  } else if (src.doc_type === "SALES_INVOICE" && src.source_document_id) {
+  if (src.doc_type === "DELIVERY") return sourceDocumentId;
+
+  if (src.doc_type === "SALES_INVOICE" && src.source_document_id) {
     const [linked] = await tx`
       select doc_type from document where id = ${src.source_document_id} and company_id = ${companyId}`;
-    if (linked?.doc_type === "DELIVERY") deliveryId = src.source_document_id;
+    if (linked?.doc_type === "DELIVERY") return src.source_document_id;
   }
-  if (!deliveryId) return null;
 
-  const [agg] = await tx`
-    select coalesce(sum(c.qty), 0) as qty, coalesce(sum(c.qty * c.unit_cost), 0) as cost
-      from stock_movement sm
-      join stock_lot_consumption c on c.stock_movement_id = sm.id
-     where sm.company_id = ${companyId} and sm.document_id = ${deliveryId} and sm.item_id = ${itemId}`;
-
-  const qty = Number(agg.qty);
-  return qty > 0 ? round4(Number(agg.cost) / qty) : null;
+  return null;
 }
 
 /** Collapses journal lines that hit the same account, dropping any that net to zero. */
@@ -1764,6 +1898,11 @@ export async function postSalesReturn(input: ReturnInput) {
       input.lines.reduce((s, l) => s + (l.focReasonId ? 0 : l.qty * l.unitPrice), 0)
     );
 
+    // How much of each item has already come back against this sale, so a
+    // second return reads the cost layers after the ones the first took —
+    // and so two lines for one item inside a single return do the same.
+    let returnedSoFar = new Map<string, number>();
+
     // The sale being reversed decides what the returned goods cost, because
     // resolveSaleCost reads the FIFO layers the original delivery consumed.
     // So naming someone else's sale is not a tidiness problem: the same ten
@@ -1773,14 +1912,20 @@ export async function postSalesReturn(input: ReturnInput) {
     // inventory by 8,000 and over-reversing cost of sales by the same,
     // while the credit to the customer looked identical either way.
     if (input.sourceDocumentId) {
-      await requireSource(tx, {
+      const source = await requireSource(tx, {
         id: input.sourceDocumentId,
         companyId,
         partnerId,
         expect: ["SALES_INVOICE", "DELIVERY"],
         role: "sale this return reverses",
       });
-      await assertSourceLines(tx, input.sourceDocumentId, input.lines);
+      returnedSoFar = await assertWithinSource(tx, {
+        companyId,
+        sourceId: input.sourceDocumentId,
+        sourceDocNo: source.doc_no,
+        returnType: "SALES_RETURN",
+        lines: input.lines,
+      });
     }
 
     const [doc] = await tx`
@@ -1819,23 +1964,47 @@ export async function postSalesReturn(input: ReturnInput) {
            ${net}, 0, ${net}, ${line.focReasonId ?? null})`;
 
       if (item.is_stocked) {
-        // Returned stock comes back in as a fresh lot. If the return names
-        // the sale it came from, cost it at what those units actually sold
-        // for; otherwise fall back to what stock here is worth right now.
-        const unitCost =
-          (input.sourceDocumentId
-            ? await resolveSaleCost(tx, companyId, input.sourceDocumentId, line.itemId)
-            : null) ?? (await estimateCurrentCost(tx, companyId, line.itemId, locationId));
-        const totalCost = round4(unitCost * line.qty);
+        // Returned stock comes back as fresh lots at the cost the original
+        // sale drew it out at — layer by layer, not averaged across the
+        // delivery, so a unit that left at 900 comes back at 900. Each layer
+        // becomes its own lot, which keeps the distinction alive for
+        // whatever consumes this stock next instead of blending it away on
+        // the way back in.
+        //
+        // With no source named there is nothing to read, so it falls back to
+        // what stock here is worth right now.
+        const taken = returnedSoFar.get(line.itemId) ?? 0;
+        const layers = input.sourceDocumentId
+          ? await resolveReturnLayers(
+              tx, companyId, input.sourceDocumentId, line.itemId, line.qty, taken
+            )
+          : null;
+        returnedSoFar.set(line.itemId, round4(taken + line.qty));
 
-        const [movement] = await tx`
-          insert into stock_movement
-            (company_id, item_id, location_id, movement_date, qty, unit_cost, total_cost, document_id)
-          values
-            (${companyId}, ${line.itemId}, ${locationId}, ${docDate}::date,
-             ${line.qty}, ${unitCost}, ${totalCost}, ${doc.id})
-          returning id`;
-        await createFifoLot(tx, companyId, line.itemId, locationId, receivedAt, unitCost, line.qty, movement.id);
+        const slices: ReturnLayer[] = layers ?? [
+          {
+            qty: line.qty,
+            unitCost: await estimateCurrentCost(tx, companyId, line.itemId, locationId),
+          },
+        ];
+
+        let totalCost = 0;
+        for (const slice of slices) {
+          const sliceCost = round4(slice.unitCost * slice.qty);
+          totalCost = round4(totalCost + sliceCost);
+
+          const [movement] = await tx`
+            insert into stock_movement
+              (company_id, item_id, location_id, movement_date, qty, unit_cost, total_cost, document_id)
+            values
+              (${companyId}, ${line.itemId}, ${locationId}, ${docDate}::date,
+               ${slice.qty}, ${slice.unitCost}, ${sliceCost}, ${doc.id})
+            returning id`;
+          await createFifoLot(
+            tx, companyId, line.itemId, locationId, receivedAt,
+            slice.unitCost, slice.qty, movement.id
+          );
+        }
 
         const inventory = await tx`
           select fn_resolve_account_for_item(${companyId}, 'INVENTORY', ${line.itemId}) as a`;
@@ -1904,14 +2073,20 @@ export async function postPurchaseReturn(input: ReturnInput) {
     // brought them in or the invoice that billed for them — the mirror of
     // the sales return above.
     if (input.sourceDocumentId) {
-      await requireSource(tx, {
+      const source = await requireSource(tx, {
         id: input.sourceDocumentId,
         companyId,
         partnerId,
         expect: ["PURCHASE_INVOICE", "GOODS_RECEIPT"],
         role: "purchase this return sends back",
       });
-      await assertSourceLines(tx, input.sourceDocumentId, input.lines);
+      await assertWithinSource(tx, {
+        companyId,
+        sourceId: input.sourceDocumentId,
+        sourceDocNo: source.doc_no,
+        returnType: "PURCHASE_RETURN",
+        lines: input.lines,
+      });
     }
 
     const [doc] = await tx`
