@@ -16,6 +16,12 @@ export type InvoiceLine = {
   qty: number;
   unitPrice: number;
   focReasonId?: string | null;
+
+  /** Purchase side: which goods-receipt line this bills. Optional — when it
+   *  is absent the receipt's lines for that item are matched oldest first —
+   *  but naming it is what keeps two receipt lines of the same item at
+   *  different costs from being settled at the wrong one. */
+  sourceLineId?: string | null;
 };
 
 export type InvoiceInput = {
@@ -155,6 +161,85 @@ function assertLines(
 function assertAmount(value: number, what: string, { signed = false }: { signed?: boolean } = {}): void {
   assertFinite(value, what);
   if (!signed && value <= 0) throw new Error(`${what} must be more than zero`);
+}
+
+// ------------------------------------------------------- GR/IR matching --
+//
+// A goods receipt and a purchase invoice settle against each other through
+// GR/IR clearing, and either can arrive first. Whichever posts second has to
+// work out how much of the first one it actually covers — and at what rate.
+//
+// Two rules, both learned the hard way:
+//
+//   Per line, never per document. Clearing the whole counterpart meant half
+//   a shipment released the entire invoice and dumped the rest into price
+//   variance, leaving GR/IR holding a debit balance where a settled liability
+//   should be zero.
+//
+//   Per line, never per item. Summing an item's lines averages their cost, so
+//   a receipt of 50 at 1,000 and 50 at 2,000 holds every unit at 1,500 — a
+//   rate nothing was received at. Billing either half then settles at the
+//   wrong one and invents a variance on an invoice that matched exactly.
+
+export type MatchableLine = { id: string; item_id: string; qty: unknown; net: unknown };
+
+/** What a single draw took, and from which counterpart lines. */
+export type Drawn = {
+  value: number;
+  taken: { lineId: string; qty: number; value: number }[];
+};
+
+/**
+ * Opens a counterpart document for matching and returns a draw function.
+ *
+ * Each call takes a quantity of one item and returns what GR/IR was holding
+ * it at. The named line goes first when the caller knows which one it is
+ * settling; anything else is taken in document order, oldest layer first,
+ * the same rule FIFO uses for the stock itself. A line id that does not
+ * belong to this document is simply not found, and the draw falls back to
+ * that order rather than failing.
+ */
+export function grirMatcher(lines: ReadonlyArray<MatchableLine>) {
+  const remaining = new Map<string, number>();
+  const rate = new Map<string, number>();
+
+  for (const l of lines) {
+    const qty = Number(l.qty);
+    remaining.set(l.id, qty);
+    rate.set(l.id, qty > 0 ? round4(Number(l.net) / qty) : 0);
+  }
+
+  // Returns the value drawn and the lines it came from. The posting code
+  // needs only the value; the screens that show a receipt as partly invoiced
+  // need the breakdown, and taking both from one function is what stops the
+  // display and the ledger telling different stories.
+  return function draw(itemId: string, qty: number, preferLineId?: string | null): Drawn {
+    const forItem = lines.filter((l) => l.item_id === itemId);
+    const order = preferLineId
+      ? [
+          ...forItem.filter((l) => l.id === preferLineId),
+          ...forItem.filter((l) => l.id !== preferLineId),
+        ]
+      : forItem;
+
+    let left = qty;
+    let value = 0;
+    const taken: Drawn["taken"] = [];
+
+    for (const l of order) {
+      if (left <= 0) break;
+      const available = remaining.get(l.id) ?? 0;
+      if (available <= 0) continue;
+      const drawn = Math.min(available, left);
+      const drawnValue = round4(drawn * (rate.get(l.id) ?? 0));
+      remaining.set(l.id, round4(available - drawn));
+      taken.push({ lineId: l.id, qty: drawn, value: drawnValue });
+      value += drawnValue;
+      left = round4(left - drawn);
+    }
+
+    return { value: round4(value), taken };
+  };
 }
 
 // ------------------------------------------------------------------ FIFO --
@@ -848,16 +933,55 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
     const [src] = await tx`
       select doc_type from document where id = ${input.sourceDocumentId} and company_id = ${companyId}`;
     if (src?.doc_type === "PURCHASE_INVOICE") {
-      const [pi] = await tx`
-        select coalesce(sum(net_amount), 0) as total from document_line
-         where document_id = ${input.sourceDocumentId}`;
-      const invoicedValue = round4(Number(pi.total));
-      const variance = round4(netTotal - invoicedValue);
+      // Matched line by line against the invoice, not against its total.
+      // Taking the whole invoice meant half a shipment released all of it:
+      // 50 of 100 units arriving cleared the entire 100,000, booked the
+      // other 50,000 as price variance, and reported nothing still awaited.
+      // The second half then cleared it again, leaving GR/IR at -100,000 —
+      // a debit balance where a settled liability should be zero — and
+      // 100,000 of invented expense in the P&L.
+      const invoiceLines = await tx`
+        select dl.id, dl.item_id, dl.base_qty as qty, dl.net_amount as net
+          from document_line dl
+         where dl.document_id = ${input.sourceDocumentId}
+         order by dl.line_no`;
+
+      const priorReceipts = await tx`
+        select dl.item_id, dl.base_qty as qty, dl.source_line_id
+          from document_line dl
+          join document d on d.id = dl.document_id
+         where d.company_id = ${companyId}
+           and d.doc_type = 'GOODS_RECEIPT'
+           and d.status = 'POSTED'
+           and d.source_document_id = ${input.sourceDocumentId}
+           and d.id <> ${doc.id}
+         order by d.posting_date, d.doc_no, dl.line_no`;
+
+      const draw = grirMatcher(invoiceLines as unknown as MatchableLine[]);
+
+      // Earlier shipments against this same invoice first, so this one sees
+      // only what is still outstanding.
+      for (const prior of priorReceipts) {
+        draw(prior.item_id, Number(prior.qty), prior.source_line_id);
+      }
+
+      // A receipt line's sourceLineId names an order line when the receipt
+      // came from a purchase order, so it is only offered as a preference
+      // here — grirMatcher ignores an id that is not one of these lines and
+      // falls back to oldest first.
+      let matched = 0;
+      for (const line of input.lines) {
+        matched += draw(line.itemId, line.qty, line.sourceLineId).value;
+      }
+      grirAmount = round4(matched);
+
+      // Whatever this receipt is worth beyond what the invoice was holding
+      // for it: a price difference, or goods the invoice never covered.
+      const variance = round4(netTotal - grirAmount);
       if (variance !== 0) {
         const pv = await tx`select fn_system_account(${companyId}, 'PURCHASE_PRICE_VARIANCE') as a`;
         journal.push({ accountId: pv[0].a, amount: -variance, locationId });
       }
-      grirAmount = invoicedValue;
     }
   }
 
@@ -925,6 +1049,7 @@ async function _postPurchaseInvoice(
   const journal: JournalLine[] = [];
   let lineNo = 0;
   let stockedNet = 0;
+  const isStocked = new Map<string, boolean>();
 
   for (const line of input.lines) {
     lineNo++;
@@ -939,11 +1064,13 @@ async function _postPurchaseInvoice(
       insert into document_line
         (company_id, document_id, line_no, item_id, location_id,
          entered_qty, entered_uom_id, base_qty, unit_price,
-         net_amount, tax_amount, gross_amount)
+         net_amount, tax_amount, gross_amount, source_line_id)
       values
         (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
          ${line.qty}, ${item.base_uom_id}, ${line.qty}, ${line.unitPrice},
-         ${net}, 0, ${net})`;
+         ${net}, 0, ${net}, ${line.sourceLineId ?? null})`;
+
+    isStocked.set(line.itemId, !!item.is_stocked);
 
     if (item.is_stocked) {
       // Cleared against GR/IR below, once for the whole invoice — a single
@@ -970,19 +1097,20 @@ async function _postPurchaseInvoice(
       // awaiting an invoice. A later invoice for the rest then had no receipt
       // left to match.
       //
-      // Matched per line, by item, against what remains uninvoiced on the
-      // receipt. Remaining quantity is derived from the invoices already
-      // posted against it rather than stored, same as every other figure here.
+      // Matched against the receipt's individual lines by grirMatcher above,
+      // which is the same code the receipt side uses coming the other way.
       const receiptLines = await tx`
-        select dl.item_id,
-               sum(dl.base_qty)   as qty,
-               sum(dl.net_amount) as net
+        select dl.id, dl.item_id, dl.base_qty as qty, dl.net_amount as net
           from document_line dl
          where dl.document_id = ${input.goodsReceiptId}
-         group by dl.item_id`;
+         order by dl.line_no`;
 
-      const invoicedAlready = await tx`
-        select dl.item_id, coalesce(sum(dl.base_qty), 0) as qty
+      // What earlier invoices already took off this receipt. One that names
+      // the receipt line it bills comes off that line; one that does not —
+      // anything posted before invoices carried the reference — names only
+      // the item, and is drained oldest first.
+      const priorLines = await tx`
+        select dl.item_id, dl.base_qty as qty, dl.source_line_id
           from document_line dl
           join document d on d.id = dl.document_id
          where d.company_id = ${companyId}
@@ -990,31 +1118,24 @@ async function _postPurchaseInvoice(
            and d.status = 'POSTED'
            and d.source_document_id = ${input.goodsReceiptId}
            and d.id <> ${doc.id}
-         group by dl.item_id`;
+         order by d.posting_date, d.doc_no, dl.line_no`;
 
-      const remainingQty = new Map<string, number>();
-      const receiptCost = new Map<string, number>();
-      for (const r of receiptLines) {
-        const qty = Number(r.qty);
-        const done = Number(invoicedAlready.find((p: any) => p.item_id === r.item_id)?.qty ?? 0);
-        remainingQty.set(r.item_id, round4(qty - done));
-        // Unit cost the goods actually came in at, which is the rate GR/IR
-        // holds them at and therefore the rate they must be relieved at.
-        receiptCost.set(r.item_id, qty > 0 ? round4(Number(r.net) / qty) : 0);
+      const draw = grirMatcher(receiptLines as unknown as MatchableLine[]);
+
+      // Replay what has already been billed, so this invoice sees only what
+      // is genuinely left. Derived from the posted invoices rather than
+      // stored, same as every other figure here.
+      for (const prior of priorLines) {
+        draw(prior.item_id, Number(prior.qty), prior.source_line_id);
       }
 
+      // Billing more than was received relieves only what is actually held
+      // in GR/IR; the excess falls into variance below, where it shows up
+      // rather than silently balancing.
       let relieved = 0;
       for (const line of input.lines) {
-        const [it] = await tx`select is_stocked from item where id = ${line.itemId}`;
-        if (!it?.is_stocked) continue;
-        const remaining = remainingQty.get(line.itemId) ?? 0;
-        if (remaining <= 0) continue;
-        // Billing more than was received relieves only what is actually held
-        // in GR/IR; the excess falls into variance below, where it shows up
-        // rather than silently balancing.
-        const matched = Math.min(line.qty, remaining);
-        relieved += matched * (receiptCost.get(line.itemId) ?? 0);
-        remainingQty.set(line.itemId, round4(remaining - matched));
+        if (!isStocked.get(line.itemId)) continue;
+        relieved += draw(line.itemId, line.qty, line.sourceLineId).value;
       }
       grirAmount = round4(relieved);
 

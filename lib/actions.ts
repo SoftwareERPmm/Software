@@ -910,6 +910,7 @@ function parseLines(fd: FormData): InvoiceLine[] {
       qty: Number(l.qty),
       unitPrice: Number(l.unitPrice),
       focReasonId: l.focReasonId || null,
+      sourceLineId: l.sourceLineId || null,
     }))
     .filter((l) => l.itemId && l.qty > 0);
 
