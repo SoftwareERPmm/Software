@@ -234,9 +234,16 @@ async function requireSource(
     throw new Error(`${src.doc_no} is ${src.status} and cannot be continued`);
   }
 
-  if (opts.partnerId && src.partner_id && src.partner_id !== opts.partnerId) {
+  // Deliberately not `src.partner_id && ...`: every type that can be
+  // continued is created by a posting function that requires a partner, so a
+  // null here means something wrote that row outside the engine. Treating
+  // null as "matches anything" would let exactly that row through the one
+  // check meant to catch it.
+  if (opts.partnerId && src.partner_id !== opts.partnerId) {
     throw new Error(
-      `${src.doc_no} belongs to a different partner, so this document cannot continue it`
+      src.partner_id
+        ? `${src.doc_no} belongs to a different partner, so this document cannot continue it`
+        : `${src.doc_no} has no partner recorded, so this document cannot continue it`
     );
   }
 
