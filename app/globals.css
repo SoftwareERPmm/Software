@@ -678,3 +678,24 @@ a.btn.ghost { color: var(--ink-soft); background: transparent; border-color: var
 a.btn.ghost:hover { background: var(--line-soft); opacity: 1; }
 
 a.btn.tiny { padding: 0.16rem 0.5rem; font-size: var(--t-sm); }
+
+/* A row that belongs to the one above it: an invoice hanging off the receipt
+   line it billed. Indented and quieter, so the parent line still reads as the
+   subject and the children as evidence for it. Banding is switched off here —
+   the stripe follows row position, which would otherwise cut across a parent
+   and its children and break the grouping the indent is drawing. */
+tbody tr.subrow > td {
+  color: var(--muted);
+  font-size: var(--t-xs);
+  background: transparent;
+}
+tbody tr.subrow > td:first-child {
+  padding-left: 2rem;
+  position: relative;
+}
+tbody tr.subrow > td:first-child::before {
+  content: "└";
+  position: absolute;
+  left: 0.9rem;
+  color: var(--line);
+}

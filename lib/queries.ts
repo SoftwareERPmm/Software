@@ -1,4 +1,5 @@
 import { sql } from "./db";
+import { grirMatcher, type MatchableLine } from "./posting";
 
 export type Company = { id: string; code: string; name: string; name_my: string | null; base_currency: string };
 
@@ -320,22 +321,75 @@ export async function isGrirOutstanding(documentId: string): Promise<boolean> {
   return !!row;
 }
 
+/**
+ * Goods receipts that still have something to bill, with each line's
+ * remaining quantity rather than its original one.
+ *
+ * Offering the full received quantity was wrong the moment any of it had
+ * been invoiced: prefilling an invoice from a receipt already half billed
+ * would bill the same goods twice. Remaining is replayed through the same
+ * matcher the ledger settles with, so what the form offers and what GR/IR
+ * still holds are the same figure.
+ */
 export async function getOpenGoodsReceipts(companyId: string) {
-  return sql`
-    select d.id, d.doc_no, d.doc_date, d.partner_id,
-           coalesce(json_agg(json_build_object(
-             'lineId', dl.id,
-             'itemId', dl.item_id, 'itemCode', i.code, 'itemName', i.name,
-             'qty', dl.base_qty, 'unitPrice', dl.unit_price
-           ) order by dl.line_no), '[]') as lines
+  const docs = await sql`
+    select d.id, d.doc_no, d.doc_date, d.partner_id
       from document d
       join v_grir_balance g on g.document_id = d.id and g.company_id = d.company_id
-      join document_line dl on dl.document_id = d.id
-      join item i on i.id = dl.item_id
      where d.company_id = ${companyId} and d.doc_type = 'GOODS_RECEIPT' and d.status = 'POSTED'
-     group by d.id, d.doc_no, d.doc_date, d.partner_id
      order by d.doc_date desc, d.doc_no desc
      limit 200`;
+  if (docs.length === 0) return [];
+
+  const ids = docs.map((d: any) => d.id);
+
+  const lines = await sql`
+    select dl.id, dl.document_id, dl.item_id, dl.base_qty as qty, dl.net_amount as net,
+           dl.unit_price, i.code as item_code, i.name as item_name
+      from document_line dl
+      join item i on i.id = dl.item_id
+     where dl.document_id = any(${ids})
+     order by dl.line_no`;
+
+  const invoiced = await sql`
+    select d.source_document_id as receipt_id, dl.item_id,
+           dl.base_qty as qty, dl.source_line_id
+      from document_line dl
+      join document d on d.id = dl.document_id
+     where d.company_id = ${companyId}
+       and d.doc_type = 'PURCHASE_INVOICE'
+       and d.status = 'POSTED'
+       and d.source_document_id = any(${ids})
+     order by d.posting_date, d.doc_no, dl.line_no`;
+
+  return docs
+    .map((d: any) => {
+      const own = lines.filter((l: any) => l.document_id === d.id);
+      const draw = grirMatcher(own as unknown as MatchableLine[]);
+      const billed = new Map<string, number>();
+
+      for (const inv of invoiced.filter((i: any) => i.receipt_id === d.id)) {
+        for (const t of draw(inv.item_id, Number(inv.qty), inv.source_line_id).taken) {
+          billed.set(t.lineId, (billed.get(t.lineId) ?? 0) + t.qty);
+        }
+      }
+
+      const open = own
+        .map((l: any) => ({
+          lineId: l.id,
+          itemId: l.item_id,
+          itemCode: l.item_code,
+          itemName: l.item_name,
+          qty: Math.round((Number(l.qty) - (billed.get(l.id) ?? 0)) * 10000) / 10000,
+          unitPrice: Number(l.unit_price),
+        }))
+        .filter((l) => l.qty > 0);
+
+      return { ...d, lines: open };
+    })
+    // A receipt whose every line is billed has nothing left to offer, even if
+    // GR/IR still carries a rounding or price difference against it.
+    .filter((d: any) => d.lines.length > 0);
 }
 
 /**
@@ -1077,4 +1131,124 @@ export async function getTrialBalance(companyId: string) {
      group by a.code, a.name, a.account_type
     having sum(tb.balance) <> 0
      order by a.code`;
+}
+
+
+// ------------------------------------------------- GR/IR line-level status --
+
+export type MatchedBy = { docId: string; docNo: string; docDate: string; qty: number; value: number };
+export type MatchLineStatus = {
+  lineId: string;
+  itemId: string;
+  itemCode: string;
+  itemName: string;
+  uomCode: string | null;
+  qty: number;          // what this line carries
+  settled: number;      // how much of it the counterpart documents have covered
+  remaining: number;
+  matchedBy: MatchedBy[];
+};
+export type MatchStatus = {
+  state: "NONE" | "PARTIAL" | "FULL";
+  lines: MatchLineStatus[];
+};
+
+/**
+ * How much of a goods receipt has been invoiced, or of a purchase invoice
+ * received — line by line, and by which counterpart documents.
+ *
+ * This does not re-derive the answer with a rule of its own. It replays the
+ * counterpart documents through `grirMatcher`, the same function the posting
+ * engine settles GR/IR with, in the same order. So a receipt line the screen
+ * calls fully invoiced is a line the ledger has actually released, and a
+ * partial one shows the quantity that is genuinely still open.
+ *
+ * That matters most for documents posted before invoices recorded which line
+ * they billed: those name only the item, and the matcher drains them oldest
+ * layer first. Displaying them any other way would put the screen and the
+ * accounts into disagreement over the same receipt.
+ */
+export async function getMatchStatus(documentId: string): Promise<MatchStatus | null> {
+  const [doc] = await sql`
+    select id, company_id, doc_type, status from document where id = ${documentId}`;
+  if (!doc || doc.status !== "POSTED") return null;
+
+  const counterpartType =
+    doc.doc_type === "GOODS_RECEIPT" ? "PURCHASE_INVOICE"
+    : doc.doc_type === "PURCHASE_INVOICE" ? "GOODS_RECEIPT"
+    : null;
+  if (!counterpartType) return null;
+
+  const lines = await sql`
+    select dl.id, dl.item_id, dl.base_qty as qty, dl.net_amount as net,
+           i.code as item_code, i.name as item_name, u.code as uom_code
+      from document_line dl
+      join item i on i.id = dl.item_id
+      left join uom u on u.id = dl.entered_uom_id
+     where dl.document_id = ${documentId}
+     order by dl.line_no`;
+  if (lines.length === 0) return null;
+
+  // Counterpart documents in the order they posted, which is the order the
+  // ledger settled them in.
+  const counterparts = await sql`
+    select d.id, d.doc_no, d.doc_date, dl.item_id, dl.base_qty as qty, dl.source_line_id
+      from document_line dl
+      join document d on d.id = dl.document_id
+     where d.company_id = ${doc.company_id}
+       and d.doc_type = ${counterpartType}
+       and d.status = 'POSTED'
+       and d.source_document_id = ${documentId}
+     order by d.posting_date, d.doc_no, dl.line_no`;
+
+  const draw = grirMatcher(lines as unknown as MatchableLine[]);
+
+  const settled = new Map<string, number>();
+  const matchedBy = new Map<string, MatchedBy[]>();
+
+  for (const c of counterparts) {
+    const { taken } = draw(c.item_id, Number(c.qty), c.source_line_id);
+    for (const t of taken) {
+      settled.set(t.lineId, (settled.get(t.lineId) ?? 0) + t.qty);
+      const list = matchedBy.get(t.lineId) ?? [];
+      const existing = list.find((m) => m.docId === c.id);
+      if (existing) {
+        existing.qty += t.qty;
+        existing.value += t.value;
+      } else {
+        list.push({
+          docId: c.id,
+          docNo: c.doc_no,
+          docDate: String(c.doc_date),
+          qty: t.qty,
+          value: t.value,
+        });
+      }
+      matchedBy.set(t.lineId, list);
+    }
+  }
+
+  const out: MatchLineStatus[] = lines.map((l: any) => {
+    const qty = Number(l.qty);
+    const done = settled.get(l.id) ?? 0;
+    return {
+      lineId: l.id,
+      itemId: l.item_id,
+      itemCode: l.item_code,
+      itemName: l.item_name,
+      uomCode: l.uom_code ?? null,
+      qty,
+      settled: done,
+      remaining: Math.max(0, Math.round((qty - done) * 10000) / 10000),
+      matchedBy: matchedBy.get(l.id) ?? [],
+    };
+  });
+
+  const totalRemaining = out.reduce((s, l) => s + l.remaining, 0);
+  const totalSettled = out.reduce((s, l) => s + l.settled, 0);
+
+  return {
+    state: totalSettled === 0 ? "NONE" : totalRemaining === 0 ? "FULL" : "PARTIAL",
+    lines: out,
+  };
 }

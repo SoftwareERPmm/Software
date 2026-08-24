@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { money, qty, shortDate } from "@/lib/db";
@@ -12,6 +13,7 @@ import {
   getChainDocuments,
   getSettlingPayment,
   isGrirOutstanding,
+  getMatchStatus,
   getStockByLocation,
 } from "@/lib/queries";
 import { createDelivery, createGoodsReceipt } from "@/lib/actions";
@@ -92,8 +94,15 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
   const isGr = doc.doc_type === "GOODS_RECEIPT" && doc.status === "POSTED";
   const isPi = doc.doc_type === "PURCHASE_INVOICE" && doc.status === "POSTED";
   const grirOutstanding = (isGr || isPi) ? await isGrirOutstanding(doc.id) : false;
-  const needsInvoiceMatch = isGr && grirOutstanding;
-  const needsReceiptMatch = isPi && grirOutstanding;
+
+  // Line-level settlement: how much of this receipt has been invoiced, or of
+  // this invoice received, and by which documents. Replayed through the same
+  // matcher the posting engine uses, so the page cannot claim a line is
+  // settled that the ledger still holds open.
+  const match = (isGr || isPi) ? await getMatchStatus(doc.id) : null;
+  const openToMatch = match ? match.lines.some((l) => l.remaining > 0) : grirOutstanding;
+  const needsInvoiceMatch = isGr && openToMatch;
+  const needsReceiptMatch = isPi && openToMatch;
 
   // A delivery with no invoice against it yet — the sales-side mirror of
   // needsInvoiceMatch, just off the chain link itself rather than a
@@ -165,13 +174,76 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
             }
             className="btn"
           >
-            {needsInvoiceMatch ? "Create purchase invoice" : "Create goods receipt"} — {money(doc.gross_total)}
+            {match?.state === "PARTIAL"
+              ? needsInvoiceMatch ? "Invoice the rest" : "Receive the rest"
+              : needsInvoiceMatch ? "Create purchase invoice" : "Create goods receipt"}
+            {match?.state === "PARTIAL" ? "" : ` — ${money(doc.gross_total)}`}
           </Link>
           <span className="page-sub">
-            {needsInvoiceMatch
-              ? "Nothing has billed for this receipt yet."
-              : "Nothing has recorded these goods arriving yet."}
+            {match?.state === "PARTIAL"
+              ? needsInvoiceMatch
+                ? "Part of this receipt has been billed. The rest is listed below."
+                : "Part of this invoice has arrived. The rest is listed below."
+              : needsInvoiceMatch
+                ? "Nothing has billed for this receipt yet."
+                : "Nothing has recorded these goods arriving yet."}
           </span>
+        </div>
+      )}
+
+      {match && match.lines.length > 0 && (
+        <div className="card" style={{ marginBottom: "1.5rem" }}>
+          <div className="card-head">
+            <h2>{isGr ? "Invoiced" : "Received"}</h2>
+            <span className={`pill ${match.state === "FULL" ? "ok" : match.state === "PARTIAL" ? "warn" : ""}`}>
+              {match.state === "FULL"
+                ? isGr ? "Fully invoiced" : "Fully received"
+                : match.state === "PARTIAL"
+                  ? isGr ? "Partly invoiced" : "Partly received"
+                  : isGr ? "Not invoiced" : "Not received"}
+            </span>
+          </div>
+          <div className="tablewrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Item</th>
+                  <th className="r">{isGr ? "Received" : "Invoiced"}</th>
+                  <th className="r">{isGr ? "Invoiced" : "Received"}</th>
+                  <th className="r">Remaining</th>
+                </tr>
+              </thead>
+              <tbody>
+                {match.lines.map((l) => (
+                  <Fragment key={l.lineId}>
+                    <tr>
+                      <td className="wrap">
+                        <span className="code">{l.itemCode}</span> {l.itemName}
+                      </td>
+                      <td className="r">{qty(l.qty)}</td>
+                      <td className="r">{l.settled > 0 ? qty(l.settled) : "—"}</td>
+                      <td className="r">
+                        {l.remaining > 0
+                          ? <strong>{qty(l.remaining)}</strong>
+                          : <span style={{ color: "var(--muted)" }}>—</span>}
+                      </td>
+                    </tr>
+                    {l.matchedBy.map((m) => (
+                      <tr key={`${l.lineId}-${m.docId}`} className="subrow">
+                        <td className="wrap">
+                          <Link href={`/documents/${m.docId}`}>{m.docNo}</Link>
+                          {" · "}{shortDate(m.docDate)}
+                        </td>
+                        <td className="r">—</td>
+                        <td className="r">{qty(m.qty)}</td>
+                        <td className="r">—</td>
+                      </tr>
+                    ))}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

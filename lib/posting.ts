@@ -181,7 +181,13 @@ function assertAmount(value: number, what: string, { signed = false }: { signed?
 //   rate nothing was received at. Billing either half then settles at the
 //   wrong one and invents a variance on an invoice that matched exactly.
 
-type MatchableLine = { id: string; item_id: string; qty: unknown; net: unknown };
+export type MatchableLine = { id: string; item_id: string; qty: unknown; net: unknown };
+
+/** What a single draw took, and from which counterpart lines. */
+export type Drawn = {
+  value: number;
+  taken: { lineId: string; qty: number; value: number }[];
+};
 
 /**
  * Opens a counterpart document for matching and returns a draw function.
@@ -193,7 +199,7 @@ type MatchableLine = { id: string; item_id: string; qty: unknown; net: unknown }
  * belong to this document is simply not found, and the draw falls back to
  * that order rather than failing.
  */
-function grirMatcher(lines: ReadonlyArray<MatchableLine>) {
+export function grirMatcher(lines: ReadonlyArray<MatchableLine>) {
   const remaining = new Map<string, number>();
   const rate = new Map<string, number>();
 
@@ -203,7 +209,11 @@ function grirMatcher(lines: ReadonlyArray<MatchableLine>) {
     rate.set(l.id, qty > 0 ? round4(Number(l.net) / qty) : 0);
   }
 
-  return function draw(itemId: string, qty: number, preferLineId?: string | null): number {
+  // Returns the value drawn and the lines it came from. The posting code
+  // needs only the value; the screens that show a receipt as partly invoiced
+  // need the breakdown, and taking both from one function is what stops the
+  // display and the ledger telling different stories.
+  return function draw(itemId: string, qty: number, preferLineId?: string | null): Drawn {
     const forItem = lines.filter((l) => l.item_id === itemId);
     const order = preferLineId
       ? [
@@ -214,18 +224,21 @@ function grirMatcher(lines: ReadonlyArray<MatchableLine>) {
 
     let left = qty;
     let value = 0;
+    const taken: Drawn["taken"] = [];
 
     for (const l of order) {
       if (left <= 0) break;
       const available = remaining.get(l.id) ?? 0;
       if (available <= 0) continue;
-      const taken = Math.min(available, left);
-      remaining.set(l.id, round4(available - taken));
-      value += taken * (rate.get(l.id) ?? 0);
-      left = round4(left - taken);
+      const drawn = Math.min(available, left);
+      const drawnValue = round4(drawn * (rate.get(l.id) ?? 0));
+      remaining.set(l.id, round4(available - drawn));
+      taken.push({ lineId: l.id, qty: drawn, value: drawnValue });
+      value += drawnValue;
+      left = round4(left - drawn);
     }
 
-    return round4(value);
+    return { value: round4(value), taken };
   };
 }
 
@@ -958,7 +971,7 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
       // falls back to oldest first.
       let matched = 0;
       for (const line of input.lines) {
-        matched += draw(line.itemId, line.qty, line.sourceLineId);
+        matched += draw(line.itemId, line.qty, line.sourceLineId).value;
       }
       grirAmount = round4(matched);
 
@@ -1122,7 +1135,7 @@ async function _postPurchaseInvoice(
       let relieved = 0;
       for (const line of input.lines) {
         if (!isStocked.get(line.itemId)) continue;
-        relieved += draw(line.itemId, line.qty, line.sourceLineId);
+        relieved += draw(line.itemId, line.qty, line.sourceLineId).value;
       }
       grirAmount = round4(relieved);
 
