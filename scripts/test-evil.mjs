@@ -34,7 +34,7 @@ if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
 const {
   postGoodsReceipt, postSalesInvoice, postSaleWithDelivery,
   postPurchaseInvoice, postStockAdjustment, postCashVoucher,
-  postCustomerReceipt, postDelivery,
+  postCustomerReceipt, postSupplierPayment, postDelivery,
 } = await import("../lib/posting.ts");
 
 const url = process.env.DATABASE_URL;
@@ -305,6 +305,54 @@ try {
     await refuses("an allocation cannot be inserted straight past the engine",
       () => sql`insert into payment_allocation (company_id, payment_id, invoice_id, amount, base_amount)
                 values (${co.id}, ${inv.id}, ${inv.id}, ${n(inv.gross_total) * 5}, ${n(inv.gross_total) * 5})`);
+  }
+
+  // ---- Settling the wrong kind of invoice --------------------------------
+
+  console.log("\n  paying the wrong kind of invoice\n");
+
+  // A trading partner is often both customer and supplier, which is what
+  // makes this reachable without any tampering: the partner check passes.
+  const [both] = await sql`
+    insert into business_partner (company_id, code, name, is_customer, is_supplier)
+    values (${co.id}, ${'EV-B' + Date.now().toString().slice(-5)}, 'Evil Both Ways', true, true)
+    returning id`;
+
+  const evSi = await postSaleWithDelivery({ companyId: co.id, partnerId: both.id,
+    locationId: loc.id, docDate: today, dueDate: null,
+    lines: [{ itemId: item.id, qty: 2, unitPrice: 10000 }] });
+  const evPi = await postPurchaseInvoice({ companyId: co.id, partnerId: both.id,
+    locationId: loc.id, docDate: today, dueDate: null,
+    lines: [{ itemId: item.id, qty: 1, unitPrice: 500 }] });
+
+  if (cash) {
+    // The control account comes from the payment's own type while the
+    // outstanding balance comes from the invoice's, so mismatching the pair
+    // put the subledger and the ledger on opposite sides of one transaction:
+    // AR kept the debt, AP took a debit for a supplier never involved,
+    // v_open_item called the invoice settled, and the cash went out to
+    // collect money owed to us. It balanced perfectly.
+    await refuses("a supplier payment cannot settle a sales invoice",
+      () => postSupplierPayment({ companyId: co.id, partnerId: both.id, docDate: today,
+        cashAccountId: cash.id, allocations: [{ invoiceId: evSi.id, amount: 20000 }] }));
+
+    await refuses("a customer receipt cannot settle a purchase invoice",
+      () => postCustomerReceipt({ companyId: co.id, partnerId: both.id, docDate: today,
+        cashAccountId: cash.id, allocations: [{ invoiceId: evPi.id, amount: 500 }] }));
+
+    const [anyGr] = await sql`
+      select id from document where company_id = ${co.id} and doc_type = 'GOODS_RECEIPT' limit 1`;
+    await refuses("nor anything that is not an invoice at all",
+      () => postCustomerReceipt({ companyId: co.id, partnerId: both.id, docDate: today,
+        cashAccountId: cash.id, allocations: [{ invoiceId: anyGr.id, amount: 100 }] }));
+
+    await refuses("nor by inserting the allocation straight into the table",
+      () => sql`insert into payment_allocation (company_id, payment_id, invoice_id, amount, base_amount)
+                values (${co.id}, ${evPi.id}, ${evSi.id}, 100, 100)`);
+
+    await allows("while the right pairing still settles normally",
+      () => postCustomerReceipt({ companyId: co.id, partnerId: both.id, docDate: today,
+        cashAccountId: cash.id, allocations: [{ invoiceId: evSi.id, amount: 20000 }] }));
   }
 
   // ---- Billing the same goods twice --------------------------------------

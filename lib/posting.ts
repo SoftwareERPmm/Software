@@ -113,6 +113,11 @@ function round4(n: number) {
 // Infinity was already refused, but by Postgres numeric overflow rather than
 // by anything here, so the user saw a driver error instead of a reason.
 
+/** "PURCHASE_INVOICE" -> "purchase invoice", for messages people read. */
+function readable(docType: string): string {
+  return docType.toLowerCase().replace(/_/g, " ");
+}
+
 function assertFinite(value: number, what: string): void {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error(`${what} must be a number`);
@@ -1834,11 +1839,21 @@ async function postSettlement(
     const fiscalYear = fyRows[0]?.fy ?? null;
     if (!fiscalYear) throw new Error(`No fiscal year covers ${docDate}`);
 
+    // A payment settles one kind of invoice and no other. Nothing checked
+    // that, and the two subledgers are resolved from the payment's own kind
+    // rather than from what it is paying — so a supplier payment could be
+    // allocated to a sales invoice, and it posted: AR control kept the
+    // 100,000 the customer still owed, AP control took a 100,000 debit for a
+    // supplier who was never involved, v_open_item showed the invoice
+    // settled, and the cash went out of the door to collect a debt owed to
+    // us. Everything balanced. Every figure was wrong.
+    const settles = isPayment ? "PURCHASE_INVOICE" : "SALES_INVOICE";
+
     // Check each invoice still owes what is being applied. Two people paying
     // the same bill at once would otherwise both succeed.
     for (const a of lines) {
       const [inv] = await tx`
-        select d.doc_no, d.partner_id, d.gross_total,
+        select d.doc_no, d.doc_type, d.status, d.partner_id, d.gross_total,
                coalesce((select sum(amount) from payment_allocation
                           where invoice_id = d.id), 0) as allocated
           from document d
@@ -1846,6 +1861,16 @@ async function postSettlement(
          for update of d`;
 
       if (!inv) throw new Error("That invoice no longer exists");
+
+      if (inv.doc_type !== settles) {
+        throw new Error(
+          `${inv.doc_no} is a ${readable(inv.doc_type)}. A ${readable(kind)} can only ` +
+            `settle a ${readable(settles)}`
+        );
+      }
+      if (inv.status !== "POSTED") {
+        throw new Error(`${inv.doc_no} is ${inv.status} and cannot be settled`);
+      }
       if (inv.partner_id !== partnerId) {
         throw new Error(`Invoice ${inv.doc_no} belongs to a different partner`);
       }
