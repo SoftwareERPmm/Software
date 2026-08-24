@@ -34,7 +34,7 @@ if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
 const {
   postGoodsReceipt, postSalesInvoice, postSaleWithDelivery,
   postPurchaseInvoice, postStockAdjustment, postCashVoucher,
-  postCustomerReceipt, postDelivery,
+  postCustomerReceipt, postSupplierPayment, postDelivery,
 } = await import("../lib/posting.ts");
 
 const url = process.env.DATABASE_URL;
@@ -307,6 +307,54 @@ try {
                 values (${co.id}, ${inv.id}, ${inv.id}, ${n(inv.gross_total) * 5}, ${n(inv.gross_total) * 5})`);
   }
 
+  // ---- Settling the wrong kind of invoice --------------------------------
+
+  console.log("\n  paying the wrong kind of invoice\n");
+
+  // A trading partner is often both customer and supplier, which is what
+  // makes this reachable without any tampering: the partner check passes.
+  const [both] = await sql`
+    insert into business_partner (company_id, code, name, is_customer, is_supplier)
+    values (${co.id}, ${'EV-B' + Date.now().toString().slice(-5)}, 'Evil Both Ways', true, true)
+    returning id`;
+
+  const evSi = await postSaleWithDelivery({ companyId: co.id, partnerId: both.id,
+    locationId: loc.id, docDate: today, dueDate: null,
+    lines: [{ itemId: item.id, qty: 2, unitPrice: 10000 }] });
+  const evPi = await postPurchaseInvoice({ companyId: co.id, partnerId: both.id,
+    locationId: loc.id, docDate: today, dueDate: null,
+    lines: [{ itemId: item.id, qty: 1, unitPrice: 500 }] });
+
+  if (cash) {
+    // The control account comes from the payment's own type while the
+    // outstanding balance comes from the invoice's, so mismatching the pair
+    // put the subledger and the ledger on opposite sides of one transaction:
+    // AR kept the debt, AP took a debit for a supplier never involved,
+    // v_open_item called the invoice settled, and the cash went out to
+    // collect money owed to us. It balanced perfectly.
+    await refuses("a supplier payment cannot settle a sales invoice",
+      () => postSupplierPayment({ companyId: co.id, partnerId: both.id, docDate: today,
+        cashAccountId: cash.id, allocations: [{ invoiceId: evSi.id, amount: 20000 }] }));
+
+    await refuses("a customer receipt cannot settle a purchase invoice",
+      () => postCustomerReceipt({ companyId: co.id, partnerId: both.id, docDate: today,
+        cashAccountId: cash.id, allocations: [{ invoiceId: evPi.id, amount: 500 }] }));
+
+    const [anyGr] = await sql`
+      select id from document where company_id = ${co.id} and doc_type = 'GOODS_RECEIPT' limit 1`;
+    await refuses("nor anything that is not an invoice at all",
+      () => postCustomerReceipt({ companyId: co.id, partnerId: both.id, docDate: today,
+        cashAccountId: cash.id, allocations: [{ invoiceId: anyGr.id, amount: 100 }] }));
+
+    await refuses("nor by inserting the allocation straight into the table",
+      () => sql`insert into payment_allocation (company_id, payment_id, invoice_id, amount, base_amount)
+                values (${co.id}, ${evPi.id}, ${evSi.id}, 100, 100)`);
+
+    await allows("while the right pairing still settles normally",
+      () => postCustomerReceipt({ companyId: co.id, partnerId: both.id, docDate: today,
+        cashAccountId: cash.id, allocations: [{ invoiceId: evSi.id, amount: 20000 }] }));
+  }
+
   // ---- Billing the same goods twice --------------------------------------
 
   console.log("\n  billing the same goods twice\n");
@@ -330,6 +378,52 @@ try {
     n((await sql`select coalesce(sum(jl.amount),0) as v from journal_line jl
         join account a on a.id = jl.account_id where a.code = '5200'`)[0].v) === 20000);
 
+  // ---- Continuing a document that is not what it claims ------------------
+
+  console.log("\n  attaching a document to the wrong document\n");
+
+  const [supB] = await sql`
+    insert into business_partner (company_id, code, name, is_supplier)
+    values (${co.id}, ${'EV-S2' + Date.now().toString().slice(-4)}, 'Evil Second Supplier', true)
+    returning id`;
+
+  const grOwn = await postGoodsReceipt({ ...buy, lines: [{ itemId: item.id, qty: 20, unitCost: 1000 }] });
+  const grOther = await postGoodsReceipt({ companyId: co.id, partnerId: supB.id, locationId: loc.id,
+    docDate: today, lines: [{ itemId: item.id, qty: 20, unitCost: 1000 }] });
+  const [grOtherLine] = await sql`
+    select id from document_line where document_id = ${grOther.id} limit 1`;
+  const [anySale] = await sql`
+    select id from document where company_id = ${co.id} and doc_type = 'SALES_INVOICE'
+       and status = 'POSTED' limit 1`;
+
+  // The id was taken on trust, the named document's lines were read, and
+  // money was posted against them — so a purchase invoice could relieve
+  // GR/IR against a customer's invoice at sales prices, or settle a
+  // different supplier's receipt while that supplier was still owed.
+  await refuses("a purchase invoice cannot bill a sales invoice as if it were a receipt",
+    () => postPurchaseInvoice({ ...buy, dueDate: null, goodsReceiptId: anySale.id,
+      lines: [{ itemId: item.id, qty: 1, unitPrice: 1000 }] }));
+
+  await refuses("nor settle a different supplier's receipt",
+    () => postPurchaseInvoice({ ...buy, dueDate: null, goodsReceiptId: grOther.id,
+      lines: [{ itemId: item.id, qty: 5, unitPrice: 1000 }] }));
+
+  await refuses("nor point a line at a line of some other document",
+    () => postPurchaseInvoice({ ...buy, dueDate: null, goodsReceiptId: grOwn.id,
+      lines: [{ itemId: item.id, qty: 5, unitPrice: 1000, sourceLineId: grOtherLine.id }] }));
+
+  await refuses("a goods receipt cannot fulfil a sales invoice",
+    () => postGoodsReceipt({ ...buy, sourceDocumentId: anySale.id,
+      lines: [{ itemId: item.id, qty: 5, unitCost: 1000 }] }));
+
+  await refuses("a sales invoice cannot bill a goods receipt",
+    () => postSalesInvoice({ ...sell, dueDate: null, deliveryId: grOwn.id,
+      lines: [{ itemId: item.id, qty: 1, unitPrice: 1500 }] }));
+
+  await allows("while a receipt's own supplier can still bill it",
+    () => postPurchaseInvoice({ ...buy, dueDate: null, goodsReceiptId: grOwn.id,
+      lines: [{ itemId: item.id, qty: 20, unitPrice: 1000 }] }));
+
   // ---- Two people at once ------------------------------------------------
 
   console.log("\n  two people posting at the same moment\n");
@@ -344,6 +438,39 @@ try {
     won === 1, `${won} succeeded of 2`);
   check("and stock never went negative",
     n((await sql`select fn_qty_on_hand(${co.id}, ${item.id}, ${loc.id}) as q`)[0].q) >= 0);
+
+  // GR/IR is decided by reading how much of a document is still unsettled
+  // and then settling some of it, so the read and the write have to be one
+  // indivisible act. Four invoices for the whole receipt must between them
+  // take out of GR/IR exactly what the goods were received at, once.
+  const raceGr = await postGoodsReceipt({ ...buy, lines: [{ itemId: item.id, qty: 100, unitCost: 1000 }] });
+  await Promise.allSettled(Array.from({ length: 4 }, () =>
+    postPurchaseInvoice({ ...buy, dueDate: null, goodsReceiptId: raceGr.id,
+      lines: [{ itemId: item.id, qty: 100, unitPrice: 1000 }] })));
+  const relievedTogether = n((await sql`
+    select coalesce(sum(jl.amount), 0) as v from journal_line jl
+      join account a on a.id = jl.account_id
+      join journal_entry je on je.id = jl.journal_entry_id
+      join document d on d.id = je.source_id
+     where a.code = '1310' and d.doc_type = 'PURCHASE_INVOICE'
+       and d.source_document_id = ${raceGr.id}`)[0].v);
+  check("four invoices racing one receipt relieve GR/IR once, not four times",
+    relievedTogether === 100000, `${relievedTogether} of 100000`);
+
+  const racePi = await postPurchaseInvoice({ ...buy, dueDate: null,
+    lines: [{ itemId: item.id, qty: 100, unitPrice: 1000 }] });
+  await Promise.allSettled(Array.from({ length: 4 }, () =>
+    postGoodsReceipt({ ...buy, sourceDocumentId: racePi.id,
+      lines: [{ itemId: item.id, qty: 100, unitCost: 1000 }] })));
+  const releasedTogether = n((await sql`
+    select coalesce(sum(jl.amount), 0) as v from journal_line jl
+      join account a on a.id = jl.account_id
+      join journal_entry je on je.id = jl.journal_entry_id
+      join document d on d.id = je.source_id
+     where a.code = '1310' and d.doc_type = 'GOODS_RECEIPT'
+       and d.source_document_id = ${racePi.id}`)[0].v);
+  check("and four receipts racing one invoice release it once",
+    releasedTogether === -100000, `${releasedTogether} of -100000`);
 
   const numbers = await Promise.allSettled(
     Array.from({ length: 4 }, () =>

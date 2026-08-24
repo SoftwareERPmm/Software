@@ -113,6 +113,11 @@ function round4(n: number) {
 // Infinity was already refused, but by Postgres numeric overflow rather than
 // by anything here, so the user saw a driver error instead of a reason.
 
+/** "PURCHASE_INVOICE" -> "purchase invoice", for messages people read. */
+function readable(docType: string): string {
+  return docType.toLowerCase().replace(/_/g, " ");
+}
+
 function assertFinite(value: number, what: string): void {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error(`${what} must be a number`);
@@ -161,6 +166,116 @@ function assertLines(
 function assertAmount(value: number, what: string, { signed = false }: { signed?: boolean } = {}): void {
   assertFinite(value, what);
   if (!signed && value <= 0) throw new Error(`${what} must be more than zero`);
+}
+
+// ------------------------------------------------- source documents --
+//
+// A document that continues another one names it, and until this existed
+// nothing checked that the thing named was what the caller said it was. The
+// id was taken on trust, its lines were read, and money was posted against
+// them. All of these posted cleanly:
+//
+//   a purchase invoice whose "goods receipt" was a sales invoice, relieving
+//   GR/IR against a customer document's lines at sales prices
+//   a purchase invoice for supplier A settling supplier B's receipt, so B's
+//   goods looked billed while B was still owed for them
+//   a sales invoice billing another customer's delivery
+//   a delivery to a customer continuing a purchase receipt
+//
+// None of them are reachable from the UI, which passes ids it just looked
+// up. They are reachable from anything else that calls these functions - an
+// import, a script, a future API - which is the same reason the numeric
+// guards live here rather than in the parsers.
+
+type SourceDoc = {
+  id: string;
+  doc_no: string;
+  doc_type: string;
+  partner_id: string | null;
+};
+
+/**
+ * Resolves the document this one is being posted against, and locks it.
+ *
+ * The lock is not incidental to the validation — matching reads how much of
+ * the source is still open and then settles part of it, so it has to hold
+ * still for the duration. Both concerns want the same row at the same
+ * moment, so they are one query.
+ */
+async function requireSource(
+  tx: TransactionSql,
+  opts: {
+    id: string;
+    companyId: string;
+    /** When both documents must belong to the same party. */
+    partnerId?: string | null;
+    expect: readonly string[];
+    /** What the caller calls it, so the message names the field. */
+    role: string;
+  }
+): Promise<SourceDoc> {
+  const [src] = await tx`
+    select id, doc_no, doc_type, partner_id, status
+      from document
+     where id = ${opts.id} and company_id = ${opts.companyId}
+     for update`;
+
+  if (!src) throw new Error(`The ${opts.role} does not exist`);
+
+  if (!opts.expect.includes(src.doc_type)) {
+    const wanted = opts.expect.map(readable).join(" or ");
+    throw new Error(
+      `${src.doc_no} is a ${readable(src.doc_type)}, not a ${wanted}, ` +
+        `so it cannot be the ${opts.role}`
+    );
+  }
+
+  if (src.status !== "POSTED") {
+    throw new Error(`${src.doc_no} is ${src.status} and cannot be continued`);
+  }
+
+  if (opts.partnerId && src.partner_id && src.partner_id !== opts.partnerId) {
+    throw new Error(
+      `${src.doc_no} belongs to a different partner, so this document cannot continue it`
+    );
+  }
+
+  return src as SourceDoc;
+}
+
+/**
+ * Every line that names a line of the source must name one that is actually
+ * on it, and for the same item. grirMatcher tolerates an unknown id by
+ * falling back to document order, which is right for replaying history
+ * posted before the reference existed, and wrong for accepting new input:
+ * a caller pointing at another document's line has made a mistake, and
+ * quietly matching something else hides it.
+ */
+async function assertSourceLines(
+  tx: TransactionSql,
+  sourceId: string,
+  lines: ReadonlyArray<{ itemId: string; sourceLineId?: string | null }>
+): Promise<void> {
+  const named = lines.filter((l) => l.sourceLineId);
+  if (named.length === 0) return;
+
+  const rows = await tx`
+    select id, item_id from document_line
+     where document_id = ${sourceId}
+       and id = any(${named.map((l) => l.sourceLineId as string)})`;
+
+  const byId = new Map(rows.map((r: any) => [r.id, r.item_id]));
+
+  lines.forEach((line, i) => {
+    if (!line.sourceLineId) return;
+    const item = byId.get(line.sourceLineId);
+    if (item === undefined) {
+      throw new Error(`Line ${i + 1} refers to a line that is not on that document`);
+    }
+    if (item !== line.itemId) {
+      throw new Error(`Line ${i + 1} refers to a line for a different item`);
+    }
+  });
 }
 
 // ------------------------------------------------------- GR/IR matching --
@@ -544,6 +659,20 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
   const noRows = await tx`select fn_next_document_no(${companyId}, 'DELIVERY', ${fiscalYear}::uuid) as no`;
   const docNo = noRows[0].no;
 
+  // A delivery continues either the order that asked for the goods or the
+  // invoice that billed for them — never a purchase document, and never
+  // another customer's.
+  if (input.sourceDocumentId) {
+    await requireSource(tx, {
+      id: input.sourceDocumentId,
+      companyId,
+      partnerId,
+      expect: ["SALES_ORDER", "SALES_INVOICE"],
+      role: "document this delivery fulfils",
+    });
+    await assertSourceLines(tx, input.sourceDocumentId, input.lines);
+  }
+
   const [doc] = await tx`
     insert into document
       (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
@@ -696,6 +825,18 @@ async function _postSalesInvoice(
         : "This invoice comes to zero, so there is nothing to bill. Enter a price, " +
           "or mark the lines free of charge and deliver them instead."
     );
+  }
+
+  // An invoice that bills a delivery has to be billing this customer's
+  // delivery, and a delivery at that.
+  if (input.deliveryId) {
+    await requireSource(tx, {
+      id: input.deliveryId,
+      companyId,
+      partnerId,
+      expect: ["DELIVERY"],
+      role: "delivery this invoice bills",
+    });
   }
 
   const [doc] = await tx`
@@ -930,8 +1071,22 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
   // whichever document happens to post second.
   let grirAmount = netTotal;
   if (input.sourceDocumentId) {
-    const [src] = await tx`
-      select doc_type from document where id = ${input.sourceDocumentId} and company_id = ${companyId}`;
+    // Locked, not merely read: the matching below decides how much of this
+    // invoice is still unreceived, and two receipts arriving at once must
+    // not both settle the same outstanding quantity. Same reasoning as the
+    // invoice side, and the same reason the FIFO consumption planner locks
+    // the lots it is about to draw from.
+    //
+    // A receipt continues either the order that asked for the goods or the
+    // invoice that billed for them, and nothing else.
+    const src = await requireSource(tx, {
+      id: input.sourceDocumentId,
+      companyId,
+      partnerId,
+      expect: ["PURCHASE_ORDER", "PURCHASE_INVOICE"],
+      role: "document this receipt fulfils",
+    });
+    await assertSourceLines(tx, input.sourceDocumentId, input.lines);
     if (src?.doc_type === "PURCHASE_INVOICE") {
       // Matched line by line against the invoice, not against its total.
       // Taking the whole invoice meant half a shipment released all of it:
@@ -1097,6 +1252,31 @@ async function _postPurchaseInvoice(
       // awaiting an invoice. A later invoice for the rest then had no receipt
       // left to match.
       //
+      // Lock the receipt for the duration of the match. Everything below
+      // reads how much of it is still unbilled and then bills some of it,
+      // which is only correct if nothing else is doing the same thing at the
+      // same moment: two invoices reading "100 unbilled" before either
+      // commits would each relieve the full 100, taking twice out of GR/IR
+      // what the goods were received at.
+      //
+      // That does not happen today, but only by accident. fn_next_document_no
+      // takes a row lock on the number series before any of this runs, and
+      // holds it to commit, so purchase invoices already queue behind one
+      // another. That lock exists for gapless numbering and is keyed by
+      // fiscal year — it protects this by coincidence, and stops protecting
+      // it the moment numbering changes. An invariant about money should not
+      // rest on a lock taken for document numbering.
+      // Resolves the receipt, proves it is one, proves it is this supplier's,
+      // and locks it — all of which this match depends on.
+      await requireSource(tx, {
+        id: input.goodsReceiptId,
+        companyId,
+        partnerId,
+        expect: ["GOODS_RECEIPT"],
+        role: "goods receipt this invoice bills",
+      });
+      await assertSourceLines(tx, input.goodsReceiptId, input.lines);
+
       // Matched against the receipt's individual lines by grirMatcher above,
       // which is the same code the receipt side uses coming the other way.
       const receiptLines = await tx`
@@ -1834,11 +2014,21 @@ async function postSettlement(
     const fiscalYear = fyRows[0]?.fy ?? null;
     if (!fiscalYear) throw new Error(`No fiscal year covers ${docDate}`);
 
+    // A payment settles one kind of invoice and no other. Nothing checked
+    // that, and the two subledgers are resolved from the payment's own kind
+    // rather than from what it is paying — so a supplier payment could be
+    // allocated to a sales invoice, and it posted: AR control kept the
+    // 100,000 the customer still owed, AP control took a 100,000 debit for a
+    // supplier who was never involved, v_open_item showed the invoice
+    // settled, and the cash went out of the door to collect a debt owed to
+    // us. Everything balanced. Every figure was wrong.
+    const settles = isPayment ? "PURCHASE_INVOICE" : "SALES_INVOICE";
+
     // Check each invoice still owes what is being applied. Two people paying
     // the same bill at once would otherwise both succeed.
     for (const a of lines) {
       const [inv] = await tx`
-        select d.doc_no, d.partner_id, d.gross_total,
+        select d.doc_no, d.doc_type, d.status, d.partner_id, d.gross_total,
                coalesce((select sum(amount) from payment_allocation
                           where invoice_id = d.id), 0) as allocated
           from document d
@@ -1846,6 +2036,16 @@ async function postSettlement(
          for update of d`;
 
       if (!inv) throw new Error("That invoice no longer exists");
+
+      if (inv.doc_type !== settles) {
+        throw new Error(
+          `${inv.doc_no} is a ${readable(inv.doc_type)}. A ${readable(kind)} can only ` +
+            `settle a ${readable(settles)}`
+        );
+      }
+      if (inv.status !== "POSTED") {
+        throw new Error(`${inv.doc_no} is ${inv.status} and cannot be settled`);
+      }
       if (inv.partner_id !== partnerId) {
         throw new Error(`Invoice ${inv.doc_no} belongs to a different partner`);
       }

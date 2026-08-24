@@ -38,7 +38,7 @@ try {
     baseCurrency: "MMK",
     fiscalYearStartMonth: Number(start.slice(5, 7)),
     fiscalYearStart: start,
-    branchName: "Head Office",
+    officeName: "Head Office",
     warehouseName: "Main Warehouse",
   });
 

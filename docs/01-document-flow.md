@@ -70,3 +70,17 @@ records that a reversal exists, it does not erase anything.
 Per company, per document type, per fiscal year. Numbers are assigned at
 posting, never at draft, and are gapless — a reversed document keeps its
 number and the reversal gets its own.
+
+The fiscal year is part of the number, because the count restarts with it
+while `document.doc_no` and `journal_entry.entry_no` must stay unique for the
+life of the company:
+
+```
+FY 2026-27    PI-2627-000001    JE-2627-000001
+FY 2027-28    PI-2728-000001    JE-2728-000001
+```
+
+A fiscal year that sits inside one calendar year carries the single year
+instead — `PI-26-000001`. Without the year segment the second year of trading
+reissues the first year's numbers and nothing posts at all; see migration
+0025.
