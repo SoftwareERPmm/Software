@@ -935,8 +935,15 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
   // whichever document happens to post second.
   let grirAmount = netTotal;
   if (input.sourceDocumentId) {
+    // Locked, not merely read: the matching below decides how much of this
+    // invoice is still unreceived, and two receipts arriving at once must
+    // not both settle the same outstanding quantity. Same reasoning as the
+    // invoice side, and the same reason the FIFO consumption planner locks
+    // the lots it is about to draw from.
     const [src] = await tx`
-      select doc_type from document where id = ${input.sourceDocumentId} and company_id = ${companyId}`;
+      select doc_type from document
+       where id = ${input.sourceDocumentId} and company_id = ${companyId}
+       for update`;
     if (src?.doc_type === "PURCHASE_INVOICE") {
       // Matched line by line against the invoice, not against its total.
       // Taking the whole invoice meant half a shipment released all of it:
@@ -1102,6 +1109,25 @@ async function _postPurchaseInvoice(
       // awaiting an invoice. A later invoice for the rest then had no receipt
       // left to match.
       //
+      // Lock the receipt for the duration of the match. Everything below
+      // reads how much of it is still unbilled and then bills some of it,
+      // which is only correct if nothing else is doing the same thing at the
+      // same moment: two invoices reading "100 unbilled" before either
+      // commits would each relieve the full 100, taking twice out of GR/IR
+      // what the goods were received at.
+      //
+      // That does not happen today, but only by accident. fn_next_document_no
+      // takes a row lock on the number series before any of this runs, and
+      // holds it to commit, so purchase invoices already queue behind one
+      // another. That lock exists for gapless numbering and is keyed by
+      // fiscal year — it protects this by coincidence, and stops protecting
+      // it the moment numbering changes. An invariant about money should not
+      // rest on a lock taken for document numbering.
+      await tx`
+        select id from document
+         where id = ${input.goodsReceiptId} and company_id = ${companyId}
+         for update`;
+
       // Matched against the receipt's individual lines by grirMatcher above,
       // which is the same code the receipt side uses coming the other way.
       const receiptLines = await tx`

@@ -393,6 +393,39 @@ try {
   check("and stock never went negative",
     n((await sql`select fn_qty_on_hand(${co.id}, ${item.id}, ${loc.id}) as q`)[0].q) >= 0);
 
+  // GR/IR is decided by reading how much of a document is still unsettled
+  // and then settling some of it, so the read and the write have to be one
+  // indivisible act. Four invoices for the whole receipt must between them
+  // take out of GR/IR exactly what the goods were received at, once.
+  const raceGr = await postGoodsReceipt({ ...buy, lines: [{ itemId: item.id, qty: 100, unitCost: 1000 }] });
+  await Promise.allSettled(Array.from({ length: 4 }, () =>
+    postPurchaseInvoice({ ...buy, dueDate: null, goodsReceiptId: raceGr.id,
+      lines: [{ itemId: item.id, qty: 100, unitPrice: 1000 }] })));
+  const relievedTogether = n((await sql`
+    select coalesce(sum(jl.amount), 0) as v from journal_line jl
+      join account a on a.id = jl.account_id
+      join journal_entry je on je.id = jl.journal_entry_id
+      join document d on d.id = je.source_id
+     where a.code = '1310' and d.doc_type = 'PURCHASE_INVOICE'
+       and d.source_document_id = ${raceGr.id}`)[0].v);
+  check("four invoices racing one receipt relieve GR/IR once, not four times",
+    relievedTogether === 100000, `${relievedTogether} of 100000`);
+
+  const racePi = await postPurchaseInvoice({ ...buy, dueDate: null,
+    lines: [{ itemId: item.id, qty: 100, unitPrice: 1000 }] });
+  await Promise.allSettled(Array.from({ length: 4 }, () =>
+    postGoodsReceipt({ ...buy, sourceDocumentId: racePi.id,
+      lines: [{ itemId: item.id, qty: 100, unitCost: 1000 }] })));
+  const releasedTogether = n((await sql`
+    select coalesce(sum(jl.amount), 0) as v from journal_line jl
+      join account a on a.id = jl.account_id
+      join journal_entry je on je.id = jl.journal_entry_id
+      join document d on d.id = je.source_id
+     where a.code = '1310' and d.doc_type = 'GOODS_RECEIPT'
+       and d.source_document_id = ${racePi.id}`)[0].v);
+  check("and four receipts racing one invoice release it once",
+    releasedTogether === -100000, `${releasedTogether} of -100000`);
+
   const numbers = await Promise.allSettled(
     Array.from({ length: 4 }, () =>
       postGoodsReceipt({ ...buy, lines: [{ itemId: item.id, qty: 1, unitCost: 1000 }] }))
