@@ -446,6 +446,28 @@ try {
     () => postPurchaseReturn({ ...buy, sourceDocumentId: anySale.id,
       lines: [{ itemId: item.id, qty: 1, unitPrice: 1000 }] }));
 
+  // A return naming a sale is bounded by it. Returned goods come back into
+  // stock at the original sale's cost, so an unbounded return against a
+  // small sale invents inventory value out of a document that never carried
+  // it — fifty units back from a sale of ten.
+  const capSale = await postSaleWithDelivery({ ...sell, dueDate: null,
+    lines: [{ itemId: item.id, qty: 4, unitPrice: 1500 }] });
+
+  await allows("a return within what was sold posts",
+    () => postSalesReturn({ ...sell, sourceDocumentId: capSale.id,
+      lines: [{ itemId: item.id, qty: 4, unitPrice: 1500 }] }));
+
+  await refuses("but nothing beyond it, once it is all back",
+    () => postSalesReturn({ ...sell, sourceDocumentId: capSale.id,
+      lines: [{ itemId: item.id, qty: 1, unitPrice: 1500 }] }));
+
+  const capSale2 = await postSaleWithDelivery({ ...sell, dueDate: null,
+    lines: [{ itemId: item.id, qty: 4, unitPrice: 1500 }] });
+  await refuses("nor by splitting it across two lines of one return",
+    () => postSalesReturn({ ...sell, sourceDocumentId: capSale2.id,
+      lines: [{ itemId: item.id, qty: 3, unitPrice: 1500 },
+              { itemId: item.id, qty: 3, unitPrice: 1500 }] }));
+
   await allows("while a receipt's own supplier can still bill it",
     () => postPurchaseInvoice({ ...buy, dueDate: null, goodsReceiptId: grOwn.id,
       lines: [{ itemId: item.id, qty: 20, unitPrice: 1000 }] }));

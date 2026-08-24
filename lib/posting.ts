@@ -285,6 +285,70 @@ async function assertSourceLines(
   });
 }
 
+/**
+ * A return that names what it reverses cannot exceed it.
+ *
+ * The source relationship was validated but never the quantity, so fifty
+ * units could be returned against a sale of ten — and since the returned
+ * goods come back into stock at the original sale's cost, that invented
+ * inventory value out of a document that never carried it.
+ *
+ * Counted per item and net of returns already posted against the same
+ * source, so two partial returns are fine and the pair of them cannot
+ * exceed the whole. A return naming no source stays unlimited: goods do
+ * come back with no paperwork behind them, and that is a different
+ * situation from claiming a specific sale said something it did not.
+ */
+async function assertWithinSource(
+  tx: TransactionSql,
+  opts: {
+    companyId: string;
+    sourceId: string;
+    sourceDocNo: string;
+    returnType: "SALES_RETURN" | "PURCHASE_RETURN";
+    lines: ReadonlyArray<{ itemId: string; qty: number }>;
+  }
+): Promise<void> {
+  const original = await tx`
+    select item_id, sum(base_qty) as qty
+      from document_line where document_id = ${opts.sourceId}
+     group by item_id`;
+
+  const returned = await tx`
+    select dl.item_id, coalesce(sum(dl.base_qty), 0) as qty
+      from document_line dl
+      join document d on d.id = dl.document_id
+     where d.company_id = ${opts.companyId}
+       and d.doc_type = ${opts.returnType}
+       and d.status = 'POSTED'
+       and d.source_document_id = ${opts.sourceId}
+     group by dl.item_id`;
+
+  const left = new Map<string, number>();
+  for (const o of original) left.set(o.item_id, Number(o.qty));
+  for (const r of returned) {
+    left.set(r.item_id, round4((left.get(r.item_id) ?? 0) - Number(r.qty)));
+  }
+
+  // This return's own lines count together, so the same item split across
+  // two lines cannot slip past by being under the limit twice.
+  const wanted = new Map<string, number>();
+  for (const line of opts.lines) {
+    wanted.set(line.itemId, round4((wanted.get(line.itemId) ?? 0) + line.qty));
+  }
+
+  for (const [itemId, qty] of wanted) {
+    const available = left.get(itemId) ?? 0;
+    if (qty > available) {
+      const [item] = await tx`select code, name from item where id = ${itemId}`;
+      throw new Error(
+        `${opts.sourceDocNo} has ${available} of ${item?.code ?? "that item"}` +
+          `${item?.name ? ` (${item.name})` : ""} left to return; ${qty} was entered`
+      );
+    }
+  }
+}
+
 // ------------------------------------------------------- GR/IR matching --
 //
 // A goods receipt and a purchase invoice settle against each other through
@@ -1780,14 +1844,20 @@ export async function postSalesReturn(input: ReturnInput) {
     // inventory by 8,000 and over-reversing cost of sales by the same,
     // while the credit to the customer looked identical either way.
     if (input.sourceDocumentId) {
-      await requireSource(tx, {
+      const source = await requireSource(tx, {
         id: input.sourceDocumentId,
         companyId,
         partnerId,
         expect: ["SALES_INVOICE", "DELIVERY"],
         role: "sale this return reverses",
       });
-      await assertSourceLines(tx, input.sourceDocumentId, input.lines);
+      await assertWithinSource(tx, {
+        companyId,
+        sourceId: input.sourceDocumentId,
+        sourceDocNo: source.doc_no,
+        returnType: "SALES_RETURN",
+        lines: input.lines,
+      });
     }
 
     const [doc] = await tx`
@@ -1911,14 +1981,20 @@ export async function postPurchaseReturn(input: ReturnInput) {
     // brought them in or the invoice that billed for them — the mirror of
     // the sales return above.
     if (input.sourceDocumentId) {
-      await requireSource(tx, {
+      const source = await requireSource(tx, {
         id: input.sourceDocumentId,
         companyId,
         partnerId,
         expect: ["PURCHASE_INVOICE", "GOODS_RECEIPT"],
         role: "purchase this return sends back",
       });
-      await assertSourceLines(tx, input.sourceDocumentId, input.lines);
+      await assertWithinSource(tx, {
+        companyId,
+        sourceId: input.sourceDocumentId,
+        sourceDocNo: source.doc_no,
+        returnType: "PURCHASE_RETURN",
+        lines: input.lines,
+      });
     }
 
     const [doc] = await tx`
