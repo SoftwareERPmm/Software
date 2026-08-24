@@ -378,6 +378,52 @@ try {
     n((await sql`select coalesce(sum(jl.amount),0) as v from journal_line jl
         join account a on a.id = jl.account_id where a.code = '5200'`)[0].v) === 20000);
 
+  // ---- Continuing a document that is not what it claims ------------------
+
+  console.log("\n  attaching a document to the wrong document\n");
+
+  const [supB] = await sql`
+    insert into business_partner (company_id, code, name, is_supplier)
+    values (${co.id}, ${'EV-S2' + Date.now().toString().slice(-4)}, 'Evil Second Supplier', true)
+    returning id`;
+
+  const grOwn = await postGoodsReceipt({ ...buy, lines: [{ itemId: item.id, qty: 20, unitCost: 1000 }] });
+  const grOther = await postGoodsReceipt({ companyId: co.id, partnerId: supB.id, locationId: loc.id,
+    docDate: today, lines: [{ itemId: item.id, qty: 20, unitCost: 1000 }] });
+  const [grOtherLine] = await sql`
+    select id from document_line where document_id = ${grOther.id} limit 1`;
+  const [anySale] = await sql`
+    select id from document where company_id = ${co.id} and doc_type = 'SALES_INVOICE'
+       and status = 'POSTED' limit 1`;
+
+  // The id was taken on trust, the named document's lines were read, and
+  // money was posted against them — so a purchase invoice could relieve
+  // GR/IR against a customer's invoice at sales prices, or settle a
+  // different supplier's receipt while that supplier was still owed.
+  await refuses("a purchase invoice cannot bill a sales invoice as if it were a receipt",
+    () => postPurchaseInvoice({ ...buy, dueDate: null, goodsReceiptId: anySale.id,
+      lines: [{ itemId: item.id, qty: 1, unitPrice: 1000 }] }));
+
+  await refuses("nor settle a different supplier's receipt",
+    () => postPurchaseInvoice({ ...buy, dueDate: null, goodsReceiptId: grOther.id,
+      lines: [{ itemId: item.id, qty: 5, unitPrice: 1000 }] }));
+
+  await refuses("nor point a line at a line of some other document",
+    () => postPurchaseInvoice({ ...buy, dueDate: null, goodsReceiptId: grOwn.id,
+      lines: [{ itemId: item.id, qty: 5, unitPrice: 1000, sourceLineId: grOtherLine.id }] }));
+
+  await refuses("a goods receipt cannot fulfil a sales invoice",
+    () => postGoodsReceipt({ ...buy, sourceDocumentId: anySale.id,
+      lines: [{ itemId: item.id, qty: 5, unitCost: 1000 }] }));
+
+  await refuses("a sales invoice cannot bill a goods receipt",
+    () => postSalesInvoice({ ...sell, dueDate: null, deliveryId: grOwn.id,
+      lines: [{ itemId: item.id, qty: 1, unitPrice: 1500 }] }));
+
+  await allows("while a receipt's own supplier can still bill it",
+    () => postPurchaseInvoice({ ...buy, dueDate: null, goodsReceiptId: grOwn.id,
+      lines: [{ itemId: item.id, qty: 20, unitPrice: 1000 }] }));
+
   // ---- Two people at once ------------------------------------------------
 
   console.log("\n  two people posting at the same moment\n");
