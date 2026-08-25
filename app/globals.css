@@ -717,3 +717,78 @@ tbody tr.subrow > td:first-child::before {
   left: 0.9rem;
   color: var(--line);
 }
+
+/* ==========================================================================
+   ERP SHELL, APPLIED PRODUCT-WIDE
+
+   The document screens were rebuilt on the ERP shell first. Rewriting the
+   other fifty pages one at a time would take a week and drift; they all share
+   .page-head, .card and the table rules, so converting those converts the
+   application.
+
+   Everything below overrides the original rules rather than replacing them,
+   so a page that has already been rebuilt on .erp-* classes is untouched and
+   the two can coexist while the rest are migrated properly.
+   ========================================================================== */
+
+body { --erp-density-applied: 1; }
+
+/* The page heading becomes a control panel: one thin horizontal bar, the way
+   every ERP screen opens, instead of a stacked eyebrow/title/subtitle block
+   that pushes the data below the fold. */
+.page-head {
+  flex-direction: row; align-items: center; flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+  min-height: var(--erp-panel-h, 52px);
+  padding: 0.4rem 0 0.75rem;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: var(--s3);
+}
+.page-head h1 {
+  font-size: var(--t-lg); font-weight: 600; margin: 0;
+  letter-spacing: var(--track-tight); order: 2;
+}
+/* The eyebrow becomes a breadcrumb ahead of the title rather than a label
+   above it. */
+.page-head .eyebrow { order: 1; width: 100%; margin-bottom: -0.15rem; }
+.page-head .page-sub {
+  order: 3; font-size: var(--t-sm); color: var(--muted);
+  padding-left: 0.75rem; border-left: 1px solid var(--line);
+}
+.page-head .actions { order: 4; margin-left: auto; }
+
+/* Cards become sheets: squarer, flatter, and the head reads as a table strip
+   rather than as a second title. */
+.card { border-radius: var(--r-sm); }
+.card-head {
+  padding: 0.5rem var(--s3);
+  background: var(--line-soft);
+  align-items: center;
+}
+.card-head h2 { font-size: var(--t-md); font-weight: 600; margin: 0; }
+.card-body { padding: var(--s3); }
+
+/* 40px rows, asymmetric cell padding — a clean left gutter and a tight right
+   edge, which is what lets a column of figures sit against its neighbour
+   without the eye losing the row. */
+th, td { padding: 8px 5px 8px 16px; }
+tbody tr { height: 40px; }
+thead th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--line-soft);
+}
+tbody tr:hover { background: var(--line-soft); }
+
+/* Search reads as an underline in the accent, not a bordered box. This is the
+   single change that most makes a toolbar stop looking like a web form. */
+input[type="search"], .searchbox input, .card-head input[type="text"] {
+  border: 0; border-bottom: 1px solid var(--brand);
+  border-radius: 0; background: transparent; padding: 4px 6px;
+}
+input[type="search"]:focus, .searchbox input:focus {
+  outline: none; border-bottom-width: 2px; box-shadow: none;
+}
+
+/* Buttons at ERP height. The 36-40px web default is a third of a row. */
+button, a.btn, .btn { min-height: 27px; }
+button.tiny, .btn.tiny { min-height: 23px; }
