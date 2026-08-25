@@ -87,11 +87,18 @@ chrome again.
   (`window.print()` + `@media print`), copy link. All real, none stubbed.
 - **Theme** — green applied product-wide via `--brand`; 32 files repointed.
 
+- **The other ~50 screens**, converted through the shared classes rather than
+  one at a time. `.page-head` became a control bar, `.card` a sheet, tables
+  40px with asymmetric padding, search an underline, buttons 27px. These are
+  overrides appended after the originals, so the `.erp-*` pages are untouched
+  and both can coexist while individual screens are migrated properly.
+
 ## What is not done
 
-- The module list screens: `sales/invoices`, `sales/orders`, `purchases/*`,
-  `receivables`, `payables`, `inventory/*`, `items`, `partners`. They inherit
-  the green but not the shell.
+- Individual screens still use the *generic* conversion above, not a
+  purpose-built ERP layout. The document screens show what a properly
+  rebuilt one looks like; the rest inherit the density and chrome. Migrate
+  them one at a time by moving them onto `.erp-*` classes.
 - The dashboard.
 - "Show immutability instead of erroring" — see the findings above.
 - Invoiced-per-order-line. Deliberately skipped: on this chain an invoice
