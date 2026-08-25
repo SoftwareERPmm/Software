@@ -15,9 +15,11 @@ import {
   isGrirOutstanding,
   getMatchStatus,
   getStockByLocation,
+  getOrderProgress,
 } from "@/lib/queries";
 import { createDelivery, createGoodsReceipt } from "@/lib/actions";
 import { FulfillOrderForm } from "@/components/fulfill-order-form";
+import { ErpOrderForm, type OrderLine as ErpOrderLine } from "@/components/erp-order-form";
 
 // The chain each document type sits in, so the detail page can show where
 // this document falls and what comes next.
@@ -148,6 +150,71 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
   }
 
   const outstanding = isInvoice ? await getDocumentOutstanding(doc.id) : 0;
+
+  // Orders render on the ERP form. Only the two order types for now: the
+  // shell is adopted screen by screen rather than switched on globally, so
+  // anything not yet moved keeps working exactly as it did.
+  const isOrder = doc.doc_type === "SALES_ORDER" || doc.doc_type === "PURCHASE_ORDER";
+
+  if (isOrder) {
+    const sales = doc.doc_type === "SALES_ORDER";
+    const progress = (await getOrderProgress(doc.id, doc.doc_type)) as any[];
+
+    const erpLines: ErpOrderLine[] = progress.map((l) => ({
+      id: l.id,
+      itemCode: l.item_code,
+      itemName: l.item_name,
+      itemNameMy: l.item_name_my ?? null,
+      uomCode: l.uom_code ?? null,
+      ordered: Number(l.ordered),
+      fulfilled: Number(l.fulfilled),
+      unitPrice: Number(l.unit_price),
+      netAmount: Number(l.net_amount),
+    }));
+
+    return (
+      <ErpOrderForm
+        config={{
+          typeLabel: sales ? "Sales Order" : "Purchase Order",
+          partyLabel: sales ? "Customer" : "Vendor",
+          fulfilledLabel: sales ? "Delivered" : "Received",
+          listHref: `/documents?type=${doc.doc_type}`,
+          listLabel: PLURAL[doc.doc_type] ?? label(doc.doc_type),
+        }}
+        docNo={doc.doc_no ?? "Draft"}
+        status={doc.status}
+        partnerName={doc.partner_name ?? null}
+        partnerCode={doc.partner_code ?? null}
+        docDate={String(doc.doc_date)}
+        dueDate={doc.due_date ? String(doc.due_date) : null}
+        locationName={doc.location_name ?? null}
+        reference={doc.reference ?? null}
+        memo={doc.memo ?? null}
+        lines={erpLines}
+        netTotal={Number(doc.net_total)}
+        chain={chain.map((step) => ({
+          type: step,
+          label: label(step).replace(/\b\w/g, (c) => c.toUpperCase()),
+          doc: stageDoc[step] ?? null,
+        }))}
+        actions={
+          isOpenOrder && orderLines.length > 0 ? (
+            <FulfillOrderForm
+              kind={sales ? "sales" : "purchase"}
+              orderId={doc.id}
+              orderNo={doc.doc_no}
+              partnerName={doc.partner_name}
+              partnerId={doc.partner_id}
+              locationId={doc.location_id}
+              lines={orderLines}
+              action={sales ? createDelivery : createGoodsReceipt}
+              stockByLocation={sales ? stockByLocation : undefined}
+            />
+          ) : null
+        }
+      />
+    );
+  }
 
   return (
     <>

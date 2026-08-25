@@ -96,3 +96,110 @@
 }
 .erp-type:hover { background: var(--erp-surface-sunken); color: var(--erp-fg); }
 .erp-type.here { background: var(--erp-brand-weak); color: var(--erp-brand); font-weight: var(--erp-weight-med); }
+
+/* ---------------------------------------------------- transaction form --- */
+
+.erp-form { background: var(--erp-bg); margin: calc(-1 * var(--s3)) calc(-1 * var(--s3)) 0; }
+
+/* Breadcrumb and action bar are two thin rows rather than one tall header.
+   Two shallow bars above a sheet is what stops a mostly-empty document from
+   reading as an abandoned page. */
+.erp-crumb {
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.5rem 1rem; font-size: var(--erp-text-sm);
+  background: var(--erp-surface); border-bottom: 1px solid var(--erp-border);
+}
+.erp-crumb-link { color: var(--erp-brand); text-decoration: none; }
+.erp-crumb-sep  { color: var(--erp-fg-muted); }
+.erp-crumb-here { font-family: var(--erp-font-mono); color: var(--erp-fg-strong); font-weight: 600; }
+
+.erp-actionbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap;
+  padding: 0.5rem 1rem; background: var(--erp-surface);
+  border-bottom: 1px solid var(--erp-border);
+}
+.erp-actions { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+
+/* The chevron pipeline. The notch is what makes it read as direction rather
+   than as a row of badges — a stepper with dots does not. */
+.erp-pipeline {
+  display: flex; align-items: stretch;
+  border: 1px solid var(--erp-border); border-radius: var(--erp-radius);
+  overflow: hidden; max-width: 100%; overflow-x: auto;
+}
+.erp-stage {
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0 1rem 0 1.25rem; height: calc(var(--erp-btn-h) + 8px);
+  font-size: var(--erp-text-sm); white-space: nowrap;
+  background: var(--erp-surface-sunken); color: var(--erp-fg-muted);
+  clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 50%, calc(100% - 9px) 100%, 0 100%, 9px 50%);
+  margin-left: -9px;
+}
+.erp-stage:first-child { margin-left: 0; padding-left: 0.85rem;
+  clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 50%, calc(100% - 9px) 100%, 0 100%); }
+.erp-stage:last-child  { clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 9px 50%); }
+.erp-stage a { color: inherit; text-decoration: none; display: flex; align-items: center; gap: 0.4rem; }
+.erp-stage.done { color: var(--erp-fg); }
+.erp-stage.done a:hover { color: var(--erp-brand); }
+.erp-stage.here { background: var(--erp-brand); color: var(--erp-brand-fg); font-weight: 700; }
+/* A stage nothing has reached yet is dimmed, not hidden — the shape of the
+   workflow should be legible from the first step, not assembled as you go. */
+.erp-stage.todo { opacity: 0.55; }
+.erp-stage-no { font-family: var(--erp-font-mono); font-size: var(--erp-text-xs); opacity: 0.75; }
+
+/* The sheet: a page floating on the app background, which is what separates
+   a document from a screen. */
+.erp-sheet-page {
+  background: var(--erp-surface); border: 1px solid var(--erp-border);
+  border-radius: var(--erp-radius); margin: var(--s3) auto; max-width: 1100px;
+  padding: var(--s4) var(--s4) 0;
+}
+.erp-doc-title { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.erp-doc-title h1 {
+  margin: 0; font-size: var(--t-3xl); font-weight: 700;
+  letter-spacing: var(--track-tighter); font-family: var(--erp-font-mono);
+}
+.erp-doc-type {
+  width: 100%; font-size: var(--erp-text-xs); text-transform: uppercase;
+  letter-spacing: var(--track-caps); color: var(--erp-fg-muted);
+}
+
+.erp-fields {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--s3) var(--s5); margin: var(--s4) 0 var(--s3);
+}
+.erp-kv { display: grid; grid-template-columns: minmax(90px, auto) 1fr; gap: 0.3rem 1rem; margin: 0; }
+.erp-kv dt { color: var(--erp-fg-muted); font-size: var(--erp-text-sm); }
+.erp-kv dd { margin: 0; font-size: var(--erp-text); }
+
+.erp-tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--erp-border); }
+.erp-tab {
+  padding: 0.45rem 0.9rem; font-size: var(--erp-text-sm);
+  border: 1px solid transparent; border-bottom: 0; margin-bottom: -1px;
+}
+.erp-tab.here {
+  background: var(--erp-surface); border-color: var(--erp-border);
+  border-radius: var(--erp-radius) var(--erp-radius) 0 0;
+  font-weight: var(--erp-weight-med);
+}
+
+.erp-item { white-space: normal; }
+.erp-item-code { font-family: var(--erp-font-mono); font-size: var(--erp-text-xs);
+                 color: var(--erp-fg-muted); margin-right: 0.5rem; }
+.erp-item-name { color: var(--erp-fg); }
+.erp-item-my   { display: block; font-size: var(--erp-text-sm); color: var(--erp-fg-muted); }
+.erp-uom { font-family: var(--erp-font); font-size: var(--erp-text-xs);
+           color: var(--erp-fg-muted); margin-left: 0.35rem; }
+
+.erp-foot {
+  display: flex; justify-content: space-between; gap: var(--s4);
+  padding: var(--s3) 0 var(--s4); border-top: 1px solid var(--erp-border);
+  margin-top: -1px; flex-wrap: wrap;
+}
+.erp-memo { color: var(--erp-fg-muted); font-size: var(--erp-text-sm); max-width: 46ch; }
+.erp-totals { display: grid; grid-template-columns: auto auto; gap: 0.3rem 1.5rem;
+              margin: 0; margin-left: auto; text-align: right; }
+.erp-totals dt { color: var(--erp-fg-muted); font-size: var(--erp-text-sm); }
+.erp-totals dd { margin: 0; font-family: var(--erp-font-mono); font-variant-numeric: tabular-nums; }
+.erp-totals .grand { font-size: var(--t-xl); font-weight: 700; color: var(--erp-fg-strong); }

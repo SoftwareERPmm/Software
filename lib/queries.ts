@@ -1252,3 +1252,74 @@ export async function getMatchStatus(documentId: string): Promise<MatchStatus | 
     lines: out,
   };
 }
+
+/**
+ * An order's lines with how much of each has actually been fulfilled.
+ *
+ * Fulfilment is derived from `source_line_id` on the delivery or receipt
+ * lines, which is the same reference GR/IR matching uses — so the figure on
+ * the order agrees with the one the ledger settled against, rather than
+ * being a second count of the same thing.
+ *
+ * Invoiced quantity is deliberately absent. On this chain an invoice points
+ * at the *delivery*, not the order, so an invoiced-per-order-line figure
+ * needs a second hop that would only sometimes resolve. A column that is
+ * right most of the time is worse here than no column.
+ */
+export async function getOrderProgress(orderId: string, docType: string) {
+  const fulfilmentType = docType === "SALES_ORDER" ? "DELIVERY" : "GOODS_RECEIPT";
+
+  const lines = await sql`
+    select ol.id, ol.line_no, ol.item_id,
+           i.code as item_code, i.name as item_name, i.name_my as item_name_my,
+           u.code as uom_code,
+           ol.base_qty as ordered, ol.unit_price, ol.net_amount
+      from document_line ol
+      join item i on i.id = ol.item_id
+      left join uom u on u.id = ol.entered_uom_id
+     where ol.document_id = ${orderId}
+     order by ol.line_no`;
+
+  const fulfilled = await sql`
+    select dl.item_id, dl.base_qty as qty, dl.source_line_id
+      from document_line dl
+      join document d on d.id = dl.document_id
+     where d.doc_type = ${fulfilmentType}
+       and d.status = 'POSTED'
+       and d.source_document_id = ${orderId}
+     order by d.posting_date, d.doc_no, dl.line_no`;
+
+  // A fulfilment line that names the order line it satisfies is credited to
+  // that line. One that does not — anything posted before the reference
+  // existed, and everything the seed writes — names only the item, so it is
+  // spread across that item's order lines in line order, capped at what each
+  // asked for. Same rule the GR/IR matcher uses for the same reason: the
+  // alternative is a screen that reports nothing delivered while the chain
+  // plainly shows a delivery.
+  const done = new Map<string, number>();
+  const pool = new Map<string, number>();
+
+  for (const f of fulfilled) {
+    const q = Number(f.qty);
+    if (f.source_line_id) {
+      done.set(f.source_line_id, (done.get(f.source_line_id) ?? 0) + q);
+    } else {
+      pool.set(f.item_id, (pool.get(f.item_id) ?? 0) + q);
+    }
+  }
+
+  return lines.map((l: any) => {
+    const ordered = Number(l.ordered);
+    let got = done.get(l.id) ?? 0;
+
+    const spare = pool.get(l.item_id) ?? 0;
+    if (spare > 0 && got < ordered) {
+      const take = Math.min(spare, ordered - got);
+      pool.set(l.item_id, spare - take);
+      got += take;
+    }
+
+    return { ...l, fulfilled: got };
+  });
+}
+
