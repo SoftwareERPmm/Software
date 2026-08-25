@@ -52,7 +52,7 @@ export default async function PurchaseOrders({
     node: (
       <tr className="link">
         <td className="code">
-          <Link href={`/documents/${o.document_id}`} style={{ color: "var(--dr)" }}>
+          <Link href={`/documents/${o.document_id}`} style={{ color: "var(--brand)" }}>
             {o.doc_no ?? "draft"}
           </Link>
         </td>

@@ -20,6 +20,7 @@ import {
 import { createDelivery, createGoodsReceipt } from "@/lib/actions";
 import { FulfillOrderForm } from "@/components/fulfill-order-form";
 import { ErpOrderForm, type OrderLine as ErpOrderLine } from "@/components/erp-order-form";
+import { ErpDocShell } from "@/components/erp-doc-shell";
 
 // The chain each document type sits in, so the detail page can show where
 // this document falls and what comes next.
@@ -181,6 +182,7 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
           listHref: `/documents?type=${doc.doc_type}`,
           listLabel: PLURAL[doc.doc_type] ?? label(doc.doc_type),
         }}
+        docId={doc.id}
         docNo={doc.doc_no ?? "Draft"}
         status={doc.status}
         partnerName={doc.partner_name ?? null}
@@ -217,19 +219,34 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
   }
 
   return (
-    <>
-      <div className="page-head">
-        <span className="eyebrow">
-          <Link href={`/documents?type=${doc.doc_type}`} style={{ color: "var(--muted)" }}>
-            {PLURAL[doc.doc_type] ?? label(doc.doc_type)}
-          </Link>
-          {" / "}{doc.doc_no ?? "Draft"}
-        </span>
-        <h1>{doc.doc_no ?? "Draft"}</h1>
-        <span className="page-sub">
-          {doc.partner_name ?? "No partner"} · posted {shortDate(doc.posting_date)}
-        </span>
-      </div>
+    <ErpDocShell
+      docId={doc.id}
+      docNo={doc.doc_no ?? "Draft"}
+      typeLabel={label(doc.doc_type).replace(/\b\w/g, (c) => c.toUpperCase())}
+      status={doc.status}
+      listHref={`/documents?type=${doc.doc_type}`}
+      listLabel={PLURAL[doc.doc_type] ?? label(doc.doc_type)}
+      chain={chain.map((step) => ({
+        type: step,
+        label: label(step).replace(/\b\w/g, (c) => c.toUpperCase()),
+        doc: stageDoc[step] ?? null,
+      }))}
+      badges={
+        <>
+          {isInvoice && outstanding > 0 && (
+            <span className="pill warn">{money(outstanding)} outstanding</span>
+          )}
+          {isInvoice && outstanding === 0 && <span className="pill ok">Settled</span>}
+          {match && (
+            <span className={`pill ${match.state === "FULL" ? "ok" : match.state === "PARTIAL" ? "warn" : ""}`}>
+              {match.state === "FULL" ? (isGr ? "Fully invoiced" : "Fully received")
+                : match.state === "PARTIAL" ? (isGr ? "Partly invoiced" : "Partly received")
+                : (isGr ? "Not invoiced" : "Not received")}
+            </span>
+          )}
+        </>
+      }
+    >
 
       {(needsInvoiceMatch || needsReceiptMatch) && (
         <div className="actions" style={{ marginTop: "-0.5rem" }}>
@@ -323,32 +340,6 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
         </div>
       )}
 
-      <div className="flow">
-        {chain.map((step, i) => {
-          const resolved = stageDoc[step];
-          return (
-            <span key={step} style={{ display: "contents" }}>
-              {i > 0 && <span className="flow-arrow">→</span>}
-              {resolved ? (
-                <Link
-                  href={`/documents/${resolved.id}`}
-                  className={`flow-node ${step === doc.doc_type ? "here" : ""}`}
-                >
-                  {resolved.doc_no}
-                </Link>
-              ) : (
-                <span
-                  className={`flow-node ${step === doc.doc_type ? "here" : ""}`}
-                  style={step === doc.doc_type ? undefined : { opacity: 0.55 }}
-                  title={step === doc.doc_type ? undefined : "Not linked yet"}
-                >
-                  {label(step)}
-                </span>
-              )}
-            </span>
-          );
-        })}
-      </div>
 
       {isOpenOrder && orderLines.length > 0 && (
         <FulfillOrderForm
@@ -428,7 +419,7 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
               <dt>Source</dt>
               <dd>
                 {doc.source_doc_no
-                  ? <Link href={`/documents/${doc.source_id}`} className="m" style={{ color: "var(--dr)" }}>{doc.source_doc_no}</Link>
+                  ? <Link href={`/documents/${doc.source_id}`} className="m" style={{ color: "var(--brand)" }}>{doc.source_doc_no}</Link>
                   : "—"}
               </dd>
             </dl>
@@ -445,7 +436,7 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
                   {downstream.map((d: any) => (
                     <tr key={d.id}>
                       <td className="code">
-                        <Link href={`/documents/${d.id}`} style={{ color: "var(--dr)" }}>{d.doc_no}</Link>
+                        <Link href={`/documents/${d.id}`} style={{ color: "var(--brand)" }}>{d.doc_no}</Link>
                       </td>
                       <td className="m">{label(d.doc_type)}</td>
                       <td className="r">{money(d.gross_total)}</td>
@@ -546,6 +537,6 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
           )}
         </div>
       </section>
-    </>
+    </ErpDocShell>
   );
 }

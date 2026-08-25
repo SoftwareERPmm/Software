@@ -203,3 +203,40 @@
 .erp-totals dt { color: var(--erp-fg-muted); font-size: var(--erp-text-sm); }
 .erp-totals dd { margin: 0; font-family: var(--erp-font-mono); font-variant-numeric: tabular-nums; }
 .erp-totals .grand { font-size: var(--t-xl); font-weight: 700; color: var(--erp-fg-strong); }
+
+/* --------------------------------------------------------- doc toolbar --- */
+
+.erp-tools { display: inline-flex; gap: 0.15rem; }
+.erp-tool {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0;
+  border: 1px solid transparent; border-radius: var(--erp-radius);
+  background: transparent; color: var(--erp-fg-muted); cursor: pointer;
+}
+.erp-tool:hover { background: var(--erp-surface-sunken); color: var(--erp-fg); }
+/* Starred is the one state worth colouring: it is the only one the person
+   set deliberately, so it should be findable without hovering. */
+.erp-tool.on { color: var(--erp-brand); }
+
+.erp-copyno {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; padding: 0; border: 0; border-radius: 3px;
+  background: transparent; color: var(--erp-fg-muted); cursor: pointer;
+  opacity: 0; transition: opacity 90ms linear;
+}
+.erp-crumb:hover .erp-copyno { opacity: 1; }
+.erp-copyno:focus-visible { opacity: 1; }
+.erp-copyno:hover { background: var(--erp-surface-sunken); color: var(--erp-fg); }
+
+/* Printing a document should produce the document, not a screenshot of the
+   application. Chrome goes, the sheet loses its float, and the pipeline
+   stays because "which stage is this" is exactly what a printed copy is
+   asked to prove. */
+@media print {
+  .sidebar, .erp-tools, .erp-copyno, .erp-typebar, .erp-panel { display: none !important; }
+  .erp-form { margin: 0; background: #fff; }
+  .erp-sheet-page { border: 0; margin: 0; max-width: none; padding: 0; }
+  .erp-actionbar { border: 0; padding-left: 0; }
+  .erp-actions { display: none; }
+  .erp-tr { break-inside: avoid; }
+}

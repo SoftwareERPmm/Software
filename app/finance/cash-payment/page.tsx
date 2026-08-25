@@ -25,8 +25,8 @@ export default async function CashPayment() {
         <h1>Cash payment</h1>
         <span className="page-sub">
           Money paid out of the till that isn&rsquo;t against a supplier bill — use{" "}
-          <Link href="/payables/pay" style={{ color: "var(--dr)" }}>Pay supplier</Link> for that.{" "}
-          <Link href="/finance/cash-detail" style={{ color: "var(--dr)" }}>View the cash book</Link>
+          <Link href="/payables/pay" style={{ color: "var(--brand)" }}>Pay supplier</Link> for that.{" "}
+          <Link href="/finance/cash-detail" style={{ color: "var(--brand)" }}>View the cash book</Link>
         </span>
       </div>
 

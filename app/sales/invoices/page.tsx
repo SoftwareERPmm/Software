@@ -69,7 +69,7 @@ export default async function SalesInvoices({
     node: (
       <tr className="link">
         <td className="code">
-          <Link href={`/documents/${i.document_id}`} style={{ color: "var(--dr)" }}>
+          <Link href={`/documents/${i.document_id}`} style={{ color: "var(--brand)" }}>
             {i.doc_no ?? "draft"}
           </Link>
         </td>
@@ -108,7 +108,7 @@ export default async function SalesInvoices({
           {customerName ? (
             <>
               Filtered to <strong>{customerName}</strong>.{" "}
-              <Link href="/sales/invoices" style={{ color: "var(--dr)" }}>Clear</Link>
+              <Link href="/sales/invoices" style={{ color: "var(--brand)" }}>Clear</Link>
             </>
           ) : (
             "Manage sales invoices."

@@ -24,7 +24,7 @@ export default async function CustomerReturns() {
     node: (
       <tr className="link">
         <td className="code">
-          <Link href={`/documents/${r.id}`} style={{ color: "var(--dr)" }}>{r.doc_no ?? "draft"}</Link>
+          <Link href={`/documents/${r.id}`} style={{ color: "var(--brand)" }}>{r.doc_no ?? "draft"}</Link>
         </td>
         <td className="code">{shortDate(r.posting_date)}</td>
         <td className="wrap">{r.partner_name}</td>

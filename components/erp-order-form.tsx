@@ -1,5 +1,5 @@
-import Link from "next/link";
 import { money, qty as fmtQty, shortDate } from "@/lib/format";
+import { ErpDocShell, type ChainStage } from "@/components/erp-doc-shell";
 
 /**
  * The transaction-document form: breadcrumb, action row with a chevron
@@ -30,12 +30,6 @@ export type OrderLine = {
   netAmount: number;
 };
 
-export type ChainStage = {
-  type: string;
-  label: string;
-  doc: { id: string; doc_no: string } | null;
-};
-
 export type OrderFormConfig = {
   /** "Sales Order" / "Purchase Order" — the type name above the number. */
   typeLabel: string;
@@ -49,10 +43,11 @@ export type OrderFormConfig = {
 };
 
 export function ErpOrderForm({
-  config, docNo, status, partnerName, partnerCode, docDate, dueDate,
+  config, docId, docNo, status, partnerName, partnerCode, docDate, dueDate,
   locationName, reference, memo, lines, netTotal, chain, actions,
 }: {
   config: OrderFormConfig;
+  docId: string;
   docNo: string;
   status: string;
   partnerName: string | null;
@@ -74,61 +69,27 @@ export function ErpOrderForm({
 
   // The stage this document is, and everything the chain has actually
   // produced — a stage with no document behind it is dimmed, not dropped.
-  const currentIndex = chain.findIndex((s) => s.doc?.doc_no === docNo);
 
   return (
-    <div data-density="odoo" className="erp-form">
-      {/* ---- breadcrumb ------------------------------------------------- */}
-      <div className="erp-crumb">
-        <Link href={config.listHref} className="erp-crumb-link">{config.listLabel}</Link>
-        <span className="erp-crumb-sep">/</span>
-        <span className="erp-crumb-here">{docNo}</span>
-      </div>
-
-      {/* ---- actions + pipeline ----------------------------------------- */}
-      <div className="erp-actionbar">
-        <div className="erp-actions">{actions}</div>
-        <div className="erp-pipeline" role="list" aria-label="Workflow">
-          {chain.map((stage, i) => {
-            const done = !!stage.doc;
-            const here = i === currentIndex;
-            const cls = here ? "here" : done ? "done" : "todo";
-            const body = (
-              <>
-                {stage.label}
-                {stage.doc && !here && (
-                  <span className="erp-stage-no">{stage.doc.doc_no}</span>
-                )}
-              </>
-            );
-            return (
-              <div key={stage.type} role="listitem"
-                   className={`erp-stage ${cls}`}
-                   aria-current={here ? "step" : undefined}>
-                {stage.doc && !here
-                  ? <Link href={`/documents/${stage.doc.id}`}>{body}</Link>
-                  : body}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* ---- the sheet --------------------------------------------------- */}
-      <div className="erp-sheet-page">
-        <div className="erp-doc-title">
-          <span className="erp-doc-type">{config.typeLabel}</span>
-          <h1>{docNo}</h1>
-          <span className={`pill ${status.toLowerCase()}`}>{status}</span>
-          {totalOrdered > 0 && (
-            <span className={`pill ${complete ? "ok" : "warn"}`}>
-              {complete
-                ? `Fully ${config.fulfilledLabel.toLowerCase()}`
-                : `${fmtQty(totalFulfilled)} of ${fmtQty(totalOrdered)} ${config.fulfilledLabel.toLowerCase()}`}
-            </span>
-          )}
-        </div>
-
+    <ErpDocShell
+      docId={docId}
+      docNo={docNo}
+      typeLabel={config.typeLabel}
+      status={status}
+      listHref={config.listHref}
+      listLabel={config.listLabel}
+      chain={chain}
+      actions={actions}
+      badges={
+        totalOrdered > 0 ? (
+          <span className={`pill ${complete ? "ok" : "warn"}`}>
+            {complete
+              ? `Fully ${config.fulfilledLabel.toLowerCase()}`
+              : `${fmtQty(totalFulfilled)} of ${fmtQty(totalOrdered)} ${config.fulfilledLabel.toLowerCase()}`}
+          </span>
+        ) : null
+      }
+    >
         <div className="erp-fields">
           <div>
             <dl className="erp-kv">
@@ -204,7 +165,6 @@ export function ErpOrderForm({
             <dt className="grand">Total</dt><dd className="grand">{money(netTotal)}</dd>
           </dl>
         </div>
-      </div>
-    </div>
+    </ErpDocShell>
   );
 }

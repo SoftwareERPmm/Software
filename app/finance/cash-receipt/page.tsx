@@ -25,8 +25,8 @@ export default async function CashReceipt() {
         <h1>Cash receipt</h1>
         <span className="page-sub">
           Money received into the till that isn&rsquo;t against a customer invoice — use{" "}
-          <Link href="/receivables/receive" style={{ color: "var(--dr)" }}>Receive payment</Link> for that.{" "}
-          <Link href="/finance/cash-detail" style={{ color: "var(--dr)" }}>View the cash book</Link>
+          <Link href="/receivables/receive" style={{ color: "var(--brand)" }}>Receive payment</Link> for that.{" "}
+          <Link href="/finance/cash-detail" style={{ color: "var(--brand)" }}>View the cash book</Link>
         </span>
       </div>
 

@@ -84,7 +84,7 @@ export function FulfillOrderForm({
     <div className="card">
       <div className="card-head">
         <h2>
-          <Link href={`/documents/${orderId}`} style={{ color: "var(--dr)" }}>{orderNo}</Link>
+          <Link href={`/documents/${orderId}`} style={{ color: "var(--brand)" }}>{orderNo}</Link>
           {" · "}{partnerName}
         </h2>
         <span className="actions">

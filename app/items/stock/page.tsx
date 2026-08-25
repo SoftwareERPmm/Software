@@ -98,7 +98,7 @@ export default async function Stock({
     node: (
       <tr>
         <td className="code">
-          <Link href={`/items/categories/${i.item_group_id}`} style={{ color: "var(--dr)" }}>
+          <Link href={`/items/categories/${i.item_group_id}`} style={{ color: "var(--brand)" }}>
             {i.code}
           </Link>
         </td>
@@ -268,7 +268,7 @@ export default async function Stock({
           {stocked.length === 0 ? (
             <div className="empty">
               No stocked items yet.{" "}
-              <Link href="/items" style={{ color: "var(--dr)" }}>Add an item</Link>
+              <Link href="/items" style={{ color: "var(--brand)" }}>Add an item</Link>
             </div>
           ) : (
             <DataTable

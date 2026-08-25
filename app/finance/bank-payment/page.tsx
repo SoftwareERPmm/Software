@@ -25,8 +25,8 @@ export default async function BankPayment() {
         <h1>Bank payment</h1>
         <span className="page-sub">
           Money paid out of a bank account that isn&rsquo;t against a supplier bill — use{" "}
-          <Link href="/payables/pay" style={{ color: "var(--dr)" }}>Pay supplier</Link> for that.{" "}
-          <Link href="/finance/bank-detail" style={{ color: "var(--dr)" }}>View the bank book</Link>
+          <Link href="/payables/pay" style={{ color: "var(--brand)" }}>Pay supplier</Link> for that.{" "}
+          <Link href="/finance/bank-detail" style={{ color: "var(--brand)" }}>View the bank book</Link>
         </span>
       </div>
 

@@ -182,7 +182,7 @@ export function ErpDocumentList({
                 <td className="erp-td">
                   <span style={{
                     color: SIDE[r.docType] === "in" ? "var(--cr)"
-                         : SIDE[r.docType] === "out" ? "var(--dr)" : "var(--erp-fg-muted)",
+                         : SIDE[r.docType] === "out" ? "var(--brand)" : "var(--erp-fg-muted)",
                   }}>
                     {label(r.docType)}
                   </span>

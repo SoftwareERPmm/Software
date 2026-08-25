@@ -11,6 +11,16 @@
   --line-soft: #EAEEF2;
   --dr:        #5E6AD2;
   --cr:        #A8571F;
+
+  /* The interface accent, separate from --dr on purpose. --dr and --cr are
+     the debit and credit colours: they carry meaning on a figure, and a
+     journal line coloured by them is saying which side it is on. They were
+     also doing duty as the link and button colour, so recolouring the
+     product would have recoloured every debit in the ledger with it.
+     --brand is the chrome; --dr stays accounting. */
+  --brand:      #1B5E43;
+  --brand-fg:   #FFFFFF;
+  --brand-weak: color-mix(in srgb, var(--brand) 10%, transparent);
   --ok:        #1F7A4D;
   --warn:      #B4691A;
   --bad:       #B4283C;
@@ -69,6 +79,11 @@
     --line-soft: #212831;
     --dr:        #8D93F5;
     --cr:        #E09C55;
+    /* A dark surface needs a lighter green, not a tint of the same one:
+       #1B5E43 on #161B22 is unreadable. Measured at 8.63:1. */
+    --brand:      #5FCB98;
+    --brand-fg:   #0E1116;
+    --brand-weak: color-mix(in srgb, var(--brand) 16%, transparent);
     --ok:        #4FB784;
     --warn:      #DDA24E;
     --bad:       #E8697C;
@@ -128,7 +143,7 @@ a { color: inherit; text-decoration: none; }
   transition: background-color 150ms, color 150ms;
 }
 .navlink:hover { background: var(--line-soft); color: var(--ink); }
-.navlink[data-active="true"] { border-left-color: var(--dr); color: var(--ink); font-weight: 500; }
+.navlink[data-active="true"] { border-left-color: var(--brand); color: var(--ink); font-weight: 500; }
 
 /* A sub-entry narrows the one above it (Customers under Partners) rather
    than opening a new page, so it sits one step further in and a touch
@@ -155,7 +170,7 @@ a { color: inherit; text-decoration: none; }
   .navgroup { flex-direction: row; }
   .navlabel { display: none; }
   .navlink { padding: 0.3rem var(--s2); border-left: none; border-bottom: 2px solid transparent; white-space: nowrap; }
-  .navlink[data-active="true"] { border-left-color: transparent; border-bottom-color: var(--dr); }
+  .navlink[data-active="true"] { border-left-color: transparent; border-bottom-color: var(--brand); }
   .main { padding: var(--s4) var(--s3) var(--s5); }
 }
 
@@ -320,7 +335,7 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-num
 
 .flow { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); font-family: var(--mono); font-size: var(--t-sm); }
 .flow-node { padding: 0.16rem 0.5rem; border: 1px solid var(--line); border-radius: var(--r-sm); }
-.flow-node.here { border-color: var(--dr); color: var(--dr); background: color-mix(in srgb, var(--dr) 10%, transparent); }
+.flow-node.here { border-color: var(--brand); color: var(--brand); background: var(--brand-weak); }
 .flow-arrow { color: var(--muted); }
 
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--s3); align-items: start; }
@@ -373,8 +388,8 @@ input[type="text"], input[type="number"], input[type="date"], input[type="time"]
 }
 input:focus, select:focus, textarea:focus {
   outline: none;
-  border-color: var(--dr);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dr) 14%, transparent);
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 14%, transparent);
 }
 input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
 
@@ -399,7 +414,7 @@ textarea { min-height: 4.6rem; line-height: 1.5; resize: vertical; }
 .check { display: flex; align-items: center; gap: var(--s2); font-size: var(--t-base); cursor: pointer; }
 .check input {
   width: 16px; height: 16px; margin: 0; flex: none;
-  accent-color: var(--dr); cursor: pointer;
+  accent-color: var(--brand); cursor: pointer;
 }
 
 /* Buttons carry four roles, and how early each one announces itself is set by
@@ -409,14 +424,14 @@ textarea { min-height: 4.6rem; line-height: 1.5; resize: vertical; }
    loud would flatten that back into no signal at all. */
 button {
   font-family: inherit; font-size: var(--t-md); font-weight: 500;
-  color: var(--surface); background: var(--dr);
-  border: 1px solid var(--dr); border-radius: var(--r-md);
+  color: var(--brand-fg); background: var(--brand);
+  border: 1px solid var(--brand); border-radius: var(--r-md);
   padding: 0.46rem 1rem; cursor: pointer;
   transition: background-color 150ms, border-color 150ms, color 150ms, opacity 150ms;
 }
 button:hover { opacity: 0.88; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
-button:focus-visible { outline: 2px solid var(--dr); outline-offset: 2px; }
+button:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 
 /* Neutral: Edit, Cancel, Open, and the line-remove crosses inside forms —
    dropping an unsaved row is not destructive and must not look like it. */
@@ -603,7 +618,7 @@ button.tiny { padding: 0.16rem 0.5rem; font-size: var(--t-sm); }
 
 .picker-empty { padding: 0.6rem var(--s3); color: var(--muted); font-size: var(--t-md); }
 
-.picker-create { color: var(--dr); font-weight: 500; border-top: 1px solid var(--line); }
+.picker-create { color: var(--brand); font-weight: 500; border-top: 1px solid var(--line); }
 
 .picker-form { padding: var(--s3); display: flex; flex-direction: column; gap: var(--s2); }
 .picker-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--s1); }
@@ -668,14 +683,14 @@ button.tiny { padding: 0.16rem 0.5rem; font-size: var(--t-sm); }
 a.btn {
   display: inline-block;
   font-family: inherit; font-size: var(--t-md); font-weight: 500;
-  color: var(--surface); background: var(--dr);
-  border: 1px solid var(--dr); border-radius: var(--r-md);
+  color: var(--brand-fg); background: var(--brand);
+  border: 1px solid var(--brand); border-radius: var(--r-md);
   padding: 0.46rem 1rem; cursor: pointer;
   transition: opacity 150ms;
   text-decoration: none;
 }
 a.btn:hover { opacity: 0.88; }
-a.btn:focus-visible { outline: 2px solid var(--dr); outline-offset: 2px; }
+a.btn:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 
 a.btn.ghost { color: var(--ink-soft); background: transparent; border-color: var(--line); }
 a.btn.ghost:hover { background: var(--line-soft); opacity: 1; }
