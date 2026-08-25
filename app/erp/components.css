@@ -1,0 +1,98 @@
+/* Primitives from github.com/MaxxNesta/UIUXtest (erp-ui-scaffold/app/erp-tokens.css),
+   taking the classes only.
+   
+   Deliberately NOT copied from that file: its :root block, its `body` rule,
+   and its Tailwind `@theme inline` block. The first two would fight
+   globals.css over font, colour and background — the whole point of the
+   bridge is that this layer never sets those — and the third is for a
+   framework this app does not use.
+
+   Every value below reads a role, so these inherit the palette through
+   app/erp/bridge.css. */
+
+.erp-panel {
+  min-height: var(--erp-panel-h);
+  padding: 0.5rem 1rem 0.75rem;
+  background: var(--erp-surface);
+  border-bottom: 1px solid var(--erp-border);
+  display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
+}
+
+.erp-th {
+  height: var(--erp-row-h); font-weight: var(--erp-weight-med);
+  color: var(--erp-fg-strong); background: var(--erp-surface-sunken);
+  border-bottom: 1px solid var(--erp-border);
+  padding: var(--erp-cell-py) var(--erp-cell-pr) var(--erp-cell-py) var(--erp-cell-pl);
+  text-align: left; white-space: nowrap; position: sticky; top: 0; z-index: 1;
+}
+
+.erp-tr { height: var(--erp-row-h); border-bottom: 1px solid var(--erp-border); }
+.erp-tr:hover { background: var(--erp-surface-sunken); }
+
+.erp-td {
+  padding: var(--erp-cell-py) var(--erp-cell-pr) var(--erp-cell-py) var(--erp-cell-pl);
+  background: transparent; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+
+.erp-num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--erp-font-mono); }
+
+.erp-btn {
+  height: var(--erp-btn-h); padding: 0 0.5rem;
+  font-family: inherit; font-size: var(--erp-text-sm); font-weight: var(--erp-weight-med);
+  border: 1px solid var(--erp-border); border-radius: var(--erp-radius);
+  background: var(--erp-surface); color: var(--erp-fg);
+  cursor: pointer; white-space: nowrap;
+}
+.erp-btn:hover { border-color: var(--erp-border-strong); }
+.erp-btn-primary {
+  background: var(--erp-brand); color: var(--erp-brand-fg); border-color: var(--erp-brand);
+}
+
+/* Underline, not a bordered box — the single change that most makes a
+   toolbar read as ERP rather than as a web form. */
+.erp-search {
+  height: 32px; padding: 4px 8px; border: 0;
+  border-bottom: 1px solid var(--erp-brand);
+  background: transparent; color: var(--erp-fg);
+  font-family: inherit; font-size: var(--erp-text); outline: none;
+}
+.erp-search::placeholder { color: var(--erp-fg-muted); }
+
+.erp-facet {
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  height: 22px; padding: 0 0.25rem 0 0.5rem;
+  font-size: var(--erp-text-xs); border-radius: 3px;
+  background: var(--erp-brand-weak); color: var(--erp-brand);
+}
+.erp-facet button { border: 0; background: none; cursor: pointer; color: inherit; padding: 0 2px; }
+
+.erp-total {
+  background: var(--erp-surface-sunken); font-weight: 700;
+  border-top: 2px solid var(--erp-border);
+}
+
+.erp-sheet {
+  background: var(--erp-surface); border: 1px solid var(--erp-border);
+  border-radius: var(--erp-radius); overflow: hidden;
+}
+.erp-scroll { overflow-x: auto; }
+.erp-table { width: 100%; border-collapse: collapse; font-size: var(--erp-text); }
+
+/* The type switcher. Sits under the control panel rather than inside it:
+   twelve types will not fit a toolbar, and which one is showing is the
+   primary question this screen answers. Scrolls horizontally on a phone
+   instead of wrapping into four ragged lines. */
+.erp-typebar {
+  display: flex; gap: 0.25rem; overflow-x: auto;
+  padding: 0.5rem 1rem; background: var(--erp-surface);
+  border-bottom: 1px solid var(--erp-border);
+  scrollbar-width: thin;
+}
+.erp-type {
+  flex: none; padding: 0.2rem 0.55rem; border-radius: var(--erp-radius);
+  font-size: var(--erp-text-sm); color: var(--erp-fg-muted);
+  text-decoration: none; white-space: nowrap;
+}
+.erp-type:hover { background: var(--erp-surface-sunken); color: var(--erp-fg); }
+.erp-type.here { background: var(--erp-brand-weak); color: var(--erp-brand); font-weight: var(--erp-weight-med); }
