@@ -47,16 +47,6 @@ export default async function DocumentsPage({
 
   return (
     <>
-      <ErpDocumentList
-        rows={rows}
-        title={title}
-        typeFilter={
-          type && active
-            ? { label: active[1], clearHref: openOnly ? "/documents?open=grir" : "/documents" }
-            : null
-        }
-      />
-
       {/* The type filters stay a visible row rather than hiding inside a
           dropdown: there are twelve document types and which one you are
           looking at is the main thing this screen is for. */}
@@ -76,6 +66,16 @@ export default async function DocumentsPage({
           );
         })}
       </div>
+
+      <ErpDocumentList
+        rows={rows}
+        title={title}
+        typeFilter={
+          type && active
+            ? { label: active[1], clearHref: openOnly ? "/documents?open=grir" : "/documents" }
+            : null
+        }
+      />
     </>
   );
 }
