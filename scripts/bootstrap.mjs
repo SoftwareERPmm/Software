@@ -13,8 +13,13 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
-  const m = readFileSync(join(root, ".env"), "utf8").match(/DATABASE_URL\s*=\s*(.+)/);
-  if (m) process.env.DATABASE_URL = m[1].trim();
+  // Anchored, line by line — see scripts/migrate.mjs for why an unanchored
+  // match against the whole file is unsafe once .env documents more than
+  // one Neon branch.
+  for (const line of readFileSync(join(root, ".env"), "utf8").split("\n")) {
+    const m = line.match(/^\s*DATABASE_URL\s*=\s*(.+?)\s*$/);
+    if (m) { process.env.DATABASE_URL = m[1].replace(/^["\']|["\']$/g, ""); break; }
+  }
 }
 
 const [name, code, fyStart] = process.argv.slice(2);
