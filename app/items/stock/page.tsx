@@ -1,9 +1,9 @@
 import Link from "next/link";
-import { Boxes, PackageCheck, TrendingDown, AlertTriangle } from "lucide-react";
+import { Boxes, PackageCheck, TrendingDown, AlertTriangle, HandCoins } from "lucide-react";
 import { money, qty } from "@/lib/db";
 import {
   getCompany, getItems, getReservedQty, getIncomingQty, getLowStock, getReorderPoints, getLocations,
-  getStockByLocation,
+  getStockByLocation, getConsignedStockOnHand,
 } from "@/lib/queries";
 import { createReorderPoint, updateReorderPoint, deleteReorderPoint } from "@/lib/actions";
 import { DataTable, type DataRow } from "@/components/data-table";
@@ -26,7 +26,7 @@ export default async function Stock({
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
-  const [items, reserved, incoming, lowStock, reorderPoints, locations, stockByLocation] = await Promise.all([
+  const [items, reserved, incoming, lowStock, reorderPoints, locations, stockByLocation, consigned] = await Promise.all([
     getItems(company.id) as unknown as Promise<Row[]>,
     getReservedQty(company.id) as unknown as Promise<Array<{ item_id: string; location_id: string; reserved_qty: string }>>,
     getIncomingQty(company.id) as unknown as Promise<Array<{ item_id: string; location_id: string; incoming_qty: string }>>,
@@ -42,6 +42,9 @@ export default async function Stock({
     getLocations(company.id) as unknown as Promise<Array<{ id: string; code: string; name: string; is_stock_location: boolean }>>,
     getStockByLocation(company.id) as unknown as Promise<Array<{
       item_id: string; location_id: string; qty_on_hand: string; value_on_hand: string;
+    }>>,
+    getConsignedStockOnHand(company.id) as unknown as Promise<Array<{
+      item_id: string; location_id: string; on_hand: string;
     }>>,
   ]);
 
@@ -68,15 +71,21 @@ export default async function Stock({
     allLocations
       ? incoming.filter((r) => r.item_id === itemId).reduce((s, r) => s + Number(r.incoming_qty), 0)
       : Number(incoming.find((r) => r.item_id === itemId && r.location_id === selectedLocationId)?.incoming_qty ?? 0);
+  const consignedOf = (itemId: string) =>
+    (allLocations
+      ? consigned.filter((r) => r.item_id === itemId)
+      : consigned.filter((r) => r.item_id === itemId && r.location_id === selectedLocationId)
+    ).reduce((s, r) => s + Number(r.on_hand), 0);
 
   const stocked = items.filter((i) => i.is_stocked).map((i) => {
     const onHand = onHandOf(i.id, Number(i.qty_on_hand));
     const valueOnHand = valueOf(i.id, Number(i.value_on_hand));
     const reservedQty = reservedOf(i.id);
     const incomingQty = incomingOf(i.id);
+    const consignedQty = consignedOf(i.id);
     const available = onHand - reservedQty;
     const projected = available + incomingQty;
-    return { ...i, onHand, valueOnHand, reservedQty, incomingQty, available, projected };
+    return { ...i, onHand, valueOnHand, reservedQty, incomingQty, consignedQty, available, projected };
   });
   const totalValue = stocked.reduce((s, i) => s + i.valueOnHand, 0);
 
@@ -89,6 +98,7 @@ export default async function Stock({
       group_name: i.parent_group_name ? `${i.parent_group_name} / ${i.group_name}` : i.group_name,
       uom_code: i.uom_code,
       onHand: i.onHand,
+      consignedQty: i.consignedQty,
       reservedQty: i.reservedQty,
       available: i.available,
       incomingQty: i.incomingQty,
@@ -113,6 +123,13 @@ export default async function Stock({
         </td>
         <td className="code">{i.uom_code}</td>
         <td className="r">{qty(String(i.onHand))}</td>
+        <td className="r">
+          {i.consignedQty > 0 ? (
+            <Link href="/inventory/consignment" style={{ color: "var(--brand)" }}>
+              {qty(String(i.consignedQty))}
+            </Link>
+          ) : "—"}
+        </td>
         <td className="r" style={{ color: i.reservedQty > 0 ? "var(--warn)" : undefined }}>
           {i.reservedQty > 0 ? qty(String(i.reservedQty)) : "—"}
         </td>
@@ -137,7 +154,9 @@ export default async function Stock({
           On hand is summed live from the stock ledger — nothing here is a
           stored column that could drift. Reserved and Incoming come from
           open orders and unfulfilled deliveries; Available and Projected are
-          both derived, never stored.
+          both derived, never stored. Consigned is stock physically on hand
+          but owned by a consignor, not the company — it carries no value
+          here and is never added into On hand or Available.
         </span>
       </div>
 
@@ -175,6 +194,13 @@ export default async function Stock({
           <span className="kpi-label"><TrendingDown size={13} /> Reserved</span>
           <span className="kpi-value">{reserved.length}</span>
           <span className="kpi-note">item/location pair{reserved.length === 1 ? "" : "s"} committed to an open sales order</span>
+        </div>
+        <div className="kpi">
+          <span className="kpi-label"><HandCoins size={13} /> Consigned</span>
+          <span className="kpi-value">
+            <Link href="/inventory/consignment" style={{ color: "inherit" }}>{consigned.length}</Link>
+          </span>
+          <span className="kpi-note">item/location/consignor combination{consigned.length === 1 ? "" : "s"} on hand but not owned</span>
         </div>
       </div>
 
@@ -282,6 +308,7 @@ export default async function Stock({
                 { key: "group_name", label: "Category", sortable: true },
                 { key: "uom_code", label: "Unit", sortable: true },
                 { key: "onHand", label: "On hand", sortable: true, align: "r" },
+                { key: "consignedQty", label: "Consigned", sortable: true, align: "r" },
                 { key: "reservedQty", label: "Reserved", sortable: true, align: "r" },
                 { key: "available", label: "Available", sortable: true, align: "r" },
                 { key: "incomingQty", label: "Incoming", sortable: true, align: "r" },
@@ -290,7 +317,7 @@ export default async function Stock({
               ]}
               footer={
                 <tr>
-                  <td colSpan={9}>Total stock value{!allLocations ? " at this location" : ""}</td>
+                  <td colSpan={10}>Total stock value{!allLocations ? " at this location" : ""}</td>
                   <td className="r">{money(totalValue)}</td>
                 </tr>
               }
