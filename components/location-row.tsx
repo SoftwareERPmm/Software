@@ -28,7 +28,7 @@ export function LocationRow({
   location: Location;
   /** How deep this row sits — 0 for a top-level office, 1 for a warehouse inside it, and so on. */
   depth: number;
-  /** Every location in tree order, for the Office picker — includes this row, filtered out below. */
+  /** Every location in tree order, for the Branch picker — includes this row, filtered out below. */
   locations: LocationNode[];
   updateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   deleteAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
@@ -83,7 +83,7 @@ export function LocationRow({
                     type="radio" name="kind" value="office" checked={kind === "office"}
                     onChange={() => setKind("office")}
                   />
-                  Office
+                  Branch
                 </label>
               </div>
             </div>
@@ -103,7 +103,7 @@ export function LocationRow({
               </div>
               {kind === "warehouse" && (
                 <div className="field">
-                  <label>Office</label>
+                  <label>Branch</label>
                   <select value={parentId} onChange={(e) => setParentId(e.target.value)}>
                     <option value="">— none, stands on its own —</option>
                     {offices.map((l) => (
@@ -141,7 +141,7 @@ export function LocationRow({
         {" "}
         {location.is_stock_location
           ? <span className="pill ok">warehouse</span>
-          : <span className="pill">office</span>}
+          : <span className="pill">Branch</span>}
       </td>
       <td>{location.is_active ? <span className="pill ok">active</span> : <span className="pill warn">inactive</span>}</td>
       <td>

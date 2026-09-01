@@ -1,0 +1,242 @@
+/* Primitives from github.com/MaxxNesta/UIUXtest (erp-ui-scaffold/app/erp-tokens.css),
+   taking the classes only.
+   
+   Deliberately NOT copied from that file: its :root block, its `body` rule,
+   and its Tailwind `@theme inline` block. The first two would fight
+   globals.css over font, colour and background — the whole point of the
+   bridge is that this layer never sets those — and the third is for a
+   framework this app does not use.
+
+   Every value below reads a role, so these inherit the palette through
+   app/erp/bridge.css. */
+
+.erp-panel {
+  min-height: var(--erp-panel-h);
+  padding: 0.5rem 1rem 0.75rem;
+  background: var(--erp-surface);
+  border-bottom: 1px solid var(--erp-border);
+  display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
+}
+
+.erp-th {
+  height: var(--erp-row-h); font-weight: var(--erp-weight-med);
+  color: var(--erp-fg-strong); background: var(--erp-surface-sunken);
+  border-bottom: 1px solid var(--erp-border);
+  padding: var(--erp-cell-py) var(--erp-cell-pr) var(--erp-cell-py) var(--erp-cell-pl);
+  text-align: left; white-space: nowrap; position: sticky; top: 0; z-index: 1;
+}
+
+.erp-tr { height: var(--erp-row-h); border-bottom: 1px solid var(--erp-border); }
+.erp-tr:hover { background: var(--erp-surface-sunken); }
+
+.erp-td {
+  padding: var(--erp-cell-py) var(--erp-cell-pr) var(--erp-cell-py) var(--erp-cell-pl);
+  background: transparent; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+
+.erp-num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--erp-font-mono); }
+
+.erp-btn {
+  height: var(--erp-btn-h); padding: 0 0.5rem;
+  font-family: inherit; font-size: var(--erp-text-sm); font-weight: var(--erp-weight-med);
+  border: 1px solid var(--erp-border); border-radius: var(--erp-radius);
+  background: var(--erp-surface); color: var(--erp-fg);
+  cursor: pointer; white-space: nowrap;
+}
+.erp-btn:hover { border-color: var(--erp-border-strong); }
+.erp-btn-primary {
+  background: var(--erp-brand); color: var(--erp-brand-fg); border-color: var(--erp-brand);
+}
+
+/* Underline, not a bordered box — the single change that most makes a
+   toolbar read as ERP rather than as a web form. */
+.erp-search {
+  height: 32px; padding: 4px 8px; border: 0;
+  border-bottom: 1px solid var(--erp-brand);
+  background: transparent; color: var(--erp-fg);
+  font-family: inherit; font-size: var(--erp-text); outline: none;
+}
+.erp-search::placeholder { color: var(--erp-fg-muted); }
+
+.erp-facet {
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  height: 22px; padding: 0 0.25rem 0 0.5rem;
+  font-size: var(--erp-text-xs); border-radius: 3px;
+  background: var(--erp-brand-weak); color: var(--erp-brand);
+}
+.erp-facet button { border: 0; background: none; cursor: pointer; color: inherit; padding: 0 2px; }
+
+.erp-total {
+  background: var(--erp-surface-sunken); font-weight: 700;
+  border-top: 2px solid var(--erp-border);
+}
+
+.erp-sheet {
+  background: var(--erp-surface); border: 1px solid var(--erp-border);
+  border-radius: var(--erp-radius); overflow: hidden;
+}
+.erp-scroll { overflow-x: auto; }
+.erp-table { width: 100%; border-collapse: collapse; font-size: var(--erp-text); }
+
+/* The type switcher. Sits under the control panel rather than inside it:
+   twelve types will not fit a toolbar, and which one is showing is the
+   primary question this screen answers. Scrolls horizontally on a phone
+   instead of wrapping into four ragged lines. */
+.erp-typebar {
+  display: flex; gap: 0.25rem; overflow-x: auto;
+  padding: 0.5rem 1rem; background: var(--erp-surface);
+  border-bottom: 1px solid var(--erp-border);
+  scrollbar-width: thin;
+}
+.erp-type {
+  flex: none; padding: 0.2rem 0.55rem; border-radius: var(--erp-radius);
+  font-size: var(--erp-text-sm); color: var(--erp-fg-muted);
+  text-decoration: none; white-space: nowrap;
+}
+.erp-type:hover { background: var(--erp-surface-sunken); color: var(--erp-fg); }
+.erp-type.here { background: var(--erp-brand-weak); color: var(--erp-brand); font-weight: var(--erp-weight-med); }
+
+/* ---------------------------------------------------- transaction form --- */
+
+.erp-form { background: var(--erp-bg); margin: calc(-1 * var(--s3)) calc(-1 * var(--s3)) 0; }
+
+/* Breadcrumb and action bar are two thin rows rather than one tall header.
+   Two shallow bars above a sheet is what stops a mostly-empty document from
+   reading as an abandoned page. */
+.erp-crumb {
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.5rem 1rem; font-size: var(--erp-text-sm);
+  background: var(--erp-surface); border-bottom: 1px solid var(--erp-border);
+}
+.erp-crumb-link { color: var(--erp-brand); text-decoration: none; }
+.erp-crumb-sep  { color: var(--erp-fg-muted); }
+.erp-crumb-here { font-family: var(--erp-font-mono); color: var(--erp-fg-strong); font-weight: 600; }
+
+.erp-actionbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap;
+  padding: 0.5rem 1rem; background: var(--erp-surface);
+  border-bottom: 1px solid var(--erp-border);
+}
+.erp-actions { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+
+/* The chevron pipeline. The notch is what makes it read as direction rather
+   than as a row of badges — a stepper with dots does not. */
+.erp-pipeline {
+  display: flex; align-items: stretch;
+  border: 1px solid var(--erp-border); border-radius: var(--erp-radius);
+  overflow: hidden; max-width: 100%; overflow-x: auto;
+}
+.erp-stage {
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0 1rem 0 1.25rem; height: calc(var(--erp-btn-h) + 8px);
+  font-size: var(--erp-text-sm); white-space: nowrap;
+  background: var(--erp-surface-sunken); color: var(--erp-fg-muted);
+  clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 50%, calc(100% - 9px) 100%, 0 100%, 9px 50%);
+  margin-left: -9px;
+}
+.erp-stage:first-child { margin-left: 0; padding-left: 0.85rem;
+  clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 50%, calc(100% - 9px) 100%, 0 100%); }
+.erp-stage:last-child  { clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 9px 50%); }
+.erp-stage a { color: inherit; text-decoration: none; display: flex; align-items: center; gap: 0.4rem; }
+.erp-stage.done { color: var(--erp-fg); }
+.erp-stage.done a:hover { color: var(--erp-brand); }
+.erp-stage.here { background: var(--erp-brand); color: var(--erp-brand-fg); font-weight: 700; }
+/* A stage nothing has reached yet is dimmed, not hidden — the shape of the
+   workflow should be legible from the first step, not assembled as you go. */
+.erp-stage.todo { opacity: 0.55; }
+.erp-stage-no { font-family: var(--erp-font-mono); font-size: var(--erp-text-xs); opacity: 0.75; }
+
+/* The sheet: a page floating on the app background, which is what separates
+   a document from a screen. */
+.erp-sheet-page {
+  background: var(--erp-surface); border: 1px solid var(--erp-border);
+  border-radius: var(--erp-radius); margin: var(--s3) auto; max-width: 1100px;
+  padding: var(--s4) var(--s4) 0;
+}
+.erp-doc-title { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.erp-doc-title h1 {
+  margin: 0; font-size: var(--t-3xl); font-weight: 700;
+  letter-spacing: var(--track-tighter); font-family: var(--erp-font-mono);
+}
+.erp-doc-type {
+  width: 100%; font-size: var(--erp-text-xs); text-transform: uppercase;
+  letter-spacing: var(--track-caps); color: var(--erp-fg-muted);
+}
+
+.erp-fields {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--s3) var(--s5); margin: var(--s4) 0 var(--s3);
+}
+.erp-kv { display: grid; grid-template-columns: minmax(90px, auto) 1fr; gap: 0.3rem 1rem; margin: 0; }
+.erp-kv dt { color: var(--erp-fg-muted); font-size: var(--erp-text-sm); }
+.erp-kv dd { margin: 0; font-size: var(--erp-text); }
+
+.erp-tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--erp-border); }
+.erp-tab {
+  padding: 0.45rem 0.9rem; font-size: var(--erp-text-sm);
+  border: 1px solid transparent; border-bottom: 0; margin-bottom: -1px;
+}
+.erp-tab.here {
+  background: var(--erp-surface); border-color: var(--erp-border);
+  border-radius: var(--erp-radius) var(--erp-radius) 0 0;
+  font-weight: var(--erp-weight-med);
+}
+
+.erp-item { white-space: normal; }
+.erp-item-code { font-family: var(--erp-font-mono); font-size: var(--erp-text-xs);
+                 color: var(--erp-fg-muted); margin-right: 0.5rem; }
+.erp-item-name { color: var(--erp-fg); }
+.erp-item-my   { display: block; font-size: var(--erp-text-sm); color: var(--erp-fg-muted); }
+.erp-uom { font-family: var(--erp-font); font-size: var(--erp-text-xs);
+           color: var(--erp-fg-muted); margin-left: 0.35rem; }
+
+.erp-foot {
+  display: flex; justify-content: space-between; gap: var(--s4);
+  padding: var(--s3) 0 var(--s4); border-top: 1px solid var(--erp-border);
+  margin-top: -1px; flex-wrap: wrap;
+}
+.erp-memo { color: var(--erp-fg-muted); font-size: var(--erp-text-sm); max-width: 46ch; }
+.erp-totals { display: grid; grid-template-columns: auto auto; gap: 0.3rem 1.5rem;
+              margin: 0; margin-left: auto; text-align: right; }
+.erp-totals dt { color: var(--erp-fg-muted); font-size: var(--erp-text-sm); }
+.erp-totals dd { margin: 0; font-family: var(--erp-font-mono); font-variant-numeric: tabular-nums; }
+.erp-totals .grand { font-size: var(--t-xl); font-weight: 700; color: var(--erp-fg-strong); }
+
+/* --------------------------------------------------------- doc toolbar --- */
+
+.erp-tools { display: inline-flex; gap: 0.15rem; }
+.erp-tool {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0;
+  border: 1px solid transparent; border-radius: var(--erp-radius);
+  background: transparent; color: var(--erp-fg-muted); cursor: pointer;
+}
+.erp-tool:hover { background: var(--erp-surface-sunken); color: var(--erp-fg); }
+/* Starred is the one state worth colouring: it is the only one the person
+   set deliberately, so it should be findable without hovering. */
+.erp-tool.on { color: var(--erp-brand); }
+
+.erp-copyno {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; padding: 0; border: 0; border-radius: 3px;
+  background: transparent; color: var(--erp-fg-muted); cursor: pointer;
+  opacity: 0; transition: opacity 90ms linear;
+}
+.erp-crumb:hover .erp-copyno { opacity: 1; }
+.erp-copyno:focus-visible { opacity: 1; }
+.erp-copyno:hover { background: var(--erp-surface-sunken); color: var(--erp-fg); }
+
+/* Printing a document should produce the document, not a screenshot of the
+   application. Chrome goes, the sheet loses its float, and the pipeline
+   stays because "which stage is this" is exactly what a printed copy is
+   asked to prove. */
+@media print {
+  .sidebar, .erp-tools, .erp-copyno, .erp-typebar, .erp-panel { display: none !important; }
+  .erp-form { margin: 0; background: #fff; }
+  .erp-sheet-page { border: 0; margin: 0; max-width: none; padding: 0; }
+  .erp-actionbar { border: 0; padding-left: 0; }
+  .erp-actions { display: none; }
+  .erp-tr { break-inside: avoid; }
+}

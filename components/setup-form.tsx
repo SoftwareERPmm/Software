@@ -102,7 +102,7 @@ export function SetupForm({
         <div className="card-body">
           <div className="row">
             <div className="field">
-              <label htmlFor="office_name">Office</label>
+              <label htmlFor="office_name">Branch</label>
               <input id="office_name" name="office_name" type="text"
                 defaultValue="Head Office" required />
             </div>

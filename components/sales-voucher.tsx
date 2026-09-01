@@ -90,6 +90,7 @@ export function SalesVoucher({
   const [cashIn, setCashIn] = useState("");
   const [showRemark, setShowRemark] = useState(false);
   const [toDeliver, setToDeliver] = useState(false);
+  const [fee, setFee] = useState("");
   const [tab, setTab] = useState<"invoices" | "promotions">("invoices");
 
   const byId = (id: string) => items.find((i) => i.id === id);
@@ -221,7 +222,13 @@ export function SalesVoucher({
     return Math.floor((Number(l.qty) || 0) / Number(p.buy_qty)) * Number(p.free_qty);
   }
 
-  const total = lines.reduce((s, l) => s + amount(l), 0);
+  const goodsTotal = lines.reduce((s, l) => s + amount(l), 0);
+  // Carriage charged to the customer. It is part of what they owe — so it
+  // belongs in the total, the cash-in sync and the balance — but it is
+  // credited to delivery income rather than to sales, which is why it is
+  // shown separately rather than folded silently into the goods.
+  const deliveryFee = Number(fee) || 0;
+  const total = goodsTotal + deliveryFee;
   const cashAmount = Number(cashIn) || 0;
   const balance = total - cashAmount;
   const totalFree = lines.reduce((s, l) => s + freeQty(l), 0);
@@ -488,6 +495,11 @@ export function SalesVoucher({
               {fmt(totalFree)} free unit{totalFree === 1 ? "" : "s"} — cost goes to promotion expense
             </span>
           )}
+          {deliveryFee > 0 && (
+            <span style={{ color: "var(--muted)" }}>
+              goods {fmt(goodsTotal)} + delivery {fmt(deliveryFee)}
+            </span>
+          )}
           <span style={{ color: "var(--muted)" }}>Invoice total</span>
           <span className="big">{fmt(total)} MMK</span>
         </div>
@@ -498,6 +510,15 @@ export function SalesVoucher({
           <div className="card-head"><h2>Payment &amp; delivery</h2></div>
           <div className="card-body">
             <div className="row">
+              <div className="field">
+                <label htmlFor="delivery_fee">Delivery fee</label>
+                <input id="delivery_fee" name="delivery_fee" type="number" min="0" step="0.01"
+                  value={fee} onChange={(e) => setFee(e.target.value)} placeholder="0" />
+                <span className="hint">
+                  Charged for carrying the goods. Credited to delivery income, not
+                  sales, so margin on the products stays honest.
+                </span>
+              </div>
               <div className="field">
                 <label htmlFor="cash_in">Cash in</label>
                 <input id="cash_in" name="cash_in" type="number" min="0" step="any"

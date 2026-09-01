@@ -1,3 +1,6 @@
+@import "./erp/theme.css";
+@import "./erp/bridge.css";
+@import "./erp/components.css";
 :root {
   --ground:    #F4F6F8;
   --surface:   #FFFFFF;
@@ -8,6 +11,16 @@
   --line-soft: #EAEEF2;
   --dr:        #5E6AD2;
   --cr:        #A8571F;
+
+  /* The interface accent, separate from --dr on purpose. --dr and --cr are
+     the debit and credit colours: they carry meaning on a figure, and a
+     journal line coloured by them is saying which side it is on. They were
+     also doing duty as the link and button colour, so recolouring the
+     product would have recoloured every debit in the ledger with it.
+     --brand is the chrome; --dr stays accounting. */
+  --brand:      #1B5E43;
+  --brand-fg:   #FFFFFF;
+  --brand-weak: color-mix(in srgb, var(--brand) 10%, transparent);
   --ok:        #1F7A4D;
   --warn:      #B4691A;
   --bad:       #B4283C;
@@ -66,6 +79,11 @@
     --line-soft: #212831;
     --dr:        #8D93F5;
     --cr:        #E09C55;
+    /* A dark surface needs a lighter green, not a tint of the same one:
+       #1B5E43 on #161B22 is unreadable. Measured at 8.63:1. */
+    --brand:      #5FCB98;
+    --brand-fg:   #0E1116;
+    --brand-weak: color-mix(in srgb, var(--brand) 16%, transparent);
     --ok:        #4FB784;
     --warn:      #DDA24E;
     --bad:       #E8697C;
@@ -125,7 +143,7 @@ a { color: inherit; text-decoration: none; }
   transition: background-color 150ms, color 150ms;
 }
 .navlink:hover { background: var(--line-soft); color: var(--ink); }
-.navlink[data-active="true"] { border-left-color: var(--dr); color: var(--ink); font-weight: 500; }
+.navlink[data-active="true"] { border-left-color: var(--brand); color: var(--ink); font-weight: 500; }
 
 /* A sub-entry narrows the one above it (Customers under Partners) rather
    than opening a new page, so it sits one step further in and a touch
@@ -152,7 +170,7 @@ a { color: inherit; text-decoration: none; }
   .navgroup { flex-direction: row; }
   .navlabel { display: none; }
   .navlink { padding: 0.3rem var(--s2); border-left: none; border-bottom: 2px solid transparent; white-space: nowrap; }
-  .navlink[data-active="true"] { border-left-color: transparent; border-bottom-color: var(--dr); }
+  .navlink[data-active="true"] { border-left-color: transparent; border-bottom-color: var(--brand); }
   .main { padding: var(--s4) var(--s3) var(--s5); }
 }
 
@@ -317,7 +335,7 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-num
 
 .flow { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); font-family: var(--mono); font-size: var(--t-sm); }
 .flow-node { padding: 0.16rem 0.5rem; border: 1px solid var(--line); border-radius: var(--r-sm); }
-.flow-node.here { border-color: var(--dr); color: var(--dr); background: color-mix(in srgb, var(--dr) 10%, transparent); }
+.flow-node.here { border-color: var(--brand); color: var(--brand); background: var(--brand-weak); }
 .flow-arrow { color: var(--muted); }
 
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--s3); align-items: start; }
@@ -370,8 +388,8 @@ input[type="text"], input[type="number"], input[type="date"], input[type="time"]
 }
 input:focus, select:focus, textarea:focus {
   outline: none;
-  border-color: var(--dr);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dr) 14%, transparent);
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 14%, transparent);
 }
 input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
 
@@ -396,7 +414,7 @@ textarea { min-height: 4.6rem; line-height: 1.5; resize: vertical; }
 .check { display: flex; align-items: center; gap: var(--s2); font-size: var(--t-base); cursor: pointer; }
 .check input {
   width: 16px; height: 16px; margin: 0; flex: none;
-  accent-color: var(--dr); cursor: pointer;
+  accent-color: var(--brand); cursor: pointer;
 }
 
 /* Buttons carry four roles, and how early each one announces itself is set by
@@ -406,14 +424,14 @@ textarea { min-height: 4.6rem; line-height: 1.5; resize: vertical; }
    loud would flatten that back into no signal at all. */
 button {
   font-family: inherit; font-size: var(--t-md); font-weight: 500;
-  color: var(--surface); background: var(--dr);
-  border: 1px solid var(--dr); border-radius: var(--r-md);
+  color: var(--brand-fg); background: var(--brand);
+  border: 1px solid var(--brand); border-radius: var(--r-md);
   padding: 0.46rem 1rem; cursor: pointer;
   transition: background-color 150ms, border-color 150ms, color 150ms, opacity 150ms;
 }
 button:hover { opacity: 0.88; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
-button:focus-visible { outline: 2px solid var(--dr); outline-offset: 2px; }
+button:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 
 /* Neutral: Edit, Cancel, Open, and the line-remove crosses inside forms —
    dropping an unsaved row is not destructive and must not look like it. */
@@ -600,7 +618,7 @@ button.tiny { padding: 0.16rem 0.5rem; font-size: var(--t-sm); }
 
 .picker-empty { padding: 0.6rem var(--s3); color: var(--muted); font-size: var(--t-md); }
 
-.picker-create { color: var(--dr); font-weight: 500; border-top: 1px solid var(--line); }
+.picker-create { color: var(--brand); font-weight: 500; border-top: 1px solid var(--line); }
 
 .picker-form { padding: var(--s3); display: flex; flex-direction: column; gap: var(--s2); }
 .picker-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--s1); }
@@ -665,14 +683,14 @@ button.tiny { padding: 0.16rem 0.5rem; font-size: var(--t-sm); }
 a.btn {
   display: inline-block;
   font-family: inherit; font-size: var(--t-md); font-weight: 500;
-  color: var(--surface); background: var(--dr);
-  border: 1px solid var(--dr); border-radius: var(--r-md);
+  color: var(--brand-fg); background: var(--brand);
+  border: 1px solid var(--brand); border-radius: var(--r-md);
   padding: 0.46rem 1rem; cursor: pointer;
   transition: opacity 150ms;
   text-decoration: none;
 }
 a.btn:hover { opacity: 0.88; }
-a.btn:focus-visible { outline: 2px solid var(--dr); outline-offset: 2px; }
+a.btn:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 
 a.btn.ghost { color: var(--ink-soft); background: transparent; border-color: var(--line); }
 a.btn.ghost:hover { background: var(--line-soft); opacity: 1; }
@@ -699,3 +717,85 @@ tbody tr.subrow > td:first-child::before {
   left: 0.9rem;
   color: var(--line);
 }
+
+/* ==========================================================================
+   ERP SHELL, APPLIED PRODUCT-WIDE
+
+   The document screens were rebuilt on the ERP shell first. Rewriting the
+   other fifty pages one at a time would take a week and drift; they all share
+   .page-head, .card and the table rules, so converting those converts the
+   application.
+
+   Everything below overrides the original rules rather than replacing them,
+   so a page that has already been rebuilt on .erp-* classes is untouched and
+   the two can coexist while the rest are migrated properly.
+   ========================================================================== */
+
+body { --erp-density-applied: 1; }
+
+/* The page heading becomes a control panel: one thin horizontal bar, the way
+   every ERP screen opens, instead of a stacked eyebrow/title/subtitle block
+   that pushes the data below the fold. */
+.page-head {
+  flex-direction: row; align-items: center; flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+  min-height: var(--erp-panel-h, 52px);
+  padding: 0.4rem 0 0.75rem;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: var(--s3);
+}
+.page-head h1 {
+  font-size: var(--t-lg); font-weight: 600; margin: 0;
+  letter-spacing: var(--track-tight); order: 2;
+}
+/* The eyebrow becomes a breadcrumb ahead of the title rather than a label
+   above it. */
+.page-head .eyebrow { order: 1; width: 100%; margin-bottom: -0.15rem; }
+.page-head .page-sub {
+  order: 3; font-size: var(--t-sm); color: var(--muted);
+  padding-left: 0.75rem; border-left: 1px solid var(--line);
+}
+.page-head .actions { order: 4; margin-left: auto; }
+
+/* Cards become sheets: squarer, flatter, and the head reads as a table strip
+   rather than as a second title. */
+.card { border-radius: var(--r-sm); }
+.card-head {
+  padding: 0.5rem var(--s3);
+  background: var(--line-soft);
+  align-items: center;
+}
+.card-head h2 { font-size: var(--t-md); font-weight: 600; margin: 0; }
+.card-body { padding: var(--s3); }
+
+/* 40px rows, asymmetric cell padding — a clean left gutter and a tight right
+   edge, which is what lets a column of figures sit against its neighbour
+   without the eye losing the row. */
+th, td { padding: 8px 5px 8px 16px; }
+tbody tr { height: 40px; }
+thead th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--line-soft);
+}
+tbody tr:hover { background: var(--line-soft); }
+
+/* Search reads as an underline in the accent, not a bordered box. This is the
+   single change that most makes a toolbar stop looking like a web form. */
+input[type="search"], .searchbox input, .card-head input[type="text"] {
+  border: 0; border-bottom: 1px solid var(--brand);
+  border-radius: 0; background: transparent; padding: 4px 6px;
+}
+input[type="search"]:focus, .searchbox input:focus {
+  outline: none; border-bottom-width: 2px; box-shadow: none;
+}
+
+/* Buttons at ERP height. The 36-40px web default is a third of a row. */
+button, a.btn, .btn { min-height: 27px; }
+button.tiny, .btn.tiny { min-height: 23px; }
+
+/* A chart-of-accounts heading is a section of the chart rather than a row of
+   it: banded, its name carrying the row, and no hover highlight because
+   there is nothing there to click through to. */
+tbody tr.coa-section { background: var(--line-soft); }
+tbody tr.coa-section:hover { background: var(--line-soft); }
+tbody tr.coa-section > td { padding-top: 10px; padding-bottom: 10px; }

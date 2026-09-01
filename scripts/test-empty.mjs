@@ -8,8 +8,16 @@ import postgres from "postgres";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 if (!process.env.DATABASE_URL) {
-  process.env.DATABASE_URL = readFileSync(join(root, ".env"), "utf8")
-    .match(/DATABASE_URL\s*=\s*(.+)/)[1].trim();
+  // Anchored and read line by line — .env can carry more than one
+  // "DATABASE_URL=" occurrence (an active line plus a commented alternative
+  // documenting another branch), and an unanchored match against the whole
+  // file grabs whichever occurs FIRST regardless of a leading "# ". That
+  // silently pointed this script at the wrong Neon branch the moment .env
+  // gained a second mention, with no error to notice it by.
+  for (const line of readFileSync(join(root, ".env"), "utf8").split("\n")) {
+    const m = line.match(/^\s*DATABASE_URL\s*=\s*(.+?)\s*$/);
+    if (m) { process.env.DATABASE_URL = m[1].replace(/^["\']|["\']$/g, ""); break; }
+  }
 }
 const { postSaleWithDelivery, postPurchaseWithReceipt } = await import("../lib/posting.ts");
 

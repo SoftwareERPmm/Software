@@ -1,11 +1,8 @@
 import Link from "next/link";
-import { money, shortDate } from "@/lib/db";
 import { getCompany, getDocuments } from "@/lib/queries";
-import { DataTable, type DataRow } from "@/components/data-table";
+import { ErpDocumentList, type DocRow } from "@/components/erp-document-list";
 
-const toTime = (v: unknown) => (v ? new Date(v as string).getTime() : 0);
-
-const TYPES = [
+const TYPES: [string, string][] = [
   ["", "All"],
   ["PURCHASE_ORDER", "Purchase orders"],
   ["GOODS_RECEIPT", "Goods receipts"],
@@ -33,87 +30,52 @@ export default async function DocumentsPage({
 
   const docs = (await getDocuments(company.id, type || undefined, openOnly)) as any[];
 
-  const rows: DataRow[] = docs.map((d) => ({
-    key: d.id,
-    searchText: [d.doc_no, d.doc_type, d.partner_name, d.source_doc_no].filter(Boolean).join(" "),
-    sort: {
-      doc_no: d.doc_no ?? "",
-      doc_type: d.doc_type,
-      partner_name: d.partner_name ?? "",
-      posting_date: toTime(d.posting_date),
-      due_date: toTime(d.due_date),
-      gross_total: Number(d.gross_total),
-    },
-    node: (
-      <tr className="link">
-        <td className="code">
-          <Link href={`/documents/${d.id}`} style={{ color: "var(--dr)" }}>{d.doc_no ?? "draft"}</Link>
-        </td>
-        <td className="m">{d.doc_type.replace(/_/g, " ").toLowerCase()}</td>
-        <td className="wrap">{d.partner_name ?? "—"}</td>
-        <td className="code">{shortDate(d.posting_date)}</td>
-        <td className="code">{d.due_date ? shortDate(d.due_date) : "—"}</td>
-        <td className="code">{d.source_doc_no ?? "—"}</td>
-        <td className="r">{money(d.gross_total)}</td>
-      </tr>
-    ),
+  const rows: DocRow[] = docs.map((d) => ({
+    id: d.id,
+    docNo: d.doc_no ?? null,
+    docType: d.doc_type,
+    status: d.status,
+    partnerName: d.partner_name ?? null,
+    postingDate: d.posting_date ? String(d.posting_date) : null,
+    dueDate: d.due_date ? String(d.due_date) : null,
+    sourceDocNo: d.source_doc_no ?? null,
+    grossTotal: Number(d.gross_total),
   }));
+
+  const active = TYPES.find(([v]) => v === (type ?? ""));
+  const title = openOnly ? "Awaiting a matching document" : "Documents";
 
   return (
     <>
-      <div className="page-head">
-        <span className="eyebrow">Transactions</span>
-        <h1>Documents</h1>
-        <span className="page-sub">
-          Every document links back to what it came from and forward to what it produced.
-        </span>
+      {/* The type filters stay a visible row rather than hiding inside a
+          dropdown: there are twelve document types and which one you are
+          looking at is the main thing this screen is for. */}
+      <div className="erp-typebar" data-density="odoo">
+        {TYPES.map(([value, text]) => {
+          const href = value
+            ? `/documents?type=${value}${openOnly ? "&open=grir" : ""}`
+            : openOnly ? "/documents?open=grir" : "/documents";
+          return (
+            <Link
+              key={value}
+              href={href}
+              className={`erp-type ${(type ?? "") === value ? "here" : ""}`}
+            >
+              {text}
+            </Link>
+          );
+        })}
       </div>
 
-      <div className="flow">
-        {TYPES.map(([value, label]) => (
-          <Link
-            key={value}
-            href={value ? `/documents?type=${value}` : "/documents"}
-            className={`flow-node ${(type ?? "") === value ? "here" : ""}`}
-          >
-            {label}
-          </Link>
-        ))}
-      </div>
-
-      <section>
-        <div className="card">
-          <div className="card-head">
-            <h2>
-              {openOnly ? "Awaiting a matching document — " : ""}
-              {TYPES.find(([v]) => v === (type ?? ""))?.[1] ?? "All"}
-            </h2>
-            <span className="actions">
-              <span className="page-sub">{docs.length} document{docs.length === 1 ? "" : "s"}</span>
-              {openOnly && (
-                <Link href={`/documents?type=${type}`} className="m" style={{ color: "var(--dr)" }}>
-                  Show all &rarr;
-                </Link>
-              )}
-            </span>
-          </div>
-          <DataTable
-            rows={rows}
-            emptyLabel="No documents"
-            searchPlaceholder="Search documents…"
-            defaultSort={{ key: "posting_date", dir: "desc" }}
-            columns={[
-              { key: "doc_no", label: "Document", sortable: true },
-              { key: "doc_type", label: "Type", sortable: true },
-              { key: "partner_name", label: "Partner", sortable: true },
-              { key: "posting_date", label: "Date", sortable: true },
-              { key: "due_date", label: "Due", sortable: true },
-              { key: "source_doc_no", label: "From" },
-              { key: "gross_total", label: "Amount", sortable: true, align: "r" },
-            ]}
-          />
-        </div>
-      </section>
+      <ErpDocumentList
+        rows={rows}
+        title={title}
+        typeFilter={
+          type && active
+            ? { label: active[1], clearHref: openOnly ? "/documents?open=grir" : "/documents" }
+            : null
+        }
+      />
     </>
   );
 }

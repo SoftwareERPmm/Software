@@ -56,11 +56,13 @@ export default async function Warehouses() {
     <>
       <div className="page-head">
         <span className="eyebrow">Master data</span>
-        <h1>Warehouses</h1>
+        <h1>Branches &amp; warehouses</h1>
         <span className="page-sub">
-          Offices and the warehouses inside them, shown as one tree — a
-          warehouse (holds stock) always sits inside an office (a site that
-          doesn&rsquo;t hold stock itself).
+          Branches and the warehouses inside them, shown as one tree. A
+          branch is a site that doesn&rsquo;t hold stock itself; each one can
+          hold many warehouses, and every warehouse belongs to a single
+          branch. Stock lives in warehouses, and the branch it rolls up to is
+          what the branch-by-branch financial reports are grouped by.
         </span>
       </div>
 
@@ -69,12 +71,12 @@ export default async function Warehouses() {
       <section>
         <div className="card">
           <div className="card-head">
-            <h2>Warehouses</h2>
+            <h2>Branches &amp; warehouses</h2>
             <span className="page-sub">{locations.length}</span>
           </div>
 
           {nodes.length === 0 ? (
-            <div className="empty">None yet. Add your first warehouse above.</div>
+            <div className="empty">None yet. Add your first branch above, then a warehouse inside it.</div>
           ) : (
             <div className="tablewrap">
               <table>

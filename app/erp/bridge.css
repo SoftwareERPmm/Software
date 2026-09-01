@@ -1,0 +1,88 @@
+/* The seam: ERP semantic roles -> this product's tokens.
+   
+   app/erp/theme.css ships deliberately plain greys as a fallback, not a
+   design. This file is what makes those components look like MTK rather than
+   like the system they were measured from. It is the only file to edit when
+   the palette changes, and the only one to re-check after an upstream update.
+
+   Everything points at a var(), never a literal, so dark mode comes along for
+   free — globals.css already redefines these tokens under
+   prefers-color-scheme, and the roles follow without knowing about it. */
+
+:root {
+  /* surfaces */
+  --erp-bg:             var(--ground);
+  --erp-surface:        var(--surface);
+  --erp-surface-sunken: var(--line-soft);
+  --erp-border:         var(--line);
+  --erp-border-strong:  var(--ghost);
+
+  /* text */
+  --erp-fg:        var(--ink);
+  --erp-fg-strong: var(--ink);
+  --erp-fg-muted:  var(--muted);
+
+  /* accent — ours, not a borrowed brand colour.
+     Forest green, chosen against the two backgrounds it has to survive:
+     7.70:1 on white as link text, and the same as a fill under white button
+     text. Dark mode needs its own value — this one drops to unreadable on a
+     #161B22 surface — so --erp-brand is re-pointed below rather than tinted. */
+  --erp-green:      #1B5E43;
+  --erp-brand:      var(--erp-green);
+  --erp-brand-fg:   #fff;
+  --erp-brand-weak: color-mix(in srgb, var(--erp-green) 12%, transparent);
+
+  /* semantic: this palette is already darkened for AA, so fill and text
+     share a value rather than shipping the two-tone pair upstream needs. */
+  --erp-success: var(--ok);   --erp-success-fg: var(--ok);
+  --erp-info:    var(--dr);   --erp-info-fg:    var(--dr);
+  --erp-warning: var(--warn); --erp-warning-fg: var(--warn);
+  --erp-danger:  var(--bad);  --erp-danger-fg:  var(--bad);
+
+  /* shape and type */
+  --erp-radius:      var(--r-sm);
+  --erp-font:        var(--sans);
+  --erp-font-mono:   var(--mono);
+  --erp-text:        var(--t-md);
+  --erp-text-sm:     var(--t-sm);
+  --erp-text-xs:     var(--t-xs);
+  --erp-weight-med:  600;
+}
+
+/* theme.css ships its own dark palette as hard-coded greys, under selectors
+   more specific than a bare :root — so without these it would win in dark
+   mode and the bridge would silently stop applying exactly where the contrast
+   matters most. Same mappings, same specificity, declared later. globals.css
+   already flips the underlying tokens, so this just keeps pointing at them. */
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --erp-bg:             var(--ground);
+    --erp-surface:        var(--surface);
+    --erp-surface-sunken: var(--line-soft);
+    --erp-border:         var(--line);
+    --erp-border-strong:  var(--ghost);
+    --erp-fg:             var(--ink);
+    --erp-fg-strong:      var(--ink);
+    --erp-fg-muted:       var(--muted);
+    --erp-green:      #5FCB98;   /* 8.63:1 on the dark surface */
+    --erp-brand:      var(--erp-green);
+    --erp-brand-fg:   #0E1116;
+    --erp-brand-weak: color-mix(in srgb, var(--erp-green) 16%, transparent);
+  }
+}
+
+[data-theme="dark"] {
+  --erp-green:      #5FCB98;
+  --erp-brand:      var(--erp-green);
+  --erp-brand-fg:   #0E1116;
+  --erp-brand-weak: color-mix(in srgb, var(--erp-green) 16%, transparent);
+  --erp-bg:             var(--ground);
+  --erp-surface:        var(--surface);
+  --erp-surface-sunken: var(--line-soft);
+  --erp-border:         var(--line);
+  --erp-border-strong:  var(--ghost);
+  --erp-fg:             var(--ink);
+  --erp-fg-strong:      var(--ink);
+  --erp-fg-muted:       var(--muted);
+}

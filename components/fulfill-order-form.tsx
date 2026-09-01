@@ -84,7 +84,7 @@ export function FulfillOrderForm({
     <div className="card">
       <div className="card-head">
         <h2>
-          <Link href={`/documents/${orderId}`} style={{ color: "var(--dr)" }}>{orderNo}</Link>
+          <Link href={`/documents/${orderId}`} style={{ color: "var(--brand)" }}>{orderNo}</Link>
           {" · "}{partnerName}
         </h2>
         <span className="actions">
@@ -151,6 +151,19 @@ export function FulfillOrderForm({
                 </tbody>
               </table>
             </div>
+
+            {kind === "sales" && (
+              <div className="field" style={{ maxWidth: 300, marginTop: "0.6rem" }}>
+                <label htmlFor={`delivery_fee_${orderId}`}>Delivery fee</label>
+                <input id={`delivery_fee_${orderId}`} name="delivery_fee"
+                       type="number" min="0" step="0.01" placeholder="0" />
+                <span className="hint">
+                  Charged for carrying these goods. Recorded here and billed on the
+                  invoice for this delivery — it posts to delivery income there, not
+                  when the goods leave.
+                </span>
+              </div>
+            )}
 
             {shortEverywhere.length > 0 && (
               <div className="alert">

@@ -164,7 +164,7 @@ export function ItemForm({
         <div className="card-head">
           <h2>The product</h2>
           {preview && (
-            <span className="m" style={{ color: "var(--dr)" }}>Code will be {preview}</span>
+            <span className="m" style={{ color: "var(--brand)" }}>Code will be {preview}</span>
           )}
         </div>
         <div className="card-body">

@@ -15,6 +15,10 @@ the repo across machines, not just the one they were written on.
   together (Order → Delivery/Receipt → Invoice → Payment)
 - [docs/03-decisions.md](docs/03-decisions.md) — resolved and open design
   decisions, with the reasoning behind each
+- [docs/05-ui-rebuild.md](docs/05-ui-rebuild.md) — the UI rebuild in progress
+  on `feature/ui-documents-list`: the reference material, how the theme is
+  layered, why `--brand` is separate from `--dr`, what is done and what is
+  not. **Read this before touching any UI.**
 
 ## Git
 
@@ -152,6 +156,19 @@ never a data operation — nothing is ever copied between branches.
   applied files per database with checksums.
 - **Symptom of a missed step 2**: the site starts erroring right after a push.
   Run the migration against that database and it recovers without a redeploy.
+
+## The UI rebuild (in progress)
+
+Live on no branch that deploys. Full detail in
+[docs/05-ui-rebuild.md](docs/05-ui-rebuild.md); the parts that will bite:
+
+- **`--brand` is the interface accent. `--dr` is the debit colour.** They were
+  the same token, so recolouring the product recoloured every debit in the
+  ledger. Use `--brand` for chrome, never `--dr`.
+- **A fourth Neon branch, `UI-test`**, exists for this work — company name
+  "MTK Co Ltd — UI". `.env` points at it, with `dev` commented below.
+- The rebuild changes **no** posting, actions, migrations or scripts, and is
+  never merged to `main` — `main` is the tester's live site.
 
 ## Working style
 

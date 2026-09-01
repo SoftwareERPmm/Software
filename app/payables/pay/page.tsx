@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getSettlementData, createSupplierPayment } from "@/lib/actions";
+import { getCompany, getBranches } from "@/lib/queries";
 import { SettlementForm } from "@/components/settlement-form";
 
 export default async function PaySupplier({
@@ -9,6 +10,8 @@ export default async function PaySupplier({
 }) {
   const { partner, invoice } = await searchParams;
   const { partners, invoices, cashAccounts } = await getSettlementData("pay");
+  const company = await getCompany();
+  const branches = company ? await getBranches(company.id) : [];
   const today = new Date().toISOString().slice(0, 10);
 
   if (partners.length === 0 || cashAccounts.length === 0) {
@@ -35,7 +38,7 @@ export default async function PaySupplier({
         <h1>Pay a supplier</h1>
         <span className="page-sub">
           Choose a supplier to see their open bills, then apply what you are paying against each one.{" "}
-          <Link href="/payables" style={{ color: "var(--dr)" }}>See everything outstanding</Link>
+          <Link href="/payables" style={{ color: "var(--brand)" }}>See everything outstanding</Link>
         </span>
       </div>
 
@@ -45,6 +48,7 @@ export default async function PaySupplier({
         partners={partners as never}
         invoices={invoices as never}
         cashAccounts={cashAccounts as never}
+        branches={branches as never}
         today={today}
         initialPartnerId={partner}
         initialInvoiceId={invoice}

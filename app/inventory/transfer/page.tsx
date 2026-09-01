@@ -33,7 +33,7 @@ export default async function NewStockTransfer() {
         <span className="page-sub">
           Move stock between two of the company&rsquo;s own warehouses — the
           company-wide total never changes, only which location holds it.{" "}
-          <Link href="/documents?type=STOCK_TRANSFER" style={{ color: "var(--dr)" }}>
+          <Link href="/documents?type=STOCK_TRANSFER" style={{ color: "var(--brand)" }}>
             Past transfers
           </Link>
         </span>

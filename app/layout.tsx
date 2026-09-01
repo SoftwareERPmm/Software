@@ -77,6 +77,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <NavLink href="/sales/orders" exact>Sales orders</NavLink>
               <NavLink href="/sales/deliver">Deliveries</NavLink>
               <NavLink href="/sales/invoices" exact>Sales invoices</NavLink>
+              <NavLink href="/sales/consignment">Consignment sale</NavLink>
               <NavLink href="/sales/returns" exact>Customer returns</NavLink>
               <NavLink href="/receivables" exact>Receivables</NavLink>
               <NavLink href="/receivables/receive">Receive payment</NavLink>
@@ -129,6 +130,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 
             <NavGroup label="Inventory" icon={<Boxes size={14} />} match={["/items/stock", "/inventory"]}>
               <NavLink href="/items/stock">Stock overview</NavLink>
+              <NavLink href="/inventory/consignment" exact>Consignment</NavLink>
               <NavLink href="/inventory/movements">Stock movements</NavLink>
               <NavLink href="/inventory/adjustments">Adjustments</NavLink>
               <NavLink href="/inventory/transfer">Transfer</NavLink>
@@ -144,7 +146,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <NavLink href="/items/categories">Categories</NavLink>
               <NavLink href="/items/subcategories">Sub Categories</NavLink>
               <NavLink href="/items/brands">Brands</NavLink>
-              <NavLink href="/warehouses">Warehouses</NavLink>
+              <NavLink href="/warehouses">Branches &amp; warehouses</NavLink>
               <NavLink href="/salespersons">Salespersons</NavLink>
               <NavLink href="/settings/accounts">Chart of Accounts</NavLink>
             </NavGroup>

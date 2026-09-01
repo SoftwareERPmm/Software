@@ -92,7 +92,8 @@ const TXN = ["payment_allocation", "stock_movement", "document_line", "document"
 // truncating item_group would take every row of account_determination with it,
 // including the company-wide posting rules that reference no group at all.
 // Lose those and nothing can post again.
-const MASTER = ["item_alias", "item_uom", "item_reorder", "item_price", "item",
+const MASTER = ["consignment_agreement_line", "consignment_agreement",
+                "item_alias", "item_uom", "item_reorder", "item_price", "item",
                 "item_group", "business_partner", "salesman", "promotion"];
 
 try {
@@ -135,7 +136,11 @@ try {
       // fallbacks stay, so a cleared database can still post.
       await tx`delete from account_determination where item_group_id is not null`;
       await tx`delete from promotion`;
-      for (const t of ["item_alias", "item_uom", "item_reorder", "item_price",
+      // consignment_agreement_line references item; consignment_agreement
+      // references business_partner. Both deleted before the master data
+      // they point at, same as everything else in this list.
+      for (const t of ["consignment_agreement_line", "consignment_agreement",
+                       "item_alias", "item_uom", "item_reorder", "item_price",
                        "item", "item_group", "business_partner", "salesman"]) {
         await tx.unsafe(`delete from ${t}`);
       }

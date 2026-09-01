@@ -859,7 +859,59 @@ export async function getLocations(companyId: string) {
  * expense's debit balance both read as a plain positive number, and the
  * three section totals combine with plain subtraction.
  */
-export async function getIncomeStatement(companyId: string, from: string, to: string) {
+/**
+ * Branches: the top of the location tree. A branch is a site that holds no
+ * stock itself and sits under nothing; the warehouses that do hold stock are
+ * its children. Both live in `location` — they are separate rows in a
+ * parent/child relationship, not one row playing two roles, so a branch can
+ * hold many warehouses and a warehouse belongs to exactly one branch.
+ */
+export async function getBranches(companyId: string) {
+  return sql`
+    select b.id, b.code, b.name,
+           count(w.id) filter (where w.is_stock_location)::int as warehouse_count
+      from location b
+      left join location w on w.parent_id = b.id
+     where b.company_id = ${companyId} and b.parent_id is null and b.is_active
+     group by b.id, b.code, b.name
+     order by b.code`;
+}
+
+/**
+ * Restricts a ledger query to one branch, or to everything when no branch is
+ * chosen. A journal line carries the warehouse it happened at, so rolling up
+ * to a branch means walking one step up the tree — and a line posted against
+ * the branch itself (an expense booked centrally, say) counts as its own
+ * branch, which is what coalesce(parent_id, id) says.
+ */
+export const UNASSIGNED_BRANCH = "none";
+
+function branchFilter(branchId?: string | null) {
+  if (!branchId) return sql``;
+  // Entries posted before the branch dimension was stamped carry no location
+  // and belong to no branch. They still count in the consolidated company
+  // figures, so without a way to see them the branches would silently fail to
+  // add up to the company total and there would be nothing on screen saying
+  // why. This makes that remainder selectable instead of invisible.
+  if (branchId === UNASSIGNED_BRANCH) return sql`and jl.location_id is null`;
+  return sql`and exists (
+          select 1 from location w
+           where w.id = jl.location_id
+             and coalesce(w.parent_id, w.id) = ${branchId})`;
+}
+
+/** How much activity carries no branch at all, so a report can say so. */
+export async function getUnassignedBranchActivity(companyId: string) {
+  const [r] = await sql`
+    select count(*)::int as lines
+      from journal_line jl
+     where jl.company_id = ${companyId} and jl.location_id is null`;
+  return Number(r?.lines ?? 0);
+}
+
+export async function getIncomeStatement(
+  companyId: string, from: string, to: string, branchId?: string | null
+) {
   return sql`
     select a.id, a.code, a.name, a.account_type,
            case when fn_is_debit_normal(a.account_type)
@@ -870,6 +922,7 @@ export async function getIncomeStatement(companyId: string, from: string, to: st
      where jl.company_id = ${companyId}
        and a.account_type in ('REVENUE', 'COGS', 'EXPENSE')
        and je.entry_date between ${from}::date and ${to}::date
+       ${branchFilter(branchId)}
      group by a.id, a.code, a.name, a.account_type
     having sum(jl.base_amount) <> 0
      order by a.account_type, a.code`;
@@ -1000,7 +1053,7 @@ export async function getReorderPoints(companyId: string) {
  * is folded in as a "Retained earnings" line — without it Assets would not
  * equal Liabilities + Equity.
  */
-export async function getBalanceSheet(companyId: string, asOf: string) {
+export async function getBalanceSheet(companyId: string, asOf: string, branchId?: string | null) {
   const [rows, netIncomeRows] = await Promise.all([
     sql`
       select a.id, a.code, a.name, a.account_type,
@@ -1012,6 +1065,7 @@ export async function getBalanceSheet(companyId: string, asOf: string) {
        where jl.company_id = ${companyId}
          and a.account_type in ('ASSET', 'LIABILITY', 'EQUITY')
          and je.entry_date <= ${asOf}::date
+         ${branchFilter(branchId)}
        group by a.id, a.code, a.name, a.account_type
       having sum(jl.base_amount) <> 0
        order by a.account_type, a.code`,
@@ -1022,7 +1076,8 @@ export async function getBalanceSheet(companyId: string, asOf: string) {
         join account a on a.id = jl.account_id
        where jl.company_id = ${companyId}
          and a.account_type in ('REVENUE', 'COGS', 'EXPENSE')
-         and je.entry_date <= ${asOf}::date`,
+         and je.entry_date <= ${asOf}::date
+         ${branchFilter(branchId)}`,
   ]);
 
   return { rows, netIncome: Number(netIncomeRows[0]?.net_income ?? 0) };
@@ -1251,4 +1306,185 @@ export async function getMatchStatus(documentId: string): Promise<MatchStatus | 
     state: totalSettled === 0 ? "NONE" : totalRemaining === 0 ? "FULL" : "PARTIAL",
     lines: out,
   };
+}
+
+/**
+ * An order's lines with how much of each has actually been fulfilled.
+ *
+ * Fulfilment is derived from `source_line_id` on the delivery or receipt
+ * lines, which is the same reference GR/IR matching uses — so the figure on
+ * the order agrees with the one the ledger settled against, rather than
+ * being a second count of the same thing.
+ *
+ * Invoiced quantity is deliberately absent. On this chain an invoice points
+ * at the *delivery*, not the order, so an invoiced-per-order-line figure
+ * needs a second hop that would only sometimes resolve. A column that is
+ * right most of the time is worse here than no column.
+ */
+export async function getOrderProgress(orderId: string, docType: string) {
+  const fulfilmentType = docType === "SALES_ORDER" ? "DELIVERY" : "GOODS_RECEIPT";
+
+  const lines = await sql`
+    select ol.id, ol.line_no, ol.item_id,
+           i.code as item_code, i.name as item_name, i.name_my as item_name_my,
+           u.code as uom_code,
+           ol.base_qty as ordered, ol.unit_price, ol.net_amount
+      from document_line ol
+      join item i on i.id = ol.item_id
+      left join uom u on u.id = ol.entered_uom_id
+     where ol.document_id = ${orderId}
+     order by ol.line_no`;
+
+  const fulfilled = await sql`
+    select dl.item_id, dl.base_qty as qty, dl.source_line_id
+      from document_line dl
+      join document d on d.id = dl.document_id
+     where d.doc_type = ${fulfilmentType}
+       and d.status = 'POSTED'
+       and d.source_document_id = ${orderId}
+     order by d.posting_date, d.doc_no, dl.line_no`;
+
+  // A fulfilment line that names the order line it satisfies is credited to
+  // that line. One that does not — anything posted before the reference
+  // existed, and everything the seed writes — names only the item, so it is
+  // spread across that item's order lines in line order, capped at what each
+  // asked for. Same rule the GR/IR matcher uses for the same reason: the
+  // alternative is a screen that reports nothing delivered while the chain
+  // plainly shows a delivery.
+  const done = new Map<string, number>();
+  const pool = new Map<string, number>();
+
+  for (const f of fulfilled) {
+    const q = Number(f.qty);
+    if (f.source_line_id) {
+      done.set(f.source_line_id, (done.get(f.source_line_id) ?? 0) + q);
+    } else {
+      pool.set(f.item_id, (pool.get(f.item_id) ?? 0) + q);
+    }
+  }
+
+  return lines.map((l: any) => {
+    const ordered = Number(l.ordered);
+    let got = done.get(l.id) ?? 0;
+
+    const spare = pool.get(l.item_id) ?? 0;
+    if (spare > 0 && got < ordered) {
+      const take = Math.min(spare, ordered - got);
+      pool.set(l.item_id, spare - take);
+      got += take;
+    }
+
+    return { ...l, fulfilled: got };
+  });
+}
+
+// ------------------------------------------------------- consignment --
+
+/**
+ * Every consignment agreement, with its item lines nested — the settlement
+ * rule each item is received under, and how much of it is currently on
+ * consigned stock (received minus consumed, derived rather than stored, the
+ * same as every other on-hand figure in this app).
+ */
+export async function getConsignmentAgreements(companyId: string) {
+  return sql`
+    select ag.id, ag.memo, ag.created_at,
+           p.id as partner_id, p.code as partner_code, p.name as partner_name,
+           coalesce(json_agg(json_build_object(
+             'lineId', al.id,
+             'itemId', i.id, 'itemCode', i.code, 'itemName', i.name,
+             'pricingMethod', al.pricing_method, 'pricingValue', al.pricing_value,
+             'isActive', al.is_active,
+             'onHand', coalesce(lot.on_hand, 0)
+           ) order by i.code) filter (where al.id is not null), '[]') as lines
+      from consignment_agreement ag
+      join business_partner p on p.id = ag.partner_id
+      left join consignment_agreement_line al on al.agreement_id = ag.id
+      left join item i on i.id = al.item_id
+      left join lateral (
+            select sum(cl.qty_received) - coalesce(sum(consumed.qty), 0) as on_hand
+              from consignment_lot cl
+              left join lateral (
+                    select sum(c.qty) as qty from consignment_lot_consumption c
+                     where c.lot_id = cl.id
+              ) consumed on true
+             where cl.agreement_line_id = al.id
+      ) lot on true
+     where ag.company_id = ${companyId}
+     group by ag.id, ag.memo, ag.created_at, p.id, p.code, p.name
+     order by p.name`;
+}
+
+/**
+ * Suppliers with a consignment agreement on file — the only partners a
+ * consignment receipt can legally name, so this is the receive form's
+ * supplier list rather than every supplier in the company.
+ */
+/**
+ * Suppliers a new consignment agreement could be made with: every active
+ * supplier that does not already have one, since consignment_agreement is
+ * unique per (company, partner).
+ *
+ * This deliberately reads from business_partner rather than from the
+ * agreements themselves. Sourcing it from consignment_agreement — as it was
+ * originally written — meant the "new agreement" dropdown only ever offered
+ * consignors who already had an agreement, so the first one could never be
+ * created through the UI on a database that had suppliers but no agreements.
+ */
+export async function getConsignmentSupplierChoices(companyId: string) {
+  return sql`
+    select p.id, p.code, p.name
+      from business_partner p
+     where p.company_id = ${companyId}
+       and p.is_supplier
+       and p.is_active
+       and not exists (
+             select 1 from consignment_agreement ag
+              where ag.company_id = p.company_id and ag.partner_id = p.id
+           )
+     order by p.code`;
+}
+
+/**
+ * Consigned stock currently on hand, item by item, with the consignor(s) and
+ * rate(s) behind it — the breakdown a consignment sale needs to preview its
+ * settlement, and what the inventory screen shows to make ownership visible
+ * rather than folding consigned units into one on-hand figure that does not
+ * say whose they are.
+ */
+export async function getConsignedStockOnHand(companyId: string) {
+  return sql`
+    select i.id as item_id, i.code as item_code, i.name as item_name,
+           l.id as location_id, l.code as location_code, l.name as location_name,
+           p.id as consignor_id, p.code as consignor_code, p.name as consignor_name,
+           al.pricing_method, al.pricing_value,
+           sum(cl.qty_received) - coalesce(sum(consumed.qty), 0) as on_hand
+      from consignment_lot cl
+      join item i on i.id = cl.item_id
+      join location l on l.id = cl.location_id
+      join consignment_agreement_line al on al.id = cl.agreement_line_id
+      join consignment_agreement ag on ag.id = al.agreement_id
+      join business_partner p on p.id = ag.partner_id
+      left join lateral (
+            select sum(c.qty) as qty from consignment_lot_consumption c
+             where c.lot_id = cl.id
+      ) consumed on true
+     where cl.company_id = ${companyId}
+     group by i.id, i.code, i.name, l.id, l.code, l.name,
+              p.id, p.code, p.name, al.pricing_method, al.pricing_value
+    having sum(cl.qty_received) - coalesce(sum(consumed.qty), 0) > 0.0001
+     order by i.code, l.code`;
+}
+
+/**
+ * Owned on-hand for the same items that carry consigned stock, joined
+ * alongside it — what makes "owned 100 / consigned 50" possible to show as
+ * one line rather than two screens the reader has to reconcile by hand.
+ */
+export async function getOwnedStockForItems(companyId: string, itemIds: string[]) {
+  if (itemIds.length === 0) return [];
+  return sql`
+    select item_id, location_id, qty_on_hand
+      from v_stock_on_hand
+     where company_id = ${companyId} and item_id = any(${itemIds})`;
 }

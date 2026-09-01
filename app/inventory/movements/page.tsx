@@ -37,7 +37,7 @@ export default async function StockMovements({
         <td className="code">{shortDate(r.movement_date)}</td>
         <td className="code">
           {r.document_id ? (
-            <Link href={`/documents/${r.document_id}`} style={{ color: "var(--dr)" }}>
+            <Link href={`/documents/${r.document_id}`} style={{ color: "var(--brand)" }}>
               {r.doc_no ?? label(r.doc_type)}
             </Link>
           ) : (

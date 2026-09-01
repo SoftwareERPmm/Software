@@ -45,10 +45,10 @@ export default async function Receive() {
       {orders.size === 0 ? (
         <div className="empty">
           No open purchase order to receive against.{" "}
-          <Link href="/purchases/orders/new" style={{ color: "var(--dr)" }}>New purchase order</Link>
+          <Link href="/purchases/orders/new" style={{ color: "var(--brand)" }}>New purchase order</Link>
           {" "}to start one. If the goods have already arrived with no order
           behind them, use{" "}
-          <Link href="/purchases/receive/new" style={{ color: "var(--dr)" }}>Receive goods</Link>
+          <Link href="/purchases/receive/new" style={{ color: "var(--brand)" }}>Receive goods</Link>
           {" "}above instead.
         </div>
       ) : (

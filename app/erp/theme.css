@@ -1,0 +1,95 @@
+/* Vendored from github.com/MaxxNesta/UIUXtest (erp-ui-scaffold/theme/erp-theme.css).
+   Structure and density only — every value here is a semantic role, and
+   app/erp/bridge.css points those roles at this product's own tokens. Nothing
+   Odoo-branded is taken: --erp-brand is repointed to our own accent below,
+   and the purple, the name and the logo are theirs.
+
+   Kept as a separate file rather than merged into globals.css so the next
+   update from upstream is a diff rather than an archaeology exercise. */
+
+/* ============================================================================
+   ERP THEME — structure only, zero brand opinions.
+   
+   Every value here is a SEMANTIC ROLE, not a colour. Nothing in components/
+   hardcodes a colour, radius, or font — they read these variables only. So to
+   mix this into an existing design system you never touch component code: you
+   point these roles at tokens you already have (see bridge-*.css).
+   
+   The defaults below are deliberately plain greys. They are a fallback, not a
+   design. Override them and this inherits your product's look while keeping
+   Odoo's structure and density.
+   ============================================================================ */
+
+:root {
+  /* ---- roles: surfaces ---- */
+  --erp-bg:            #f8f9fa;   /* app background behind sheets */
+  --erp-surface:       #ffffff;   /* sheets, rows, dialogs */
+  --erp-surface-sunken: #f8f9fa;  /* table headers, group rows, footers */
+  --erp-border:        #dee2e6;
+  --erp-border-strong: #adb5bd;
+
+  /* ---- roles: text ---- */
+  --erp-fg:         #212529;
+  --erp-fg-strong:  #000000;      /* column headers, totals */
+  --erp-fg-muted:   #6c757d;      /* placeholders, zero values, counts */
+
+  /* ---- roles: accent (YOURS — never ship a borrowed brand colour) ---- */
+  --erp-brand:     #2f6f4f;
+  --erp-brand-fg:  #ffffff;
+  --erp-brand-weak: color-mix(in srgb, var(--erp-brand) 14%, transparent);
+
+  /* ---- roles: semantic. Fill + a darkened TEXT variant for AA contrast. ---- */
+  --erp-success: #28a745;  --erp-success-fg: #008818;
+  --erp-info:    #17a2b8;  --erp-info-fg:    #0180a5;
+  --erp-warning: #ffac00;  --erp-warning-fg: #9a6b01;
+  --erp-danger:  #dc3545;  --erp-danger-fg:  #d23f3a;
+
+  /* ---- shape: inherit your system's radius; ERP wants it small ---- */
+  --erp-radius: 4px;
+  --erp-radius-pill: 999px;
+
+  /* ---- type ---- */
+  --erp-font: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+  --erp-font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --erp-text: 14px;
+  --erp-text-sm: 13px;
+  --erp-text-xs: 12px;
+  --erp-leading: 1.5;
+  --erp-weight-med: 500;
+}
+
+/* ============================================================================
+   DENSITY — the one dial worth exposing.
+   
+   Odoo's 40px row is what makes it read as ERP rather than as a web app, but
+   it may be tighter than your product. Set data-density on <html> or on any
+   subtree; scope it to just your ERP routes if the rest of the app is airier.
+   ============================================================================ */
+
+:root, [data-density="odoo"] {
+  --erp-row-h: 40px;  --erp-btn-h: 25px;  --erp-panel-h: 60px;
+  --erp-cell-py: 8px; --erp-cell-pl: 16px; --erp-cell-pr: 5px;
+}
+[data-density="compact"] {
+  --erp-row-h: 32px;  --erp-btn-h: 24px;  --erp-panel-h: 52px;
+  --erp-cell-py: 4px; --erp-cell-pl: 12px; --erp-cell-pr: 4px;
+}
+[data-density="comfortable"] {
+  --erp-row-h: 52px;  --erp-btn-h: 36px;  --erp-panel-h: 68px;
+  --erp-cell-py: 14px; --erp-cell-pl: 20px; --erp-cell-pr: 10px;
+}
+
+/* Dark mode: only the surface/text roles flip. Everything else is inherited,
+   so a bridged design system brings its own dark palette automatically. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --erp-bg: #16181a; --erp-surface: #1d2023; --erp-surface-sunken: #16181a;
+    --erp-border: #32373c; --erp-border-strong: #4b5359;
+    --erp-fg: #e6e8ea; --erp-fg-strong: #ffffff; --erp-fg-muted: #9aa1a8;
+  }
+}
+[data-theme="dark"] {
+  --erp-bg: #16181a; --erp-surface: #1d2023; --erp-surface-sunken: #16181a;
+  --erp-border: #32373c; --erp-border-strong: #4b5359;
+  --erp-fg: #e6e8ea; --erp-fg-strong: #ffffff; --erp-fg-muted: #9aa1a8;
+}

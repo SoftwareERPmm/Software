@@ -33,7 +33,7 @@ export default async function NewStockAdjustment() {
         <span className="page-sub">
           Correct a count — damage, shrinkage, or what the shelf actually
           holds versus what the ledger says.{" "}
-          <Link href="/documents?type=STOCK_ADJUSTMENT" style={{ color: "var(--dr)" }}>
+          <Link href="/documents?type=STOCK_ADJUSTMENT" style={{ color: "var(--brand)" }}>
             Past adjustments
           </Link>
         </span>
