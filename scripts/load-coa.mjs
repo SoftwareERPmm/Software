@@ -161,10 +161,14 @@ const SYSTEM = {
   PURCHASE_PRICE_VARIANCE: "5050", PURCHASE_DISCOUNT_RECEIVED: "5020",
   SALES_DISCOUNT_ALLOWED: "6300", PROMOTION_EXPENSE: "6320", STOCK_ADJUSTMENT: "5300",
 
-  // These three have homes in the chart already, so they use them rather
-  // than adding accounts nobody asked for. Settlement in another currency is
-  // other income or a miscellaneous cost; a rounding difference is the same.
+  // These have homes in the chart already, so they use them rather than
+  // adding accounts nobody asked for. Settlement in another currency is other
+  // income or a miscellaneous cost; a rounding difference is the same; and a
+  // delivery fee charged to the customer is plainly other income too — it is
+  // money earned for carrying goods, not for selling them, which is the whole
+  // reason it is kept out of 4000 Sales.
   FX_GAIN: "4100", FX_LOSS: "6110", ROUNDING_DIFFERENCE: "6110",
+  DELIVERY_INCOME: "4100",
 };
 
 // COGS points at 5000 "Purchase" — they are the same account here. The
