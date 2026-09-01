@@ -35,7 +35,7 @@ export default async function ReceiveFromCustomer({
         <h1>Receive from a customer</h1>
         <span className="page-sub">
           Choose a customer to see their open invoices, then apply what they have paid against each one.{" "}
-          <Link href="/receivables" style={{ color: "var(--dr)" }}>See everything outstanding</Link>
+          <Link href="/receivables" style={{ color: "var(--brand)" }}>See everything outstanding</Link>
         </span>
       </div>
 

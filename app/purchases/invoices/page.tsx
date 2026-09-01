@@ -67,7 +67,7 @@ export default async function PurchaseInvoices({
     node: (
       <tr className="link">
         <td className="code">
-          <Link href={`/documents/${i.document_id}`} style={{ color: "var(--dr)" }}>
+          <Link href={`/documents/${i.document_id}`} style={{ color: "var(--brand)" }}>
             {i.doc_no ?? "draft"}
           </Link>
         </td>
@@ -106,7 +106,7 @@ export default async function PurchaseInvoices({
           {supplierName ? (
             <>
               Filtered to <strong>{supplierName}</strong>.{" "}
-              <Link href="/purchases/invoices" style={{ color: "var(--dr)" }}>Clear</Link>
+              <Link href="/purchases/invoices" style={{ color: "var(--brand)" }}>Clear</Link>
             </>
           ) : (
             "Manage purchase invoices."

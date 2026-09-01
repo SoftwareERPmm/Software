@@ -79,7 +79,7 @@ export default async function Items() {
           {items.length === 0 ? (
             <div className="empty">
               Nothing yet. Start with a category, then add products inside it.{" "}
-              <Link href="/items/categories" style={{ color: "var(--dr)" }}>Add a category</Link>
+              <Link href="/items/categories" style={{ color: "var(--brand)" }}>Add a category</Link>
             </div>
           ) : (
             <DataTable

@@ -61,7 +61,7 @@ export default async function Deliver() {
                   {(pending as any[]).map((p) => (
                     <tr key={p.id}>
                       <td className="code">
-                        <Link href={`/documents/${p.id}`} style={{ color: "var(--dr)" }}>{p.doc_no}</Link>
+                        <Link href={`/documents/${p.id}`} style={{ color: "var(--brand)" }}>{p.doc_no}</Link>
                       </td>
                       <td className="wrap">{p.partner_name}</td>
                       <td className="code">{shortDate(p.doc_date)}</td>
@@ -85,7 +85,7 @@ export default async function Deliver() {
       {orders.size === 0 ? (
         <div className="empty">
           Nothing outstanding.{" "}
-          <Link href="/sales/orders/new" style={{ color: "var(--dr)" }}>New sales order</Link>
+          <Link href="/sales/orders/new" style={{ color: "var(--brand)" }}>New sales order</Link>
         </div>
       ) : (
         [...orders.values()].map((o) => (

@@ -153,7 +153,7 @@ export default async function Dashboard() {
                         )}
                       </span>
                     </span>
-                    <span className="m" style={{ color: "var(--dr)" }}>View →</span>
+                    <span className="m" style={{ color: "var(--brand)" }}>View →</span>
                   </Link>
                 ))}
               </div>
@@ -318,7 +318,7 @@ export default async function Dashboard() {
         <div className="card">
           <div className="card-head">
             <h2>Recent activity</h2>
-            <Link href="/documents" className="m" style={{ color: "var(--dr)" }}>View all →</Link>
+            <Link href="/documents" className="m" style={{ color: "var(--brand)" }}>View all →</Link>
           </div>
           <div className="card-body">
             <ActivityFeed docs={docs.slice(0, 10) as unknown as ActivityDoc[]} />

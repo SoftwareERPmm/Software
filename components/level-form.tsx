@@ -68,7 +68,7 @@ export function AddCategoryForm({
         <h2>New {label.toLowerCase()}</h2>
         <span className="actions">
           {segment && (
-            <span className="m" style={{ color: "var(--dr)" }}>Code will be {composed}</span>
+            <span className="m" style={{ color: "var(--brand)" }}>Code will be {composed}</span>
           )}
           <button type="button" className="ghost tiny" onClick={() => setOpen(false)}>Cancel</button>
         </span>

@@ -170,3 +170,52 @@ export const ORDER_STATUS_PILL: Record<OrderDisplayStatus, string> = {
   PARTIALLY_FULFILLED: "warn",
   OPEN: "posted",
 };
+
+/**
+ * What the Type column shows, by the section an account sits in.
+ *
+ * The stored `account_type` has six values — ASSET, LIABILITY, EQUITY,
+ * REVENUE, COGS, EXPENSE — because that is what the balance sheet and the
+ * income statement group by. The chart draws finer distinctions than that:
+ * a current asset and a fixed asset are both ASSET, and tax payable is a
+ * LIABILITY however it is filed under.
+ *
+ * So the distinction lives here, in the reading of the chart, rather than in
+ * the enum. Retyping tax as its own kind would put it somewhere other than
+ * liabilities on the balance sheet, which is the one place it certainly
+ * belongs — you owe it.
+ *
+ * An account under no known section falls back to its stored type, which is
+ * what every database still on the seed chart does.
+ */
+export const SECTION_TYPE_LABEL: Record<string, string> = {
+  "1-CA":  "Current Asset",
+  "1-FA":  "Fixed Asset",
+  "1-IA":  "Fixed Asset",
+  "2-CL":  "Liability",
+  "2-LT": "Liability",
+  "3-EQ":  "Equity",
+  "4-SA": "Revenue",
+  "5-CG": "COGS",
+  "6-EX": "Expense",
+  "6-GA":  "Expense",
+  "6-SD":  "Expense",
+  "7-TX": "Tax",
+};
+
+/** Walks up to the nearest section that names a display type. */
+export function accountTypeLabel(
+  account: { parent_id: string | null; account_type: string },
+  all: ReadonlyArray<{ id: string; code: string; parent_id: string | null }>,
+  fallback: Record<string, string>
+): string {
+  const byId = new Map(all.map((a) => [a.id, a]));
+  let node = account.parent_id ? byId.get(account.parent_id) : undefined;
+  let guard = 0;
+  while (node && guard++ < 20) {
+    const label = SECTION_TYPE_LABEL[node.code];
+    if (label) return label;
+    node = node.parent_id ? byId.get(node.parent_id) : undefined;
+  }
+  return fallback[account.account_type] ?? account.account_type;
+}

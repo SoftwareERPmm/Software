@@ -35,7 +35,7 @@ export default async function PaySupplier({
         <h1>Pay a supplier</h1>
         <span className="page-sub">
           Choose a supplier to see their open bills, then apply what you are paying against each one.{" "}
-          <Link href="/payables" style={{ color: "var(--dr)" }}>See everything outstanding</Link>
+          <Link href="/payables" style={{ color: "var(--brand)" }}>See everything outstanding</Link>
         </span>
       </div>
 

@@ -32,8 +32,8 @@ export function RevenueTrendChart({ data }: { data: { month: string; revenue: nu
       <AreaChart data={rows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
         <defs>
           <linearGradient id="revenueFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--dr)" stopOpacity={0.35} />
-            <stop offset="100%" stopColor="var(--dr)" stopOpacity={0.02} />
+            <stop offset="0%" stopColor="var(--brand)" stopOpacity={0.35} />
+            <stop offset="100%" stopColor="var(--brand)" stopOpacity={0.02} />
           </linearGradient>
         </defs>
         <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" vertical={false} />
@@ -43,7 +43,7 @@ export function RevenueTrendChart({ data }: { data: { month: string; revenue: nu
         />
         <YAxis hide />
         <Tooltip content={<ChartTooltip />} cursor={{ stroke: "var(--line)" }} />
-        <Area type="monotone" dataKey="revenue" stroke="var(--dr)" strokeWidth={2} fill="url(#revenueFill)" />
+        <Area type="monotone" dataKey="revenue" stroke="var(--brand)" strokeWidth={2} fill="url(#revenueFill)" />
       </AreaChart>
     </ResponsiveContainer>
   );
@@ -68,7 +68,7 @@ export function RankedBarChart({
           tickFormatter={(v: string) => (v.length > 16 ? `${v.slice(0, 15)}…` : v)}
         />
         <Tooltip content={<ChartTooltip />} cursor={{ fill: "var(--line-soft)" }} />
-        <Bar dataKey="value" fill="var(--dr)" radius={[0, 4, 4, 0]} barSize={16}>
+        <Bar dataKey="value" fill="var(--brand)" radius={[0, 4, 4, 0]} barSize={16}>
           <LabelList
             dataKey="value"
             position="right"
