@@ -2487,3 +2487,130 @@ export async function postAccountOpening(input: {
     "OPENING_BALANCE"
   );
 }
+
+// ------------------------------------------------------- consignment --
+//
+// Goods that arrive but are not yet owned. See db/migrations/0028_consignment
+// for the schema and the reasoning behind the two trigger amendments this
+// document type needed.
+//
+// A consignment receipt records custody, not value: no journal entry, no
+// GR/IR, no Accounts Payable. The purchase - and the payable - is recognized
+// later, when a specific unit actually sells, at the rate the receiving lot
+// was agreed to settle at. That later step is a separate piece of work; this
+// function only gets the goods onto the shelf.
+
+export type ConsignmentReceiptLine = {
+  itemId: string;
+  qty: number;
+  /** Which agreement line this receipt draws its settlement rate from. A
+   *  receipt can only bring in items the agreement actually names. */
+  agreementLineId: string;
+};
+
+export type ConsignmentReceiptInput = {
+  companyId: string;
+  /** The consignor. Must be a supplier with an agreement on file. */
+  partnerId: string;
+  locationId: string;
+  docDate: string;
+  memo?: string | null;
+  reference?: string | null;
+  lines: ConsignmentReceiptLine[];
+};
+
+async function _postConsignmentReceipt(tx: TransactionSql, input: ConsignmentReceiptInput) {
+  if (input.lines.length === 0) throw new Error("A consignment receipt needs at least one line");
+  assertLines(input.lines);
+
+  const { companyId, partnerId, locationId, docDate } = input;
+
+  const [partner] = await tx`
+    select is_supplier, code from business_partner where id = ${partnerId} and company_id = ${companyId}`;
+  if (!partner) throw new Error("Partner not found");
+  if (!partner.is_supplier) throw new Error("Consigned goods can only be received from a supplier");
+
+  const [agreement] = await tx`
+    select id from consignment_agreement where company_id = ${companyId} and partner_id = ${partnerId}`;
+  if (!agreement) throw new Error(`${partner.code} has no consignment agreement on file`);
+
+  const fyRows = await tx`select fn_fiscal_year_for(${companyId}, ${docDate}::date) as fy`;
+  const fiscalYear = fyRows[0]?.fy ?? null;
+  if (!fiscalYear) throw new Error(`No fiscal year covers ${docDate}`);
+
+  // No journal entry will exist for this document, so fn_journal_entry_period
+  // never runs for it and the usual period lock never fires. Checked
+  // directly instead: a closed period should refuse every document dated
+  // into it, not only the ones that happen to touch the ledger.
+  const [period] = await tx`
+    select status from fiscal_period
+     where company_id = ${companyId} and ${docDate}::date between start_date and end_date`;
+  if (!period) throw new Error(`No fiscal period covers ${docDate}`);
+  if (period.status !== "OPEN") {
+    throw new Error(`Fiscal period is ${period.status}; cannot post on ${docDate}`);
+  }
+
+  const noRows = await tx`
+    select fn_next_document_no(${companyId}, 'CONSIGNMENT_RECEIPT', ${fiscalYear}::uuid) as no`;
+  const docNo = noRows[0].no;
+
+  // net_total/gross_total are 0 deliberately, not a $0 sale wearing a real
+  // one's clothes (the free-of-charge bug fixed earlier). This document
+  // genuinely has nothing to total: nothing here is owned yet.
+  const [doc] = await tx`
+    insert into document
+      (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
+       partner_id, location_id, currency, exchange_rate, status,
+       net_total, tax_total, gross_total, memo, posted_at, reference)
+    values
+      (${companyId}, 'CONSIGNMENT_RECEIPT', ${docNo}, ${fiscalYear}, ${docDate}::date,
+       ${docDate}::date, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
+       0, 0, 0, ${input.memo ?? null}, now(), ${input.reference ?? null})
+    returning id`;
+
+  let lineNo = 0;
+  for (const line of input.lines) {
+    lineNo++;
+
+    const [item] = await tx`
+      select id, code, name, base_uom_id, is_stocked from item
+       where id = ${line.itemId} and company_id = ${companyId}`;
+    if (!item) throw new Error(`Line ${lineNo}: item not found`);
+    if (!item.is_stocked) {
+      throw new Error(`Line ${lineNo}: ${item.code} (${item.name}) is not stocked and cannot be received`);
+    }
+
+    const [al] = await tx`
+      select id, item_id, pricing_method, pricing_value from consignment_agreement_line
+       where id = ${line.agreementLineId} and agreement_id = ${agreement.id} and is_active`;
+    if (!al) throw new Error(`Line ${lineNo}: that agreement line does not exist or is not active`);
+    if (al.item_id !== line.itemId) {
+      throw new Error(`Line ${lineNo}: names an agreement line for a different item`);
+    }
+
+    await tx`
+      insert into document_line
+        (company_id, document_id, line_no, item_id, location_id,
+         entered_qty, entered_uom_id, base_qty, unit_price, net_amount, tax_amount, gross_amount)
+      values
+        (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
+         ${line.qty}, ${item.base_uom_id}, ${line.qty}, 0, 0, 0, 0)`;
+
+    await tx`
+      insert into consignment_lot
+        (company_id, item_id, location_id, agreement_line_id, receipt_document_id,
+         pricing_method, pricing_value, received_date, qty_received)
+      values
+        (${companyId}, ${line.itemId}, ${locationId}, ${al.id}, ${doc.id},
+         ${al.pricing_method}, ${al.pricing_value}, ${docDate}::date, ${line.qty})`;
+  }
+
+  // No writeJournal call and journal_entry_id stays null. See the migration
+  // for how fn_document_immutable and fn_document_line_immutable were
+  // amended to still freeze this document once it is POSTED.
+  return { id: doc.id as string, docNo: docNo as string };
+}
+
+export async function postConsignmentReceipt(input: ConsignmentReceiptInput) {
+  return sql.begin((tx) => _postConsignmentReceipt(tx, input));
+}
