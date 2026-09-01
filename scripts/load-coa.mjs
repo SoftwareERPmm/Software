@@ -68,9 +68,16 @@ if (confirm && targetHost !== envHost && named !== targetHost) {
   process.exit(1);
 }
 
-/** code, name, type, postable, flags */
+/** code, name, type, postable, flags
+ *
+ * Section codes are numbered, not lettered, because the chart is read in
+ * `order by code` and letters sort alphabetically: H-CGS lands between H-CA
+ * and H-CL, which puts Cost of Sales second, above the liabilities. The
+ * leading digit matches the account block beneath it and the hyphen sorts
+ * before any digit, so each section lands immediately ahead of its accounts.
+ * They are never displayed — the Code column is blank on a section row. */
 const CHART = [
-  ["H-CA",  "Current Assets",                    "ASSET",     false],
+  ["1-CA",  "Current Assets",                    "ASSET",     false],
   ["1000",  "Cash on Hand",                      "ASSET",     true,  { cash: true }],
   ["1010",  "Cash at Bank",                      "ASSET",     true,  { bank: true }],
   ["1020",  "Petty Cash",                        "ASSET",     true,  { cash: true }],
@@ -78,36 +85,36 @@ const CHART = [
   ["1040",  "Inventory",                         "ASSET",     true],
   ["1050",  "Prepaid Expenses",                  "ASSET",     true],
   ["1060",  "GR/IR Clearing",                    "ASSET",     true,  { added: true }],
-  ["H-FA",  "Non-Current Assets (Fixed Assets)", "ASSET",     false],
+  ["1-FA",  "Non-Current Assets (Fixed Assets)", "ASSET",     false],
   ["1100",  "Land",                              "ASSET",     true],
   ["1110",  "Building",                          "ASSET",     true],
   ["1120",  "Office Equipment",                  "ASSET",     true],
   ["1130",  "Furniture & Fixtures",              "ASSET",     true],
   ["1140",  "Vehicle",                           "ASSET",     true],
   ["1190",  "Accumulated Depreciation",          "ASSET",     true],
-  ["H-IA",  "Intangible Assets",                 "ASSET",     false],
+  ["1-IA",  "Intangible Assets",                 "ASSET",     false],
   ["1200",  "Software",                          "ASSET",     true],
   ["1210",  "Accumulated Amortization",          "ASSET",     true],
-  ["H-CL",  "Current Liabilities",               "LIABILITY", false],
+  ["2-CL",  "Current Liabilities",               "LIABILITY", false],
   ["2000",  "Accounts Payable",                  "LIABILITY", true,  { control: true }],
   ["2010",  "Salary Payable",                    "LIABILITY", true],
   ["2020",  "Tax Payable",                       "LIABILITY", true],
   ["2030",  "Accrued Expenses",                  "LIABILITY", true],
-  ["H-LTL", "Long-Term Liabilities",             "LIABILITY", false],
+  ["2-LT", "Long-Term Liabilities",             "LIABILITY", false],
   ["2040",  "Loan Payable – Short Term",         "LIABILITY", true],
   ["2050",  "Loan Payable – Long Term",          "LIABILITY", true],
-  ["H-EQ",  "Owner Equity",                      "EQUITY",    false],
+  ["3-EQ",  "Owner Equity",                      "EQUITY",    false],
   ["3000",  "Owner's Capital",                   "EQUITY",    true],
   ["3010",  "Owner's Drawing",                   "EQUITY",    true],
   ["3020",  "Retained Earnings",                 "EQUITY",    true],
   ["3030",  "Opening Balance Equity",            "EQUITY",    true,  { added: true }],
-  ["H-SAL", "Sales",                             "REVENUE",   false],
+  ["4-SA", "Sales",                             "REVENUE",   false],
   ["4000",  "Sales",                             "REVENUE",   true],
   ["4010",  "Sales Return",                      "REVENUE",   true],
   ["4020",  "Sales Discount",                    "REVENUE",   true],
   ["4100",  "Other Income",                      "REVENUE",   true],
   ["4110",  "FX Gain on Settlement",             "REVENUE",   true,  { added: true }],
-  ["H-CGS", "Cost of Good Sold",                 "COGS",      false],
+  ["5-CG", "Cost of Good Sold",                 "COGS",      false],
   ["5000",  "Purchase",                          "COGS",      true],
   ["5010",  "Purchase Return",                   "COGS",      true],
   ["5020",  "Purchase Discounts",                "COGS",      true],
@@ -115,8 +122,8 @@ const CHART = [
   ["5040",  "Cost of Goods Sold",                "COGS",      true,  { added: true }],
   ["5050",  "Purchase Price Variance",           "COGS",      true,  { added: true }],
   ["5300",  "Inventory Adjustment",              "COGS",      true],
-  ["H-EXP", "Expense",                           "EXPENSE",   false],
-  ["H-GA",  "General & Administration Expenses", "EXPENSE",   false, { under: "H-EXP" }],
+  ["6-EX", "Expense",                           "EXPENSE",   false],
+  ["6-GA",  "General & Administration Expenses", "EXPENSE",   false, { under: "6-EX" }],
   ["6000",  "Salary",                            "EXPENSE",   true],
   ["6010",  "Rent",                              "EXPENSE",   true],
   ["6020",  "Utilities – Electricity & Water",   "EXPENSE",   true],
@@ -130,13 +137,13 @@ const CHART = [
   ["6160",  "Depreciation Expense",              "EXPENSE",   true],
   ["6170",  "FX Loss on Settlement",             "EXPENSE",   true,  { added: true }],
   ["6180",  "Rounding Difference",               "EXPENSE",   true,  { added: true }],
-  ["H-SD",  "Selling & Distribution Expenses",   "EXPENSE",   false, { under: "H-EXP" }],
+  ["6-SD",  "Selling & Distribution Expenses",   "EXPENSE",   false, { under: "6-EX" }],
   ["6300",  "Discount Allowed",                  "EXPENSE",   true],
   ["6310",  "Advertising Expense",               "EXPENSE",   true],
   ["6320",  "Promotion Expense",                 "EXPENSE",   true],
   ["6330",  "Commission Expenses",               "EXPENSE",   true],
   ["6340",  "Delivery Charges",                  "EXPENSE",   true],
-  ["H-TAX", "Tax Account",                       "LIABILITY", false],
+  ["7-TX", "Tax Account",                       "LIABILITY", false],
   ["7000",  "Commercial Tax Payable",            "LIABILITY", true],
   ["7010",  "Income Tax Payable",                "LIABILITY", true],
 ];

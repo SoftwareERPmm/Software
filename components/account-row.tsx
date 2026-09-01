@@ -4,6 +4,7 @@ import { useActionState, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
 import { ConfirmDelete } from "./confirm-delete";
 import { ACCOUNT_TYPE_LABEL } from "./account-form";
+import { accountTypeLabel } from "@/lib/format";
 
 export type CoaAccount = {
   id: string; code: string; name: string; name_my: string | null;
@@ -167,7 +168,7 @@ export function AccountRow({
         )}
       </td>
       <td style={{ color: "var(--muted)" }}>
-        {isHeading ? "" : (ACCOUNT_TYPE_LABEL[account.account_type] ?? account.account_type)}
+        {isHeading ? "" : accountTypeLabel(account, accounts, ACCOUNT_TYPE_LABEL)}
       </td>
       <td>
         {isHeading && <span className="pill">heading</span>}

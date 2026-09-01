@@ -141,8 +141,22 @@ Difference (6180). A chart without them looks complete and cannot post.
 Two judgement calls recorded so they can be revisited: `COGS` resolves to
 **5040**, not to *5000 Purchase* — inventory here is perpetual FIFO, so
 "Purchase" belongs to a periodic system and is left unused. And the tax
-accounts are typed `LIABILITY`, since the `account_type` enum has no Tax
-member and tax payable is a liability.
+accounts are **stored** as `LIABILITY` while **displaying** as "Tax".
+
+That second one is worth understanding. The `account_type` enum has six
+members because that is what the balance sheet and income statement group by;
+the chart draws finer distinctions than that — a current asset and a fixed
+asset are both `ASSET`. So the displayed type comes from the *section* an
+account sits in (`SECTION_TYPE_LABEL` in `lib/format.ts`), falling back to the
+stored type for any database still on the seed chart. Retyping tax as its own
+kind would move it off the liabilities on the balance sheet, which is the one
+place it certainly belongs — you owe it.
+
+Section codes are numbered (`1-CA`, `2-CL`, `6-GA`…) rather than lettered.
+The chart is read `order by code`, so letters sorted alphabetically and put
+Cost of Sales second, above the liabilities. The leading digit matches the
+account block beneath it and the hyphen sorts ahead of any digit. They are
+never displayed: the Code column is blank on a section row.
 
 **Applied to `dev` only.** `UI-test`, `pilot` and `production` still carry the
 seed chart. A consequence worth knowing: `test-posting`, `test-grir` and
