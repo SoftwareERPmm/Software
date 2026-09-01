@@ -17,11 +17,20 @@
 // customer's own chart, and the two are deliberately separate so that
 // adopting one does not silently rewrite the other.
 //
-// The six accounts marked `added: true` are not in the customer's chart. They
-// are here because the posting engine resolves seventeen roles and raises if
-// any is missing — GR/IR clearing carries every unbilled receipt, price
-// variance absorbs the difference between a receipt and its bill, and so on.
-// A chart without them looks complete and cannot post.
+// Three accounts marked `added: true` are not in the customer's chart. Every
+// other role the engine resolves was pointed at an account the chart already
+// has, so these three are what genuinely has no home in it:
+//
+//   1060 GR/IR Clearing         holds a receipt between the goods arriving
+//                               and the bill for them. Without it a receipt
+//                               would have to credit Payables, claiming a
+//                               debt the supplier has not invoiced.
+//   3030 Opening Balance Equity balances opening balances and nets to zero
+//                               once they are all in. Posting them against
+//                               Owner's Capital instead would overstate it.
+//   5050 Purchase Price Variance absorbs a bill that differs from the
+//                               receipt it settles. Folding it into Purchase
+//                               would hide the difference inside cost.
 
 import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -113,13 +122,11 @@ const CHART = [
   ["4010",  "Sales Return",                      "REVENUE",   true],
   ["4020",  "Sales Discount",                    "REVENUE",   true],
   ["4100",  "Other Income",                      "REVENUE",   true],
-  ["4110",  "FX Gain on Settlement",             "REVENUE",   true,  { added: true }],
   ["5-CG", "Cost of Good Sold",                 "COGS",      false],
   ["5000",  "Purchase",                          "COGS",      true],
   ["5010",  "Purchase Return",                   "COGS",      true],
   ["5020",  "Purchase Discounts",                "COGS",      true],
   ["5030",  "Carriage Inward",                   "COGS",      true],
-  ["5040",  "Cost of Goods Sold",                "COGS",      true,  { added: true }],
   ["5050",  "Purchase Price Variance",           "COGS",      true,  { added: true }],
   ["5300",  "Inventory Adjustment",              "COGS",      true],
   ["6-EX", "Expense",                           "EXPENSE",   false],
@@ -135,8 +142,6 @@ const CHART = [
   ["6100",  "Bank Charges",                      "EXPENSE",   true],
   ["6110",  "Miscellaneous Expenses",            "EXPENSE",   true],
   ["6160",  "Depreciation Expense",              "EXPENSE",   true],
-  ["6170",  "FX Loss on Settlement",             "EXPENSE",   true,  { added: true }],
-  ["6180",  "Rounding Difference",               "EXPENSE",   true,  { added: true }],
   ["6-SD",  "Selling & Distribution Expenses",   "EXPENSE",   false, { under: "6-EX" }],
   ["6300",  "Discount Allowed",                  "EXPENSE",   true],
   ["6310",  "Advertising Expense",               "EXPENSE",   true],
@@ -153,18 +158,25 @@ const CHART = [
 // failure mode migration 0022 exists to record.
 const SYSTEM = {
   GRIR_CLEARING: "1060", OPENING_BALANCE_EQUITY: "3030", RETAINED_EARNINGS: "3020",
-  FX_GAIN: "4110", FX_LOSS: "6170", ROUNDING_DIFFERENCE: "6180",
   PURCHASE_PRICE_VARIANCE: "5050", PURCHASE_DISCOUNT_RECEIVED: "5020",
   SALES_DISCOUNT_ALLOWED: "6300", PROMOTION_EXPENSE: "6320", STOCK_ADJUSTMENT: "5300",
+
+  // These three have homes in the chart already, so they use them rather
+  // than adding accounts nobody asked for. Settlement in another currency is
+  // other income or a miscellaneous cost; a rounding difference is the same.
+  FX_GAIN: "4100", FX_LOSS: "6110", ROUNDING_DIFFERENCE: "6110",
 };
 
-// COGS points at 5040, not at 5000 "Purchase". Inventory here is perpetual
-// FIFO — every delivery posts cost of goods sold as the goods leave — so
-// "Purchase", which belongs to a periodic system, would be the wrong account
-// to accumulate it in and is left unused.
+// COGS points at 5000 "Purchase" — they are the same account here. The
+// customer's chart is written for a periodic system, where purchases
+// accumulate in 5000 and cost of sales is computed at period end. This app is
+// perpetual FIFO: a goods receipt debits Inventory, never Purchase, and cost
+// of goods sold posts as the goods leave. So 5000 is the account doing that
+// job, and a second "Cost of Goods Sold" beside it would be the same thing
+// under two names.
 const DETERMINATION = {
   AR_CONTROL: "1030", AP_CONTROL: "2000", INVENTORY: "1040",
-  COGS: "5040", REVENUE: "4000", SALES_RETURN: "4010",
+  COGS: "5000", REVENUE: "4000", SALES_RETURN: "4010",
 };
 
 // The old chart's accounts, mapped to their home in the new one, so free-of-

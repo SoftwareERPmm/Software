@@ -132,16 +132,17 @@ It refuses outright if the database has posted journal lines, and refuses a
 database other than the one in `.env` unless the host is named — same guard
 `clear.mjs` uses.
 
-**Six accounts are added that the customer's chart does not contain**, because
-the engine resolves seventeen roles and raises if any is missing: GR/IR
-Clearing (1060), Purchase Price Variance (5050), Cost of Goods Sold (5040),
-Opening Balance Equity (3030), FX Gain (4110) / FX Loss (6170), Rounding
-Difference (6180). A chart without them looks complete and cannot post.
+**Three accounts are added that the customer's chart does not contain**: GR/IR
+Clearing (1060), Opening Balance Equity (3030), Purchase Price Variance
+(5050). Every other role the engine resolves points at an account the chart
+already has — an earlier pass added six, including a duplicate "Cost of Goods
+Sold" beside "Purchase" that the user caught: in a perpetual-FIFO system they
+are the same account, so `COGS` now resolves to **5000 Purchase** itself, and
+FX gain/loss and rounding differences land on Other Income (4100) and
+Miscellaneous Expenses (6110) rather than on invented accounts.
 
-Two judgement calls recorded so they can be revisited: `COGS` resolves to
-**5040**, not to *5000 Purchase* — inventory here is perpetual FIFO, so
-"Purchase" belongs to a periodic system and is left unused. And the tax
-accounts are **stored** as `LIABILITY` while **displaying** as "Tax".
+One judgement call left recorded so it can be revisited: the tax accounts are
+**stored** as `LIABILITY` while **displaying** as "Tax".
 
 That second one is worth understanding. The `account_type` enum has six
 members because that is what the balance sheet and income statement group by;
