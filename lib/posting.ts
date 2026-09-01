@@ -1064,6 +1064,7 @@ async function settleConsignmentSales(
   companyId: string,
   docDate: string,
   salesInvoiceId: string,
+  salesInvoiceNo: string,
   deliveryId: string,
   saleLines: ReadonlyArray<{ itemId: string; unitPrice: number }>
 ): Promise<void> {
@@ -1127,7 +1128,7 @@ async function settleConsignmentSales(
         (${companyId}, 'PURCHASE_INVOICE', ${docNo}, ${fiscalYear}, ${docDate}::date,
          ${docDate}::date, ${dueDate}, ${consignorId}, 'MMK', 1, 'POSTED',
          ${total}, 0, ${total},
-         ${"Consignment settlement for " + salesInvoiceId}, now(), ${salesInvoiceId})
+         ${"Consignment settlement for " + salesInvoiceNo}, now(), ${salesInvoiceId})
       returning id`;
 
     const journal: JournalLine[] = [];
@@ -1306,7 +1307,7 @@ async function _postSalesInvoice(
   // finds nothing to settle and returns immediately.
   if (input.deliveryId) {
     await settleConsignmentSales(
-      tx, companyId, docDate, doc.id, input.deliveryId,
+      tx, companyId, docDate, doc.id, docNo, input.deliveryId,
       input.lines.map((l) => ({ itemId: l.itemId, unitPrice: l.unitPrice }))
     );
   }

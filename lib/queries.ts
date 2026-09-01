@@ -1323,3 +1323,97 @@ export async function getOrderProgress(orderId: string, docType: string) {
   });
 }
 
+// ------------------------------------------------------- consignment --
+
+/**
+ * Every consignment agreement, with its item lines nested — the settlement
+ * rule each item is received under, and how much of it is currently on
+ * consigned stock (received minus consumed, derived rather than stored, the
+ * same as every other on-hand figure in this app).
+ */
+export async function getConsignmentAgreements(companyId: string) {
+  return sql`
+    select ag.id, ag.memo, ag.created_at,
+           p.id as partner_id, p.code as partner_code, p.name as partner_name,
+           coalesce(json_agg(json_build_object(
+             'lineId', al.id,
+             'itemId', i.id, 'itemCode', i.code, 'itemName', i.name,
+             'pricingMethod', al.pricing_method, 'pricingValue', al.pricing_value,
+             'isActive', al.is_active,
+             'onHand', coalesce(lot.on_hand, 0)
+           ) order by i.code) filter (where al.id is not null), '[]') as lines
+      from consignment_agreement ag
+      join business_partner p on p.id = ag.partner_id
+      left join consignment_agreement_line al on al.agreement_id = ag.id
+      left join item i on i.id = al.item_id
+      left join lateral (
+            select sum(cl.qty_received) - coalesce(sum(consumed.qty), 0) as on_hand
+              from consignment_lot cl
+              left join lateral (
+                    select sum(c.qty) as qty from consignment_lot_consumption c
+                     where c.lot_id = cl.id
+              ) consumed on true
+             where cl.agreement_line_id = al.id
+      ) lot on true
+     where ag.company_id = ${companyId}
+     group by ag.id, ag.memo, ag.created_at, p.id, p.code, p.name
+     order by p.name`;
+}
+
+/**
+ * Suppliers with a consignment agreement on file — the only partners a
+ * consignment receipt can legally name, so this is the receive form's
+ * supplier list rather than every supplier in the company.
+ */
+export async function getConsignmentSuppliers(companyId: string) {
+  return sql`
+    select p.id, p.code, p.name
+      from consignment_agreement ag
+      join business_partner p on p.id = ag.partner_id
+     where ag.company_id = ${companyId}
+     order by p.name`;
+}
+
+/**
+ * Consigned stock currently on hand, item by item, with the consignor(s) and
+ * rate(s) behind it — the breakdown a consignment sale needs to preview its
+ * settlement, and what the inventory screen shows to make ownership visible
+ * rather than folding consigned units into one on-hand figure that does not
+ * say whose they are.
+ */
+export async function getConsignedStockOnHand(companyId: string) {
+  return sql`
+    select i.id as item_id, i.code as item_code, i.name as item_name,
+           l.id as location_id, l.code as location_code, l.name as location_name,
+           p.id as consignor_id, p.code as consignor_code, p.name as consignor_name,
+           al.pricing_method, al.pricing_value,
+           sum(cl.qty_received) - coalesce(sum(consumed.qty), 0) as on_hand
+      from consignment_lot cl
+      join item i on i.id = cl.item_id
+      join location l on l.id = cl.location_id
+      join consignment_agreement_line al on al.id = cl.agreement_line_id
+      join consignment_agreement ag on ag.id = al.agreement_id
+      join business_partner p on p.id = ag.partner_id
+      left join lateral (
+            select sum(c.qty) as qty from consignment_lot_consumption c
+             where c.lot_id = cl.id
+      ) consumed on true
+     where cl.company_id = ${companyId}
+     group by i.id, i.code, i.name, l.id, l.code, l.name,
+              p.id, p.code, p.name, al.pricing_method, al.pricing_value
+    having sum(cl.qty_received) - coalesce(sum(consumed.qty), 0) > 0.0001
+     order by i.code, l.code`;
+}
+
+/**
+ * Owned on-hand for the same items that carry consigned stock, joined
+ * alongside it — what makes "owned 100 / consigned 50" possible to show as
+ * one line rather than two screens the reader has to reconcile by hand.
+ */
+export async function getOwnedStockForItems(companyId: string, itemIds: string[]) {
+  if (itemIds.length === 0) return [];
+  return sql`
+    select item_id, location_id, qty_on_hand
+      from v_stock_on_hand
+     where company_id = ${companyId} and item_id = any(${itemIds})`;
+}

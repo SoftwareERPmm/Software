@@ -10,9 +10,9 @@ import {
   postSupplierPayment, postCustomerReceipt,
   postCashVoucher, postBankVoucher, postJournalVoucher,
   postCashTransfer, postAccountOpening, postStockAdjustment, postStockTransfer,
-  postSalesReturn, postPurchaseReturn,
+  postSalesReturn, postPurchaseReturn, postConsignmentReceipt,
   type InvoiceLine, type OrderLine, type FulfillmentLine, type Allocation, type VoucherLine,
-  type AdjustmentLine, type ReturnLine, type TransferLine,
+  type AdjustmentLine, type ReturnLine, type TransferLine, type ConsignmentReceiptLine,
 } from "./posting";
 
 export type ActionResult = { error: string } | { ok: true };
@@ -2498,4 +2498,166 @@ export async function deleteAccount(_prev: unknown, fd: FormData): Promise<Actio
 
   revalidatePath("/settings/accounts");
   redirectWithToast("/settings/accounts", "Account deleted");
+}
+
+// ---------------------------------------------------------- consignment --
+
+export async function createConsignmentAgreement(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const partnerId = str(fd, "partner_id");
+    if (!partnerId) return { error: "Choose a consignor" };
+
+    const [existing] = await sql`
+      select id from consignment_agreement where company_id = ${co} and partner_id = ${partnerId}`;
+    if (existing) return { error: "This supplier already has a consignment agreement" };
+
+    await sql`insert into consignment_agreement (company_id, partner_id, memo)
+      values (${co}, ${partnerId}, ${str(fd, "memo") || null})`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/inventory/consignment");
+  redirectWithToast("/inventory/consignment", "Consignment agreement created");
+}
+
+export async function addConsignmentAgreementLine(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const agreementId = str(fd, "agreement_id");
+    const itemId = str(fd, "item_id");
+    const method = str(fd, "pricing_method");
+    const value = Number(fd.get("pricing_value"));
+
+    if (!agreementId || !itemId) return { error: "Choose an item" };
+    if (method !== "PERCENTAGE" && method !== "FIXED") return { error: "Choose a settlement method" };
+    if (!Number.isFinite(value) || value <= 0) return { error: "Enter a settlement value" };
+    if (method === "PERCENTAGE" && value > 100) return { error: "A percentage cannot exceed 100" };
+
+    await sql`
+      insert into consignment_agreement_line (company_id, agreement_id, item_id, pricing_method, pricing_value)
+      values (${co}, ${agreementId}, ${itemId}, ${method}, ${value})`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/inventory/consignment");
+  redirectWithToast("/inventory/consignment", "Item added to the agreement");
+}
+
+function parseConsignmentReceiptLines(fd: FormData): ConsignmentReceiptLine[] {
+  const raw = String(fd.get("lines") ?? "[]");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("Could not read the receipt lines");
+  }
+  if (!Array.isArray(parsed)) throw new Error("Could not read the receipt lines");
+
+  return parsed
+    .map((l: any) => ({
+      itemId: String(l.itemId ?? ""),
+      qty: Number(l.qty),
+      agreementLineId: String(l.agreementLineId ?? ""),
+    }))
+    .filter((l) => l.itemId && l.qty > 0 && l.agreementLineId);
+}
+
+export async function createConsignmentReceipt(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  let docId: string;
+  let toastMsg = "Consignment receipt posted";
+
+  try {
+    const co = await companyId();
+    const lines = parseConsignmentReceiptLines(fd);
+
+    if (lines.length === 0) return { error: "Add at least one line with a quantity" };
+    if (!str(fd, "partner_id")) return { error: "Choose a consignor" };
+    if (!str(fd, "location_id")) return { error: "Choose a warehouse" };
+
+    const result = await postConsignmentReceipt({
+      companyId: co,
+      partnerId: str(fd, "partner_id"),
+      locationId: str(fd, "location_id"),
+      docDate: str(fd, "doc_date"),
+      memo: str(fd, "memo") || null,
+      reference: str(fd, "reference") || null,
+      lines,
+    });
+
+    docId = result.id;
+    toastMsg = `Consignment receipt ${result.docNo} posted`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/documents");
+  revalidatePath("/inventory/consignment");
+  redirectWithToast(`/documents/${docId}`, toastMsg);
+}
+
+/**
+ * A consignment sale is a normal sale whose lines are all forced to draw
+ * consigned stock — a dedicated form rather than a checkbox buried in the
+ * general sales voucher, because the settlement math (consignor, rate,
+ * amount owed, margin) is the entire point of this screen and deserves to
+ * be shown plainly rather than tucked away.
+ */
+export async function createConsignmentSale(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  let docId: string;
+  let toastMsg = "Consignment sale posted";
+
+  try {
+    const co = await companyId();
+    const raw = String(fd.get("lines") ?? "[]");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return { error: "Could not read the sale lines" };
+    }
+    if (!Array.isArray(parsed)) return { error: "Could not read the sale lines" };
+
+    const lines: InvoiceLine[] = parsed
+      .map((l: any) => ({
+        itemId: String(l.itemId ?? ""),
+        qty: Number(l.qty),
+        unitPrice: Number(l.unitPrice),
+        source: "CONSIGNMENT" as const,
+      }))
+      .filter((l) => l.itemId && l.qty > 0);
+
+    if (lines.length === 0) return { error: "Add at least one line with a quantity" };
+    if (!str(fd, "partner_id")) return { error: "Choose a customer" };
+    if (!str(fd, "location_id")) return { error: "Choose a warehouse" };
+
+    const dueDays = Number(fd.get("due_days") ?? 0);
+    const docDate = str(fd, "doc_date");
+    const dueDate = dueDays > 0
+      ? new Date(new Date(docDate).getTime() + dueDays * 86400000).toISOString().slice(0, 10)
+      : null;
+
+    const result = await postSaleWithDelivery({
+      companyId: co,
+      partnerId: str(fd, "partner_id"),
+      locationId: str(fd, "location_id"),
+      docDate,
+      dueDate,
+      memo: str(fd, "memo") || null,
+      reference: str(fd, "reference") || null,
+      lines,
+    });
+
+    docId = result.id;
+    toastMsg = `Consignment sale ${result.docNo} posted`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/documents");
+  revalidatePath("/inventory/consignment");
+  revalidatePath("/purchases/invoices");
+  redirectWithToast(`/documents/${docId}`, toastMsg);
 }
