@@ -792,3 +792,10 @@ input[type="search"]:focus, .searchbox input:focus {
 /* Buttons at ERP height. The 36-40px web default is a third of a row. */
 button, a.btn, .btn { min-height: 27px; }
 button.tiny, .btn.tiny { min-height: 23px; }
+
+/* A chart-of-accounts heading is a section of the chart rather than a row of
+   it: banded, its name carrying the row, and no hover highlight because
+   there is nothing there to click through to. */
+tbody tr.coa-section { background: var(--line-soft); }
+tbody tr.coa-section:hover { background: var(--line-soft); }
+tbody tr.coa-section > td { padding-top: 10px; padding-bottom: 10px; }

@@ -151,17 +151,24 @@ export function AccountRow({
   const isHeading = !account.is_postable;
 
   return (
-    <tr style={isHeading ? { background: "var(--line-soft)" } : undefined}>
-      <td className="code" style={{ paddingLeft: `${1 + depth * 1.4}rem`, fontWeight: isHeading ? 600 : 400 }}>
-        {account.code}
+    <tr className={isHeading ? "coa-section" : undefined}>
+      {/* A heading is a section of the chart, not an account anyone posts to,
+          so it reads as one: the name carries the row and the code and type
+          columns stay empty rather than repeating a number nobody quotes and
+          a type that belongs to the accounts underneath. The code is still
+          there to edit — it is on the Edit form, where changing it belongs. */}
+      <td className="code" style={{ paddingLeft: `${1 + depth * 1.4}rem` }}>
+        {isHeading ? "" : account.code}
       </td>
-      <td className="wrap" style={{ fontWeight: isHeading ? 600 : 400 }}>
-        {account.name}
+      <td className="wrap" style={{ paddingLeft: isHeading ? `${1 + depth * 1.4}rem` : undefined }}>
+        <strong style={{ fontWeight: isHeading ? 700 : 400 }}>{account.name}</strong>
         {account.name_my && (
           <div className="subline" style={{ fontWeight: 400 }}>{account.name_my}</div>
         )}
       </td>
-      <td style={{ color: "var(--muted)" }}>{ACCOUNT_TYPE_LABEL[account.account_type] ?? account.account_type}</td>
+      <td style={{ color: "var(--muted)" }}>
+        {isHeading ? "" : (ACCOUNT_TYPE_LABEL[account.account_type] ?? account.account_type)}
+      </td>
       <td>
         {isHeading && <span className="pill">heading</span>}
         {account.is_control && <> <span className="pill warn">control</span></>}
