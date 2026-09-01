@@ -115,6 +115,41 @@ chrome again.
    feature branch; it builds a preview.
 3. Preview reads **UI-test**, never pilot. Verify by the sidebar company name.
 
+## The customer's chart of accounts
+
+`scripts/load-coa.mjs` loads MTK's own 69-account chart, replacing whatever is
+there. It is **not** seed data: `db/seed.sql` keeps the original 29-account
+chart that the test suites assert against, and the two are deliberately
+separate so adopting one does not silently rewrite the other.
+
+```bash
+node scripts/load-coa.mjs             # dry run — shows the target and what it would add
+node scripts/load-coa.mjs --confirm   # replace the chart
+npx tsx scripts/test-empty.mjs        # prove it still posts
+```
+
+It refuses outright if the database has posted journal lines, and refuses a
+database other than the one in `.env` unless the host is named — same guard
+`clear.mjs` uses.
+
+**Six accounts are added that the customer's chart does not contain**, because
+the engine resolves seventeen roles and raises if any is missing: GR/IR
+Clearing (1060), Purchase Price Variance (5050), Cost of Goods Sold (5040),
+Opening Balance Equity (3030), FX Gain (4110) / FX Loss (6170), Rounding
+Difference (6180). A chart without them looks complete and cannot post.
+
+Two judgement calls recorded so they can be revisited: `COGS` resolves to
+**5040**, not to *5000 Purchase* — inventory here is perpetual FIFO, so
+"Purchase" belongs to a periodic system and is left unused. And the tax
+accounts are typed `LIABILITY`, since the `account_type` enum has no Tax
+member and tax payable is a liability.
+
+**Applied to `dev` only.** `UI-test`, `pilot` and `production` still carry the
+seed chart. A consequence worth knowing: `test-posting`, `test-grir` and
+`test-foc` assert the seed's codes (1300, 1310, 5100) and so **fail on `dev`**
+while passing everywhere else. That is the tests tracking the seed, not the
+ledger breaking — `test-empty` passes on both.
+
 ## The four databases
 
 Neon branches. The company name is the only way to tell them apart from
