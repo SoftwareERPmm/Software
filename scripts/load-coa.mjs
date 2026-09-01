@@ -88,7 +88,11 @@ if (confirm && targetHost !== envHost && named !== targetHost) {
 const CHART = [
   ["1-CA",  "Current Assets",                    "ASSET",     false],
   ["1000",  "Cash on Hand",                      "ASSET",     true,  { cash: true }],
-  ["1010",  "Cash at Bank",                      "ASSET",     true,  { bank: true }],
+  // Both flags, deliberately. is_bank_account puts it in the bank book; the
+  // payment and sales screens ask for is_cash_account, and a bank account you
+  // cannot pay a supplier from is not much of a bank account. The cash book
+  // asks for "cash and not bank", so this still stays out of it.
+  ["1010",  "Cash at Bank",                      "ASSET",     true,  { cash: true, bank: true }],
   ["1020",  "Petty Cash",                        "ASSET",     true,  { cash: true }],
   ["1030",  "Accounts Receivable",               "ASSET",     true,  { control: true }],
   ["1040",  "Inventory",                         "ASSET",     true],
