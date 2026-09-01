@@ -52,6 +52,14 @@ export type SalesInvoiceInput = InvoiceInput & {
   /** Taken at the counter. Creates a receipt document allocated to this invoice. */
   cashIn?: number;
   cashAccountId?: string | null;
+
+  /**
+   * Delivery charged to the customer, posted as Dr AR / Cr delivery income
+   * rather than as revenue on the goods. Left undefined on an invoice that
+   * bills a delivery, the delivery's own fee is billed instead, so the charge
+   * entered when the goods went out is not silently dropped.
+   */
+  deliveryFee?: number;
 };
 
 /** An order commits nothing — no stock movement, no ledger entry. */
@@ -91,6 +99,12 @@ export type FulfillmentInput = {
   sourceDocumentId?: string | null;
   /** When goods actually arrived, if more precise than docDate — receipts only, ignored for deliveries. */
   receivedAt?: string | null;
+  /**
+   * What the customer is charged for delivering the goods — deliveries only.
+   * Recorded here because it is a fact about the delivery, but never posted
+   * here: it becomes income on the sales invoice that bills this delivery.
+   */
+  deliveryFee?: number;
   lines: FulfillmentLine[];
 };
 
@@ -914,11 +928,13 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
     insert into document
       (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
        partner_id, location_id, currency, exchange_rate, status,
-       net_total, tax_total, gross_total, memo, posted_at, reference, source_document_id)
+       net_total, tax_total, gross_total, memo, posted_at, reference, source_document_id,
+       delivery_fee)
     values
       (${companyId}, 'DELIVERY', ${docNo}, ${fiscalYear}, ${docDate}::date,
        ${docDate}::date, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
-       0, 0, 0, ${input.memo ?? null}, now(), ${input.reference ?? null}, ${input.sourceDocumentId ?? null})
+       0, 0, 0, ${input.memo ?? null}, now(), ${input.reference ?? null}, ${input.sourceDocumentId ?? null},
+       ${round4(input.deliveryFee ?? 0)})
     returning id`;
 
   const journal: JournalLine[] = [];
@@ -1227,9 +1243,24 @@ async function _postSalesInvoice(
     select fn_next_document_no(${companyId}, 'SALES_INVOICE', ${fiscalYear}::uuid) as no`;
   const docNo = noRows[0].no;
 
-  const netTotal = round4(
+  const goodsTotal = round4(
     input.lines.reduce((s, l) => s + (l.focReasonId ? 0 : l.qty * l.unitPrice), 0)
   );
+
+  // The fee comes from the delivery unless this invoice states its own. A
+  // charge entered when the goods went out must not be lost just because
+  // whoever raised the invoice did not retype it.
+  let deliveryFee = round4(input.deliveryFee ?? 0);
+  if (input.deliveryFee === undefined && input.deliveryId) {
+    const [d] = await tx`
+      select delivery_fee from document where id = ${input.deliveryId} and company_id = ${companyId}`;
+    deliveryFee = round4(Number(d?.delivery_fee ?? 0));
+  }
+  if (deliveryFee < 0) throw new Error("Delivery fee cannot be negative");
+
+  // The receivable is the goods plus the carriage; the two reach different
+  // accounts on the credit side but the customer owes one sum.
+  const netTotal = round4(goodsTotal + deliveryFee);
 
   // An invoice that bills nothing has no journal entry to write, and until
   // now it failed several steps later with "Journal entry JE-000005 has no
@@ -1269,13 +1300,14 @@ async function _postSalesInvoice(
       (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date, due_date,
        partner_id, location_id, currency, exchange_rate, status,
        net_total, tax_total, gross_total, memo, posted_at,
-       payment_type, salesman_id, reference, to_deliver, source_document_id)
+       payment_type, salesman_id, reference, to_deliver, source_document_id, delivery_fee)
     values
       (${companyId}, 'SALES_INVOICE', ${docNo}, ${fiscalYear}, ${docDate}::date,
        ${docDate}::date, ${dueDate}, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
        ${netTotal}, 0, ${netTotal}, ${input.memo ?? null}, now(),
        ${input.paymentType ?? "CREDIT"}, ${input.salesmanId ?? null},
-       ${input.reference ?? null}, ${input.toDeliver ?? false}, ${input.deliveryId ?? null})
+       ${input.reference ?? null}, ${input.toDeliver ?? false}, ${input.deliveryId ?? null},
+       ${deliveryFee})
     returning id`;
 
   const journal: JournalLine[] = [];
@@ -1307,6 +1339,23 @@ async function _postSalesInvoice(
         select fn_resolve_account_for_item(${companyId}, 'REVENUE', ${line.itemId}) as a`;
       journal.push({ accountId: revenue[0].a, amount: -net });
     }
+  }
+
+  // Carriage is income the company earns for delivering, not part of what the
+  // goods sold for. Sending it to Sales would inflate revenue and quietly
+  // flatter gross margin on the products themselves, which is the number the
+  // business is actually judged on.
+  if (deliveryFee !== 0) {
+    const [income] = await tx`
+      select account_id from system_account
+       where company_id = ${companyId} and role = 'DELIVERY_INCOME'`;
+    if (!income) {
+      throw new Error(
+        "No account is set for delivery income. Point the DELIVERY_INCOME role " +
+        "at an income account before charging a delivery fee."
+      );
+    }
+    journal.push({ accountId: income.account_id, amount: -deliveryFee });
   }
 
   if (netTotal !== 0) {
@@ -1416,6 +1465,11 @@ export async function postSaleWithDelivery(input: SalesInvoiceInput) {
         docDate: input.docDate,
         memo: input.memo,
         reference: input.reference,
+        // Recorded on the delivery as a fact about it; the invoice below
+        // posts it. Passing it to both cannot double count — the delivery
+        // writes no journal, and the invoice uses its own value rather than
+        // reading the delivery's back.
+        deliveryFee: input.deliveryFee,
         lines: toDeliver.map((l) => ({
           itemId: l.itemId, qty: l.qty, focReasonId: l.focReasonId, source: l.source,
         })),
@@ -2508,6 +2562,13 @@ export type SettlementInput = {
   allocations: Allocation[];
   memo?: string | null;
   reference?: string | null;
+  /**
+   * Which branch's cash or bank this settles through. Optional: left unset it
+   * follows the invoices being settled, which is right whenever a payment
+   * covers one branch's bills. The control side never uses this — see
+   * postSettlement.
+   */
+  locationId?: string | null;
 };
 
 async function postSettlement(
@@ -2549,11 +2610,17 @@ async function postSettlement(
     // us. Everything balanced. Every figure was wrong.
     const settles = isPayment ? "PURCHASE_INVOICE" : "SALES_INVOICE";
 
+    // Amount being settled per invoice branch. "" stands for an invoice that
+    // carries no branch — entries posted before the dimension existed — and
+    // is deliberately kept null rather than defaulted, so relieving old AP
+    // does not invent a branch balance that was never raised in one.
+    const controlByLocation = new Map<string, number>();
+
     // Check each invoice still owes what is being applied. Two people paying
     // the same bill at once would otherwise both succeed.
     for (const a of lines) {
       const [inv] = await tx`
-        select d.doc_no, d.doc_type, d.status, d.partner_id, d.gross_total,
+        select d.doc_no, d.doc_type, d.status, d.partner_id, d.gross_total, d.location_id,
                coalesce((select sum(amount) from payment_allocation
                           where invoice_id = d.id), 0) as allocated
           from document d
@@ -2581,7 +2648,25 @@ async function postSettlement(
           `${inv.doc_no} only has ${outstanding} outstanding; ${a.amount} was applied`
         );
       }
+
+      // The branch that raised the payable is the branch it has to be
+      // relieved in. Clearing a Yangon bill against no branch, or against
+      // Mandalay, leaves Yangon's payables showing money it no longer owes
+      // for ever — the invoice credited AP there and nothing ever debits it
+      // back. Grouped so one payment covering several bills from the same
+      // branch still posts a single control line.
+      const key = (inv.location_id as string | null) ?? "";
+      controlByLocation.set(key, round4((controlByLocation.get(key) ?? 0) + a.amount));
     }
+
+    // Which branch's cash moves. Explicit choice wins; otherwise it follows
+    // the invoices, which is right whenever a payment covers one branch's
+    // bills and is the overwhelmingly common case. Genuinely mixed payments
+    // with no choice made stay unattributed on the cash side rather than
+    // being assigned to whichever branch happened to sort first.
+    const settledLocations = [...controlByLocation.keys()].filter((k) => k !== "");
+    const cashLocationId =
+      input.locationId ?? (settledLocations.length === 1 ? settledLocations[0] : null);
 
     const noRows = await tx`
       select fn_next_document_no(${companyId}, ${kind}, ${fiscalYear}::uuid) as no`;
@@ -2590,11 +2675,11 @@ async function postSettlement(
     const [doc] = await tx`
       insert into document
         (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
-         partner_id, currency, exchange_rate, status,
+         partner_id, location_id, currency, exchange_rate, status,
          net_total, tax_total, gross_total, memo, reference, payment_type, posted_at)
       values
         (${companyId}, ${kind}, ${docNo}, ${fiscalYear}, ${docDate}::date, ${docDate}::date,
-         ${partnerId}, 'MMK', 1, 'POSTED',
+         ${partnerId}, ${cashLocationId}, 'MMK', 1, 'POSTED',
          ${total}, 0, ${total}, ${input.memo ?? null}, ${input.reference ?? null},
          'CASH', now())
       returning id`;
@@ -2609,16 +2694,21 @@ async function postSettlement(
     const control = await tx`
       select fn_resolve_control_account(${companyId}, ${controlRole}, ${partnerId}) as a`;
 
-    const journal: JournalLine[] = isPayment
-      ? [
-          { accountId: control[0].a, amount: total, partnerId },
-          { accountId: input.cashAccountId, amount: -total },
-        ]
-      : [
-          { accountId: input.cashAccountId, amount: total },
-          { accountId: control[0].a, amount: -total, partnerId },
-        ];
+    const sign = isPayment ? 1 : -1;
+    const journal: JournalLine[] = [];
+    for (const [key, amount] of controlByLocation) {
+      journal.push({
+        accountId: control[0].a, amount: round4(sign * amount), partnerId,
+        locationId: key === "" ? null : key,
+      });
+    }
+    journal.push({
+      accountId: input.cashAccountId, amount: round4(-sign * total), locationId: cashLocationId,
+    });
 
+    // No default branch is passed. Every line here already states its own,
+    // and a default would overwrite the deliberate null on control lines
+    // relieving invoices that never had a branch.
     const entryId = await writeJournal(
       tx, companyId, docDate, kind, doc.id,
       `${docNo} settling ${lines.length} invoice${lines.length === 1 ? "" : "s"}`,

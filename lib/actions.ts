@@ -938,7 +938,10 @@ export async function createSalesInvoice(_prev: unknown, fd: FormData): Promise<
     const cashIn = num(fd, "cash_in");
     const toDeliver = fd.get("to_deliver") !== null;
     const deliveryId = str(fd, "delivery_id") || null;
-    const roughTotal = lines.reduce((s, l) => s + l.qty * l.unitPrice, 0);
+    const deliveryFee = num(fd, "delivery_fee");
+    // Counted toward what the customer owes, so an invoice that is only a
+    // carriage charge still gets the due date it needs to age.
+    const roughTotal = lines.reduce((s, l) => s + l.qty * l.unitPrice, 0) + deliveryFee;
 
     // An invoice left with no due date can never be flagged overdue no
     // matter how large or how old its balance gets — v_open_item buckets a
@@ -960,6 +963,7 @@ export async function createSalesInvoice(_prev: unknown, fd: FormData): Promise<
       toDeliver,
       cashIn,
       cashAccountId: str(fd, "cash_account_id") || null,
+      deliveryFee,
       lines,
     };
 
@@ -969,7 +973,13 @@ export async function createSalesInvoice(_prev: unknown, fd: FormData): Promise<
     // (delivery and invoice post together). Matching and deferring are
     // mutually exclusive — the form only shows one at a time.
     const result = deliveryId
-      ? await postSalesInvoice({ ...input, deliveryId })
+      ? await postSalesInvoice({
+          ...input, deliveryId,
+          // Blank means "whatever the delivery charged" — the field is only
+          // shown when composing a new delivery, so leaving it empty here
+          // must not wipe a fee entered when the goods went out.
+          deliveryFee: fd.get("delivery_fee") === null ? undefined : deliveryFee,
+        })
       : toDeliver
         ? await postSalesInvoice(input)
         : await postSaleWithDelivery(input);
@@ -1275,6 +1285,8 @@ export async function createDelivery(_prev: unknown, fd: FormData): Promise<Acti
       memo: str(fd, "memo") || null,
       reference: str(fd, "reference") || null,
       sourceDocumentId: str(fd, "source_document_id") || null,
+      // Recorded here, billed by the invoice that follows this delivery.
+      deliveryFee: num(fd, "delivery_fee"),
       lines,
     });
 
@@ -1420,6 +1432,10 @@ async function settle(
     cashAccountId: str(fd, "cash_account_id"),
     reference: str(fd, "reference") || null,
     memo: str(fd, "memo") || null,
+    // Blank means "follow the invoices being settled", which postSettlement
+    // resolves. Only worth setting when a payment spans branches, or when the
+    // cash leaves a different branch from the one that raised the bill.
+    locationId: str(fd, "location_id") || null,
     allocations,
   };
 

@@ -30,7 +30,8 @@ if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
   }
 }
 
-const { postSaleWithDelivery, postPurchaseWithReceipt, postStockTransfer } = await import("../lib/posting.ts");
+const { postSaleWithDelivery, postPurchaseWithReceipt, postStockTransfer, postSupplierPayment } =
+  await import("../lib/posting.ts");
 
 const url = process.env.DATABASE_URL;
 const local = url.includes("localhost") || url.includes("127.0.0.1");
@@ -193,6 +194,56 @@ try {
   const ar = Object.fromEntries(arByBranch.map((r) => [r.code, n(r.ar)]));
   check("receivables split by branch, not just company-wide",
     ar.YGN === 90000 && ar.MDY === 30000, `YGN ${ar.YGN}, MDY ${ar.MDY}`);
+
+  // ---- Settling a bill relieves the branch that raised it ------------------
+  // A payment used to carry no branch at all. Left that way, an invoice would
+  // credit Yangon's payables and the payment would debit nothing in
+  // particular, so Yangon went on reporting money it no longer owed for ever.
+  // The same accounts the payment screens offer. Picking any old asset account
+  // gets refused by fn_journal_line_account_guard, and rightly — a control
+  // account is maintained by the subledger, never posted to by hand.
+  const [cashAcct] = await sql`
+    select id from account
+     where company_id = ${co.id} and is_cash_account and is_active
+     order by code limit 1`;
+
+  const apAt = async (branchCode) => {
+    const [r] = await sql`
+      select coalesce(sum(jl.base_amount), 0) as v
+        from journal_line jl
+        join location w on w.id = jl.location_id
+        join location b on b.id = coalesce(w.parent_id, w.id)
+       where jl.company_id = ${co.id} and b.code = ${branchCode}
+         and jl.partner_id = ${supp.id}
+         and jl.account_id = (select fn_resolve_control_account(${co.id}, 'AP_CONTROL', ${supp.id}))`;
+    return n(r.v);
+  };
+
+  const bill = await postPurchaseWithReceipt({
+    companyId: co.id, partnerId: supp.id, locationId: branches[0].whId,
+    docDate: today, dueDate: null,
+    lines: [{ itemId: item.id, qty: 7, unitPrice: 1000 }],
+  });
+  const owedBefore = await apAt("YGN");
+
+  await postSupplierPayment({
+    companyId: co.id, partnerId: supp.id, docDate: today, cashAccountId: cashAcct.id,
+    allocations: [{ invoiceId: bill.id, amount: 7000 }],
+  });
+  const owedAfter = await apAt("YGN");
+
+  check("paying a Yangon bill clears Yangon's payables, not another branch's",
+    owedAfter - owedBefore === 7000, `${owedBefore} -> ${owedAfter}`);
+
+  const payLines = await sql`
+    select count(*) filter (where jl.location_id is null)::int as unlocated
+      from document d
+      join journal_entry je on je.id = d.journal_entry_id
+      join journal_line jl on jl.journal_entry_id = je.id
+     where d.company_id = ${co.id} and d.doc_type = 'SUPPLIER_PAYMENT'
+       and d.partner_id = ${supp.id}`;
+  check("and every line of that payment carries a branch",
+    payLines[0].unlocated === 0, `${payLines[0].unlocated} unlocated`);
 
   // ---- Inter-branch transfer ----------------------------------------------
   // Moving stock between two warehouses that share one Inventory account is a

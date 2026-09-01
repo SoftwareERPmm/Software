@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getSettlementData, createCustomerReceipt } from "@/lib/actions";
+import { getCompany, getBranches } from "@/lib/queries";
 import { SettlementForm } from "@/components/settlement-form";
 
 export default async function ReceiveFromCustomer({
@@ -9,6 +10,8 @@ export default async function ReceiveFromCustomer({
 }) {
   const { partner, invoice } = await searchParams;
   const { partners, invoices, cashAccounts } = await getSettlementData("receive");
+  const company = await getCompany();
+  const branches = company ? await getBranches(company.id) : [];
   const today = new Date().toISOString().slice(0, 10);
 
   if (partners.length === 0 || cashAccounts.length === 0) {
@@ -45,6 +48,7 @@ export default async function ReceiveFromCustomer({
         partners={partners as never}
         invoices={invoices as never}
         cashAccounts={cashAccounts as never}
+        branches={branches as never}
         today={today}
         initialPartnerId={partner}
         initialInvoiceId={invoice}

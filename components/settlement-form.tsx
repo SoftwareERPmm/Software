@@ -5,6 +5,7 @@ import type { ActionResult } from "@/lib/actions";
 
 type Partner = { id: string; code: string; name: string };
 type CashAccount = { id: string; code: string; name: string };
+type Branch = { id: string; code: string; name: string };
 type Invoice = {
   document_id: string; doc_no: string; partner_id: string;
   posting_date: string; due_date: string | null;
@@ -27,6 +28,7 @@ export function SettlementForm({
   partners,
   invoices,
   cashAccounts,
+  branches,
   today,
   initialPartnerId,
   initialInvoiceId,
@@ -36,6 +38,7 @@ export function SettlementForm({
   partners: Partner[];
   invoices: Invoice[];
   cashAccounts: CashAccount[];
+  branches: Branch[];
   today: string;
   /** Arriving from a specific document's page — jump straight to it. */
   initialPartnerId?: string;
@@ -112,6 +115,23 @@ export function SettlementForm({
                 ))}
               </select>
             </div>
+
+            {branches.length > 1 && (
+              <div className="field">
+                <label htmlFor="location_id">Branch</label>
+                <select id="location_id" name="location_id" defaultValue="">
+                  <option value="">Follow the invoices</option>
+                  {branches.map((b) => (
+                    <option key={b.id} value={b.id}>{b.code} · {b.name}</option>
+                  ))}
+                </select>
+                <span className="hint">
+                  Which branch&rsquo;s cash moves. Left alone it follows the invoices being
+                  settled, which is right unless one branch pays another&rsquo;s bills. The
+                  payable itself always clears in the branch that raised it.
+                </span>
+              </div>
+            )}
 
             <div className="field">
               <label htmlFor="doc_date">Date</label>
