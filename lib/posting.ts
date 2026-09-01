@@ -743,6 +743,21 @@ function consolidate(lines: JournalLine[]): JournalLine[] {
   return [...byKey.values()].filter((l) => l.amount !== 0);
 }
 
+/**
+ * Writes one balanced journal entry.
+ *
+ * `defaultLocationId` is the branch dimension: the location of the document
+ * being posted, stamped onto every line that does not name one of its own.
+ * It is applied here rather than at each journal.push because there are
+ * twenty-six of those and nine had silently omitted it — including revenue,
+ * which made a per-branch profit report read zero everywhere. Defaulting at
+ * the one choke point means a line has to opt out deliberately, and any
+ * posting written later inherits the dimension without having to remember.
+ *
+ * The default is applied before consolidation so that a line carrying an
+ * explicit location and a defaulted line at that same location still
+ * collapse together, rather than surviving as two rows on one account.
+ */
 async function writeJournal(
   tx: TransactionSql,
   companyId: string,
@@ -750,9 +765,13 @@ async function writeJournal(
   sourceType: string,
   sourceId: string,
   memo: string,
-  lines: JournalLine[]
+  lines: JournalLine[],
+  defaultLocationId?: string | null
 ): Promise<string> {
-  const consolidated = consolidate(lines);
+  const located = defaultLocationId
+    ? lines.map((l) => (l.locationId ? l : { ...l, locationId: defaultLocationId }))
+    : lines;
+  const consolidated = consolidate(located);
 
   const total = round4(consolidated.reduce((s, l) => s + l.amount, 0));
   if (total !== 0) {
@@ -1015,7 +1034,7 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
   // stays null; fn_document_posting_required (0029) knows to permit that
   // specifically when every line on the document is consignment-sourced.
   const entryId = journal.length > 0
-    ? await writeJournal(tx, companyId, docDate, "DELIVERY", doc.id, `${docNo} delivery`, journal)
+    ? await writeJournal(tx, companyId, docDate, "DELIVERY", doc.id, `${docNo} delivery`, journal, locationId)
     : null;
 
   await tx`
@@ -1066,7 +1085,8 @@ async function settleConsignmentSales(
   salesInvoiceId: string,
   salesInvoiceNo: string,
   deliveryId: string,
-  saleLines: ReadonlyArray<{ itemId: string; unitPrice: number }>
+  saleLines: ReadonlyArray<{ itemId: string; unitPrice: number }>,
+  locationId: string
 ): Promise<void> {
   const consumed = await tx`
     select c.id as consumption_id, c.lot_id, c.qty, l.item_id,
@@ -1122,11 +1142,11 @@ async function settleConsignmentSales(
     const [settleDoc] = await tx`
       insert into document
         (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date, due_date,
-         partner_id, currency, exchange_rate, status,
+         partner_id, location_id, currency, exchange_rate, status,
          net_total, tax_total, gross_total, memo, posted_at, source_document_id)
       values
         (${companyId}, 'PURCHASE_INVOICE', ${docNo}, ${fiscalYear}, ${docDate}::date,
-         ${docDate}::date, ${dueDate}, ${consignorId}, 'MMK', 1, 'POSTED',
+         ${docDate}::date, ${dueDate}, ${consignorId}, ${locationId}, 'MMK', 1, 'POSTED',
          ${total}, 0, ${total},
          ${"Consignment settlement for " + salesInvoiceNo}, now(), ${salesInvoiceId})
       returning id`;
@@ -1166,7 +1186,7 @@ async function settleConsignmentSales(
 
     const entryId = await writeJournal(
       tx, companyId, docDate, "PURCHASE_INVOICE", settleDoc.id,
-      `${docNo} consignment settlement`, journal
+      `${docNo} consignment settlement`, journal, locationId
     );
     await tx`update document set journal_entry_id = ${entryId} where id = ${settleDoc.id}`;
 
@@ -1296,7 +1316,7 @@ async function _postSalesInvoice(
   }
 
   const entryId = await writeJournal(
-    tx, companyId, docDate, "SALES_INVOICE", doc.id, `${docNo} sales invoice`, journal
+    tx, companyId, docDate, "SALES_INVOICE", doc.id, `${docNo} sales invoice`, journal, locationId
   );
 
   await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
@@ -1308,7 +1328,8 @@ async function _postSalesInvoice(
   if (input.deliveryId) {
     await settleConsignmentSales(
       tx, companyId, docDate, doc.id, docNo, input.deliveryId,
-      input.lines.map((l) => ({ itemId: l.itemId, unitPrice: l.unitPrice }))
+      input.lines.map((l) => ({ itemId: l.itemId, unitPrice: l.unitPrice })),
+      locationId
     );
   }
 
@@ -1356,7 +1377,8 @@ async function _postSalesInvoice(
       [
         { accountId: input.cashAccountId as string, amount: cashIn },
         { accountId: ar[0].a, amount: -cashIn, partnerId },
-      ]
+      ],
+      locationId
     );
 
     await tx`update document set journal_entry_id = ${receiptEntry} where id = ${receipt.id}`;
@@ -1562,7 +1584,7 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
   journal.push({ accountId: grir[0].a, amount: -grirAmount, partnerId });
 
   const entryId = await writeJournal(
-    tx, companyId, docDate, "GOODS_RECEIPT", doc.id, `${docNo} goods receipt`, journal
+    tx, companyId, docDate, "GOODS_RECEIPT", doc.id, `${docNo} goods receipt`, journal, locationId
   );
   await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
 
@@ -1756,7 +1778,7 @@ async function _postPurchaseInvoice(
   journal.push({ accountId: ap[0].a, amount: -netTotal, partnerId });
 
   const entryId = await writeJournal(
-    tx, companyId, docDate, "PURCHASE_INVOICE", doc.id, `${docNo} purchase invoice`, journal
+    tx, companyId, docDate, "PURCHASE_INVOICE", doc.id, `${docNo} purchase invoice`, journal, locationId
   );
 
   await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
@@ -1802,7 +1824,8 @@ async function _postPurchaseInvoice(
       [
         { accountId: ap[0].a, amount: cashOut, partnerId },
         { accountId: input.cashAccountId as string, amount: -cashOut },
-      ]
+      ],
+      locationId
     );
 
     await tx`update document set journal_entry_id = ${paymentEntry} where id = ${payment.id}`;
@@ -1977,7 +2000,7 @@ export async function postStockAdjustment(input: AdjustmentInput) {
     journal.push({ accountId: adj[0].a, amount: -netValue, locationId });
 
     const entryId = await writeJournal(
-      tx, companyId, docDate, "STOCK_ADJUSTMENT", doc.id, `${docNo} stock adjustment`, journal
+      tx, companyId, docDate, "STOCK_ADJUSTMENT", doc.id, `${docNo} stock adjustment`, journal, locationId
     );
 
     const absValue = Math.abs(netValue);
@@ -2105,10 +2128,20 @@ export async function postStockTransfer(input: TransferInput) {
         select fn_resolve_account_for_item(${companyId}, 'INVENTORY', ${line.itemId}, null, ${fromLocationId}) as a`;
       const [toAcct] = await tx`
         select fn_resolve_account_for_item(${companyId}, 'INVENTORY', ${line.itemId}, null, ${toLocationId}) as a`;
-      if (fromAcct.a !== toAcct.a) {
-        journal.push({ accountId: toAcct.a, amount: totalCost, locationId: toLocationId });
-        journal.push({ accountId: fromAcct.a, amount: -totalCost, locationId: fromLocationId });
-      }
+      // Both sides are always posted, even when the two warehouses share one
+      // Inventory account. On a company-wide ledger that pair is a genuine
+      // no-op — debit and credit the same account — and it used to be skipped
+      // for exactly that reason. It stopped being a no-op when journal lines
+      // started carrying the branch: the value really does leave one branch's
+      // inventory and arrive in another's, and skipping the entry left the
+      // sending branch's balance sheet holding stock it no longer has while
+      // the receiving branch showed none of what it received.
+      //
+      // The two lines cannot collapse into nothing: consolidate() keys on
+      // location as well as account, and postStockTransfer refuses a transfer
+      // whose two locations are the same, so they always survive as a pair.
+      journal.push({ accountId: toAcct.a, amount: totalCost, locationId: toLocationId });
+      journal.push({ accountId: fromAcct.a, amount: -totalCost, locationId: fromLocationId });
     }
 
     const entryId = journal.length > 0
@@ -2318,7 +2351,7 @@ export async function postSalesReturn(input: ReturnInput) {
     }
 
     const entryId = await writeJournal(
-      tx, companyId, docDate, "SALES_RETURN", doc.id, `${docNo} sales return`, journal
+      tx, companyId, docDate, "SALES_RETURN", doc.id, `${docNo} sales return`, journal, locationId
     );
 
     await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
@@ -2447,7 +2480,7 @@ export async function postPurchaseReturn(input: ReturnInput) {
     journal.push({ accountId: ap[0].a, amount: netTotal, partnerId });
 
     const entryId = await writeJournal(
-      tx, companyId, docDate, "PURCHASE_RETURN", doc.id, `${docNo} purchase return`, journal
+      tx, companyId, docDate, "PURCHASE_RETURN", doc.id, `${docNo} purchase return`, journal, locationId
     );
 
     await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;

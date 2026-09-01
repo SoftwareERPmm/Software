@@ -34,7 +34,7 @@ export function AddLocationForm({
   return (
     <div className="card">
       <div className="card-head">
-        <h2>New location</h2>
+        <h2>Add new Branch or Warehouse</h2>
         <span className="actions">
           <button type="button" className="ghost tiny" onClick={() => setOpen(false)}>Cancel</button>
         </span>
@@ -60,7 +60,7 @@ export function AddLocationForm({
                   type="radio" name="kind" value="office" checked={kind === "office"}
                   onChange={() => setKind("office")}
                 />
-                Office — a site that doesn&rsquo;t hold stock itself
+                Branch — a site that doesn&rsquo;t hold stock itself
               </label>
             </div>
           </div>
@@ -74,7 +74,7 @@ export function AddLocationForm({
             <div className="field">
               <label htmlFor="name">Name</label>
               <input id="name" name="name" type="text" required
-                placeholder={kind === "warehouse" ? "Main Warehouse" : "Mandalay Office"} />
+                placeholder={kind === "warehouse" ? "Main Warehouse" : "Mandalay Branch"} />
             </div>
             <div className="field">
               <label htmlFor="name_my">Name (Burmese)</label>
@@ -83,7 +83,7 @@ export function AddLocationForm({
 
             {kind === "warehouse" && (
               <div className="field">
-                <label htmlFor="parent_id_select">Office</label>
+                <label htmlFor="parent_id_select">Branch</label>
                 <select id="parent_id_select" value={parentId} onChange={(e) => setParentId(e.target.value)}>
                   <option value="">— none, stands on its own —</option>
                   {offices.map((l) => (
@@ -92,8 +92,8 @@ export function AddLocationForm({
                 </select>
                 <span className="hint">
                   {offices.length === 0
-                    ? "No offices yet — this warehouse won't belong to one, which is fine"
-                    : "Which office or site this warehouse belongs to"}
+                    ? "No branches yet — add one first so this warehouse belongs to it"
+                    : "Which branch this warehouse belongs to. One branch can hold many warehouses."}
                 </span>
               </div>
             )}

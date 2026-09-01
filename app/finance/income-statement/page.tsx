@@ -1,5 +1,5 @@
 import { money } from "@/lib/db";
-import { getCompany, getIncomeStatement } from "@/lib/queries";
+import { getCompany, getIncomeStatement, getBranches, getUnassignedBranchActivity, UNASSIGNED_BRANCH } from "@/lib/queries";
 
 function defaultFrom() {
   return `${new Date().getFullYear()}-01-01`;
@@ -11,15 +11,30 @@ function today() {
 export default async function IncomeStatement({
   searchParams,
 }: {
-  searchParams: Promise<{ from?: string; to?: string }>;
+  searchParams: Promise<{ from?: string; to?: string; branch?: string }>;
 }) {
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
-  const { from, to } = await searchParams;
+  const { from, to, branch } = await searchParams;
   const range = { from: from || defaultFrom(), to: to || today() };
 
-  const rows = (await getIncomeStatement(company.id, range.from, range.to)) as unknown as Array<{
+  const branches = (await getBranches(company.id)) as unknown as Array<{
+    id: string; code: string; name: string; warehouse_count: number;
+  }>;
+  // "All branches" is the consolidated company view, and is the default. A
+  // branch id that no longer exists falls back to it rather than showing an
+  // empty statement that looks like a business with no trade.
+  const unassignedLines = await getUnassignedBranchActivity(company.id);
+  const branchId =
+    branch === UNASSIGNED_BRANCH ? UNASSIGNED_BRANCH
+    : branch && branches.some((b) => b.id === branch) ? branch
+    : null;
+  const branchName =
+    branchId === UNASSIGNED_BRANCH ? "No branch"
+    : branches.find((b) => b.id === branchId)?.name ?? "All branches";
+
+  const rows = (await getIncomeStatement(company.id, range.from, range.to, branchId)) as unknown as Array<{
     id: string; code: string; name: string; account_type: "REVENUE" | "COGS" | "EXPENSE"; amount: string;
   }>;
 
@@ -54,11 +69,25 @@ export default async function IncomeStatement({
         <h1>Income statement</h1>
         <span className="page-sub">
           Revenue less cost of goods sold less expense, read straight from the
-          ledger for the period below.
+          ledger for the period below. Choose a branch to see that branch
+          alone, or leave it on all branches for the consolidated company
+          figures — the branches always add up to the company total.
         </span>
       </div>
 
       <form className="row" style={{ marginBottom: "1rem", alignItems: "flex-end" }}>
+        <div className="field">
+          <label htmlFor="branch">Branch</label>
+          <select id="branch" name="branch" defaultValue={branchId ?? ""}>
+            <option value="">All branches (consolidated)</option>
+            {branches.map((b) => (
+              <option key={b.id} value={b.id}>{b.code} · {b.name}</option>
+            ))}
+            {unassignedLines > 0 && (
+              <option value={UNASSIGNED_BRANCH}>— No branch ({unassignedLines} lines) —</option>
+            )}
+          </select>
+        </div>
         <div className="field">
           <label htmlFor="from">From</label>
           <input id="from" name="from" type="date" defaultValue={range.from} />
@@ -74,7 +103,7 @@ export default async function IncomeStatement({
         <div className="card">
           <div className="card-head">
             <h2>Statement</h2>
-            <span className="page-sub">{range.from} to {range.to}</span>
+            <span className="page-sub">{branchName} · {range.from} to {range.to}</span>
           </div>
           <div className="tablewrap">
             <table>

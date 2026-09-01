@@ -6,7 +6,8 @@ import {
   getStockByLocation, getConsignedStockOnHand,
 } from "@/lib/queries";
 import { createReorderPoint, updateReorderPoint, deleteReorderPoint } from "@/lib/actions";
-import { DataTable, type DataRow } from "@/components/data-table";
+import { type DataRow } from "@/components/data-table";
+import { StockTable } from "@/components/stock-table";
 import { AddReorderPointForm } from "@/components/reorder-point-form";
 import { ReorderPointRow } from "@/components/reorder-point-row";
 import { AccountPicker } from "@/components/account-picker";
@@ -71,11 +72,14 @@ export default async function Stock({
     allLocations
       ? incoming.filter((r) => r.item_id === itemId).reduce((s, r) => s + Number(r.incoming_qty), 0)
       : Number(incoming.find((r) => r.item_id === itemId && r.location_id === selectedLocationId)?.incoming_qty ?? 0);
+  // Every consigned row visible under the current location choice. The KPI
+  // counts these rather than the whole company's, or picking a warehouse
+  // would leave the tile reading the same number for every warehouse.
+  const consignedHere = allLocations
+    ? consigned
+    : consigned.filter((r) => r.location_id === selectedLocationId);
   const consignedOf = (itemId: string) =>
-    (allLocations
-      ? consigned.filter((r) => r.item_id === itemId)
-      : consigned.filter((r) => r.item_id === itemId && r.location_id === selectedLocationId)
-    ).reduce((s, r) => s + Number(r.on_hand), 0);
+    consignedHere.filter((r) => r.item_id === itemId).reduce((s, r) => s + Number(r.on_hand), 0);
 
   const stocked = items.filter((i) => i.is_stocked).map((i) => {
     const onHand = onHandOf(i.id, Number(i.qty_on_hand));
@@ -198,9 +202,12 @@ export default async function Stock({
         <div className="kpi">
           <span className="kpi-label"><HandCoins size={13} /> Consigned</span>
           <span className="kpi-value">
-            <Link href="/inventory/consignment" style={{ color: "inherit" }}>{consigned.length}</Link>
+            <Link href="/inventory/consignment" style={{ color: "inherit" }}>{consignedHere.length}</Link>
           </span>
-          <span className="kpi-note">item/location/consignor combination{consigned.length === 1 ? "" : "s"} on hand but not owned</span>
+          <span className="kpi-note">
+            item/location/consignor combination{consignedHere.length === 1 ? "" : "s"} on hand but not owned
+            {!allLocations && " at this location"}
+          </span>
         </div>
       </div>
 
@@ -297,8 +304,9 @@ export default async function Stock({
               <Link href="/items" style={{ color: "var(--brand)" }}>Add an item</Link>
             </div>
           ) : (
-            <DataTable
+            <StockTable
               rows={rows}
+              consignmentItemIds={stocked.filter((i) => i.consignedQty > 0).map((i) => i.id)}
               emptyLabel="No stocked items"
               searchPlaceholder="Search stock…"
               defaultSort={{ key: "code", dir: "asc" }}

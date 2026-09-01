@@ -859,7 +859,59 @@ export async function getLocations(companyId: string) {
  * expense's debit balance both read as a plain positive number, and the
  * three section totals combine with plain subtraction.
  */
-export async function getIncomeStatement(companyId: string, from: string, to: string) {
+/**
+ * Branches: the top of the location tree. A branch is a site that holds no
+ * stock itself and sits under nothing; the warehouses that do hold stock are
+ * its children. Both live in `location` — they are separate rows in a
+ * parent/child relationship, not one row playing two roles, so a branch can
+ * hold many warehouses and a warehouse belongs to exactly one branch.
+ */
+export async function getBranches(companyId: string) {
+  return sql`
+    select b.id, b.code, b.name,
+           count(w.id) filter (where w.is_stock_location)::int as warehouse_count
+      from location b
+      left join location w on w.parent_id = b.id
+     where b.company_id = ${companyId} and b.parent_id is null and b.is_active
+     group by b.id, b.code, b.name
+     order by b.code`;
+}
+
+/**
+ * Restricts a ledger query to one branch, or to everything when no branch is
+ * chosen. A journal line carries the warehouse it happened at, so rolling up
+ * to a branch means walking one step up the tree — and a line posted against
+ * the branch itself (an expense booked centrally, say) counts as its own
+ * branch, which is what coalesce(parent_id, id) says.
+ */
+export const UNASSIGNED_BRANCH = "none";
+
+function branchFilter(branchId?: string | null) {
+  if (!branchId) return sql``;
+  // Entries posted before the branch dimension was stamped carry no location
+  // and belong to no branch. They still count in the consolidated company
+  // figures, so without a way to see them the branches would silently fail to
+  // add up to the company total and there would be nothing on screen saying
+  // why. This makes that remainder selectable instead of invisible.
+  if (branchId === UNASSIGNED_BRANCH) return sql`and jl.location_id is null`;
+  return sql`and exists (
+          select 1 from location w
+           where w.id = jl.location_id
+             and coalesce(w.parent_id, w.id) = ${branchId})`;
+}
+
+/** How much activity carries no branch at all, so a report can say so. */
+export async function getUnassignedBranchActivity(companyId: string) {
+  const [r] = await sql`
+    select count(*)::int as lines
+      from journal_line jl
+     where jl.company_id = ${companyId} and jl.location_id is null`;
+  return Number(r?.lines ?? 0);
+}
+
+export async function getIncomeStatement(
+  companyId: string, from: string, to: string, branchId?: string | null
+) {
   return sql`
     select a.id, a.code, a.name, a.account_type,
            case when fn_is_debit_normal(a.account_type)
@@ -870,6 +922,7 @@ export async function getIncomeStatement(companyId: string, from: string, to: st
      where jl.company_id = ${companyId}
        and a.account_type in ('REVENUE', 'COGS', 'EXPENSE')
        and je.entry_date between ${from}::date and ${to}::date
+       ${branchFilter(branchId)}
      group by a.id, a.code, a.name, a.account_type
     having sum(jl.base_amount) <> 0
      order by a.account_type, a.code`;
@@ -1000,7 +1053,7 @@ export async function getReorderPoints(companyId: string) {
  * is folded in as a "Retained earnings" line — without it Assets would not
  * equal Liabilities + Equity.
  */
-export async function getBalanceSheet(companyId: string, asOf: string) {
+export async function getBalanceSheet(companyId: string, asOf: string, branchId?: string | null) {
   const [rows, netIncomeRows] = await Promise.all([
     sql`
       select a.id, a.code, a.name, a.account_type,
@@ -1012,6 +1065,7 @@ export async function getBalanceSheet(companyId: string, asOf: string) {
        where jl.company_id = ${companyId}
          and a.account_type in ('ASSET', 'LIABILITY', 'EQUITY')
          and je.entry_date <= ${asOf}::date
+         ${branchFilter(branchId)}
        group by a.id, a.code, a.name, a.account_type
       having sum(jl.base_amount) <> 0
        order by a.account_type, a.code`,
@@ -1022,7 +1076,8 @@ export async function getBalanceSheet(companyId: string, asOf: string) {
         join account a on a.id = jl.account_id
        where jl.company_id = ${companyId}
          and a.account_type in ('REVENUE', 'COGS', 'EXPENSE')
-         and je.entry_date <= ${asOf}::date`,
+         and je.entry_date <= ${asOf}::date
+         ${branchFilter(branchId)}`,
   ]);
 
   return { rows, netIncome: Number(netIncomeRows[0]?.net_income ?? 0) };
@@ -1365,13 +1420,29 @@ export async function getConsignmentAgreements(companyId: string) {
  * consignment receipt can legally name, so this is the receive form's
  * supplier list rather than every supplier in the company.
  */
-export async function getConsignmentSuppliers(companyId: string) {
+/**
+ * Suppliers a new consignment agreement could be made with: every active
+ * supplier that does not already have one, since consignment_agreement is
+ * unique per (company, partner).
+ *
+ * This deliberately reads from business_partner rather than from the
+ * agreements themselves. Sourcing it from consignment_agreement — as it was
+ * originally written — meant the "new agreement" dropdown only ever offered
+ * consignors who already had an agreement, so the first one could never be
+ * created through the UI on a database that had suppliers but no agreements.
+ */
+export async function getConsignmentSupplierChoices(companyId: string) {
   return sql`
     select p.id, p.code, p.name
-      from consignment_agreement ag
-      join business_partner p on p.id = ag.partner_id
-     where ag.company_id = ${companyId}
-     order by p.name`;
+      from business_partner p
+     where p.company_id = ${companyId}
+       and p.is_supplier
+       and p.is_active
+       and not exists (
+             select 1 from consignment_agreement ag
+              where ag.company_id = p.company_id and ag.partner_id = p.id
+           )
+     order by p.code`;
 }
 
 /**

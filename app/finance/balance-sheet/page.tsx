@@ -1,5 +1,5 @@
 import { money } from "@/lib/db";
-import { getCompany, getBalanceSheet } from "@/lib/queries";
+import { getCompany, getBalanceSheet, getBranches, getUnassignedBranchActivity, UNASSIGNED_BRANCH } from "@/lib/queries";
 
 function today() {
   return new Date().toISOString().slice(0, 10);
@@ -8,15 +8,27 @@ function today() {
 export default async function BalanceSheet({
   searchParams,
 }: {
-  searchParams: Promise<{ asOf?: string }>;
+  searchParams: Promise<{ asOf?: string; branch?: string }>;
 }) {
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
-  const { asOf: asOfParam } = await searchParams;
+  const { asOf: asOfParam, branch } = await searchParams;
   const asOf = asOfParam || today();
 
-  const { rows, netIncome } = await getBalanceSheet(company.id, asOf);
+  const branches = (await getBranches(company.id)) as unknown as Array<{
+    id: string; code: string; name: string; warehouse_count: number;
+  }>;
+  const unassignedLines = await getUnassignedBranchActivity(company.id);
+  const branchId =
+    branch === UNASSIGNED_BRANCH ? UNASSIGNED_BRANCH
+    : branch && branches.some((b) => b.id === branch) ? branch
+    : null;
+  const branchName =
+    branchId === UNASSIGNED_BRANCH ? "No branch"
+    : branches.find((b) => b.id === branchId)?.name ?? "All branches";
+
+  const { rows, netIncome } = await getBalanceSheet(company.id, asOf, branchId);
   const typed = rows as unknown as Array<{
     id: string; code: string; name: string; account_type: "ASSET" | "LIABILITY" | "EQUITY"; amount: string;
   }>;
@@ -63,6 +75,18 @@ export default async function BalanceSheet({
 
       <form className="row" style={{ marginBottom: "1rem", alignItems: "flex-end" }}>
         <div className="field">
+          <label htmlFor="branch">Branch</label>
+          <select id="branch" name="branch" defaultValue={branchId ?? ""}>
+            <option value="">All branches (consolidated)</option>
+            {branches.map((b) => (
+              <option key={b.id} value={b.id}>{b.code} · {b.name}</option>
+            ))}
+            {unassignedLines > 0 && (
+              <option value={UNASSIGNED_BRANCH}>— No branch ({unassignedLines} lines) —</option>
+            )}
+          </select>
+        </div>
+        <div className="field">
           <label htmlFor="asOf">As of</label>
           <input id="asOf" name="asOf" type="date" defaultValue={asOf} />
         </div>
@@ -73,6 +97,7 @@ export default async function BalanceSheet({
         <div className="card">
           <div className="card-head">
             <h2>Statement</h2>
+            <span className="page-sub">{branchName} · as of {asOf}</span>
             <span className={`pill ${balanced ? "ok" : "overdue"}`}>
               {balanced ? "Balanced" : `Out by ${money(assets - (liabilities + equity))}`}
             </span>

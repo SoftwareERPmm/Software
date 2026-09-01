@@ -1,9 +1,9 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useState, useTransition } from "react";
 import Link from "next/link";
 import { money, qty } from "@/lib/format";
-import type { ActionResult } from "@/lib/actions";
+import { createItemInline, type ActionResult } from "@/lib/actions";
 
 type AgreementLine = {
   lineId: string; itemId: string; itemCode: string; itemName: string;
@@ -28,13 +28,15 @@ const basis = (method: string, value: number | string) =>
 
 export function ConsignmentHub({
   agreements, consignedStock, ownedStock, suppliers, items,
-  createAgreementAction, addLineAction,
+  categories, uoms, createAgreementAction, addLineAction,
 }: {
   agreements: Agreement[];
   consignedStock: ConsignedStockRow[];
   ownedStock: OwnedRow[];
   suppliers: { id: string; code: string; name: string }[];
   items: { id: string; code: string; name: string }[];
+  categories: { id: string; code: string; name: string; parent_id: string | null }[];
+  uoms: { id: string; code: string; name: string }[];
   createAgreementAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   addLineAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
 }) {
@@ -43,6 +45,34 @@ export function ConsignmentHub({
   const [lineState, lineAction] = useActionState<ActionResult | null, FormData>(
     addLineAction as never, null);
   const [newAgreementOpen, setNewAgreementOpen] = useState(false);
+
+  // Items created from here are appended locally so the select can show the
+  // new product straight away, without a round trip that would lose the
+  // half-filled agreement line around it.
+  const [extraItems, setExtraItems] = useState<{ id: string; code: string; name: string }[]>([]);
+  const [creatingItem, setCreatingItem] = useState(false);
+  const [newItemId, setNewItemId] = useState("");
+  const [itemName, setItemName] = useState("");
+  const [itemGroupId, setItemGroupId] = useState("");
+  const [itemUomId, setItemUomId] = useState("");
+  const [itemError, setItemError] = useState<string | null>(null);
+  const [savingItem, startSaveItem] = useTransition();
+
+  const allItems = [...items, ...extraItems];
+
+  function submitNewItem() {
+    setItemError(null);
+    startSaveItem(async () => {
+      const res = await createItemInline({
+        name: itemName, groupId: itemGroupId, uomId: itemUomId, isStocked: true,
+      });
+      if (!res.ok) { setItemError(res.error); return; }
+      setExtraItems((xs) => [...xs, { id: res.item.id, code: res.item.code, name: res.item.name }]);
+      setNewItemId(res.item.id);
+      setCreatingItem(false);
+      setItemName(""); setItemGroupId(""); setItemUomId("");
+    });
+  }
   const [addingLineTo, setAddingLineTo] = useState<string | null>(null);
   const [method, setMethod] = useState<"PERCENTAGE" | "FIXED">("PERCENTAGE");
 
@@ -145,10 +175,17 @@ export function ConsignmentHub({
               <label style={{ display: "block", fontSize: "var(--erp-text-xs)", color: "var(--erp-fg-muted)" }}>
                 Consignor (supplier)
               </label>
-              <select name="partner_id" required>
+              <select name="partner_id" required disabled={suppliers.length === 0}>
                 <option value="">Choose…</option>
                 {suppliers.map((s) => <option key={s.id} value={s.id}>{s.code} · {s.name}</option>)}
               </select>
+              {suppliers.length === 0 && (
+                <div style={{ fontSize: "var(--erp-text-xs)", color: "var(--warn)", marginTop: "0.25rem", maxWidth: 260 }}>
+                  Every supplier already has an agreement. Add a supplier under{" "}
+                  <a href="/partners?role=supplier" style={{ color: "var(--brand)" }}>Master data → Suppliers</a>{" "}
+                  to make another.
+                </div>
+              )}
             </div>
             <div style={{ flex: 1, minWidth: 180 }}>
               <label style={{ display: "block", fontSize: "var(--erp-text-xs)", color: "var(--erp-fg-muted)" }}>
@@ -186,10 +223,16 @@ export function ConsignmentHub({
                   <input type="hidden" name="agreement_id" value={ag.id} />
                   <div>
                     <label style={{ display: "block", fontSize: "var(--erp-text-xs)", color: "var(--erp-fg-muted)" }}>Item</label>
-                    <select name="item_id" required>
+                    <select name="item_id" required value={newItemId}
+                            onChange={(e) => setNewItemId(e.target.value)}>
                       <option value="">Choose…</option>
-                      {items.map((it) => <option key={it.id} value={it.id}>{it.code} · {it.name}</option>)}
+                      {allItems.map((it) => <option key={it.id} value={it.id}>{it.code} · {it.name}</option>)}
                     </select>
+                    <button type="button" className="erp-btn"
+                            style={{ marginTop: "0.3rem", fontSize: "var(--erp-text-xs)" }}
+                            onClick={() => { setCreatingItem((v) => !v); setItemError(null); }}>
+                      {creatingItem ? "Cancel new item" : "+ Create new item"}
+                    </button>
                   </div>
                   <div>
                     <label style={{ display: "block", fontSize: "var(--erp-text-xs)", color: "var(--erp-fg-muted)" }}>Settlement</label>
@@ -208,6 +251,50 @@ export function ConsignmentHub({
                   <button type="submit" className="erp-btn erp-btn-primary">Add</button>
                   {lineState && "error" in lineState && <span style={{ color: "var(--bad)" }}>{lineState.error}</span>}
                 </form>
+              )}
+
+              {addingLineTo === ag.id && creatingItem && (
+                <div style={{ padding: "0.6rem 0.9rem", margin: "0 0.9rem 0.6rem",
+                              border: "1px solid var(--erp-border)", borderRadius: "var(--erp-radius)",
+                              background: "var(--erp-surface-sunken)" }}>
+                  <div style={{ fontSize: "var(--erp-text-xs)", color: "var(--erp-fg-muted)", marginBottom: "0.4rem" }}>
+                    New item — goes into the ordinary item master. Creating it
+                    records what the product is; it does not make the stock yours.
+                    Ownership is decided when the consignment is received.
+                  </div>
+                  <div style={{ display: "flex", gap: "0.6rem", alignItems: "flex-end", flexWrap: "wrap" }}>
+                    <div style={{ flex: 2, minWidth: 180 }}>
+                      <label style={{ display: "block", fontSize: "var(--erp-text-xs)", color: "var(--erp-fg-muted)" }}>Name</label>
+                      <input type="text" value={itemName} placeholder="Sprite 500ml"
+                             onChange={(e) => setItemName(e.target.value)} style={{ width: "100%" }} />
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: "var(--erp-text-xs)", color: "var(--erp-fg-muted)" }}>Category</label>
+                      <select value={itemGroupId} onChange={(e) => setItemGroupId(e.target.value)}>
+                        <option value="">Choose…</option>
+                        {categories.map((c) => <option key={c.id} value={c.id}>{c.code} · {c.name}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: "var(--erp-text-xs)", color: "var(--erp-fg-muted)" }}>Unit</label>
+                      <select value={itemUomId} onChange={(e) => setItemUomId(e.target.value)}>
+                        <option value="">Choose…</option>
+                        {uoms.map((u) => <option key={u.id} value={u.id}>{u.code}</option>)}
+                      </select>
+                    </div>
+                    <button type="button" className="erp-btn erp-btn-primary"
+                            disabled={savingItem || !itemName.trim() || !itemGroupId || !itemUomId}
+                            onClick={submitNewItem}>
+                      {savingItem ? "Creating…" : "Create item"}
+                    </button>
+                  </div>
+                  {categories.length === 0 && (
+                    <div style={{ color: "var(--warn)", fontSize: "var(--erp-text-xs)", marginTop: "0.4rem" }}>
+                      No categories yet — add one under Master data first, so the item has somewhere to file.
+                    </div>
+                  )}
+                  {itemError && <div style={{ color: "var(--bad)", fontSize: "var(--erp-text-sm)", marginTop: "0.4rem" }}>{itemError}</div>}
+                </div>
               )}
 
               {ag.lines.length > 0 && (
