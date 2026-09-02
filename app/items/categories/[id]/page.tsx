@@ -40,7 +40,7 @@ export default async function CategoryLevel({ params }: { params: Promise<{ id: 
           left join item_price p on p.item_id = i.id
          where i.company_id = ${co.id} and i.item_group_id = ${id}
          order by i.code`,
-    sql`select id, code, name from uom where company_id = ${co.id} order by code`,
+    sql`select id, code, name from uom where company_id = ${co.id} and is_active order by code`,
     getBrands(co.id),
   ]);
 

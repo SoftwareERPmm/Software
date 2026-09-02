@@ -788,6 +788,135 @@ export async function createBrandInline(
   }
 }
 
+// --------------------------------------------------------------- units --
+
+/**
+ * Units of measure — Piece, Box, Carton, Kilogram.
+ *
+ * Small, but not cosmetic: a unit is what every quantity of an item is
+ * counted in, so changing one after stock exists changes what the numbers
+ * mean without changing the numbers. That is why an item's base unit is set
+ * once when the item is created and the sheet importer refuses to guess
+ * "Btl" into "Bottle" — and why a unit in use is retired rather than deleted.
+ */
+export async function createUnit(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  const code = str(fd, "code").toUpperCase();
+
+  try {
+    const co = await companyId();
+    const name = str(fd, "name");
+
+    if (!code) return { error: "Code is required" };
+    if (!name) return { error: "Name is required" };
+
+    const dup = await sql`select 1 from uom where company_id = ${co} and code = ${code}`;
+    if (dup.length) return { error: `Code ${code} is already used` };
+
+    await sql`
+      insert into uom (company_id, code, name, name_my)
+      values (${co}, ${code}, ${name}, ${str(fd, "name_my") || null})`;
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/items/units");
+  revalidatePath("/items/new");
+  redirectWithToast("/items/units", "Unit added");
+}
+
+export async function updateUnit(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  const code = str(fd, "code").toUpperCase();
+
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    const name = str(fd, "name");
+
+    if (!id) return { error: "Choose a unit" };
+    if (!code) return { error: "Code is required" };
+    if (!name) return { error: "Name is required" };
+
+    const dup = await sql`
+      select 1 from uom where company_id = ${co} and code = ${code} and id <> ${id}`;
+    if (dup.length) return { error: `Code ${code} is already used` };
+
+    await sql`
+      update uom set
+        code = ${code}, name = ${name}, name_my = ${str(fd, "name_my") || null},
+        is_active = ${fd.get("is_active") === "on"}
+      where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/items/units");
+  redirectWithToast("/items/units", "Unit updated");
+}
+
+/**
+ * Retires a unit without touching a single item that already counts in it.
+ *
+ * Deactivating takes it off the pickers and out of what an import will
+ * accept; everything historic keeps reading exactly as it did, which is the
+ * whole reason this is not a delete.
+ */
+export async function deactivateUnit(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose a unit" };
+
+    await sql`update uom set is_active = false where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/items/units");
+  redirectWithToast("/items/units", "Unit deactivated");
+}
+
+/** Puts back what deactivateUnit retired. Reactivating is always safe, so
+ *  unlike deactivation it carries no guard. */
+export async function activateUnit(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose a unit" };
+
+    await sql`update uom set is_active = true where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/items/units");
+  redirectWithToast("/items/units", "Unit reactivated");
+}
+
+/** Hard delete only succeeds for a unit nothing has ever been counted in.
+ *  Deactivating is the way to retire one that has. */
+export async function deleteUnit(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose a unit" };
+
+    await sql`delete from uom where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    if (isForeignKeyViolation(e)) {
+      return {
+        error: "This unit is in use by an item, a price or a document line — " +
+               "deactivate it instead of deleting",
+      };
+    }
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/items/units");
+  redirectWithToast("/items/units", "Unit deleted");
+}
+
 // ------------------------------------------------- inline item creation --
 
 export type NewItemInput = {
@@ -1753,7 +1882,7 @@ export async function getFormData() {
            from item_group g
            left join item_group p on p.id = g.parent_id
           where g.company_id = ${co} order by g.code`,
-    sql`select id, code, name from uom where company_id = ${co} order by code`,
+    sql`select id, code, name from uom where company_id = ${co} and is_active order by code`,
 
     sql`select id, code, name, name_my, commission_pct from salesman
          where company_id = ${co} and is_active order by code`,
