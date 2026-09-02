@@ -96,13 +96,22 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
   // recorded rather than reconcile anything.
   const isGr = doc.doc_type === "GOODS_RECEIPT" && doc.status === "POSTED";
   const isPi = doc.doc_type === "PURCHASE_INVOICE" && doc.status === "POSTED";
+  // The sales mirror: a delivery moves the goods and a sales invoice bills
+  // them, exactly as a receipt and a purchase invoice do. Same two questions,
+  // so the same panel answers them in the sales vocabulary.
+  const isDel = doc.doc_type === "DELIVERY" && doc.status === "POSTED";
+  const isSi = doc.doc_type === "SALES_INVOICE" && doc.status === "POSTED";
+  /** True on the document that moves goods, false on the one that bills. */
+  const movesGoods = isGr || isDel;
+  const goodsWord = isGr || isPi ? "received" : "delivered";
+  const Goods = goodsWord.replace(/^\w/, (c) => c.toUpperCase());
   const grirOutstanding = (isGr || isPi) ? await isGrirOutstanding(doc.id) : false;
 
   // Line-level settlement: how much of this receipt has been invoiced, or of
   // this invoice received, and by which documents. Replayed through the same
   // matcher the posting engine uses, so the page cannot claim a line is
   // settled that the ledger still holds open.
-  const match = (isGr || isPi) ? await getMatchStatus(doc.id) : null;
+  const match = (isGr || isPi || isDel || isSi) ? await getMatchStatus(doc.id) : null;
   const openToMatch = match ? match.lines.some((l) => l.remaining > 0) : grirOutstanding;
   const needsInvoiceMatch = isGr && openToMatch;
   const needsReceiptMatch = isPi && openToMatch;
@@ -239,9 +248,9 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
           {isInvoice && outstanding === 0 && <span className="pill ok">Settled</span>}
           {match && (
             <span className={`pill ${match.state === "FULL" ? "ok" : match.state === "PARTIAL" ? "warn" : ""}`}>
-              {match.state === "FULL" ? (isGr ? "Fully invoiced" : "Fully received")
-                : match.state === "PARTIAL" ? (isGr ? "Partly invoiced" : "Partly received")
-                : (isGr ? "Not invoiced" : "Not received")}
+              {match.state === "FULL" ? (movesGoods ? "Fully invoiced" : `Fully ${goodsWord}`)
+                : match.state === "PARTIAL" ? (movesGoods ? "Partly invoiced" : `Partly ${goodsWord}`)
+                : (movesGoods ? "Not invoiced" : `Not ${goodsWord}`)}
             </span>
           )}
         </>
@@ -278,13 +287,13 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
       {match && match.lines.length > 0 && (
         <div className="card" style={{ marginBottom: "1.5rem" }}>
           <div className="card-head">
-            <h2>{isGr ? "Invoiced" : "Received"}</h2>
+            <h2>{movesGoods ? "Invoiced" : Goods}</h2>
             <span className={`pill ${match.state === "FULL" ? "ok" : match.state === "PARTIAL" ? "warn" : ""}`}>
               {match.state === "FULL"
-                ? isGr ? "Fully invoiced" : "Fully received"
+                ? movesGoods ? "Fully invoiced" : `Fully ${goodsWord}`
                 : match.state === "PARTIAL"
-                  ? isGr ? "Partly invoiced" : "Partly received"
-                  : isGr ? "Not invoiced" : "Not received"}
+                  ? movesGoods ? "Partly invoiced" : `Partly ${goodsWord}`
+                  : movesGoods ? "Not invoiced" : `Not ${goodsWord}`}
             </span>
           </div>
           <div className="tablewrap">
@@ -292,8 +301,8 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
               <thead>
                 <tr>
                   <th>Item</th>
-                  <th className="r">{isGr ? "Received" : "Invoiced"}</th>
-                  <th className="r">{isGr ? "Invoiced" : "Received"}</th>
+                  <th className="r">{movesGoods ? Goods : "Invoiced"}</th>
+                  <th className="r">{movesGoods ? "Invoiced" : Goods}</th>
                   <th className="r">Remaining</th>
                 </tr>
               </thead>

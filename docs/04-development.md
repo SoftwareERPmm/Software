@@ -85,6 +85,8 @@ npx tsx scripts/test-year-rollover.mjs  # document numbers survive a new fiscal 
 npx tsx scripts/test-item-import.mjs    # the item master from a spreadsheet
 npx tsx scripts/test-voucher-import.mjs # cash and bank receipts from a spreadsheet
 npx tsx scripts/test-units.mjs          # retiring a unit disturbs nothing counting in it
+npx tsx scripts/test-match-direction.mjs    # a receipt and its invoice see each other both ways
+npx tsx scripts/test-purchase-states.mjs    # ordered / received / invoiced / paid, every combination
 ```
 
 Some of these assert the **seed** chart's account codes (1200, 1300, 4100,

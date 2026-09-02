@@ -1269,17 +1269,26 @@ export type MatchStatus = {
  */
 export async function getMatchStatus(documentId: string): Promise<MatchStatus | null> {
   const [doc] = await sql`
-    select id, company_id, doc_type, status from document where id = ${documentId}`;
+    select id, company_id, doc_type, status, source_document_id
+      from document where id = ${documentId}`;
   if (!doc || doc.status !== "POSTED") return null;
 
+  // The sales side is the same shape in different vocabulary: goods move on
+  // one document, the money is billed on another, and either can come first.
+  // A delivery is to a sales invoice what a goods receipt is to a purchase
+  // invoice, so it is tracked by the same code rather than a parallel copy
+  // that would drift.
   const counterpartType =
-    doc.doc_type === "GOODS_RECEIPT" ? "PURCHASE_INVOICE"
+    doc.doc_type === "GOODS_RECEIPT"   ? "PURCHASE_INVOICE"
     : doc.doc_type === "PURCHASE_INVOICE" ? "GOODS_RECEIPT"
+    : doc.doc_type === "DELIVERY"      ? "SALES_INVOICE"
+    : doc.doc_type === "SALES_INVOICE" ? "DELIVERY"
     : null;
   if (!counterpartType) return null;
 
   const lines = await sql`
     select dl.id, dl.item_id, dl.base_qty as qty, dl.net_amount as net,
+           dl.source_line_id,
            i.code as item_code, i.name as item_name, u.code as uom_code
       from document_line dl
       join item i on i.id = dl.item_id
@@ -1290,23 +1299,41 @@ export async function getMatchStatus(documentId: string): Promise<MatchStatus | 
 
   // Counterpart documents in the order they posted, which is the order the
   // ledger settled them in.
+  //
+  // Both directions, because the chain is only ever built one way: a receipt
+  // is posted, and the invoice billing it names the receipt as its source.
+  // Nothing points back. Looking only for "documents whose source is me"
+  // therefore answers correctly from the receipt and wrongly from the
+  // invoice, which reported the goods it was raised from as never having
+  // arrived — and then offered a button to receive them a second time.
   const counterparts = await sql`
-    select d.id, d.doc_no, d.doc_date, dl.item_id, dl.base_qty as qty, dl.source_line_id
+    select d.id, d.doc_no, d.doc_date, dl.id as line_id, dl.item_id,
+           dl.base_qty as qty, dl.source_line_id
       from document_line dl
       join document d on d.id = dl.document_id
      where d.company_id = ${doc.company_id}
        and d.doc_type = ${counterpartType}
        and d.status = 'POSTED'
-       and d.source_document_id = ${documentId}
+       and (d.source_document_id = ${documentId}
+            or d.id = ${doc.source_document_id ?? null})
      order by d.posting_date, d.doc_no, dl.line_no`;
 
   const draw = grirMatcher(lines as unknown as MatchableLine[]);
+
+  // Looking down the chain, a counterpart line names the line it settles.
+  // Looking up it, this document's lines name theirs — so the same link read
+  // backwards is what identifies the counterpart, and line-level matching
+  // stays exact rather than falling back to oldest-first.
+  const inverse = new Map<string, string>();
+  for (const l of lines as any[]) {
+    if (l.source_line_id) inverse.set(l.source_line_id, l.id);
+  }
 
   const settled = new Map<string, number>();
   const matchedBy = new Map<string, MatchedBy[]>();
 
   for (const c of counterparts) {
-    const { taken } = draw(c.item_id, Number(c.qty), c.source_line_id);
+    const { taken } = draw(c.item_id, Number(c.qty), inverse.get(c.line_id) ?? c.source_line_id);
     for (const t of taken) {
       settled.set(t.lineId, (settled.get(t.lineId) ?? 0) + t.qty);
       const list = matchedBy.get(t.lineId) ?? [];
