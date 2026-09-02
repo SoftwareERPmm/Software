@@ -25,9 +25,11 @@ the repo across machines, not just the one they were written on.
 - Never commit or push without an explicit instruction in that message
   ("commit", "push", "push commit"). An earlier approval doesn't carry
   forward to later changes.
-- `main` deploys straight to the live site with no review step, so default to
-  working on a `feature/*` branch unless told otherwise — see "Git branches
-  and what deploys where" below.
+- `main` deploys straight to the live site with no review step. **All work
+  goes on `dev` first** — standing rule set 2026-09-02: code and edit against
+  the `dev` Neon database, commit on the `dev` git branch, push it, then merge
+  `dev` into `main` to go live. See "Git branches and what deploys where"
+  below. Never commit straight onto `main`.
 - Never stage `Software/` — a stray untracked duplicate clone of this same
   repo, stuck on an old commit. Always `git add` explicit paths, never
   `-A`/`.`.
@@ -35,7 +37,7 @@ the repo across machines, not just the one they were written on.
 ## Deployment
 
 - GitHub: `SoftwareERPmm/Software`. `main` is the production branch — Vercel
-  deploys it on every push. `staging` and `feature/*` build previews instead.
+  deploys it on every push. `dev` and `feature/*` build previews instead.
 - Hosting: Vercel project "software" (`prj_4VHZiHWbYM79np3m5ogjsjDY5dKF`),
   team "Kaung Htet's projects" (`team_vPlcInd1S2X9k0g9oQveX4lc`).
 - Database: Neon Postgres, three branches off `main`. Which one is "live" is
@@ -77,18 +79,29 @@ the repo across machines, not just the one they were written on.
 `main` is the production branch: **anything pushed to it is live immediately**,
 with no review step. Work on a branch and merge when it is ready.
 
+`dev` is the integration branch (2026-09-02). It replaced `staging`, which is
+stale and no longer part of the path.
+
 | Push to | Vercel builds | Reads `DATABASE_URL` for | Who sees it |
 | --- | --- | --- | --- |
+| `dev` | Preview (stable branch URL) | Preview → `dev` | you only (SSO) |
 | `feature/*` | Preview (own URL) | Preview → `dev` | you only (SSO) |
-| `staging` | Preview (stable branch URL) | Preview → `dev` | you only (SSO) |
 | `main` | **Production** | Production → `pilot` | everyone |
 
 ```
-git checkout -b feature/x   # work; local npm run dev uses dev
-git push -u origin feature/x   # preview URL, safe to break
-git checkout staging && git merge feature/x && git push   # optional soak
-git checkout main && git merge staging && git push        # goes live
+git checkout dev                                # work here; local npm run dev
+git push origin dev                             # preview URL, safe to break
+git checkout main && git merge dev && git push  # goes live
+git checkout dev                                # go straight back
 ```
+
+The one thing that must not slip: a change needing a migration applies it to
+`pilot` **before** `dev` merges into `main`, not after. Pushing `dev` itself is
+safe at any time — its preview reads the `dev` database, which is also where
+the migration was tested.
+
+A `feature/*` branch is still fine for work risky enough to want isolated, but
+it reaches `main` by merging into `dev` first, never directly.
 
 Preview deployments **must** have `DATABASE_URL` scoped to Preview pointing at
 `dev`. If the Production row is ticked for all environments instead, every
@@ -105,7 +118,9 @@ sidebar company name ("MTK Co Ltd" = pilot, "My Company" = main; both are
 otherwise empty and identical). Never switch while the tester is mid-session —
 their data is safe in `pilot`, but the site would appear to have emptied.
 
-`staging` therefore only buys a deployed environment running `dev` data today.
+`dev` therefore buys a deployed environment running `dev` data — a place to
+see a change working before it is live, which is the whole point of pushing it
+before merging.
 
 ### Planned: two projects, when both must be live at once
 
@@ -115,15 +130,15 @@ and ongoing testing have to coexist:
 
 | Project | Production branch | Production `DATABASE_URL` | Preview | Audience |
 | --- | --- | --- | --- | --- |
-| `software-tester` (new) | `staging` | `pilot` | `dev` | tester |
+| `software-tester` (new) | `dev` | `pilot` | `dev` | tester |
 | `software` (existing) | `main` | `main` | `dev` | real customer |
 
 Both track the same repo, so one `git push` keeps them in step, and the
-promotion path becomes `feature/*` → `staging` (tester validates) → `main`
-(customers). Set the production branch under Settings → Git on each project.
+promotion path becomes `dev` (tester validates) → `main` (customers). Set the
+production branch under Settings → Git on each project.
 
 Order matters when setting it up, or the tester loses access mid-way:
-1. Create `software-tester`, set both env vars, set its branch to `staging`,
+1. Create `software-tester`, set both env vars, set its branch to `dev`,
    deploy, and verify it shows "MTK Co Ltd".
 2. Send the tester that new URL.
 3. Only then repoint `software`'s Production row at `main` and redeploy.

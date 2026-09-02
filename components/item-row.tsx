@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useActionState, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
 import { ConfirmDelete } from "./confirm-delete";
+import { RowMenu } from "./row-menu";
 
 // lib/db.ts opens a real Postgres connection at import time — never import
 // it into a client component. Same formatting as money() there, kept local.
@@ -15,6 +16,9 @@ type Item = {
   item_group_id: string; brand_id: string | null; base_uom_id: string;
   group_name: string; parent_group_name: string | null; brand_name: string | null;
   uom_code: string; is_stocked: boolean; is_active: boolean; sale_price: string | null;
+  last_purchase_price?: string | null;
+  last_purchase_doc_no?: string | null;
+  last_purchase_date?: string | null;
 };
 type Brand = { id: string; code: string; name: string };
 type Uom = { id: string; code: string; name: string };
@@ -58,7 +62,7 @@ export function ItemRow({
   if (editing) {
     return (
       <tr>
-        <td colSpan={8}>
+        <td colSpan={9}>
           <form action={formAction} className="form" style={{ padding: "0.5rem 0" }}>
             {state && "error" in state && <div className="alert">{state.error}</div>}
             <input type="hidden" name="id" value={item.id} />
@@ -134,30 +138,44 @@ export function ItemRow({
       <td style={{ color: "var(--muted)" }}>{item.brand_name ?? "—"}</td>
       <td className="code">{item.uom_code}</td>
       <td className="r">{item.sale_price ? money(item.sale_price) : "—"}</td>
-      <td>
-        <span className="actions">
-          <button type="button" className="ghost tiny" onClick={() => setEditing(true)}>Edit</button>
+      {/* Derived, never stored: the price on the newest posted purchase
+          invoice. The document it came from is shown underneath, because a
+          figure with no provenance invites being read as "the" cost. */}
+      <td className="r">
+        {item.last_purchase_price ? money(item.last_purchase_price) : "—"}
+        {item.last_purchase_doc_no && (
+          <div className="subline" style={{ color: "var(--muted)" }}>
+            {item.last_purchase_doc_no}
+            {item.last_purchase_date ? ` · ${item.last_purchase_date}` : ""}
+          </div>
+        )}
+      </td>
+      <td className="r">
+        <RowMenu label={`Actions for ${item.name}`}>
+          <button type="button" onClick={() => setEditing(true)}>Edit</button>
           {item.is_active ? (
-            <form action={deactFormAction} style={{ display: "inline" }}>
+            <form action={deactFormAction}>
               <input type="hidden" name="id" value={item.id} />
-              <button type="submit" className="warn tiny">Deactivate</button>
+              <button type="submit" className="warn">Deactivate</button>
             </form>
           ) : (
-            <form action={actFormAction} style={{ display: "inline" }}>
+            <form action={actFormAction}>
               <input type="hidden" name="id" value={item.id} />
-              <button type="submit" className="ghost tiny">Reactivate</button>
+              <button type="submit">Reactivate</button>
             </form>
           )}
+          <div className="rowmenu-sep" />
           <ConfirmDelete
             action={delFormAction}
             pending={delPending}
             error={delState && "error" in delState ? delState.error : null}
             title={`Delete ${item.name}?`}
             detail="This cannot be undone."
+            className="danger"
           >
             <input type="hidden" name="id" value={item.id} />
           </ConfirmDelete>
-        </span>
+        </RowMenu>
         {delState && "error" in delState && (
           <div className="hint" style={{ color: "var(--bad)" }}>{delState.error}</div>
         )}

@@ -15,7 +15,7 @@ import {
   postSupplierPayment, postCustomerReceipt,
   postCashVoucher, postBankVoucher, postJournalVoucher,
   postCashTransfer, postAccountOpening, postStockAdjustment, postStockTransfer,
-  importItemsAndOpeningStock, importVouchers,
+  importItems, importVouchers,
   postSalesReturn, postPurchaseReturn, postConsignmentReceipt,
   type InvoiceLine, type OrderLine, type FulfillmentLine, type Allocation, type VoucherLine,
   type AdjustmentLine, type ReturnLine, type TransferLine, type ConsignmentReceiptLine,
@@ -786,6 +786,135 @@ export async function createBrandInline(
     if (isUniqueViolation(e)) return { ok: false, error: "That brand code was just taken — try again" };
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+// --------------------------------------------------------------- units --
+
+/**
+ * Units of measure — Piece, Box, Carton, Kilogram.
+ *
+ * Small, but not cosmetic: a unit is what every quantity of an item is
+ * counted in, so changing one after stock exists changes what the numbers
+ * mean without changing the numbers. That is why an item's base unit is set
+ * once when the item is created and the sheet importer refuses to guess
+ * "Btl" into "Bottle" — and why a unit in use is retired rather than deleted.
+ */
+export async function createUnit(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  const code = str(fd, "code").toUpperCase();
+
+  try {
+    const co = await companyId();
+    const name = str(fd, "name");
+
+    if (!code) return { error: "Code is required" };
+    if (!name) return { error: "Name is required" };
+
+    const dup = await sql`select 1 from uom where company_id = ${co} and code = ${code}`;
+    if (dup.length) return { error: `Code ${code} is already used` };
+
+    await sql`
+      insert into uom (company_id, code, name, name_my)
+      values (${co}, ${code}, ${name}, ${str(fd, "name_my") || null})`;
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/items/units");
+  revalidatePath("/items/new");
+  redirectWithToast("/items/units", "Unit added");
+}
+
+export async function updateUnit(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  const code = str(fd, "code").toUpperCase();
+
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    const name = str(fd, "name");
+
+    if (!id) return { error: "Choose a unit" };
+    if (!code) return { error: "Code is required" };
+    if (!name) return { error: "Name is required" };
+
+    const dup = await sql`
+      select 1 from uom where company_id = ${co} and code = ${code} and id <> ${id}`;
+    if (dup.length) return { error: `Code ${code} is already used` };
+
+    await sql`
+      update uom set
+        code = ${code}, name = ${name}, name_my = ${str(fd, "name_my") || null},
+        is_active = ${fd.get("is_active") === "on"}
+      where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/items/units");
+  redirectWithToast("/items/units", "Unit updated");
+}
+
+/**
+ * Retires a unit without touching a single item that already counts in it.
+ *
+ * Deactivating takes it off the pickers and out of what an import will
+ * accept; everything historic keeps reading exactly as it did, which is the
+ * whole reason this is not a delete.
+ */
+export async function deactivateUnit(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose a unit" };
+
+    await sql`update uom set is_active = false where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/items/units");
+  redirectWithToast("/items/units", "Unit deactivated");
+}
+
+/** Puts back what deactivateUnit retired. Reactivating is always safe, so
+ *  unlike deactivation it carries no guard. */
+export async function activateUnit(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose a unit" };
+
+    await sql`update uom set is_active = true where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/items/units");
+  redirectWithToast("/items/units", "Unit reactivated");
+}
+
+/** Hard delete only succeeds for a unit nothing has ever been counted in.
+ *  Deactivating is the way to retire one that has. */
+export async function deleteUnit(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose a unit" };
+
+    await sql`delete from uom where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    if (isForeignKeyViolation(e)) {
+      return {
+        error: "This unit is in use by an item, a price or a document line — " +
+               "deactivate it instead of deleting",
+      };
+    }
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/items/units");
+  redirectWithToast("/items/units", "Unit deleted");
 }
 
 // ------------------------------------------------- inline item creation --
@@ -1753,7 +1882,7 @@ export async function getFormData() {
            from item_group g
            left join item_group p on p.id = g.parent_id
           where g.company_id = ${co} order by g.code`,
-    sql`select id, code, name from uom where company_id = ${co} order by code`,
+    sql`select id, code, name from uom where company_id = ${co} and is_active order by code`,
 
     sql`select id, code, name, name_my, commission_pct from salesman
          where company_id = ${co} and is_active order by code`,
@@ -2722,7 +2851,7 @@ export async function previewItemImport(
 export async function runItemImport(
   _prev: unknown, fd: FormData
 ): Promise<ActionResult> {
-  let done: { ref: string; itemsCreated: number; itemsMatched: number; stockRows: number };
+  let done: { ref: string; itemsCreated: number; itemsMatched: number };
   try {
     const co = await companyId();
     const content = str(fd, "csv");
@@ -2746,9 +2875,8 @@ export async function runItemImport(
     }
     if (plan.rows.length === 0) return { error: "There is nothing to import" };
 
-    done = await importItemsAndOpeningStock({
+    done = await importItems({
       companyId: co,
-      docDate: str(fd, "doc_date") || new Date().toISOString().slice(0, 10),
       filename,
       rowCount: plan.summary.rows,
       rows: plan.rows,
@@ -2758,12 +2886,10 @@ export async function runItemImport(
   }
 
   revalidatePath("/items");
-  revalidatePath("/items/stock");
-  revalidatePath("/documents");
   redirectWithToast(
     "/items/import",
-    `${done.ref}: ${done.itemsCreated} item${done.itemsCreated === 1 ? "" : "s"} created, ` +
-    `${done.stockRows} stock record${done.stockRows === 1 ? "" : "s"}`
+    `${done.ref}: ${done.itemsCreated} item${done.itemsCreated === 1 ? "" : "s"} created` +
+    (done.itemsMatched > 0 ? `, ${done.itemsMatched} already existed` : "")
   );
 }
 
@@ -2862,6 +2988,121 @@ export async function runVoucherImport(_prev: unknown, fd: FormData): Promise<Ac
  * rather than something the trade recognises, and a person invited to invent
  * one for each of forty brands will not enjoy it.
  */
+export type MissingEntry = {
+  kind: "brand" | "category" | "subcategory";
+  name: string;
+  /** For a sub category: the name of the category it belongs under. */
+  parent?: string;
+};
+
+/**
+ * Registers names an import sheet used that this database does not have.
+ *
+ * Categories first, then sub categories, then brands — a sub category cannot
+ * be created before the category it hangs off, and the same call may be
+ * asked to create both. Within one transaction, so a partial registration
+ * cannot leave a sub category orphaned by a category that failed.
+ *
+ * Nothing here decides that two names mean the same thing. "Coca Cola" and
+ * "Coca-Cola" are registered as two brands if that is what is asked for; the
+ * preview is where the resemblance is pointed out, and choosing is the
+ * user's. Guessing would silently merge two real products, which is worse
+ * than the duplicate it avoids.
+ */
+export async function createMissingMasterData(
+  entries: MissingEntry[]
+): Promise<{ ok: true; created: number } | { ok: false; error: string }> {
+  try {
+    const co = await companyId();
+
+    // A generated code, letters and digits only so it stays typeable, with a
+    // numeric suffix settling the rare collision between two similar names.
+    const codeFor = async (
+      tx: typeof sql, table: "brand" | "item_group", column: "code" | "segment",
+      name: string, fallback: string
+    ) => {
+      const base = name.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) || fallback;
+      let code = base;
+      for (let i = 2; ; i++) {
+        const clash = await tx.unsafe(
+          `select 1 from ${table} where company_id = $1 and ${column} = $2`, [co, code]);
+        if (clash.length === 0) break;
+        code = `${base.slice(0, 12 - String(i).length)}${i}`;
+      }
+      return code;
+    };
+
+    const order = { category: 0, subcategory: 1, brand: 2 } as const;
+    const wanted = entries
+      .filter((e) => e.name?.trim())
+      .map((e) => ({ ...e, name: e.name.trim(), parent: e.parent?.trim() }))
+      .sort((a, b) => order[a.kind] - order[b.kind]);
+    if (wanted.length === 0) return { ok: true, created: 0 };
+
+    let created = 0;
+    await sql.begin(async (tx) => {
+      for (const e of wanted) {
+        if (e.kind === "brand") {
+          const [existing] = await tx`
+            select id from brand where company_id = ${co} and lower(name) = ${e.name.toLowerCase()}`;
+          if (existing) continue;   // added by someone else since the preview
+          const code = await codeFor(tx as never, "brand", "code", e.name, "BRAND");
+          await tx`insert into brand (company_id, code, name) values (${co}, ${code}, ${e.name})`;
+          created++;
+          continue;
+        }
+
+        let parentId: string | null = null;
+        if (e.kind === "subcategory") {
+          if (!e.parent) throw new Error(`"${e.name}" needs the category it belongs under`);
+          const [parent] = await tx`
+            select id from item_group
+             where company_id = ${co} and parent_id is null
+               and lower(name) = ${e.parent.toLowerCase()}`;
+          if (!parent) {
+            // Either the category was not in this batch, or it failed. Saying
+            // so beats creating a second root category with the sub's name.
+            throw new Error(`Category "${e.parent}" does not exist, so "${e.name}" cannot go under it`);
+          }
+          parentId = parent.id;
+        }
+
+        const [existing] = await tx`
+          select id from item_group
+           where company_id = ${co} and lower(name) = ${e.name.toLowerCase()}
+             and parent_id is not distinct from ${parentId}`;
+        if (existing) continue;
+
+        const segment = await codeFor(tx as never, "item_group", "segment", e.name, "CAT");
+        // Composed the same way createCategory does it. A trigger maintains
+        // `code` from the parent chain and this segment, but the composed
+        // value is written here too so the row is right the moment it exists.
+        const [composed] = await tx`
+          select fn_compose_group_code(${parentId}::uuid, ${segment}) as code`;
+        await tx`
+          insert into item_group (company_id, parent_id, segment, code, name)
+          values (${co}, ${parentId}, ${segment}, ${composed.code}, ${e.name})`;
+        created++;
+      }
+    });
+
+    // Already committed. Revalidation is a hint, and letting it throw here
+    // would report failure for master data that now exists — the caller would
+    // show an error and the user would go and find it there.
+    try {
+      revalidatePath("/items/brands");
+      revalidatePath("/items/categories");
+      revalidatePath("/items/subcategories");
+      revalidatePath("/items");
+    } catch {
+      // Outside a request context (scripts, tests). Nothing to revalidate.
+    }
+    return { ok: true, created };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 export async function createMissingBrands(
   names: string[]
 ): Promise<{ ok: true; created: number } | { ok: false; error: string }> {

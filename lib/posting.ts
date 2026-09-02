@@ -3056,7 +3056,7 @@ export async function postConsignmentReceipt(input: ConsignmentReceiptInput) {
 }
 
 // =========================================================================
-// Item and opening-stock import
+// Item import
 // =========================================================================
 
 export type ImportRow = {
@@ -3067,39 +3067,38 @@ export type ImportRow = {
   categoryId: string;
   brandId: string | null;
   uomId: string;
-  locationId: string;
-  qty: number;
-  unitCost: number;
+  /** The item's own piece of the code. `code` is composed from it by trigger
+   *  and is never written here — see migration 0012. */
+  serial: string;
 };
 
 /**
- * Creates the items a spreadsheet describes and stocks them, as one act.
+ * Creates the items a spreadsheet describes, as one act.
  *
  * The whole import is a single transaction. That is the point rather than a
- * detail: an import that stocked three warehouses and failed on the fourth
- * would leave the customer's inventory in a state nobody chose and nobody can
- * see — the file looks imported, the numbers are half right, and the only way
- * to find out is a stock count. Either all of it lands or none of it does.
+ * detail: an import that created four hundred items and failed on the four
+ * hundred and first would leave a half-populated catalogue that looks
+ * imported, and the only way to find out which half arrived is to read it.
+ * Either all of it lands or none of it does.
  *
- * It writes no ledger entries of its own. Opening stock goes through
- * _postStockAdjustment, one document per warehouse, which is what creates the
- * stock movement, the FIFO layer at the imported cost, and the
- * Dr Inventory / Cr Stock Adjustment entry — and which picks up the branch
- * from the warehouse without being told.
+ * It writes nothing to the ledger and moves no stock, because an item is not
+ * a quantity. A new item exists with no stock and no cost until a goods
+ * receipt or an opening stock adjustment gives it both — those are documents,
+ * they post, and they are entered as themselves rather than as columns on a
+ * setup sheet.
  *
  * Rows arrive already validated. This function deliberately re-checks nothing
  * except what only the database can know at the moment of writing, because a
  * second, differently-worded copy of the rules would eventually disagree with
  * the first.
  */
-export async function importItemsAndOpeningStock(input: {
+export async function importItems(input: {
   companyId: string;
-  docDate: string;
   filename: string;
   rowCount: number;
   rows: ImportRow[];
 }) {
-  const { companyId, docDate, filename, rows } = input;
+  const { companyId, filename, rows } = input;
   if (rows.length === 0) throw new Error("There is nothing to import");
 
   return sql.begin(async (tx) => {
@@ -3113,69 +3112,35 @@ export async function importItemsAndOpeningStock(input: {
       values (${companyId}, ${ref}, ${filename}, ${input.rowCount})
       returning id`;
 
-    // ---- items ----------------------------------------------------------
-    // One item per barcode, however many warehouses stock it. A barcode
-    // appearing three times is one product in three places, and creating it
-    // three times is the mistake the whole exercise is meant to avoid.
-    const itemIdByBarcode = new Map<string, string>();
     let created = 0;
+    let matched = 0;
 
     for (const r of rows) {
-      if (itemIdByBarcode.has(r.barcode)) continue;
-      if (r.itemId) { itemIdByBarcode.set(r.barcode, r.itemId); continue; }
+      // A barcode already in the catalogue is left exactly as it is. An
+      // import that quietly rewrote an item's category, brand or code would
+      // edit master data as a side effect of a file someone uploaded to add
+      // something else, which is not what "import items" says it does.
+      if (r.itemId) { matched++; continue; }
 
-      // Serial is what the user would have typed; the code is composed from
-      // it and the category by trigger. Re-read inside the transaction so
-      // items created moments ago by this same import are counted.
-      const [next] = await tx`
-        select coalesce(max(serial::int), 0) + 1 as n
-          from item
-         where company_id = ${companyId} and item_group_id = ${r.categoryId}
-           and serial ~ '^[0-9]+$'`;
-      const serial = String(next.n).padStart(3, "0");
-
-      const [item] = await tx`
+      // The serial the sheet asked for, and the trigger composes the code
+      // from it and the category. A blank Stock ID column was already turned
+      // into the next free number by the validator, which is also what the
+      // preview showed — so this writes what was approved rather than
+      // deciding it a second time and possibly differently.
+      await tx`
         insert into item (company_id, item_group_id, serial, name, barcode,
                           brand_id, base_uom_id, is_stocked, import_batch_id)
-        values (${companyId}, ${r.categoryId}, ${serial}, ${r.name}, ${r.barcode},
-                ${r.brandId}, ${r.uomId}, true, ${batch.id})
-        returning id`;
+        values (${companyId}, ${r.categoryId}, ${r.serial}, ${r.name}, ${r.barcode},
+                ${r.brandId}, ${r.uomId}, true, ${batch.id})`;
 
-      itemIdByBarcode.set(r.barcode, item.id);
       created++;
-    }
-
-    // ---- opening stock --------------------------------------------------
-    // Grouped by warehouse so each one gets a single adjustment document
-    // rather than one per line, which is what a person entering this by hand
-    // would have produced.
-    const byLocation = new Map<string, AdjustmentLine[]>();
-    for (const r of rows) {
-      if (r.qty <= 0) continue;
-      const list = byLocation.get(r.locationId) ?? [];
-      list.push({ itemId: itemIdByBarcode.get(r.barcode)!, qty: r.qty, unitCost: r.unitCost });
-      byLocation.set(r.locationId, list);
-    }
-
-    const documents: string[] = [];
-    for (const [locationId, lines] of byLocation) {
-      const doc = await _postStockAdjustment(tx, {
-        companyId, locationId, docDate,
-        memo: `Opening stock imported from ${filename}`,
-        reference: ref,
-        importBatchId: batch.id,
-        lines,
-      });
-      documents.push(doc.docNo);
     }
 
     return {
       ref,
       batchId: batch.id as string,
       itemsCreated: created,
-      itemsMatched: itemIdByBarcode.size - created,
-      stockRows: rows.filter((r) => r.qty > 0).length,
-      documents,
+      itemsMatched: matched,
     };
   });
 }

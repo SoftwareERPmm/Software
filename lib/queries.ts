@@ -604,11 +604,14 @@ export async function getItems(companyId: string) {
     select i.id, i.code, i.name, i.name_my, i.item_group_id, i.brand_id,
            i.base_uom_id, i.is_stocked, i.is_active,
            g.name as group_name, g.parent_id as group_parent_id,
-           pg.name as parent_group_name,
+           pg.id as parent_group_id, pg.name as parent_group_name,
            b.name as brand_name,
            u.code as uom_code,
            coalesce(s.qty, 0) as qty_on_hand, coalesce(s.val, 0) as value_on_hand,
-           pr.price as sale_price
+           sp.price as sale_price,
+           lp.unit_price as last_purchase_price,
+           lp.doc_no    as last_purchase_doc_no,
+           to_char(lp.doc_date, 'YYYY-MM-DD') as last_purchase_date
       from item i
       join item_group g on g.id = i.item_group_id
       left join item_group pg on pg.id = g.parent_id
@@ -618,7 +621,48 @@ export async function getItems(companyId: string) {
             select item_id, sum(qty_on_hand) as qty, sum(value_on_hand) as val
               from v_stock_on_hand group by item_id
       ) s on s.item_id = i.id
-      left join item_price pr on pr.item_id = i.id
+
+      -- The default selling price: the first price level by sort_order, which
+      -- is the same "first level wins" rule the item form writes with, and its
+      -- most recent price that has actually come into effect.
+      --
+      -- Laterally, and limited to one row. A plain join on item_price has no
+      -- such limit: an item priced at both Retail and Wholesale would come
+      -- back twice and appear twice in the catalogue, with whichever price the
+      -- planner happened to reach first. Two price levels already exist, so
+      -- that was waiting for the first item to be given a second price.
+      left join lateral (
+            select ip.price
+              from item_price ip
+              join price_level pl on pl.id = ip.price_level_id
+             where ip.company_id = i.company_id
+               and ip.item_id = i.id
+               and ip.valid_from <= current_date
+             order by pl.sort_order, ip.valid_from desc
+             limit 1
+      ) sp on true
+
+      -- What was last paid for it, read from the supplier's invoice rather
+      -- than the receipt: the invoice is what the supplier actually charged,
+      -- and where the two differ it is the invoice that is the price. It is
+      -- deliberately null for goods received but not yet billed — that gap is
+      -- real, it is what GR/IR holds, and inventing a figure for it would hide
+      -- exactly the thing worth noticing.
+      --
+      -- Never stored. A purchase price kept on the item master is a second
+      -- source of truth that goes stale the next time the supplier changes it.
+      left join lateral (
+            select dl.unit_price, d.doc_no, d.doc_date
+              from document_line dl
+              join document d on d.id = dl.document_id
+             where dl.item_id = i.id
+               and d.company_id = i.company_id
+               and d.doc_type = 'PURCHASE_INVOICE'
+               and d.status = 'POSTED'
+             order by d.doc_date desc, d.created_at desc, dl.line_no desc
+             limit 1
+      ) lp on true
+
      where i.company_id = ${companyId}
      order by i.code`;
 }
@@ -1225,17 +1269,26 @@ export type MatchStatus = {
  */
 export async function getMatchStatus(documentId: string): Promise<MatchStatus | null> {
   const [doc] = await sql`
-    select id, company_id, doc_type, status from document where id = ${documentId}`;
+    select id, company_id, doc_type, status, source_document_id
+      from document where id = ${documentId}`;
   if (!doc || doc.status !== "POSTED") return null;
 
+  // The sales side is the same shape in different vocabulary: goods move on
+  // one document, the money is billed on another, and either can come first.
+  // A delivery is to a sales invoice what a goods receipt is to a purchase
+  // invoice, so it is tracked by the same code rather than a parallel copy
+  // that would drift.
   const counterpartType =
-    doc.doc_type === "GOODS_RECEIPT" ? "PURCHASE_INVOICE"
+    doc.doc_type === "GOODS_RECEIPT"   ? "PURCHASE_INVOICE"
     : doc.doc_type === "PURCHASE_INVOICE" ? "GOODS_RECEIPT"
+    : doc.doc_type === "DELIVERY"      ? "SALES_INVOICE"
+    : doc.doc_type === "SALES_INVOICE" ? "DELIVERY"
     : null;
   if (!counterpartType) return null;
 
   const lines = await sql`
     select dl.id, dl.item_id, dl.base_qty as qty, dl.net_amount as net,
+           dl.source_line_id,
            i.code as item_code, i.name as item_name, u.code as uom_code
       from document_line dl
       join item i on i.id = dl.item_id
@@ -1246,23 +1299,41 @@ export async function getMatchStatus(documentId: string): Promise<MatchStatus | 
 
   // Counterpart documents in the order they posted, which is the order the
   // ledger settled them in.
+  //
+  // Both directions, because the chain is only ever built one way: a receipt
+  // is posted, and the invoice billing it names the receipt as its source.
+  // Nothing points back. Looking only for "documents whose source is me"
+  // therefore answers correctly from the receipt and wrongly from the
+  // invoice, which reported the goods it was raised from as never having
+  // arrived — and then offered a button to receive them a second time.
   const counterparts = await sql`
-    select d.id, d.doc_no, d.doc_date, dl.item_id, dl.base_qty as qty, dl.source_line_id
+    select d.id, d.doc_no, d.doc_date, dl.id as line_id, dl.item_id,
+           dl.base_qty as qty, dl.source_line_id
       from document_line dl
       join document d on d.id = dl.document_id
      where d.company_id = ${doc.company_id}
        and d.doc_type = ${counterpartType}
        and d.status = 'POSTED'
-       and d.source_document_id = ${documentId}
+       and (d.source_document_id = ${documentId}
+            or d.id = ${doc.source_document_id ?? null})
      order by d.posting_date, d.doc_no, dl.line_no`;
 
   const draw = grirMatcher(lines as unknown as MatchableLine[]);
+
+  // Looking down the chain, a counterpart line names the line it settles.
+  // Looking up it, this document's lines name theirs — so the same link read
+  // backwards is what identifies the counterpart, and line-level matching
+  // stays exact rather than falling back to oldest-first.
+  const inverse = new Map<string, string>();
+  for (const l of lines as any[]) {
+    if (l.source_line_id) inverse.set(l.source_line_id, l.id);
+  }
 
   const settled = new Map<string, number>();
   const matchedBy = new Map<string, MatchedBy[]>();
 
   for (const c of counterparts) {
-    const { taken } = draw(c.item_id, Number(c.qty), c.source_line_id);
+    const { taken } = draw(c.item_id, Number(c.qty), inverse.get(c.line_id) ?? c.source_line_id);
     for (const t of taken) {
       settled.set(t.lineId, (settled.get(t.lineId) ?? 0) + t.qty);
       const list = matchedBy.get(t.lineId) ?? [];
@@ -1495,20 +1566,15 @@ export async function getOwnedStockForItems(companyId: string, itemIds: string[]
  * can say anything about a file.
  */
 export async function getImportMasterData(companyId: string) {
-  const [items, categories, brands, uoms, locations, existingStock] = await Promise.all([
-    sql`select id, code, name, barcode, item_group_id, brand_id, base_uom_id
+  const [items, categories, brands, uoms] = await Promise.all([
+    sql`select id, code, serial, name, barcode, item_group_id, brand_id, base_uom_id
           from item where company_id = ${companyId} and is_active`,
-    sql`select id, code, name from item_group where company_id = ${companyId} and is_active`,
+    sql`select id, code, name, parent_id from item_group
+          where company_id = ${companyId} and is_active`,
     sql`select id, code, name from brand where company_id = ${companyId} and is_active`,
-    sql`select id, code, name from uom where company_id = ${companyId}`,
-    sql`select id, code, name, parent_id, is_stock_location, is_active
-          from location where company_id = ${companyId}`,
-    // Item/warehouse pairs already carrying stock. An import must not quietly
-    // add to a balance that is already there.
-    sql`select item_id, location_id from v_stock_on_hand
-         where company_id = ${companyId} and qty_on_hand <> 0`,
+    sql`select id, code, name from uom where company_id = ${companyId} and is_active`,
   ]);
-  return { items, categories, brands, uoms, locations, existingStock };
+  return { items, categories, brands, uoms };
 }
 
 /** Past imports, newest first, with what each one actually created. */
