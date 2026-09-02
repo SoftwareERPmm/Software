@@ -39,6 +39,7 @@ export function ItemImport({ action, today }: {
 }) {
   const [state, formAction, posting] = useActionState<ActionResult | null, FormData>(action as never, null);
   const [csv, setCsv] = useState("");
+  const [format, setFormat] = useState<"csv" | "xlsx">("csv");
   const [filename, setFilename] = useState("");
   const [plan, setPlan] = useState<Plan | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
@@ -53,21 +54,36 @@ export function ItemImport({ action, today }: {
     URL.revokeObjectURL(a.href);
   }
 
+  /** A workbook is sent as bytes; a CSV as text. Chunked on the way to base64
+   *  because spreading a 500-row file into String.fromCharCode in one call
+   *  overflows the argument list. */
+  async function encode(file: File): Promise<{ content: string; kind: "csv" | "xlsx" }> {
+    const isCsv = /\.csv$/i.test(file.name) || file.type === "text/csv";
+    if (isCsv) return { content: await file.text(), kind: "csv" };
+
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    }
+    return { content: btoa(binary), kind: "xlsx" };
+  }
+
   function onFile(file: File | undefined) {
     setPlan(null);
     setReadError(null);
     if (!file) return;
-    file.text().then((text) => {
-      setCsv(text);
-      setFilename(file.name);
-      startChecking(async () => {
-        try {
-          const res = await previewItemImport(text, file.name);
-          setPlan(res.plan as unknown as Plan);
-        } catch (e) {
-          setReadError(e instanceof Error ? e.message : String(e));
-        }
-      });
+    startChecking(async () => {
+      try {
+        const { content, kind } = await encode(file);
+        setCsv(content);
+        setFormat(kind);
+        setFilename(file.name);
+        const res = await previewItemImport(content, file.name, kind);
+        setPlan(res.plan as unknown as Plan);
+      } catch (e) {
+        setReadError(e instanceof Error ? e.message : String(e));
+      }
     });
   }
 
@@ -79,13 +95,14 @@ export function ItemImport({ action, today }: {
         <div className="card">
           <div className="card-head">
             <h2>1 · The file</h2>
-            <span className="page-sub">CSV — save your Excel sheet as CSV before uploading</span>
+            <span className="page-sub">Excel (.xlsx) or CSV — upload the workbook directly, no need to convert it</span>
           </div>
           <div className="card-body">
             <div className="row" style={{ alignItems: "flex-end" }}>
               <div className="field">
                 <label htmlFor="file">Spreadsheet</label>
-                <input id="file" type="file" accept=".csv,text/csv"
+                <input id="file" type="file"
+                       accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
                        onChange={(e) => onFile(e.target.files?.[0])} />
               </div>
               <div className="actions">
@@ -94,10 +111,13 @@ export function ItemImport({ action, today }: {
             </div>
 
             <div className="alert" style={{ marginTop: "0.75rem" }}>
-              <strong>Format the Barcode column as Text in Excel before you fill it.</strong>{" "}
-              Left as a number, Excel turns a 13-digit barcode into <code>8.85123E+12</code> and
-              throws away the digits that tell one product from another. Any row like that is
-              refused here, because the lost digits cannot be recovered by guessing.
+              <strong>Format the Barcode column as Text before you fill it.</strong>{" "}
+              Excel treats a long barcode as a number otherwise, which drops any leading zero
+              and rounds anything past fifteen digits — damage done in the sheet, before the
+              file gets here.{" "}
+              {format === "xlsx"
+                ? "Reading the workbook directly does avoid the other half of the problem: a barcode merely displayed as 8.85E+12 is stored exactly, and comes through intact."
+                : "Saving as CSV can also write out the displayed 8.85123E+12 instead of the real number, losing the digits that tell two products apart — uploading the .xlsx avoids that."}
             </div>
 
             {checking && <p className="page-sub">Checking the file…</p>}
@@ -275,6 +295,7 @@ export function ItemImport({ action, today }: {
           <div className="card-head"><h2>3 · Import</h2></div>
           <form action={formAction} className="form">
             <input type="hidden" name="csv" value={csv} />
+            <input type="hidden" name="format" value={format} />
             <input type="hidden" name="filename" value={filename} />
             <div className="card-body">
               <div className="row" style={{ alignItems: "flex-end" }}>

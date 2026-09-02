@@ -24,6 +24,8 @@ if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
 }
 
 const { parseCsv, planImport } = await import("../lib/import-items.ts");
+const { xlsxToRows } = await import("../lib/read-spreadsheet.ts");
+const ExcelJS = (await import("exceljs")).default;
 const { importItemsAndOpeningStock } = await import("../lib/posting.ts");
 
 const url = process.env.DATABASE_URL;
@@ -246,6 +248,44 @@ try {
     b.ref === done.ref && b.filename === "test.csv" && n(b.row_count) === ok.summary.rows);
   const madeItems = await sql`select count(*)::int as c from item where import_batch_id = ${done.batchId}`;
   check("what it created can be listed afterwards", madeItems[0].c === 2, String(madeItems[0].c));
+
+  // ---- reading a real workbook --------------------------------------------
+  // The reason .xlsx is accepted at all: a barcode Excel merely *displays* as
+  // 8.85E+12 is stored exactly, so opening the workbook gets the real digits.
+  // Going via CSV is what can write the display out and lose them.
+  {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("Sheet1");
+    ws.addRow(HEADER.split(","));
+    const big = 8851234567890;
+    const r1 = ws.addRow([1, big, "Workbook Coke", grp.name, brand.name, wh.name, 12, uom.name, 700]);
+    r1.getCell(2).numFmt = "0.00E+00";              // shown as 8.85E+12
+    ws.addRow([2, "0123456789012", "Leading Zero", grp.name, "", wh.name, 3, uom.name, 900]);
+
+    const rows = await xlsxToRows(Buffer.from(await wb.xlsx.writeBuffer()).toString("base64"));
+
+    check("a workbook reads back the barcode Excel only displayed as 8.85E+12",
+      rows[1][1] === String(big), rows[1]?.[1]);
+    check("a text barcode keeps its leading zero",
+      rows[2][1] === "0123456789012", rows[2]?.[1]);
+
+    const wbPlan = planImport(rows, await master());
+    check("a workbook validates with no errors", wbPlan.errors.length === 0,
+      wbPlan.errors.map((e) => e.message).join(" | ").slice(0, 80));
+    check("and is read as two items, 15 units",
+      wbPlan.items.length === 2 && wbPlan.summary.totalUnits === 15,
+      `${wbPlan.items.length} items, ${wbPlan.summary.totalUnits} units`);
+
+    // A blank cell mid-row must not shift later values into the wrong column.
+    const wb2 = new ExcelJS.Workbook();
+    const ws2 = wb2.addWorksheet("S");
+    ws2.addRow(HEADER.split(","));
+    ws2.addRow([3, `B${stamp}G`, "Gap Item", grp.name, "", wh.name, 7, uom.name, 100]);
+    const gapRows = await xlsxToRows(Buffer.from(await wb2.xlsx.writeBuffer()).toString("base64"));
+    check("a blank Brand cell does not shift the columns after it",
+      gapRows[1][5] === wh.name && gapRows[1][6] === "7",
+      `location="${gapRows[1]?.[5]}" qty="${gapRows[1]?.[6]}"`);
+  }
 
   // ---- invariants ---------------------------------------------------------
   const [tb] = await sql`select coalesce(sum(base_amount), 0) as t from journal_line where company_id = ${co.id}`;

@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { sql } from "./db";
 import { parseCsv, planImport, type MasterData } from "./import-items";
+import { xlsxToRows, type UploadFormat } from "./read-spreadsheet";
 import { getImportMasterData } from "./queries";
 import { scaffoldCompany } from "./setup";
 import {
@@ -2697,10 +2698,17 @@ export async function createConsignmentSale(_prev: unknown, fd: FormData): Promi
  * same validator: the preview a person approves has to be produced by the
  * code that later acts, or they are approving one thing and getting another.
  */
-export async function previewItemImport(csv: string, filename: string) {
+/** Rows from whichever kind of file was uploaded. */
+async function readUpload(content: string, format: UploadFormat): Promise<string[][]> {
+  return format === "xlsx" ? xlsxToRows(content) : parseCsv(content);
+}
+
+export async function previewItemImport(
+  content: string, filename: string, format: UploadFormat = "csv"
+) {
   const co = await companyId();
   const master = (await getImportMasterData(co)) as unknown as MasterData;
-  const plan = planImport(parseCsv(csv), master);
+  const plan = planImport(await readUpload(content, format), master);
   return { plan, filename };
 }
 
@@ -2710,16 +2718,17 @@ export async function runItemImport(
   let done: { ref: string; itemsCreated: number; itemsMatched: number; stockRows: number };
   try {
     const co = await companyId();
-    const csv = str(fd, "csv");
+    const content = str(fd, "csv");
     const filename = str(fd, "filename") || "import.csv";
-    if (!csv) return { error: "No file was uploaded" };
+    const format = (str(fd, "format") === "xlsx" ? "xlsx" : "csv") as UploadFormat;
+    if (!content) return { error: "No file was uploaded" };
 
     // Re-validated here, against the database as it is now rather than as it
     // was when the preview was drawn. Master data can be edited, or another
     // import run, between the two — and the check that matters most (stock
     // already present) is exactly the kind that changes underneath you.
     const master = (await getImportMasterData(co)) as unknown as MasterData;
-    const plan = planImport(parseCsv(csv), master);
+    const plan = planImport(await readUpload(content, format), master);
 
     if (plan.errors.length > 0) {
       return {
