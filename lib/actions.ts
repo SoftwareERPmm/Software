@@ -3,6 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { sql } from "./db";
+import { parseCsv, planImport, type MasterData } from "./import-items";
+import { getImportMasterData } from "./queries";
 import { scaffoldCompany } from "./setup";
 import {
   postSalesInvoice, postPurchaseInvoice, postSaleWithDelivery, postPurchaseWithReceipt,
@@ -10,6 +12,7 @@ import {
   postSupplierPayment, postCustomerReceipt,
   postCashVoucher, postBankVoucher, postJournalVoucher,
   postCashTransfer, postAccountOpening, postStockAdjustment, postStockTransfer,
+  importItemsAndOpeningStock,
   postSalesReturn, postPurchaseReturn, postConsignmentReceipt,
   type InvoiceLine, type OrderLine, type FulfillmentLine, type Allocation, type VoucherLine,
   type AdjustmentLine, type ReturnLine, type TransferLine, type ConsignmentReceiptLine,
@@ -2683,4 +2686,67 @@ export async function createConsignmentSale(_prev: unknown, fd: FormData): Promi
   revalidatePath("/inventory/consignment");
   revalidatePath("/purchases/invoices");
   redirectWithToast(`/documents/${docId}`, toastMsg);
+}
+
+// --------------------------------------------------- item/stock import --
+
+/**
+ * Reads a spreadsheet and reports what it would do, changing nothing.
+ *
+ * Deliberately a separate call from the import itself, and deliberately the
+ * same validator: the preview a person approves has to be produced by the
+ * code that later acts, or they are approving one thing and getting another.
+ */
+export async function previewItemImport(csv: string, filename: string) {
+  const co = await companyId();
+  const master = (await getImportMasterData(co)) as unknown as MasterData;
+  const plan = planImport(parseCsv(csv), master);
+  return { plan, filename };
+}
+
+export async function runItemImport(
+  _prev: unknown, fd: FormData
+): Promise<ActionResult> {
+  let done: { ref: string; itemsCreated: number; itemsMatched: number; stockRows: number };
+  try {
+    const co = await companyId();
+    const csv = str(fd, "csv");
+    const filename = str(fd, "filename") || "import.csv";
+    if (!csv) return { error: "No file was uploaded" };
+
+    // Re-validated here, against the database as it is now rather than as it
+    // was when the preview was drawn. Master data can be edited, or another
+    // import run, between the two — and the check that matters most (stock
+    // already present) is exactly the kind that changes underneath you.
+    const master = (await getImportMasterData(co)) as unknown as MasterData;
+    const plan = planImport(parseCsv(csv), master);
+
+    if (plan.errors.length > 0) {
+      return {
+        error:
+          `${plan.errors.length} problem${plan.errors.length === 1 ? "" : "s"} found on re-checking the ` +
+          `file — the first is row ${plan.errors[0].row}: ${plan.errors[0].message}`,
+      };
+    }
+    if (plan.rows.length === 0) return { error: "There is nothing to import" };
+
+    done = await importItemsAndOpeningStock({
+      companyId: co,
+      docDate: str(fd, "doc_date") || new Date().toISOString().slice(0, 10),
+      filename,
+      rowCount: plan.summary.rows,
+      rows: plan.rows,
+    });
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/items");
+  revalidatePath("/items/stock");
+  revalidatePath("/documents");
+  redirectWithToast(
+    "/items/import",
+    `${done.ref}: ${done.itemsCreated} item${done.itemsCreated === 1 ? "" : "s"} created, ` +
+    `${done.stockRows} stock record${done.stockRows === 1 ? "" : "s"}`
+  );
 }

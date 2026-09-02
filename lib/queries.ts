@@ -1488,3 +1488,36 @@ export async function getOwnedStockForItems(companyId: string, itemIds: string[]
       from v_stock_on_hand
      where company_id = ${companyId} and item_id = any(${itemIds})`;
 }
+
+/**
+ * Everything the spreadsheet importer checks a row against. One round trip,
+ * because the validator is pure and needs the whole picture in hand before it
+ * can say anything about a file.
+ */
+export async function getImportMasterData(companyId: string) {
+  const [items, categories, brands, uoms, locations, existingStock] = await Promise.all([
+    sql`select id, code, name, barcode, item_group_id, brand_id, base_uom_id
+          from item where company_id = ${companyId} and is_active`,
+    sql`select id, code, name from item_group where company_id = ${companyId} and is_active`,
+    sql`select id, code, name from brand where company_id = ${companyId} and is_active`,
+    sql`select id, code, name from uom where company_id = ${companyId}`,
+    sql`select id, code, name, parent_id, is_stock_location, is_active
+          from location where company_id = ${companyId}`,
+    // Item/warehouse pairs already carrying stock. An import must not quietly
+    // add to a balance that is already there.
+    sql`select item_id, location_id from v_stock_on_hand
+         where company_id = ${companyId} and qty_on_hand <> 0`,
+  ]);
+  return { items, categories, brands, uoms, locations, existingStock };
+}
+
+/** Past imports, newest first, with what each one actually created. */
+export async function getImportBatches(companyId: string) {
+  return sql`
+    select b.id, b.ref, b.filename, b.row_count, b.status, b.created_at,
+           (select count(*)::int from item i where i.import_batch_id = b.id) as items_created,
+           (select count(*)::int from document d where d.import_batch_id = b.id) as documents
+      from import_batch b
+     where b.company_id = ${companyId}
+     order by b.created_at desc`;
+}
