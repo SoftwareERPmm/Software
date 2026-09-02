@@ -2842,3 +2842,63 @@ export async function runVoucherImport(_prev: unknown, fd: FormData): Promise<Ac
     `${done.ref}: ${done.posted} receipt${done.posted === 1 ? "" : "s"} posted, ${done.total.toLocaleString()} total`
   );
 }
+
+/**
+ * Registers brands an import file named that the brand master does not have.
+ *
+ * Deliberately its own action with its own button rather than something the
+ * import does on its way past. Auto-creating master data from a spreadsheet
+ * is how a chart ends up holding Coca-Cola, Coca Cola and COKE as three
+ * brands, each with a share of the sales — a typo becomes a permanent record
+ * and nobody sees it happen. Asking first costs one click and makes the
+ * decision visible, which is the whole difference.
+ *
+ * The code is derived from the name, since a brand code is an internal handle
+ * rather than something the trade recognises, and a person invited to invent
+ * one for each of forty brands will not enjoy it.
+ */
+export async function createMissingBrands(
+  names: string[]
+): Promise<{ ok: true; created: number } | { ok: false; error: string }> {
+  try {
+    const co = await companyId();
+    const wanted = [...new Set(names.map((n) => n.trim()).filter(Boolean))];
+    if (wanted.length === 0) return { ok: true, created: 0 };
+
+    let created = 0;
+    await sql.begin(async (tx) => {
+      for (const name of wanted) {
+        const [existing] = await tx`
+          select id from brand where company_id = ${co} and lower(name) = ${name.toLowerCase()}`;
+        if (existing) continue;   // added by someone else since the preview
+
+        // Letters and digits only, so the code stays typeable; a numeric
+        // suffix settles the rare collision between two similar names.
+        const base = (name.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) || "BRAND");
+        let code = base;
+        for (let i = 2; ; i++) {
+          const [clash] = await tx`select 1 from brand where company_id = ${co} and code = ${code}`;
+          if (!clash) break;
+          code = `${base.slice(0, 12 - String(i).length)}${i}`;
+        }
+
+        await tx`insert into brand (company_id, code, name) values (${co}, ${code}, ${name})`;
+        created++;
+      }
+    });
+
+    // The brands are already committed. Cache revalidation is a hint, and
+    // letting it throw here would report failure for brands that now exist —
+    // the caller would show an error, the user would look in Master data and
+    // find them there. Same guard as createItemInline, for the same reason.
+    try {
+      revalidatePath("/items/brands");
+      revalidatePath("/items");
+    } catch {
+      // Outside a request context (scripts, tests). Nothing to revalidate.
+    }
+    return { ok: true, created };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}

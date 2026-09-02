@@ -25,6 +25,7 @@ if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
 
 const { parseCsv, planImport } = await import("../lib/import-items.ts");
 const { xlsxToRows, buildImportTemplate } = await import("../lib/read-spreadsheet.ts");
+const { createMissingBrands } = await import("../lib/actions.ts");
 const ExcelJS = (await import("exceljs")).default;
 const { importItemsAndOpeningStock } = await import("../lib/posting.ts");
 
@@ -345,6 +346,57 @@ try {
     check("a blank Brand cell does not shift the columns after it",
       gapRows[1][5] === wh.name && gapRows[1][6] === "7",
       `location="${gapRows[1]?.[5]}" qty="${gapRows[1]?.[6]}"`);
+  }
+
+  // ---- brands the file names but the master does not have -----------------
+  // Brand is optional, and a brand that is given must exist. The importer
+  // never creates one on its way past — that is how a chart ends up holding
+  // Coca-Cola, Coca Cola and COKE — but it does say which are missing so the
+  // remedy is one deliberate action rather than a hunt through Master data.
+  {
+    const newBrands = [`Zed Cola ${stamp}`, `Zed Fizz ${stamp}`];
+    const body = [
+      `1,B${stamp}Z1,Zed Cola Can,${grp.name},${newBrands[0]},${wh.name},5,${uom.name},100`,
+      `2,B${stamp}Z2,Zed Fizz Can,${grp.name},${newBrands[1]},${wh.name},6,${uom.name},110`,
+      // the same unknown brand twice — reported once, not twice
+      `3,B${stamp}Z3,Zed Cola Bottle,${grp.name},${newBrands[0]},${wh.name},7,${uom.name},120`,
+    ].join("\n");
+
+    const before = await plan(body);
+    check("an unregistered brand is refused, not invented",
+      before.errors.some((e) => /is not in the brand list/.test(e.message)));
+    check("the missing brands are listed once each, by name",
+      before.missingBrands.length === 2 &&
+      before.missingBrands.every((b) => newBrands.includes(b)),
+      before.missingBrands.join(", "));
+
+    const made = await createMissingBrands(before.missingBrands);
+    check("registering them creates one brand per name",
+      made.ok === true && made.created === 2, JSON.stringify(made));
+
+    const after = await plan(body);
+    check("the same file then validates with no errors",
+      after.errors.length === 0 && after.missingBrands.length === 0,
+      errorsOf(after).slice(0, 70));
+    check("and the items now point at a brand rather than carrying text",
+      after.rows.every((r) => Boolean(r.brandId)));
+
+    // Asked twice, the second time is a no-op rather than a duplicate.
+    const twice = await createMissingBrands(before.missingBrands);
+    check("registering the same brands again creates nothing",
+      twice.ok === true && twice.created === 0, JSON.stringify(twice));
+
+    const codes = await sql`select code, name from brand
+      where company_id = ${co.id} and name = any(${newBrands}) order by code`;
+    check("each generated code is typeable and unique",
+      codes.length === 2 && codes.every((c) => /^[A-Z0-9]+$/.test(c.code)),
+      codes.map((c) => c.code).join(", "));
+
+    // Blank stays blank: an item with no brand must not acquire one.
+    const blank = await plan(`1,B${stamp}Z9,No Brand Item,${grp.name},,${wh.name},2,${uom.name},50`);
+    check("a blank brand is still allowed and creates nothing",
+      blank.errors.length === 0 && blank.missingBrands.length === 0 &&
+      blank.rows[0].brandId === null);
   }
 
   // ---- the template ------------------------------------------------------

@@ -68,6 +68,13 @@ export type ImportPlan = {
   rows: PlannedRow[];
   /** The item master this file implies — one entry per barcode, not per row. */
   items: PlannedItem[];
+  /**
+   * Brand names the file uses that the brand master does not have, in the
+   * order they first appear. Reported apart from the errors because this one
+   * has an obvious remedy — register them — and a list of names is what that
+   * remedy needs, where a list of failing row numbers is not.
+   */
+  missingBrands: string[];
   errors: Issue[];
   warnings: Issue[];
   summary: {
@@ -188,7 +195,8 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
   const rows: PlannedRow[] = [];
 
   if (rowsIn.length === 0) {
-    return { rows, items: [], errors: [{ row: 0, message: "The file is empty." }], warnings,
+    return { rows, items: [], missingBrands: [],
+             errors: [{ row: 0, message: "The file is empty." }], warnings,
              summary: { rows: 0, newItems: 0, existingItems: 0, stockRows: 0, totalUnits: 0 } };
   }
 
@@ -200,7 +208,7 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
   const missing = REQUIRED_COLUMNS.filter((c) => !indexOf.has(norm(c)));
   if (missing.length > 0) {
     errors.push({ row: 1, message: `Missing column${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}` });
-    return { rows, items: [], errors, warnings,
+    return { rows, items: [], missingBrands: [], errors, warnings,
              summary: { rows: 0, newItems: 0, existingItems: 0, stockRows: 0, totalUnits: 0 } };
   }
   const col = (name: string) => indexOf.get(norm(name))!;
@@ -223,6 +231,7 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
 
   // Same barcode twice in the file must agree about what the item is, and the
   // same item may not be stocked into the same warehouse twice.
+  const missingBrands: string[] = [];
   const seenBarcodeName = new Map<string, { name: string; row: number }>();
   const seenPairs = new Map<string, number>();
 
@@ -277,8 +286,9 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
     if (brandText) {
       const brand = brands.get(norm(brandText));
       if (!brand) {
+        if (!missingBrands.some((b) => norm(b) === norm(brandText))) missingBrands.push(brandText);
         add(`Brand "${brandText}" is not in the brand list.` + didYouMean(brandText, master.brands) +
-            ` Leave the cell blank if this product has no brand.`, "Brand");
+            ` Register it, or leave the cell blank if this product has no brand.`, "Brand");
       }
       else brandId = brand.id;
     } else {
@@ -427,6 +437,7 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
   return {
     rows,
     items,
+    missingBrands,
     errors,
     warnings,
     summary: {

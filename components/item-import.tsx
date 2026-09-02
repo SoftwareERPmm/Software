@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useState, useTransition } from "react";
-import { previewItemImport, itemImportTemplate } from "@/lib/actions";
+import { previewItemImport, itemImportTemplate, createMissingBrands } from "@/lib/actions";
 import { FileDrop, type Upload } from "./file-drop";
 import type { ActionResult } from "@/lib/actions";
 
@@ -17,6 +17,7 @@ type PlannedItem = {
 type Plan = {
   rows: PlannedRow[];
   items: PlannedItem[];
+  missingBrands: string[];
   errors: Issue[];
   warnings: Issue[];
   summary: {
@@ -46,6 +47,7 @@ export function ItemImport({ action, today }: {
   const [readError, setReadError] = useState<string | null>(null);
   const [picked, setPicked] = useState(false);
   const [gettingTemplate, startTemplate] = useTransition();
+  const [addingBrands, startBrands] = useTransition();
   const [checking, startChecking] = useTransition();
 
   function save(blob: Blob, name: string) {
@@ -96,6 +98,26 @@ export function ItemImport({ action, today }: {
       } catch (e) {
         setReadError(e instanceof Error ? e.message : String(e));
       }
+    });
+  }
+
+  function recheck() {
+    startChecking(async () => {
+      try {
+        const res = await previewItemImport(csv, filename, format);
+        setPlan(res.plan as unknown as Plan);
+      } catch (e) {
+        setReadError(e instanceof Error ? e.message : String(e));
+      }
+    });
+  }
+
+  function addBrands(names: string[]) {
+    startBrands(async () => {
+      setReadError(null);
+      const res = await createMissingBrands(names);
+      if (!res.ok) { setReadError(res.error); return; }
+      recheck();
     });
   }
 
@@ -191,6 +213,33 @@ export function ItemImport({ action, today }: {
                 </span>
               </div>
             </div>
+
+            {plan.missingBrands.length > 0 && (
+              <div className="card-body">
+                <div className="alert">
+                  <strong>
+                    {plan.missingBrands.length} brand
+                    {plan.missingBrands.length === 1 ? " is" : "s are"} not registered yet.
+                  </strong>{" "}
+                  A brand named in the file has to exist in Master data first, so that items
+                  point at one brand rather than each carrying its own spelling of it — which is
+                  how Coca-Cola, Coca Cola and COKE end up as three brands with a share of the
+                  sales each. Register them, or blank the cells for products that have no brand.
+                  <div style={{ margin: "0.6rem 0", display: "flex", flexWrap: "wrap", gap: "0.35rem" }}>
+                    {plan.missingBrands.map((b) => (
+                      <span key={b} className="pill">{b}</span>
+                    ))}
+                  </div>
+                  <button type="button" onClick={() => addBrands(plan.missingBrands)}
+                          disabled={addingBrands || checking}>
+                    {addingBrands ? "Adding…" : `Add ${plan.missingBrands.length} brand${plan.missingBrands.length === 1 ? "" : "s"} to Master data`}
+                  </button>
+                  <a href="/items/brands" className="btn ghost" style={{ marginLeft: "0.4rem" }}>
+                    Manage brands
+                  </a>
+                </div>
+              </div>
+            )}
 
             {plan.items.length > 0 && (
               <>
