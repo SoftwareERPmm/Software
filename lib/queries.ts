@@ -604,11 +604,14 @@ export async function getItems(companyId: string) {
     select i.id, i.code, i.name, i.name_my, i.item_group_id, i.brand_id,
            i.base_uom_id, i.is_stocked, i.is_active,
            g.name as group_name, g.parent_id as group_parent_id,
-           pg.name as parent_group_name,
+           pg.id as parent_group_id, pg.name as parent_group_name,
            b.name as brand_name,
            u.code as uom_code,
            coalesce(s.qty, 0) as qty_on_hand, coalesce(s.val, 0) as value_on_hand,
-           pr.price as sale_price
+           sp.price as sale_price,
+           lp.unit_price as last_purchase_price,
+           lp.doc_no    as last_purchase_doc_no,
+           to_char(lp.doc_date, 'YYYY-MM-DD') as last_purchase_date
       from item i
       join item_group g on g.id = i.item_group_id
       left join item_group pg on pg.id = g.parent_id
@@ -618,7 +621,48 @@ export async function getItems(companyId: string) {
             select item_id, sum(qty_on_hand) as qty, sum(value_on_hand) as val
               from v_stock_on_hand group by item_id
       ) s on s.item_id = i.id
-      left join item_price pr on pr.item_id = i.id
+
+      -- The default selling price: the first price level by sort_order, which
+      -- is the same "first level wins" rule the item form writes with, and its
+      -- most recent price that has actually come into effect.
+      --
+      -- Laterally, and limited to one row. A plain join on item_price has no
+      -- such limit: an item priced at both Retail and Wholesale would come
+      -- back twice and appear twice in the catalogue, with whichever price the
+      -- planner happened to reach first. Two price levels already exist, so
+      -- that was waiting for the first item to be given a second price.
+      left join lateral (
+            select ip.price
+              from item_price ip
+              join price_level pl on pl.id = ip.price_level_id
+             where ip.company_id = i.company_id
+               and ip.item_id = i.id
+               and ip.valid_from <= current_date
+             order by pl.sort_order, ip.valid_from desc
+             limit 1
+      ) sp on true
+
+      -- What was last paid for it, read from the supplier's invoice rather
+      -- than the receipt: the invoice is what the supplier actually charged,
+      -- and where the two differ it is the invoice that is the price. It is
+      -- deliberately null for goods received but not yet billed — that gap is
+      -- real, it is what GR/IR holds, and inventing a figure for it would hide
+      -- exactly the thing worth noticing.
+      --
+      -- Never stored. A purchase price kept on the item master is a second
+      -- source of truth that goes stale the next time the supplier changes it.
+      left join lateral (
+            select dl.unit_price, d.doc_no, d.doc_date
+              from document_line dl
+              join document d on d.id = dl.document_id
+             where dl.item_id = i.id
+               and d.company_id = i.company_id
+               and d.doc_type = 'PURCHASE_INVOICE'
+               and d.status = 'POSTED'
+             order by d.doc_date desc, d.created_at desc, dl.line_no desc
+             limit 1
+      ) lp on true
+
      where i.company_id = ${companyId}
      order by i.code`;
 }

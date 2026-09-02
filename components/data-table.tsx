@@ -15,6 +15,9 @@ export type DataRow = {
   searchText: string;
   /** Sort value per sortable column key. */
   sort?: Record<string, string | number>;
+  /** This row as flat cells, for Export. Plain data rather than a formatter
+   *  callback, for the same serialization reason `node` is pre-rendered. */
+  csv?: (string | number | null)[];
   /** The row already rendered as a <tr> — a Server Component page renders
    *  its own markup exactly as before; this component never touches it. */
   node: React.ReactNode;
@@ -40,12 +43,18 @@ export function DataTable({
   defaultSort,
   emptyLabel = "Nothing here",
   footer,
+  csvHeader,
+  csvFilename,
 }: {
   rows: DataRow[];
   columns: Column[];
   searchPlaceholder?: string;
   defaultSort?: { key: string; dir: "asc" | "desc" };
   emptyLabel?: string;
+  /** Column titles for the exported file. Export appears only when this and
+   *  csvFilename are both given and the rows carry `csv`. */
+  csvHeader?: string[];
+  csvFilename?: string;
   /** Rendered as <tfoot>, on the unfiltered/unsorted totals — a search that hides rows shouldn't change a grand total. */
   footer?: React.ReactNode;
 }) {
@@ -70,6 +79,32 @@ export function DataTable({
     return copy;
   }, [filtered, sort]);
 
+  /**
+   * Exports what is on screen — search applied, in the order displayed —
+   * rather than the rows the page started with. A file that disagrees with
+   * the table above it is worse than no export at all, because the difference
+   * is invisible until someone acts on the wrong list.
+   */
+  function exportCsv() {
+    const quote = (v: string | number | null) => {
+      const t = v === null || v === undefined ? "" : String(v);
+      return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+    };
+    const lines = [
+      (csvHeader ?? []).map(quote).join(","),
+      ...sorted.map((r) => (r.csv ?? []).map(quote).join(",")),
+    ];
+    // A BOM, so Excel opens Burmese names as UTF-8 instead of mojibake.
+    const blob = new Blob(["\ufeff" + lines.join("\n") + "\n"], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = csvFilename ?? "export.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  const canExport = Boolean(csvHeader && csvFilename && rows.some((r) => r.csv));
+
   function toggleSort(key: string) {
     setSort((s) => {
       if (!s || s.key !== key) return { key, dir: "asc" };
@@ -80,7 +115,7 @@ export function DataTable({
 
   return (
     <>
-      <div style={{ marginBottom: "0.75rem" }}>
+      <div style={{ marginBottom: "0.75rem", display: "flex", gap: "0.5rem", alignItems: "center" }}>
         <input
           type="text"
           value={q}
@@ -89,6 +124,11 @@ export function DataTable({
           aria-label="Search"
           style={{ maxWidth: 320 }}
         />
+        {canExport && (
+          <button type="button" className="ghost" onClick={exportCsv} disabled={sorted.length === 0}>
+            Export {sorted.length !== rows.length ? `${sorted.length} of ${rows.length}` : ""}
+          </button>
+        )}
       </div>
       <div className="tablewrap">
         <table>
