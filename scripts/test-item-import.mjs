@@ -53,18 +53,31 @@ try {
   const [grp] = await sql`
     insert into item_group (company_id, segment, code, name)
     values (${co.id}, ${"IM" + stamp.slice(-2)}, 'x', ${"Import Test " + stamp}) returning id, name`;
-  const [brand] = await sql`
-    insert into brand (company_id, code, name) values (${co.id}, ${"BR" + stamp}, ${"Import Brand " + stamp})
-    returning id, name`;
+  const TEST_BRAND = "ZZ-TEST-BRAND";
+  let [brand] = await sql`
+    select id, name from brand where company_id = ${co.id} and code = ${TEST_BRAND}`;
+  if (!brand) {
+    [brand] = await sql`
+      insert into brand (company_id, code, name)
+      values (${co.id}, ${TEST_BRAND}, 'Test Brand') returning id, name`;
+  }
   const [uom] = await sql`select id, code, name from uom where company_id = ${co.id} order by code limit 1`;
   const [wh] = await sql`
     select id, code, name from location
      where company_id = ${co.id} and is_stock_location and is_active order by code limit 1`;
   const [branch] = await sql`
     select id, name from location where company_id = ${co.id} and parent_id is null order by code limit 1`;
-  const [inactive] = await sql`
-    insert into location (company_id, code, name, is_stock_location, is_active)
-    values (${co.id}, ${"OLD" + stamp}, ${"Old Warehouse " + stamp}, true, false) returning id, name`;
+  // Reused rather than created fresh each run. Making a new one every time
+  // left a drift of dead warehouses behind: clear.mjs keeps locations, quite
+  // rightly, so nothing ever tidied them and the picker filled up with them.
+  const INACTIVE_WH = "ZZ-TEST-INACTIVE";
+  let [inactive] = await sql`
+    select id, name from location where company_id = ${co.id} and code = ${INACTIVE_WH}`;
+  if (!inactive) {
+    [inactive] = await sql`
+      insert into location (company_id, code, name, is_stock_location, is_active)
+      values (${co.id}, ${INACTIVE_WH}, 'Closed Test Warehouse', true, false) returning id, name`;
+  }
 
   const master = async () => {
     const [items, categories, brands, uoms, locations, existingStock] = await Promise.all([
