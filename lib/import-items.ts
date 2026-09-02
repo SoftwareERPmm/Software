@@ -29,7 +29,7 @@
  */
 
 export const IMPORT_COLUMNS = [
-  "No", "Barcode", "Stock ID", "Stock Name", "Category", "Brand", "Unit",
+  "No", "Barcode", "Stock ID", "Stock Name", "Category", "Sub Category", "Brand", "Unit",
 ] as const;
 
 /**
@@ -44,9 +44,31 @@ const REQUIRED_COLUMNS = ["Barcode", "Stock Name", "Category", "Unit"];
 export type MasterData = {
   items: { id: string; code: string; serial: string; name: string; barcode: string | null;
            item_group_id: string; brand_id: string | null; base_uom_id: string }[];
-  categories: { id: string; code: string; name: string }[];
+  categories: { id: string; code: string; name: string; parent_id: string | null }[];
   brands: { id: string; code: string; name: string }[];
   uoms: { id: string; code: string; name: string }[];
+};
+
+/**
+ * A name the sheet uses that the master data does not have yet, and which the
+ * user can register from the preview rather than by leaving to go and type it
+ * somewhere else.
+ *
+ * `similarTo` is the point of interest. A name close to one already
+ * registered is usually the same thing spelled differently — "Coca Cola"
+ * where "Coca-Cola" exists — and registering it makes two of them, each with
+ * a share of the sales. The importer cannot tell which was meant, so it
+ * refuses to decide and says what it noticed instead.
+ */
+export type Registrable = {
+  kind: "brand" | "category" | "subcategory";
+  name: string;
+  /** For a sub category: the category it will be created under. */
+  parent?: string;
+  /** An existing name close enough that this one may be a duplicate of it. */
+  similarTo?: string;
+  /** Sheet rows asking for it, so the user can go and look. */
+  rows: number[];
 };
 
 export type Issue = { row: number; column?: string; message: string };
@@ -78,18 +100,21 @@ export type PlannedRow = {
   // without looking anything up a second time.
   unitName: string;
   categoryName: string;
+  subCategoryName: string | null;
   brandName: string | null;
 };
 
 export type ImportPlan = {
   rows: PlannedRow[];
   /**
-   * Brand names the file uses that the brand master does not have, in the
-   * order they first appear. Reported apart from the errors because this one
-   * has an obvious remedy — register them — and a list of names is what that
-   * remedy needs, where a list of failing row numbers is not.
+   * Categories, sub categories and brands the file names that do not exist
+   * here, in the order they first appear. Reported apart from the errors
+   * because these have an obvious remedy — register them — and a list of
+   * names is what that remedy needs, where a list of failing row numbers is
+   * not. Categories come before the sub categories that hang off them, so
+   * registering the list in order always has a parent to attach to.
    */
-  missingBrands: string[];
+  missing: Registrable[];
   errors: Issue[];
   warnings: Issue[];
   summary: { rows: number; newItems: number; existingItems: number };
@@ -202,7 +227,7 @@ const didYouMean = (typed: string, candidates: { name: string }[]) => {
 };
 
 const empty = (errors: Issue[], warnings: Issue[] = []): ImportPlan => ({
-  rows: [], missingBrands: [], errors, warnings,
+  rows: [], missing: [], errors, warnings,
   summary: { rows: 0, newItems: 0, existingItems: 0 },
 });
 
@@ -218,11 +243,11 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
   const indexOf = new Map<string, number>();
   header.forEach((h, i) => indexOf.set(norm(h), i));
 
-  const missing = REQUIRED_COLUMNS.filter((c) => !indexOf.has(norm(c)));
-  if (missing.length > 0) {
+  const missingColumns = REQUIRED_COLUMNS.filter((c) => !indexOf.has(norm(c)));
+  if (missingColumns.length > 0) {
     return empty([{
       row: 1,
-      message: `Missing column${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`,
+      message: `Missing column${missingColumns.length === 1 ? "" : "s"}: ${missingColumns.join(", ")}`,
     }], warnings);
   }
 
@@ -251,7 +276,14 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
     for (const x of list) { m.set(norm(x.name), x); m.set(norm(x.code), x); }
     return m;
   };
-  const categories = byNameOrCode(master.categories);
+  // Categories nest exactly two deep (Category -> Sub category, enforced in
+  // createCategory), so the two levels are indexed separately. A flat "any
+  // group by name" map cannot tell a category from a sub category, and two
+  // sub categories called "Soft Drinks" under different parents are different
+  // things that such a map would collapse into one.
+  const rootCategories = byNameOrCode(master.categories.filter((c) => !c.parent_id));
+  const childrenOf = (parentId: string) =>
+    byNameOrCode(master.categories.filter((c) => c.parent_id === parentId));
   const brands = byNameOrCode(master.brands);
   const uoms = byNameOrCode(master.uoms);
   const itemByBarcode = new Map(
@@ -288,7 +320,27 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
     return serial;
   };
 
-  const missingBrands: string[] = [];
+  /**
+   * One entry per distinct missing name, carrying every row that asked for
+   * it. Collected rather than pushed straight into errors so the same name on
+   * two hundred rows is one thing to register, not two hundred failures.
+   */
+  const missing: Registrable[] = [];
+  const noteMissing = (
+    kind: Registrable["kind"], name: string, row: number,
+    candidates: { name: string }[], parent?: string
+  ) => {
+    const found = missing.find(
+      (m) => m.kind === kind && norm(m.name) === norm(name) && norm(m.parent ?? "") === norm(parent ?? "")
+    );
+    if (found) { found.rows.push(row); return; }
+    missing.push({
+      kind, name, parent,
+      similarTo: suggest(name, candidates) ?? undefined,
+      rows: [row],
+    });
+  };
+
   const seenBarcode = new Map<string, number>();
   const seenCode = new Map<string, number>();
 
@@ -306,6 +358,7 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
     const stockId = has("Stock ID") ? cell(r, "Stock ID") : "";
     const name = cell(r, "Stock Name");
     const categoryText = cell(r, "Category");
+    const subText = has("Sub Category") ? cell(r, "Sub Category") : "";
     const brandText = has("Brand") ? cell(r, "Brand") : "";
     const unitText = cell(r, "Unit");
 
@@ -335,26 +388,53 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
           `of the item's code, which has to stay typeable.`, "Stock ID");
     }
 
-    // ---- master data ------------------------------------------------------
-    const category = categories.get(norm(categoryText));
+    // ---- category and sub category ----------------------------------------
+    // Neither is invented silently. A name that is not registered is an error
+    // AND an offer: the preview lists it so it can be created deliberately,
+    // which is the difference between adding a category and acquiring three
+    // spellings of one.
+    const roots = master.categories.filter((c) => !c.parent_id);
+    const category = rootCategories.get(norm(categoryText));
     if (!categoryText) {
-      add("Category is empty. Every item belongs to one, and an import will not invent it.", "Category");
+      add("Category is empty. Every item belongs to one.", "Category");
+    } else if (!category) {
+      noteMissing("category", categoryText, rowNo, roots);
+      add(`Category "${categoryText}" is not registered yet.` + didYouMean(categoryText, roots) +
+          ` Register it below, or correct the sheet.`, "Category");
     }
-    else if (!category) {
-      add(`Category "${categoryText}" is not in the item categories.` +
-          didYouMean(categoryText, master.categories) +
-          ` Categories are never created by an import — add it under Master data first, or correct the sheet.`,
-          "Category");
+
+    let sub: { id: string; code: string; name: string } | undefined;
+    if (subText) {
+      if (category) {
+        const siblings = master.categories.filter((c) => c.parent_id === category.id);
+        sub = childrenOf(category.id).get(norm(subText));
+        if (!sub) {
+          noteMissing("subcategory", subText, rowNo, siblings, category.name);
+          add(`Sub category "${subText}" is not registered under "${category.name}".` +
+              didYouMean(subText, siblings) + ` Register it below, or correct the sheet.`,
+              "Sub Category");
+        }
+      } else if (categoryText) {
+        // The parent is missing too. Record the sub against the category the
+        // sheet names, so registering both in order still attaches correctly.
+        noteMissing("subcategory", subText, rowNo, [], categoryText);
+      }
     }
+
+    // The item is filed against the leaf: the sub category when there is one,
+    // the category otherwise. That is also the group whose code goes in front
+    // of the Stock ID, because fn_set_item_code reads the group the item
+    // actually points at.
+    const group = sub ?? category;
 
     let brandId: string | null = null;
     let brandName: string | null = null;
     if (brandText) {
       const brand = brands.get(norm(brandText));
       if (!brand) {
-        if (!missingBrands.some((b) => norm(b) === norm(brandText))) missingBrands.push(brandText);
-        add(`Brand "${brandText}" is not in the brand list.` + didYouMean(brandText, master.brands) +
-            ` Register it, or leave the cell blank if this product has no brand.`, "Brand");
+        noteMissing("brand", brandText, rowNo, master.brands);
+        add(`Brand "${brandText}" is not registered yet.` + didYouMean(brandText, master.brands) +
+            ` Register it below, or leave the cell blank if this product has no brand.`, "Brand");
       }
       else { brandId = brand.id; brandName = brand.name; }
     } else {
@@ -423,8 +503,8 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
     const assigned = !stockId;
     const serial = existing
       ? (existing.serial ?? "")
-      : (stockId || takeNextSerial(category!.id, category!.code));
-    const code = existing ? existing.code : `${category!.code}${serial}`;
+      : (stockId || takeNextSerial(group!.id, group!.code));
+    const code = existing ? existing.code : `${group!.code}${serial}`;
 
     // Two rows landing on one code, or a code an item already has. Both are
     // refused rather than resolved: the unique constraint would abort the
@@ -435,10 +515,10 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
       const clash = seenCode.get(key);
       const taken = itemByCode.get(key);
       if (clash) {
-        add(`Stock ID ${serial} in ${category!.name} makes the code ${code}, ` +
+        add(`Stock ID ${serial} in ${group!.name} makes the code ${code}, ` +
             `which row ${clash} already takes.`, "Stock ID");
       } else if (taken) {
-        add(`Stock ID ${serial} in ${category!.name} makes the code ${code}, ` +
+        add(`Stock ID ${serial} in ${group!.name} makes the code ${code}, ` +
             `which already belongs to "${taken.name}". Give this item a different ` +
             `Stock ID, or match the existing item by its barcode.`, "Stock ID");
       } else {
@@ -454,21 +534,27 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
       name,
       itemId: existing?.id ?? null,
       isNew: !existing,
-      categoryId: category!.id,
+      categoryId: group!.id,
       brandId,
       uomId: uom!.id,
       serial,
       code,
       serialAssigned: assigned,
       unitName: uom!.name,
-      categoryName: category!.name,
+      categoryName: category ? category.name : group!.name,
+      subCategoryName: sub ? sub.name : null,
       brandName,
     });
   }
 
+  // Categories before the sub categories that hang off them, so registering
+  // the list top to bottom always has a parent to attach to.
+  const order = { category: 0, subcategory: 1, brand: 2 } as const;
+  missing.sort((a, b) => order[a.kind] - order[b.kind]);
+
   return {
     rows,
-    missingBrands,
+    missing,
     errors,
     warnings,
     summary: {

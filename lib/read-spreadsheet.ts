@@ -70,7 +70,7 @@ export async function xlsxToRows(base64: string): Promise<string[][]> {
 }
 
 /** Column widths that make the template readable without fiddling. */
-const TEMPLATE_WIDTHS = [5, 20, 14, 34, 22, 20, 14];
+const TEMPLATE_WIDTHS = [5, 20, 14, 34, 20, 20, 18, 14];
 
 /**
  * A blank import workbook with the Barcode column already formatted as Text.
@@ -86,7 +86,7 @@ export async function buildImportTemplate(): Promise<string> {
   wb.creator = "ERP";
   const ws = wb.addWorksheet("Items");
 
-  const header = ["No", "Barcode", "Stock ID", "Stock Name", "Category", "Brand", "Unit"];
+  const header = ["No", "Barcode", "Stock ID", "Stock Name", "Category", "Sub Category", "Brand", "Unit"];
   ws.addRow(header);
   ws.getRow(1).font = { bold: true };
   ws.views = [{ state: "frozen", ySplit: 1 }];
@@ -100,10 +100,11 @@ export async function buildImportTemplate(): Promise<string> {
   ws.getColumn(3).numFmt = "@";
 
   const examples = [
-    [1, "8851234567890", "Item001", "Coca-Cola 300ml", "Beverages", "Coca-Cola", "Bottle"],
-    [2, "8851234567891", "Item002", "Sprite 300ml", "Beverages", "Sprite", "Bottle"],
-    // Stock ID left blank: the next number in that category is used instead.
-    [3, "10001", "", "T-Shirt Black L", "Clothing", "", "Piece"],
+    [1, "8851234567890", "Item001", "Coca-Cola 300ml", "Beverages", "Soft Drinks", "Coca-Cola", "Bottle"],
+    [2, "8851234567891", "Item002", "Sprite 300ml", "Beverages", "Soft Drinks", "Sprite", "Bottle"],
+    // Stock ID and Sub Category both left blank: the item is filed under the
+    // category itself, and given the next number in it.
+    [3, "10001", "", "T-Shirt Black L", "Clothing", "", "", "Piece"],
   ];
   for (const e of examples) {
     const r = ws.addRow(e);
@@ -115,13 +116,15 @@ export async function buildImportTemplate(): Promise<string> {
   const note = ws.addRow([]);
   note.getCell(1).value =
     "Delete the three grey example rows before uploading. Category, Brand and Unit must already " +
-    "exist in the ERP — they are never created by an import. Brand may be left blank. " +
+    "exist in the ERP, but any the sheet names can be registered from the preview before " +
+    "importing. Sub Category and Brand may be left blank; an item with no sub category is filed " +
+    "under its category. " +
     "Stock ID is the item's own piece of its code: the category's code goes in front of it, so a " +
     "category coded 001 and a Stock ID of Item001 make 001Item001. Leave it blank to be given the " +
     "next number in that category. One row per item: this sheet sets up what the items ARE, and " +
     "carries no quantity, cost or warehouse — stock arrives on a goods receipt, or on a stock " +
     "adjustment for opening balances.";
-  ws.mergeCells(`A${note.number}:G${note.number}`);
+  ws.mergeCells(`A${note.number}:H${note.number}`);
   note.getCell(1).alignment = { wrapText: true, vertical: "top" };
   note.height = 66;
 

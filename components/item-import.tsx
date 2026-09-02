@@ -1,29 +1,37 @@
 "use client";
 
 import { useActionState, useState, useTransition } from "react";
-import { previewItemImport, itemImportTemplate, createMissingBrands } from "@/lib/actions";
+import { previewItemImport, itemImportTemplate, createMissingMasterData } from "@/lib/actions";
 import { FileDrop, type Upload } from "./file-drop";
 import type { ActionResult } from "@/lib/actions";
 
 type Issue = { row: number; column?: string; message: string };
+type Registrable = {
+  kind: "brand" | "category" | "subcategory";
+  name: string;
+  parent?: string;
+  similarTo?: string;
+  rows: number[];
+};
 type PlannedRow = {
   row: number; barcode: string; name: string; itemId: string | null; isNew: boolean;
   serial: string; code: string; serialAssigned: boolean;
-  unitName: string; categoryName: string; brandName: string | null;
+  unitName: string; categoryName: string; subCategoryName: string | null;
+  brandName: string | null;
 };
 type Plan = {
   rows: PlannedRow[];
-  missingBrands: string[];
+  missing: Registrable[];
   errors: Issue[];
   warnings: Issue[];
   summary: { rows: number; newItems: number; existingItems: number };
 };
 
-const TEMPLATE_HEADER = "No,Barcode,Stock ID,Stock Name,Category,Brand,Unit";
+const TEMPLATE_HEADER = "No,Barcode,Stock ID,Stock Name,Category,Sub Category,Brand,Unit";
 const TEMPLATE_EXAMPLE = [
-  '1,8851234567890,Item001,Coca-Cola 300ml,Beverages,Coca-Cola,Bottle',
-  '2,8851234567891,Item002,Sprite 300ml,Beverages,Sprite,Bottle',
-  '3,10001,,T-Shirt Black L,Clothing,,Piece',
+  '1,8851234567890,Item001,Coca-Cola 300ml,Beverages,Soft Drinks,Coca-Cola,Bottle',
+  '2,8851234567891,Item002,Sprite 300ml,Beverages,Soft Drinks,Sprite,Bottle',
+  '3,10001,,T-Shirt Black L,Clothing,,,Piece',
 ].join("\n");
 
 export function ItemImport({ action }: {
@@ -38,6 +46,7 @@ export function ItemImport({ action }: {
   const [picked, setPicked] = useState(false);
   const [gettingTemplate, startTemplate] = useTransition();
   const [addingBrands, startBrands] = useTransition();
+  const [pendingName, setPendingName] = useState<string | null>(null);
   const [checking, startChecking] = useTransition();
 
   function save(blob: Blob, name: string) {
@@ -102,10 +111,14 @@ export function ItemImport({ action }: {
     });
   }
 
-  function addBrands(names: string[]) {
+  function register(entries: Registrable[]) {
+    setPendingName(entries.length === 1 ? entries[0].name : "*all*");
     startBrands(async () => {
       setReadError(null);
-      const res = await createMissingBrands(names);
+      const res = await createMissingMasterData(
+        entries.map((e) => ({ kind: e.kind, name: e.name, parent: e.parent }))
+      );
+      setPendingName(null);
       if (!res.ok) { setReadError(res.error); return; }
       recheck();
     });
@@ -194,26 +207,90 @@ export function ItemImport({ action }: {
               </div>
             </div>
 
-            {plan.missingBrands.length > 0 && (
+            {plan.missing.length > 0 && (
               <div className="card-body">
                 <div className="alert">
                   <strong>
-                    {plan.missingBrands.length} brand
-                    {plan.missingBrands.length === 1 ? " is" : "s are"} not registered yet.
+                    {plan.missing.length} name{plan.missing.length === 1 ? " is" : "s are"} not
+                    registered yet.
                   </strong>{" "}
-                  A brand named in the file has to exist in Master data first, so that items
-                  point at one brand rather than each carrying its own spelling of it — which is
-                  how Coca-Cola, Coca Cola and COKE end up as three brands with a share of the
-                  sales each. Register them, or blank the cells for products that have no brand.
-                  <div style={{ margin: "0.6rem 0", display: "flex", flexWrap: "wrap", gap: "0.35rem" }}>
-                    {plan.missingBrands.map((b) => (
-                      <span key={b} className="pill">{b}</span>
-                    ))}
+                  A category, sub category or brand named in the file has to exist here before
+                  an item can point at it — so that items share one spelling of each rather than
+                  carrying their own, which is how Coca-Cola, Coca Cola and COKE end up as three
+                  brands with a share of the sales each. Add the ones you want; correct the sheet
+                  for the rest.
+
+                  <div style={{ margin: "0.75rem 0 0.5rem" }}>
+                    {(["category", "subcategory", "brand"] as const).map((kind) => {
+                      const group = plan.missing.filter((m) => m.kind === kind);
+                      if (group.length === 0) return null;
+                      const label =
+                        kind === "category" ? "Categories"
+                        : kind === "subcategory" ? "Sub categories"
+                        : "Brands";
+                      return (
+                        <div key={kind} style={{ marginBottom: "0.6rem" }}>
+                          <div className="page-sub" style={{ marginBottom: "0.25rem" }}>
+                            {label} ({group.length})
+                            {kind === "subcategory" && " — created under their category"}
+                          </div>
+                          <div className="tablewrap">
+                            <table>
+                              <tbody>
+                                {group.map((m) => (
+                                  <tr key={`${m.kind}-${m.parent ?? ""}-${m.name}`}>
+                                    <td className="wrap">
+                                      <strong>{m.name}</strong>
+                                      {m.parent && (
+                                        <span style={{ color: "var(--muted)" }}> under {m.parent}</span>
+                                      )}
+                                      <div className="subline" style={{ color: "var(--muted)" }}>
+                                        {m.rows.length === 1
+                                          ? `row ${m.rows[0]}`
+                                          : `${m.rows.length} rows — ${m.rows.slice(0, 6).join(", ")}${m.rows.length > 6 ? "…" : ""}`}
+                                      </div>
+                                    </td>
+                                    <td className="wrap">
+                                      {/* The case worth stopping on: a name a
+                                          keystroke away from one already here
+                                          is usually the same thing, and adding
+                                          it makes two. */}
+                                      {m.similarTo && (
+                                        <span style={{ color: "var(--warn)" }}>
+                                          Looks like &ldquo;{m.similarTo}&rdquo;, which already
+                                          exists — check the sheet before adding a second.
+                                        </span>
+                                      )}
+                                    </td>
+                                    <td style={{ width: "1%", whiteSpace: "nowrap" }}>
+                                      <button
+                                        type="button"
+                                        className={m.similarTo ? "ghost tiny" : "tiny"}
+                                        onClick={() => register([m])}
+                                        disabled={addingBrands || checking}
+                                      >
+                                        {addingBrands && pendingName === m.name ? "Adding…" : "Add"}
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                  <button type="button" onClick={() => addBrands(plan.missingBrands)}
+
+                  <button type="button" onClick={() => register(plan.missing)}
                           disabled={addingBrands || checking}>
-                    {addingBrands ? "Adding…" : `Add ${plan.missingBrands.length} brand${plan.missingBrands.length === 1 ? "" : "s"} to Master data`}
+                    {addingBrands && pendingName === "*all*"
+                      ? "Adding…"
+                      : `Add all ${plan.missing.length}`}
                   </button>
+                  <a href="/items/categories" className="btn ghost" style={{ marginLeft: "0.4rem" }}>
+                    Manage categories
+                  </a>
                   <a href="/items/brands" className="btn ghost" style={{ marginLeft: "0.4rem" }}>
                     Manage brands
                   </a>
@@ -237,7 +314,8 @@ export function ItemImport({ action }: {
                     <thead>
                       <tr>
                         <th>Row</th><th>Barcode</th><th>Stock ID</th><th>Code</th>
-                        <th>Stock name</th><th>Category</th><th>Brand</th><th>Unit</th><th />
+                        <th>Stock name</th><th>Category</th><th>Sub category</th>
+                        <th>Brand</th><th>Unit</th><th />
                       </tr>
                     </thead>
                     <tbody>
@@ -254,6 +332,7 @@ export function ItemImport({ action }: {
                           <td className="code"><strong>{r.code}</strong></td>
                           <td className="wrap">{r.name}</td>
                           <td style={{ color: "var(--muted)" }}>{r.categoryName}</td>
+                          <td style={{ color: "var(--muted)" }}>{r.subCategoryName ?? "—"}</td>
                           <td style={{ color: "var(--muted)" }}>{r.brandName ?? "—"}</td>
                           <td className="code">{r.unitName}</td>
                           <td>

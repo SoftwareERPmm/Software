@@ -29,7 +29,7 @@ if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
 
 const { parseCsv, planImport } = await import("../lib/import-items.ts");
 const { xlsxToRows, buildImportTemplate } = await import("../lib/read-spreadsheet.ts");
-const { createMissingBrands } = await import("../lib/actions.ts");
+const { createMissingMasterData } = await import("../lib/actions.ts");
 const ExcelJS = (await import("exceljs")).default;
 const { importItems } = await import("../lib/posting.ts");
 
@@ -46,7 +46,7 @@ const check = (label, ok, detail = "") => {
 };
 const n = (v) => Number(v ?? 0);
 
-const HEADER = "No,Barcode,Stock ID,Stock Name,Category,Brand,Unit";
+const HEADER = "No,Barcode,Stock ID,Stock Name,Category,Sub Category,Brand,Unit";
 
 try {
   const [co] = await sql`select id, name from company order by created_at limit 1`;
@@ -73,7 +73,7 @@ try {
     const [items, categories, brands, uoms] = await Promise.all([
       sql`select id, code, serial, name, barcode, item_group_id, brand_id, base_uom_id
             from item where company_id = ${co.id} and is_active`,
-      sql`select id, code, name from item_group where company_id = ${co.id} and is_active`,
+      sql`select id, code, name, parent_id from item_group where company_id = ${co.id} and is_active`,
       sql`select id, code, name from brand where company_id = ${co.id} and is_active`,
       sql`select id, code, name from uom where company_id = ${co.id}`,
     ]);
@@ -83,8 +83,8 @@ try {
   const plan = async (body) => planImport(parseCsv(`${HEADER}\n${body}`), await master());
   const errorsOf = (p) => p.errors.map((e) => e.message).join(" | ");
   const warningsOf = (p) => p.warnings.map((w) => w.message).join(" | ");
-  const row = (bc, name, unit, cat, br, id) =>
-    `1,${bc},${id ?? ""},${name},${cat ?? grp.name},${br ?? brand.name},${unit ?? uom.name}`;
+  const row = (bc, name, unit, cat, br, id, sub) =>
+    `1,${bc},${id ?? ""},${name},${cat ?? grp.name},${sub ?? ""},${br ?? brand.name},${unit ?? uom.name}`;
 
   // ---- structure ----------------------------------------------------------
   check("a file with no Unit column is refused",
@@ -99,9 +99,9 @@ try {
   // whoever typed them, and dropping them in silence would look like they
   // had landed somewhere.
   {
-    const oldHeader = "No,Barcode,Stock ID,Stock Name,Category,Brand,Location,Qty,Unit,Unit Cost";
+    const oldHeader = "No,Barcode,Stock ID,Stock Name,Category,Sub Category,Brand,Location,Qty,Unit,Unit Cost";
     const oldFile = planImport(parseCsv(
-      `${oldHeader}\n1,B${stamp}O,,Old Sheet,${grp.name},${brand.name},Main Warehouse,100,${uom.name},600`),
+      `${oldHeader}\n1,B${stamp}O,,Old Sheet,${grp.name},,${brand.name},Main Warehouse,100,${uom.name},600`),
       await master());
     check("a sheet still carrying Qty, Unit Cost and Location still imports the items",
       oldFile.errors.length === 0 && oldFile.rows.length === 1, errorsOf(oldFile).slice(0, 70));
@@ -122,7 +122,7 @@ try {
   // ---- master data must exist ---------------------------------------------
   const badCat = await plan(row(`B${stamp}1`, "Coke", null, "Beverages Typo"));
   check("an unknown category is refused, not created",
-    badCat.errors.some((e) => /Category .* is not in the item categories/.test(e.message)));
+    badCat.errors.some((e) => /Category .* is not registered yet/.test(e.message)));
 
   const badUnit = await plan(row(`B${stamp}1`, "Coke", "Btl"));
   check("an abbreviated unit is refused rather than guessed",
@@ -130,9 +130,9 @@ try {
 
   const badBrand = await plan(row(`B${stamp}1`, "Coke", null, null, "No Such Brand"));
   check("an unknown brand is refused",
-    badBrand.errors.some((e) => /Brand .* is not in the brand list/.test(e.message)));
+    badBrand.errors.some((e) => /Brand .* is not registered yet/.test(e.message)));
 
-  const noBrand = await plan(`1,B${stamp}9,,Coke,${grp.name},,${uom.name}`);
+  const noBrand = await plan(`1,B${stamp}9,,Coke,${grp.name},,,${uom.name}`);
   check("a blank brand is allowed, with a warning",
     noBrand.errors.length === 0 && noBrand.warnings.some((w) => /Brand is blank/.test(w.message)));
 
@@ -144,7 +144,7 @@ try {
     const cols = HEADER.split(",");
     const keep = cols.filter((c) => c !== column);
     const idx = cols.indexOf(column);
-    const full = `1,B${stamp}M,,Blank Test,${grp.name},${brand.name},${uom.name}`.split(",");
+    const full = `1,B${stamp}M,,Blank Test,${grp.name},,${brand.name},${uom.name}`.split(",");
 
     // (a) the column is not in the file at all
     const withoutCol = planImport(
@@ -173,7 +173,7 @@ try {
 
   // Whitespace is not a value. " " in a cell must read as empty, not as a
   // category named space.
-  const spaces = await plan(`1,B${stamp}W,,Space Test,   ,${brand.name},${uom.name}`);
+  const spaces = await plan(`1,B${stamp}W,,Space Test,   ,,${brand.name},${uom.name}`);
   check("a cell holding only spaces counts as empty",
     spaces.errors.some((e) => /Category is empty/.test(e.message)));
 
@@ -187,8 +187,8 @@ try {
   // An entirely empty row between blocks of data is ignored rather than
   // reported as four separate failures.
   const withGap = planImport(parseCsv(
-    `${HEADER}\n1,B${stamp}A,,Gap A,${grp.name},${brand.name},${uom.name}\n,,,,,,\n` +
-    `3,B${stamp}B,,Gap B,${grp.name},${brand.name},${uom.name}`), await master());
+    `${HEADER}\n1,B${stamp}A,,Gap A,${grp.name},,${brand.name},${uom.name}\n,,,,,,\n` +
+    `3,B${stamp}B,,Gap B,${grp.name},,${brand.name},${uom.name}`), await master());
   check("a completely blank row is skipped, not reported as errors",
     withGap.errors.length === 0 && withGap.rows.length === 2,
     `${withGap.errors.length} errors, ${withGap.rows.length} rows`);
@@ -197,22 +197,22 @@ try {
   // One row per item now, so a repeated barcode is a duplicate rather than a
   // second balance somewhere.
   const dupPair = await plan(
-    `${row(`B${stamp}1`, "Coke")}\n2,B${stamp}1,,Coke,${grp.name},${brand.name},${uom.name}`);
+    `${row(`B${stamp}1`, "Coke")}\n2,B${stamp}1,,Coke,${grp.name},,${brand.name},${uom.name}`);
   check("the same barcode twice is refused as a duplicate row",
     dupPair.errors.some((e) => /already on row/.test(e.message)),
     errorsOf(dupPair).slice(0, 70));
 
   const clash = await plan(
-    `${row(`B${stamp}1`, "Coke 300ml")}\n2,B${stamp}1,,Coke 500ml,${grp.name},${brand.name},${uom.name}`);
+    `${row(`B${stamp}1`, "Coke 300ml")}\n2,B${stamp}1,,Coke 500ml,${grp.name},,${brand.name},${uom.name}`);
   check("one barcode used for two different names is refused",
     clash.errors.some((e) => /already on row/.test(e.message)));
 
   // ---- the good file ------------------------------------------------------
   const good = [
     row(`B${stamp}1`, "Coca-Cola 300ml", null, null, null, `Item${stamp}A`),
-    `2,B${stamp}2,Item${stamp}B,Sprite 300ml,${grp.name},${brand.name},${uom.name}`,
+    `2,B${stamp}2,Item${stamp}B,Sprite 300ml,${grp.name},,${brand.name},${uom.name}`,
     // Stock ID left blank on purpose: this one is given the next number.
-    `3,B${stamp}3,,Fanta 300ml,${grp.name},,${uom.name}`,
+    `3,B${stamp}3,,Fanta 300ml,${grp.name},,,${uom.name}`,
   ].join("\n");
 
   const ok = await plan(good);
@@ -245,8 +245,8 @@ try {
 
   {
     const twice = await plan(
-      `1,B${stamp}D1,Same${stamp},First,${grp.name},,${uom.name}\n` +
-      `2,B${stamp}D2,Same${stamp},Second,${grp.name},,${uom.name}`);
+      `1,B${stamp}D1,Same${stamp},First,${grp.name},,,${uom.name}\n` +
+      `2,B${stamp}D2,Same${stamp},Second,${grp.name},,,${uom.name}`);
     check("two rows claiming one Stock ID in one category are refused",
       twice.errors.some((e) => /which row 2 already takes|already takes/.test(e.message)),
       twice.errors.map((e) => e.message).join(" | ").slice(0, 70));
@@ -258,8 +258,8 @@ try {
       values (${co.id}, ${"IX" + stamp.slice(-2)}, 'x', ${"Import Test B " + stamp})
       returning id, name, code`;
     const across = await plan(
-      `1,B${stamp}X1,Same${stamp},First,${grp.name},,${uom.name}\n` +
-      `2,B${stamp}X2,Same${stamp},Second,${grp2.name},,${uom.name}`);
+      `1,B${stamp}X1,Same${stamp},First,${grp.name},,,${uom.name}\n` +
+      `2,B${stamp}X2,Same${stamp},Second,${grp2.name},,,${uom.name}`);
     check("the same Stock ID under two categories is fine — the codes differ",
       across.errors.length === 0 &&
       across.rows[0].code === `${grp.code}Same${stamp}` &&
@@ -362,7 +362,7 @@ try {
     check("the barcode still belongs to exactly one item", dupes[0].c === 1, String(dupes[0].c));
 
     // A renamed row is refused rather than quietly rewriting the item.
-    const renamed = await plan(`1,B${stamp}1,,Coca-Cola 500ml,${grp.name},${brand.name},${uom.name}`);
+    const renamed = await plan(`1,B${stamp}1,,Coca-Cola 500ml,${grp.name},,${brand.name},${uom.name}`);
     check("renaming an existing barcode is refused, not applied",
       renamed.errors.some((e) => /already belongs to/.test(e.message)),
       errorsOf(renamed).slice(0, 70));
@@ -384,9 +384,9 @@ try {
     const ws = wb.addWorksheet("Sheet1");
     ws.addRow(HEADER.split(","));
     const big = 8851234567890;
-    const r1 = ws.addRow([1, big, "", "Workbook Coke", grp.name, brand.name, uom.name]);
+    const r1 = ws.addRow([1, big, "", "Workbook Coke", grp.name, "", brand.name, uom.name]);
     r1.getCell(2).numFmt = "0.00E+00";              // shown as 8.85E+12
-    ws.addRow([2, "0123456789012", "", "Leading Zero", grp.name, "", uom.name]);
+    ws.addRow([2, "0123456789012", "", "Leading Zero", grp.name, "", "", uom.name]);
 
     const rows = await xlsxToRows(Buffer.from(await wb.xlsx.writeBuffer()).toString("base64"));
 
@@ -404,11 +404,11 @@ try {
     const wb2 = new ExcelJS.Workbook();
     const ws2 = wb2.addWorksheet("S");
     ws2.addRow(HEADER.split(","));
-    ws2.addRow([3, `B${stamp}G`, "", "Gap Item", grp.name, "", uom.name]);
+    ws2.addRow([3, `B${stamp}G`, "", "Gap Item", grp.name, "", "", uom.name]);
     const gapRows = await xlsxToRows(Buffer.from(await wb2.xlsx.writeBuffer()).toString("base64"));
     check("a blank Brand cell does not shift the Unit after it",
-      gapRows[1][6] === uom.name,
-      `unit="${gapRows[1]?.[6]}"`);
+      gapRows[1][7] === uom.name,
+      `unit="${gapRows[1]?.[7]}"`);
   }
 
   // ---- brands the file names but the master does not have -----------------
@@ -419,33 +419,33 @@ try {
   {
     const newBrands = [`Zed Cola ${stamp}`, `Zed Fizz ${stamp}`];
     const body = [
-      `1,B${stamp}Z1,,Zed Cola Can,${grp.name},${newBrands[0]},${uom.name}`,
-      `2,B${stamp}Z2,,Zed Fizz Can,${grp.name},${newBrands[1]},${uom.name}`,
+      `1,B${stamp}Z1,,Zed Cola Can,${grp.name},,${newBrands[0]},${uom.name}`,
+      `2,B${stamp}Z2,,Zed Fizz Can,${grp.name},,${newBrands[1]},${uom.name}`,
       // the same unknown brand twice — reported once, not twice
-      `3,B${stamp}Z3,,Zed Cola Bottle,${grp.name},${newBrands[0]},${uom.name}`,
+      `3,B${stamp}Z3,,Zed Cola Bottle,${grp.name},,${newBrands[0]},${uom.name}`,
     ].join("\n");
 
     const before = await plan(body);
     check("an unregistered brand is refused, not invented",
-      before.errors.some((e) => /is not in the brand list/.test(e.message)));
+      before.errors.some((e) => /is not registered yet/.test(e.message)));
     check("the missing brands are listed once each, by name",
-      before.missingBrands.length === 2 &&
-      before.missingBrands.every((b) => newBrands.includes(b)),
-      before.missingBrands.join(", "));
+      before.missing.length === 2 &&
+      before.missing.every((m) => m.kind === "brand" && newBrands.includes(m.name)),
+      before.missing.map((m) => m.name).join(", "));
 
-    const made = await createMissingBrands(before.missingBrands);
+    const made = await createMissingMasterData(before.missing);
     check("registering them creates one brand per name",
       made.ok === true && made.created === 2, JSON.stringify(made));
 
     const after = await plan(body);
     check("the same file then validates with no errors",
-      after.errors.length === 0 && after.missingBrands.length === 0,
+      after.errors.length === 0 && after.missing.length === 0,
       errorsOf(after).slice(0, 70));
     check("and the items now point at a brand rather than carrying text",
       after.rows.every((r) => Boolean(r.brandId)));
 
     // Asked twice, the second time is a no-op rather than a duplicate.
-    const twice = await createMissingBrands(before.missingBrands);
+    const twice = await createMissingMasterData(before.missing);
     check("registering the same brands again creates nothing",
       twice.ok === true && twice.created === 0, JSON.stringify(twice));
 
@@ -456,10 +456,101 @@ try {
       codes.map((c) => c.code).join(", "));
 
     // Blank stays blank: an item with no brand must not acquire one.
-    const blank = await plan(`1,B${stamp}Z9,,No Brand Item,${grp.name},,${uom.name}`);
+    const blank = await plan(`1,B${stamp}Z9,,No Brand Item,${grp.name},,,${uom.name}`);
     check("a blank brand is still allowed and creates nothing",
-      blank.errors.length === 0 && blank.missingBrands.length === 0 &&
+      blank.errors.length === 0 && blank.missing.length === 0 &&
       blank.rows[0].brandId === null);
+  }
+
+  // ---- categories, sub categories, and registering them -------------------
+  // The importer still never invents master data on its way past. What it now
+  // does is say exactly what is missing, so registering it is one deliberate
+  // act rather than a trip to another screen and back.
+  {
+    const catName = `Zed Cat ${stamp}`;
+    const subName = `Zed Sub ${stamp}`;
+
+    const before = await plan(
+      `1,B${stamp}C1,,Cat Item,${catName},${subName},,${uom.name}`);
+    check("an unregistered category is refused, not invented",
+      before.errors.some((e) => /Category .* is not registered yet/.test(e.message)));
+    check("the category and its sub category are both offered for registration",
+      before.missing.length === 2 &&
+      before.missing[0].kind === "category" && before.missing[0].name === catName &&
+      before.missing[1].kind === "subcategory" && before.missing[1].name === subName,
+      before.missing.map((m) => `${m.kind}:${m.name}`).join(", "));
+    check("the sub category names the category it will go under",
+      before.missing[1].parent === catName, before.missing[1].parent);
+    check("each missing name carries the rows that asked for it",
+      before.missing.every((m) => m.rows.length === 1 && m.rows[0] === 2));
+
+    // Category before sub category, so registering the list in order always
+    // has a parent to attach to.
+    const made = await createMissingMasterData(before.missing);
+    check("registering creates the category and the sub category",
+      made.ok === true && made.created === 2, JSON.stringify(made));
+
+    const [madeCat] = await sql`
+      select id, code, parent_id from item_group
+       where company_id = ${co.id} and name = ${catName}`;
+    const [madeSub] = await sql`
+      select id, code, parent_id from item_group
+       where company_id = ${co.id} and name = ${subName}`;
+    check("the category is a root", Boolean(madeCat) && madeCat.parent_id === null);
+    check("the sub category hangs off it", Boolean(madeSub) && madeSub.parent_id === madeCat.id);
+    check("the sub category's code is composed from its parent's",
+      madeSub.code.startsWith(madeCat.code), `${madeCat?.code} -> ${madeSub?.code}`);
+
+    const after = await plan(
+      `1,B${stamp}C1,,Cat Item,${catName},${subName},,${uom.name}`);
+    check("the same sheet then validates with nothing missing",
+      after.errors.length === 0 && after.missing.length === 0,
+      errorsOf(after).slice(0, 70));
+    check("the item is filed under the sub category, not the category",
+      after.rows[0].categoryId === madeSub.id);
+    check("and its code is composed from the sub category",
+      after.rows[0].code.startsWith(madeSub.code), after.rows[0].code);
+    check("the preview shows both levels",
+      after.rows[0].categoryName === catName && after.rows[0].subCategoryName === subName,
+      `${after.rows[0].categoryName} / ${after.rows[0].subCategoryName}`);
+
+    // Registering twice is a no-op rather than a duplicate.
+    const twice = await createMissingMasterData(before.missing);
+    check("registering the same names again creates nothing",
+      twice.ok === true && twice.created === 0, JSON.stringify(twice));
+
+    // Sub category is optional: no column, no cell, either is fine.
+    const noSub = await plan(`1,B${stamp}C2,,No Sub Item,${catName},,,${uom.name}`);
+    check("a blank sub category files the item under the category itself",
+      noSub.errors.length === 0 && noSub.rows[0].categoryId === madeCat.id &&
+      noSub.rows[0].subCategoryName === null, errorsOf(noSub).slice(0, 60));
+
+    // A sub category under the wrong parent is not silently accepted.
+    const [otherCat] = await sql`
+      select name from item_group where company_id = ${co.id}
+        and parent_id is null and id <> ${madeCat.id} limit 1`;
+    if (otherCat) {
+      const wrongParent = await plan(
+        `1,B${stamp}C3,,Wrong Parent,${otherCat.name},${subName},,${uom.name}`);
+      check("a sub category is not accepted under a category it does not belong to",
+        wrongParent.errors.some((e) => /not registered under/.test(e.message)),
+        errorsOf(wrongParent).slice(0, 70));
+    }
+  }
+
+  // ---- the duplicate a near-identical name would create --------------------
+  // The real failure mode is not a name that is obviously new. It is "Coca
+  // Cola" arriving where "Coca-Cola" already exists: registering it is legal,
+  // silent, and leaves two brands splitting one product's sales.
+  {
+    const near = await plan(
+      `1,B${stamp}N1,,Near Miss,${grp.name},,${brand.name.toUpperCase().replace(/ /g, "")},${uom.name}`);
+    const entry = near.missing.find((m) => m.kind === "brand");
+    check("a brand a keystroke from an existing one is flagged, not just offered",
+      Boolean(entry) && entry.similarTo === brand.name,
+      entry ? `${entry.name} ~ ${entry.similarTo}` : "not offered");
+    check("and it is still refused rather than quietly matched to the existing one",
+      near.errors.some((e) => /is not registered yet/.test(e.message)));
   }
 
   // ---- the template ------------------------------------------------------
@@ -475,7 +566,7 @@ try {
     const head = [];
     ws.getRow(1).eachCell({ includeEmpty: true }, (c) => head.push(String(c.value ?? "")));
     check("the template's columns match what the importer expects",
-      head.slice(0, 7).join(",") === HEADER, head.slice(0, 7).join(","));
+      head.slice(0, 8).join(",") === HEADER, head.slice(0, 8).join(","));
     check("the template carries no Qty, Unit Cost or Location column",
       !/Qty|Unit Cost|Location/.test(head.join(",")), head.join(","));
 
@@ -483,7 +574,7 @@ try {
       ws.getColumn(2).numFmt === "@", String(ws.getColumn(2).numFmt));
 
     // A 13-digit barcode typed into that column must come back whole.
-    ws.addRow([9, "8851234567899", "T001", "Typed In", grp.name, brand.name, uom.name]);
+    ws.addRow([9, "8851234567899", "T001", "Typed In", grp.name, "", brand.name, uom.name]);
     const rows = await xlsxToRows(Buffer.from(await wb.xlsx.writeBuffer()).toString("base64"));
     const typed = rows.find((r) => r[3] === "Typed In");
     check("a barcode typed into the template survives the round trip",
