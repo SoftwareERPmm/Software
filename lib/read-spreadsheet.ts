@@ -119,3 +119,47 @@ export async function buildImportTemplate(): Promise<string> {
 
   return Buffer.from(await wb.xlsx.writeBuffer()).toString("base64");
 }
+
+/**
+ * A blank receipt workbook whose columns are the fields the receipt screen
+ * asks for, in the order it asks for them. Someone who has entered one
+ * receipt by hand should recognise the sheet without being taught it.
+ */
+export async function buildVoucherTemplate(columns: string[], kind: "cash" | "bank"): Promise<string> {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "ERP";
+  const ws = wb.addWorksheet(kind === "cash" ? "Cash receipts" : "Bank receipts");
+
+  ws.addRow(columns);
+  ws.getRow(1).font = { bold: true };
+  ws.views = [{ state: "frozen", ySplit: 1 }];
+  [5, 14, 24, 26, 14, 18, 20, 34].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+
+  // Dates as text, so Excel cannot reformat one into a shape the sheet did
+  // not intend — and the importer refuses an ambiguous 03/04/2026 anyway.
+  ws.getColumn(2).numFmt = "@";
+
+  const money = kind === "cash" ? "Cash on Hand" : "Cash at Bank";
+  const examples = [
+    [1, "2026-09-02", money, "Other Income", 150000, "Yangon Branch", "RCP-001", "Scrap sale"],
+    [2, "2026-09-02", money, "Other Income", 42000, "Mandalay Branch", "RCP-002", "Rent recovered"],
+  ];
+  for (const e of examples) {
+    const r = ws.addRow(e);
+    r.getCell(2).numFmt = "@";
+    r.font = { italic: true, color: { argb: "FF888888" } };
+  }
+
+  const note = ws.addRow([]);
+  note.getCell(1).value =
+    "Delete the two grey example rows before uploading. One row is one receipt. Dates as YYYY-MM-DD. " +
+    "Received From must be an account in the chart that can be posted to — not a heading, and not " +
+    "Accounts Receivable, which is maintained by the sales ledger: record money from a customer " +
+    "against their invoice instead. Branch may be left blank, but then the receipt appears in no " +
+    "branch's figures.";
+  ws.mergeCells(`A${note.number}:H${note.number}`);
+  note.getCell(1).alignment = { wrapText: true, vertical: "top" };
+  note.height = 56;
+
+  return Buffer.from(await wb.xlsx.writeBuffer()).toString("base64");
+}

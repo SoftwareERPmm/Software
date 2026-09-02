@@ -5,7 +5,9 @@ import { redirect } from "next/navigation";
 import { sql } from "./db";
 import { parseCsv, planImport, type MasterData } from "./import-items";
 import { xlsxToRows, type UploadFormat } from "./read-spreadsheet";
-import { getImportMasterData } from "./queries";
+import { planVoucherImport, voucherColumns, type VoucherMasterData, type VoucherKind }
+  from "./import-vouchers";
+import { getImportMasterData, getVoucherImportMasterData } from "./queries";
 import { scaffoldCompany } from "./setup";
 import {
   postSalesInvoice, postPurchaseInvoice, postSaleWithDelivery, postPurchaseWithReceipt,
@@ -13,7 +15,7 @@ import {
   postSupplierPayment, postCustomerReceipt,
   postCashVoucher, postBankVoucher, postJournalVoucher,
   postCashTransfer, postAccountOpening, postStockAdjustment, postStockTransfer,
-  importItemsAndOpeningStock,
+  importItemsAndOpeningStock, importVouchers,
   postSalesReturn, postPurchaseReturn, postConsignmentReceipt,
   type InvoiceLine, type OrderLine, type FulfillmentLine, type Allocation, type VoucherLine,
   type AdjustmentLine, type ReturnLine, type TransferLine, type ConsignmentReceiptLine,
@@ -2772,4 +2774,71 @@ export async function runItemImport(
 export async function itemImportTemplate(): Promise<{ base64: string }> {
   const { buildImportTemplate } = await import("./read-spreadsheet");
   return { base64: await buildImportTemplate() };
+}
+
+// ------------------------------------------ cash / bank receipt import --
+
+export async function previewVoucherImport(
+  content: string, filename: string, format: UploadFormat, kind: VoucherKind
+) {
+  const co = await companyId();
+  const master = (await getVoucherImportMasterData(co)) as unknown as VoucherMasterData;
+  const rows = format === "xlsx" ? await xlsxToRows(content) : parseCsv(content);
+  return { plan: planVoucherImport(rows, master, kind), filename };
+}
+
+/** The blank workbook for a receipt import, columns matching the screen. */
+export async function voucherImportTemplate(kind: VoucherKind): Promise<{ base64: string }> {
+  const { buildVoucherTemplate } = await import("./read-spreadsheet");
+  return { base64: await buildVoucherTemplate(voucherColumns(kind), kind) };
+}
+
+export async function runVoucherImport(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  let done: { ref: string; posted: number; total: number };
+  let kind: VoucherKind = "cash";
+  try {
+    const co = await companyId();
+    const content = str(fd, "csv");
+    const filename = str(fd, "filename") || "receipts.xlsx";
+    const format = (str(fd, "format") === "xlsx" ? "xlsx" : "csv") as UploadFormat;
+    kind = str(fd, "kind") === "bank" ? "bank" : "cash";
+    if (!content) return { error: "No file was uploaded" };
+
+    // Re-checked against the database as it is now, not as it was when the
+    // preview was drawn — a period can be closed, or an account deactivated,
+    // between looking and confirming.
+    const master = (await getVoucherImportMasterData(co)) as unknown as VoucherMasterData;
+    const rows = format === "xlsx" ? await xlsxToRows(content) : parseCsv(content);
+    const plan = planVoucherImport(rows, master, kind);
+
+    if (plan.errors.length > 0) {
+      return {
+        error:
+          `${plan.errors.length} problem${plan.errors.length === 1 ? "" : "s"} found on re-checking the ` +
+          `file — the first is row ${plan.errors[0].row}: ${plan.errors[0].message}`,
+      };
+    }
+    if (plan.rows.length === 0) return { error: "There is nothing to import" };
+
+    done = await importVouchers({
+      companyId: co, kind, filename, rowCount: plan.summary.rows,
+      rows: plan.rows.map((r) => ({
+        docDate: r.docDate,
+        moneyAccountId: r.moneyAccountId,
+        otherAccountId: r.otherAccountId,
+        amount: r.amount,
+        locationId: r.locationId,
+        reference: r.reference,
+        memo: r.memo,
+      })),
+    });
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  financeRevalidate();
+  redirectWithToast(
+    kind === "cash" ? "/finance/cash-receipt/import" : "/finance/bank-receipt/import",
+    `${done.ref}: ${done.posted} receipt${done.posted === 1 ? "" : "s"} posted, ${done.total.toLocaleString()} total`
+  );
 }

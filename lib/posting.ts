@@ -2776,9 +2776,18 @@ export type VoucherInput = {
   locationId?: string | null;
 };
 
-async function postVoucher(
+type VoucherDocType =
+  "CASH_VOUCHER" | "BANK_VOUCHER" | "JOURNAL_VOUCHER" | "CASH_TRANSFER" | "OPENING_BALANCE";
+
+/**
+ * Split from postVoucher so a caller already inside a transaction can post
+ * one without opening a second. The receipt importer posts a whole file of
+ * them and needs all or none, not one transaction per row.
+ */
+async function _postVoucher(
+  tx: TransactionSql,
   input: VoucherInput,
-  docType: "CASH_VOUCHER" | "BANK_VOUCHER" | "JOURNAL_VOUCHER" | "CASH_TRANSFER" | "OPENING_BALANCE"
+  docType: VoucherDocType
 ) {
   // Voucher amounts are signed on purpose — positive debit, negative credit —
   // so only finiteness is checked here. The balance trigger catches the rest.
@@ -2792,7 +2801,7 @@ async function postVoucher(
     throw new Error(`Debits and credits differ by ${net}`);
   }
 
-  return sql.begin(async (tx) => {
+  {
     const { companyId, docDate } = input;
 
     const fyRows = await tx`select fn_fiscal_year_for(${companyId}, ${docDate}::date) as fy`;
@@ -2830,7 +2839,12 @@ async function postVoucher(
     await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
 
     return { id: doc.id as string, docNo: docNo as string, total };
-  });
+  }
+}
+
+/** A voucher in a transaction of its own. */
+async function postVoucher(input: VoucherInput, docType: VoucherDocType) {
+  return sql.begin((tx) => _postVoucher(tx, input, docType));
 }
 
 /** Money in or out of a till. */
@@ -3162,6 +3176,84 @@ export async function importItemsAndOpeningStock(input: {
       itemsMatched: itemIdByBarcode.size - created,
       stockRows: rows.filter((r) => r.qty > 0).length,
       documents,
+    };
+  });
+}
+
+export type ImportedVoucher = {
+  docDate: string;
+  moneyAccountId: string;
+  otherAccountId: string;
+  amount: number;
+  locationId: string | null;
+  reference: string | null;
+  memo: string | null;
+};
+
+/**
+ * Posts a spreadsheet of cash or bank receipts as one act.
+ *
+ * Each row becomes its own voucher — they are separate receipts from
+ * different people on different days, and merging them would lose the
+ * reference that identifies each one. What they share is the transaction:
+ * a file of two hundred receipts either posts entirely or not at all, because
+ * "which of these went in?" is not a question anyone should have to answer by
+ * reading the ledger afterwards.
+ *
+ * Dr the cash or bank account, Cr where the money came from — the same two
+ * lines the receipt screen writes, through the same postVoucher path, so an
+ * imported receipt and a typed one are indistinguishable once posted.
+ */
+export async function importVouchers(input: {
+  companyId: string;
+  kind: "cash" | "bank";
+  filename: string;
+  rowCount: number;
+  rows: ImportedVoucher[];
+}) {
+  const { companyId, kind, filename, rows } = input;
+  if (rows.length === 0) throw new Error("There is nothing to import");
+
+  const docType = kind === "cash" ? "CASH_VOUCHER" : "BANK_VOUCHER";
+
+  return sql.begin(async (tx) => {
+    const [{ next }] = await tx`
+      select coalesce(max(substring(ref from '[0-9]+$')::int), 0) + 1 as next
+        from import_batch where company_id = ${companyId}`;
+    const ref = `IMP-${String(next).padStart(6, "0")}`;
+
+    const [batch] = await tx`
+      insert into import_batch (company_id, ref, filename, row_count)
+      values (${companyId}, ${ref}, ${filename}, ${input.rowCount})
+      returning id`;
+
+    const posted: string[] = [];
+    for (const v of rows) {
+      const doc = await _postVoucher(
+        tx,
+        {
+          companyId,
+          docDate: v.docDate,
+          memo: v.memo,
+          reference: v.reference,
+          locationId: v.locationId,
+          lines: [
+            { accountId: v.moneyAccountId, amount: v.amount },
+            { accountId: v.otherAccountId, amount: -v.amount },
+          ],
+        },
+        docType
+      );
+      await tx`update document set import_batch_id = ${batch.id} where id = ${doc.id}`;
+      posted.push(doc.docNo);
+    }
+
+    return {
+      ref,
+      batchId: batch.id as string,
+      posted: posted.length,
+      total: round4(rows.reduce((s, r) => s + r.amount, 0)),
+      documents: posted,
     };
   });
 }

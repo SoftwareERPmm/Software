@@ -2,6 +2,7 @@
 
 import { useActionState, useState, useTransition } from "react";
 import { previewItemImport, itemImportTemplate } from "@/lib/actions";
+import { FileDrop, type Upload } from "./file-drop";
 import type { ActionResult } from "@/lib/actions";
 
 type Issue = { row: number; column?: string; message: string };
@@ -81,33 +82,16 @@ export function ItemImport({ action, today }: {
          "item-opening-stock-template.csv");
   }
 
-  /** A workbook is sent as bytes; a CSV as text. Chunked on the way to base64
-   *  because spreading a 500-row file into String.fromCharCode in one call
-   *  overflows the argument list. */
-  async function encode(file: File): Promise<{ content: string; kind: "csv" | "xlsx" }> {
-    const isCsv = /\.csv$/i.test(file.name) || file.type === "text/csv";
-    if (isCsv) return { content: await file.text(), kind: "csv" };
-
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    let binary = "";
-    for (let i = 0; i < bytes.length; i += 0x8000) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    }
-    return { content: btoa(binary), kind: "xlsx" };
-  }
-
-  function onFile(file: File | undefined) {
+  function onPick(u: Upload) {
     setPlan(null);
     setReadError(null);
-    if (!file) return;
+    setCsv(u.content);
+    setFormat(u.format);
+    setFilename(u.name);
+    setPicked(true);
     startChecking(async () => {
       try {
-        const { content, kind } = await encode(file);
-        setPicked(true);
-        setCsv(content);
-        setFormat(kind);
-        setFilename(file.name);
-        const res = await previewItemImport(content, file.name, kind);
+        const res = await previewItemImport(u.content, u.name, u.format);
         setPlan(res.plan as unknown as Plan);
       } catch (e) {
         setReadError(e instanceof Error ? e.message : String(e));
@@ -126,13 +110,14 @@ export function ItemImport({ action, today }: {
             <span className="page-sub">Excel (.xlsx) or CSV — upload the workbook directly, no need to convert it</span>
           </div>
           <div className="card-body">
-            <div className="row" style={{ alignItems: "flex-end" }}>
-              <div className="field">
-                <label htmlFor="file">Spreadsheet</label>
-                <input id="file" type="file"
-                       accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
-                       onChange={(e) => onFile(e.target.files?.[0])} />
-              </div>
+            <FileDrop
+              onPick={onPick}
+              onClear={() => { setPicked(false); setPlan(null); setCsv(""); setFilename(""); }}
+              picked={picked ? filename : null}
+              busy={checking}
+            />
+
+            <div className="row" style={{ alignItems: "flex-end", marginTop: "0.75rem" }}>
               <div className="actions">
                 <button type="button" onClick={downloadTemplate} disabled={gettingTemplate}>
                   {gettingTemplate ? "Preparing…" : "Download Excel template"}

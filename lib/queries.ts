@@ -1521,3 +1521,19 @@ export async function getImportBatches(companyId: string) {
      where b.company_id = ${companyId}
      order by b.created_at desc`;
 }
+
+/** Everything the cash/bank receipt importer checks a row against. */
+export async function getVoucherImportMasterData(companyId: string) {
+  const [accounts, locations, openPeriods] = await Promise.all([
+    sql`select id, code, name, is_postable, is_control, is_cash_account, is_bank_account
+          from account where company_id = ${companyId} and is_active order by code`,
+    sql`select id, code, name, parent_id, is_active
+          from location where company_id = ${companyId}`,
+    // Checked up front so a date in a closed period is reported against its
+    // row, rather than failing the whole import at the moment of posting.
+    sql`select to_char(start_date, 'YYYY-MM-DD') as start_date,
+               to_char(end_date, 'YYYY-MM-DD') as end_date
+          from fiscal_period where company_id = ${companyId} and status = 'OPEN'`,
+  ]);
+  return { accounts, locations, openPeriods };
+}

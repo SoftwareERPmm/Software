@@ -28,6 +28,7 @@ export default async function BankReceipt() {
           <Link href="/receivables/receive" style={{ color: "var(--brand)" }}>Receive payment</Link> for that.{" "}
           <Link href="/finance/bank-detail" style={{ color: "var(--brand)" }}>View the bank book</Link>
         </span>
+        <Link href="/finance/bank-receipt/import" className="btn ghost">Import from Excel</Link>
       </div>
 
       <VoucherForm

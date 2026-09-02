@@ -28,6 +28,7 @@ export default async function CashReceipt() {
           <Link href="/receivables/receive" style={{ color: "var(--brand)" }}>Receive payment</Link> for that.{" "}
           <Link href="/finance/cash-detail" style={{ color: "var(--brand)" }}>View the cash book</Link>
         </span>
+        <Link href="/finance/cash-receipt/import" className="btn ghost">Import from Excel</Link>
       </div>
 
       <VoucherForm
