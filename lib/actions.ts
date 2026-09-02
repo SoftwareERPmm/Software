@@ -3,6 +3,11 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { sql } from "./db";
+import { parseCsv, planImport, type MasterData } from "./import-items";
+import { xlsxToRows, type UploadFormat } from "./read-spreadsheet";
+import { planVoucherImport, voucherColumns, type VoucherMasterData, type VoucherKind }
+  from "./import-vouchers";
+import { getImportMasterData, getVoucherImportMasterData } from "./queries";
 import { scaffoldCompany } from "./setup";
 import {
   postSalesInvoice, postPurchaseInvoice, postSaleWithDelivery, postPurchaseWithReceipt,
@@ -10,6 +15,7 @@ import {
   postSupplierPayment, postCustomerReceipt,
   postCashVoucher, postBankVoucher, postJournalVoucher,
   postCashTransfer, postAccountOpening, postStockAdjustment, postStockTransfer,
+  importItemsAndOpeningStock, importVouchers,
   postSalesReturn, postPurchaseReturn, postConsignmentReceipt,
   type InvoiceLine, type OrderLine, type FulfillmentLine, type Allocation, type VoucherLine,
   type AdjustmentLine, type ReturnLine, type TransferLine, type ConsignmentReceiptLine,
@@ -1670,7 +1676,7 @@ export async function createAccountOpening(_prev: unknown, fd: FormData): Promis
 export async function getFinanceData() {
   const co = await companyId();
 
-  const [accounts, accountTree, cashAccounts, bankAccounts, locations, costCenters] = await Promise.all([
+  const [accounts, accountTree, cashAccounts, bankAccounts, branches, costCenters] = await Promise.all([
     sql`select id, code, name, parent_id, account_type, is_control, is_cash_account, is_bank_account
           from account
          where company_id = ${co} and is_postable and is_active
@@ -1681,19 +1687,24 @@ export async function getFinanceData() {
     // that is where the finer distinctions live, since the stored
     // account_type has six members and the chart draws eight (a tax payable
     // is a LIABILITY underneath and reads as Tax on screen).
-    sql`select id, code, parent_id from account where company_id = ${co}`,
+    sql`select id, code, name, parent_id, is_postable from account where company_id = ${co}`,
     sql`select id, code, name from account
          where company_id = ${co} and is_cash_account and not is_bank_account and is_active
          order by code`,
     sql`select id, code, name from account
          where company_id = ${co} and is_bank_account and is_active order by code`,
+    // Branches only, not every location. A voucher happens at a branch — a
+    // receipt is taken at an office, money is transferred between them — and
+    // a warehouse is where stock sits, which is a different question. Listing
+    // warehouses under a control labelled "Branch" invited someone to file a
+    // cash receipt into a shed.
     sql`select id, code, name from location
-         where company_id = ${co} and is_active order by code`,
+         where company_id = ${co} and parent_id is null and is_active order by code`,
     sql`select id, code, name from cost_center
          where company_id = ${co} and is_active order by code`,
   ]);
 
-  return { accounts, accountTree, cashAccounts, bankAccounts, locations, costCenters };
+  return { accounts, accountTree, cashAccounts, bankAccounts, branches, costCenters };
 }
 
 /** Movements on one account with its running balance. */
@@ -2683,4 +2694,216 @@ export async function createConsignmentSale(_prev: unknown, fd: FormData): Promi
   revalidatePath("/inventory/consignment");
   revalidatePath("/purchases/invoices");
   redirectWithToast(`/documents/${docId}`, toastMsg);
+}
+
+// --------------------------------------------------- item/stock import --
+
+/**
+ * Reads a spreadsheet and reports what it would do, changing nothing.
+ *
+ * Deliberately a separate call from the import itself, and deliberately the
+ * same validator: the preview a person approves has to be produced by the
+ * code that later acts, or they are approving one thing and getting another.
+ */
+/** Rows from whichever kind of file was uploaded. */
+async function readUpload(content: string, format: UploadFormat): Promise<string[][]> {
+  return format === "xlsx" ? xlsxToRows(content) : parseCsv(content);
+}
+
+export async function previewItemImport(
+  content: string, filename: string, format: UploadFormat = "csv"
+) {
+  const co = await companyId();
+  const master = (await getImportMasterData(co)) as unknown as MasterData;
+  const plan = planImport(await readUpload(content, format), master);
+  return { plan, filename };
+}
+
+export async function runItemImport(
+  _prev: unknown, fd: FormData
+): Promise<ActionResult> {
+  let done: { ref: string; itemsCreated: number; itemsMatched: number; stockRows: number };
+  try {
+    const co = await companyId();
+    const content = str(fd, "csv");
+    const filename = str(fd, "filename") || "import.csv";
+    const format = (str(fd, "format") === "xlsx" ? "xlsx" : "csv") as UploadFormat;
+    if (!content) return { error: "No file was uploaded" };
+
+    // Re-validated here, against the database as it is now rather than as it
+    // was when the preview was drawn. Master data can be edited, or another
+    // import run, between the two — and the check that matters most (stock
+    // already present) is exactly the kind that changes underneath you.
+    const master = (await getImportMasterData(co)) as unknown as MasterData;
+    const plan = planImport(await readUpload(content, format), master);
+
+    if (plan.errors.length > 0) {
+      return {
+        error:
+          `${plan.errors.length} problem${plan.errors.length === 1 ? "" : "s"} found on re-checking the ` +
+          `file — the first is row ${plan.errors[0].row}: ${plan.errors[0].message}`,
+      };
+    }
+    if (plan.rows.length === 0) return { error: "There is nothing to import" };
+
+    done = await importItemsAndOpeningStock({
+      companyId: co,
+      docDate: str(fd, "doc_date") || new Date().toISOString().slice(0, 10),
+      filename,
+      rowCount: plan.summary.rows,
+      rows: plan.rows,
+    });
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/items");
+  revalidatePath("/items/stock");
+  revalidatePath("/documents");
+  redirectWithToast(
+    "/items/import",
+    `${done.ref}: ${done.itemsCreated} item${done.itemsCreated === 1 ? "" : "s"} created, ` +
+    `${done.stockRows} stock record${done.stockRows === 1 ? "" : "s"}`
+  );
+}
+
+/**
+ * The blank workbook to fill in.
+ *
+ * Built server-side and handed back as bytes, so the Barcode column can be
+ * formatted as Text before anyone types in it. That is the whole point: the
+ * barcode damage happens in Excel, before any file reaches us, and a template
+ * that arrives already formatted is the only fix that works by default rather
+ * than by the user remembering.
+ */
+export async function itemImportTemplate(): Promise<{ base64: string }> {
+  const { buildImportTemplate } = await import("./read-spreadsheet");
+  return { base64: await buildImportTemplate() };
+}
+
+// ------------------------------------------ cash / bank receipt import --
+
+export async function previewVoucherImport(
+  content: string, filename: string, format: UploadFormat, kind: VoucherKind
+) {
+  const co = await companyId();
+  const master = (await getVoucherImportMasterData(co)) as unknown as VoucherMasterData;
+  const rows = format === "xlsx" ? await xlsxToRows(content) : parseCsv(content);
+  return { plan: planVoucherImport(rows, master, kind), filename };
+}
+
+/** The blank workbook for a receipt import, columns matching the screen. */
+export async function voucherImportTemplate(kind: VoucherKind): Promise<{ base64: string }> {
+  const { buildVoucherTemplate } = await import("./read-spreadsheet");
+  return { base64: await buildVoucherTemplate(voucherColumns(kind), kind) };
+}
+
+export async function runVoucherImport(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  let done: { ref: string; posted: number; total: number };
+  let kind: VoucherKind = "cash";
+  try {
+    const co = await companyId();
+    const content = str(fd, "csv");
+    const filename = str(fd, "filename") || "receipts.xlsx";
+    const format = (str(fd, "format") === "xlsx" ? "xlsx" : "csv") as UploadFormat;
+    kind = str(fd, "kind") === "bank" ? "bank" : "cash";
+    if (!content) return { error: "No file was uploaded" };
+
+    // Re-checked against the database as it is now, not as it was when the
+    // preview was drawn — a period can be closed, or an account deactivated,
+    // between looking and confirming.
+    const master = (await getVoucherImportMasterData(co)) as unknown as VoucherMasterData;
+    const rows = format === "xlsx" ? await xlsxToRows(content) : parseCsv(content);
+    const plan = planVoucherImport(rows, master, kind);
+
+    if (plan.errors.length > 0) {
+      return {
+        error:
+          `${plan.errors.length} problem${plan.errors.length === 1 ? "" : "s"} found on re-checking the ` +
+          `file — the first is row ${plan.errors[0].row}: ${plan.errors[0].message}`,
+      };
+    }
+    if (plan.rows.length === 0) return { error: "There is nothing to import" };
+
+    done = await importVouchers({
+      companyId: co, kind, filename, rowCount: plan.summary.rows,
+      rows: plan.rows.map((r) => ({
+        docDate: r.docDate,
+        moneyAccountId: r.moneyAccountId,
+        otherAccountId: r.otherAccountId,
+        amount: r.amount,
+        locationId: r.locationId,
+        reference: r.reference,
+        memo: r.memo,
+      })),
+    });
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  financeRevalidate();
+  redirectWithToast(
+    kind === "cash" ? "/finance/cash-receipt/import" : "/finance/bank-receipt/import",
+    `${done.ref}: ${done.posted} receipt${done.posted === 1 ? "" : "s"} posted, ${done.total.toLocaleString()} total`
+  );
+}
+
+/**
+ * Registers brands an import file named that the brand master does not have.
+ *
+ * Deliberately its own action with its own button rather than something the
+ * import does on its way past. Auto-creating master data from a spreadsheet
+ * is how a chart ends up holding Coca-Cola, Coca Cola and COKE as three
+ * brands, each with a share of the sales — a typo becomes a permanent record
+ * and nobody sees it happen. Asking first costs one click and makes the
+ * decision visible, which is the whole difference.
+ *
+ * The code is derived from the name, since a brand code is an internal handle
+ * rather than something the trade recognises, and a person invited to invent
+ * one for each of forty brands will not enjoy it.
+ */
+export async function createMissingBrands(
+  names: string[]
+): Promise<{ ok: true; created: number } | { ok: false; error: string }> {
+  try {
+    const co = await companyId();
+    const wanted = [...new Set(names.map((n) => n.trim()).filter(Boolean))];
+    if (wanted.length === 0) return { ok: true, created: 0 };
+
+    let created = 0;
+    await sql.begin(async (tx) => {
+      for (const name of wanted) {
+        const [existing] = await tx`
+          select id from brand where company_id = ${co} and lower(name) = ${name.toLowerCase()}`;
+        if (existing) continue;   // added by someone else since the preview
+
+        // Letters and digits only, so the code stays typeable; a numeric
+        // suffix settles the rare collision between two similar names.
+        const base = (name.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) || "BRAND");
+        let code = base;
+        for (let i = 2; ; i++) {
+          const [clash] = await tx`select 1 from brand where company_id = ${co} and code = ${code}`;
+          if (!clash) break;
+          code = `${base.slice(0, 12 - String(i).length)}${i}`;
+        }
+
+        await tx`insert into brand (company_id, code, name) values (${co}, ${code}, ${name})`;
+        created++;
+      }
+    });
+
+    // The brands are already committed. Cache revalidation is a hint, and
+    // letting it throw here would report failure for brands that now exist —
+    // the caller would show an error, the user would look in Master data and
+    // find them there. Same guard as createItemInline, for the same reason.
+    try {
+      revalidatePath("/items/brands");
+      revalidatePath("/items");
+    } catch {
+      // Outside a request context (scripts, tests). Nothing to revalidate.
+    }
+    return { ok: true, created };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }

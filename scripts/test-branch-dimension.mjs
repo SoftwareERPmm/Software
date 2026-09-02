@@ -30,8 +30,8 @@ if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
   }
 }
 
-const { postSaleWithDelivery, postPurchaseWithReceipt, postStockTransfer, postSupplierPayment } =
-  await import("../lib/posting.ts");
+const { postSaleWithDelivery, postPurchaseWithReceipt, postStockTransfer, postSupplierPayment,
+        postCashVoucher } = await import("../lib/posting.ts");
 
 const url = process.env.DATABASE_URL;
 const local = url.includes("localhost") || url.includes("127.0.0.1");
@@ -244,6 +244,51 @@ try {
        and d.partner_id = ${supp.id}`;
   check("and every line of that payment carries a branch",
     payLines[0].unlocated === 0, `${payLines[0].unlocated} unlocated`);
+
+  // ---- a receipt taken at a branch reaches that branch's books -------------
+  // The point of the Branch field on the receipt screen. Money taken at
+  // Yangon has to show in Yangon's income statement and nowhere else, or the
+  // field is decoration.
+  {
+    const [cashAcct2] = await sql`
+      select id from account where company_id = ${co.id} and is_cash_account and is_active
+       order by code limit 1`;
+    const [incomeAcct] = await sql`
+      select id, name from account
+       where company_id = ${co.id} and account_type = 'REVENUE' and is_postable and not is_control
+       order by code limit 1`;
+
+    const revenueAt = async (branchCode) => {
+      const [r] = await sql`
+        select coalesce(-sum(jl.base_amount), 0) as v
+          from journal_line jl
+          join location w on w.id = jl.location_id
+          join location b on b.id = coalesce(w.parent_id, w.id)
+         where jl.company_id = ${co.id} and b.code = ${branchCode}
+           and jl.account_id = ${incomeAcct.id}`;
+      return n(r.v);
+    };
+
+    const ygnBefore = await revenueAt("YGN");
+    const mdyBefore = await revenueAt("MDY");
+
+    // Posted against the BRANCH itself, which is what the receipt screen now
+    // offers — no warehouse involved.
+    await postCashVoucher({
+      companyId: co.id, docDate: today, memo: "Branch receipt test",
+      locationId: branches[0].branchId,
+      lines: [
+        { accountId: cashAcct2.id, amount: 25000 },
+        { accountId: incomeAcct.id, amount: -25000 },
+      ],
+    });
+
+    check("a receipt taken at Yangon shows in Yangon's income",
+      (await revenueAt("YGN")) - ygnBefore === 25000,
+      `${ygnBefore} -> ${await revenueAt("YGN")}`);
+    check("and not in Mandalay's",
+      (await revenueAt("MDY")) === mdyBefore, `${mdyBefore}`);
+  }
 
   // ---- Inter-branch transfer ----------------------------------------------
   // Moving stock between two warehouses that share one Inventory account is a

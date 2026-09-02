@@ -3,7 +3,7 @@ import { getFinanceData, createBankVoucher } from "@/lib/actions";
 import { VoucherForm } from "@/components/voucher-form";
 
 export default async function BankReceipt() {
-  const { accounts, accountTree, bankAccounts, locations } = await getFinanceData();
+  const { accounts, accountTree, bankAccounts, branches } = await getFinanceData();
   const today = new Date().toISOString().slice(0, 10);
 
   if (bankAccounts.length === 0) {
@@ -28,6 +28,7 @@ export default async function BankReceipt() {
           <Link href="/receivables/receive" style={{ color: "var(--brand)" }}>Receive payment</Link> for that.{" "}
           <Link href="/finance/bank-detail" style={{ color: "var(--brand)" }}>View the bank book</Link>
         </span>
+        <Link href="/finance/bank-receipt/import" className="btn ghost">Import from Excel</Link>
       </div>
 
       <VoucherForm
@@ -35,7 +36,7 @@ export default async function BankReceipt() {
         action={createBankVoucher}
         accounts={accounts as never}
         accountTree={accountTree as never}
-        locations={locations as never}
+        branches={branches as never}
         moneyAccounts={bankAccounts as never}
         today={today}
         nextNo="BV-"

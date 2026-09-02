@@ -1957,13 +1957,26 @@ export type AdjustmentInput = {
  *   Increase: Dr Inventory / Cr Stock Adjustment
  *   Decrease: Dr Stock Adjustment / Cr Inventory
  */
-export async function postStockAdjustment(input: AdjustmentInput) {
+/**
+ * Split from postStockAdjustment so a caller that is already inside a
+ * transaction can post one without opening a second. The spreadsheet import
+ * needs that: it writes stock into several warehouses in one act, and an
+ * import that half-succeeded — some warehouses stocked, others not, the file
+ * apparently accepted — is worse than one that failed outright.
+ *
+ * `importBatchId` marks the document as something an import produced, so
+ * "what did that spreadsheet do?" stays answerable afterwards.
+ */
+async function _postStockAdjustment(
+  tx: TransactionSql,
+  input: AdjustmentInput & { importBatchId?: string | null }
+) {
   const lines = input.lines.filter((l) => l.qty !== 0);
   if (lines.length === 0) throw new Error("An adjustment needs at least one line");
   // Signed: a stock loss is a negative quantity by design.
   assertLines(lines, { signedQty: true });
 
-  return sql.begin(async (tx) => {
+  {
     const { companyId, locationId, docDate } = input;
     const receivedAt = input.receivedAt || docDate;
 
@@ -2059,11 +2072,17 @@ export async function postStockAdjustment(input: AdjustmentInput) {
 
     const absValue = Math.abs(netValue);
     await tx`
-      update document set journal_entry_id = ${entryId}, net_total = ${absValue}, gross_total = ${absValue}
+      update document set journal_entry_id = ${entryId}, net_total = ${absValue}, gross_total = ${absValue},
+             import_batch_id = ${input.importBatchId ?? null}
        where id = ${doc.id}`;
 
     return { id: doc.id as string, docNo: docNo as string };
-  });
+  }
+}
+
+/** Dr Inventory / Cr Stock Adjustment, in a transaction of its own. */
+export async function postStockAdjustment(input: AdjustmentInput) {
+  return sql.begin((tx) => _postStockAdjustment(tx, input));
 }
 
 // =========================================================================
@@ -2757,9 +2776,18 @@ export type VoucherInput = {
   locationId?: string | null;
 };
 
-async function postVoucher(
+type VoucherDocType =
+  "CASH_VOUCHER" | "BANK_VOUCHER" | "JOURNAL_VOUCHER" | "CASH_TRANSFER" | "OPENING_BALANCE";
+
+/**
+ * Split from postVoucher so a caller already inside a transaction can post
+ * one without opening a second. The receipt importer posts a whole file of
+ * them and needs all or none, not one transaction per row.
+ */
+async function _postVoucher(
+  tx: TransactionSql,
   input: VoucherInput,
-  docType: "CASH_VOUCHER" | "BANK_VOUCHER" | "JOURNAL_VOUCHER" | "CASH_TRANSFER" | "OPENING_BALANCE"
+  docType: VoucherDocType
 ) {
   // Voucher amounts are signed on purpose — positive debit, negative credit —
   // so only finiteness is checked here. The balance trigger catches the rest.
@@ -2773,7 +2801,7 @@ async function postVoucher(
     throw new Error(`Debits and credits differ by ${net}`);
   }
 
-  return sql.begin(async (tx) => {
+  {
     const { companyId, docDate } = input;
 
     const fyRows = await tx`select fn_fiscal_year_for(${companyId}, ${docDate}::date) as fy`;
@@ -2811,7 +2839,12 @@ async function postVoucher(
     await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
 
     return { id: doc.id as string, docNo: docNo as string, total };
-  });
+  }
+}
+
+/** A voucher in a transaction of its own. */
+async function postVoucher(input: VoucherInput, docType: VoucherDocType) {
+  return sql.begin((tx) => _postVoucher(tx, input, docType));
 }
 
 /** Money in or out of a till. */
@@ -3020,4 +3053,207 @@ async function _postConsignmentReceipt(tx: TransactionSql, input: ConsignmentRec
 
 export async function postConsignmentReceipt(input: ConsignmentReceiptInput) {
   return sql.begin((tx) => _postConsignmentReceipt(tx, input));
+}
+
+// =========================================================================
+// Item and opening-stock import
+// =========================================================================
+
+export type ImportRow = {
+  row: number;
+  barcode: string;
+  name: string;
+  itemId: string | null;
+  categoryId: string;
+  brandId: string | null;
+  uomId: string;
+  locationId: string;
+  qty: number;
+  unitCost: number;
+};
+
+/**
+ * Creates the items a spreadsheet describes and stocks them, as one act.
+ *
+ * The whole import is a single transaction. That is the point rather than a
+ * detail: an import that stocked three warehouses and failed on the fourth
+ * would leave the customer's inventory in a state nobody chose and nobody can
+ * see — the file looks imported, the numbers are half right, and the only way
+ * to find out is a stock count. Either all of it lands or none of it does.
+ *
+ * It writes no ledger entries of its own. Opening stock goes through
+ * _postStockAdjustment, one document per warehouse, which is what creates the
+ * stock movement, the FIFO layer at the imported cost, and the
+ * Dr Inventory / Cr Stock Adjustment entry — and which picks up the branch
+ * from the warehouse without being told.
+ *
+ * Rows arrive already validated. This function deliberately re-checks nothing
+ * except what only the database can know at the moment of writing, because a
+ * second, differently-worded copy of the rules would eventually disagree with
+ * the first.
+ */
+export async function importItemsAndOpeningStock(input: {
+  companyId: string;
+  docDate: string;
+  filename: string;
+  rowCount: number;
+  rows: ImportRow[];
+}) {
+  const { companyId, docDate, filename, rows } = input;
+  if (rows.length === 0) throw new Error("There is nothing to import");
+
+  return sql.begin(async (tx) => {
+    const [{ next }] = await tx`
+      select coalesce(max(substring(ref from '[0-9]+$')::int), 0) + 1 as next
+        from import_batch where company_id = ${companyId}`;
+    const ref = `IMP-${String(next).padStart(6, "0")}`;
+
+    const [batch] = await tx`
+      insert into import_batch (company_id, ref, filename, row_count)
+      values (${companyId}, ${ref}, ${filename}, ${input.rowCount})
+      returning id`;
+
+    // ---- items ----------------------------------------------------------
+    // One item per barcode, however many warehouses stock it. A barcode
+    // appearing three times is one product in three places, and creating it
+    // three times is the mistake the whole exercise is meant to avoid.
+    const itemIdByBarcode = new Map<string, string>();
+    let created = 0;
+
+    for (const r of rows) {
+      if (itemIdByBarcode.has(r.barcode)) continue;
+      if (r.itemId) { itemIdByBarcode.set(r.barcode, r.itemId); continue; }
+
+      // Serial is what the user would have typed; the code is composed from
+      // it and the category by trigger. Re-read inside the transaction so
+      // items created moments ago by this same import are counted.
+      const [next] = await tx`
+        select coalesce(max(serial::int), 0) + 1 as n
+          from item
+         where company_id = ${companyId} and item_group_id = ${r.categoryId}
+           and serial ~ '^[0-9]+$'`;
+      const serial = String(next.n).padStart(3, "0");
+
+      const [item] = await tx`
+        insert into item (company_id, item_group_id, serial, name, barcode,
+                          brand_id, base_uom_id, is_stocked, import_batch_id)
+        values (${companyId}, ${r.categoryId}, ${serial}, ${r.name}, ${r.barcode},
+                ${r.brandId}, ${r.uomId}, true, ${batch.id})
+        returning id`;
+
+      itemIdByBarcode.set(r.barcode, item.id);
+      created++;
+    }
+
+    // ---- opening stock --------------------------------------------------
+    // Grouped by warehouse so each one gets a single adjustment document
+    // rather than one per line, which is what a person entering this by hand
+    // would have produced.
+    const byLocation = new Map<string, AdjustmentLine[]>();
+    for (const r of rows) {
+      if (r.qty <= 0) continue;
+      const list = byLocation.get(r.locationId) ?? [];
+      list.push({ itemId: itemIdByBarcode.get(r.barcode)!, qty: r.qty, unitCost: r.unitCost });
+      byLocation.set(r.locationId, list);
+    }
+
+    const documents: string[] = [];
+    for (const [locationId, lines] of byLocation) {
+      const doc = await _postStockAdjustment(tx, {
+        companyId, locationId, docDate,
+        memo: `Opening stock imported from ${filename}`,
+        reference: ref,
+        importBatchId: batch.id,
+        lines,
+      });
+      documents.push(doc.docNo);
+    }
+
+    return {
+      ref,
+      batchId: batch.id as string,
+      itemsCreated: created,
+      itemsMatched: itemIdByBarcode.size - created,
+      stockRows: rows.filter((r) => r.qty > 0).length,
+      documents,
+    };
+  });
+}
+
+export type ImportedVoucher = {
+  docDate: string;
+  moneyAccountId: string;
+  otherAccountId: string;
+  amount: number;
+  locationId: string | null;
+  reference: string | null;
+  memo: string | null;
+};
+
+/**
+ * Posts a spreadsheet of cash or bank receipts as one act.
+ *
+ * Each row becomes its own voucher — they are separate receipts from
+ * different people on different days, and merging them would lose the
+ * reference that identifies each one. What they share is the transaction:
+ * a file of two hundred receipts either posts entirely or not at all, because
+ * "which of these went in?" is not a question anyone should have to answer by
+ * reading the ledger afterwards.
+ *
+ * Dr the cash or bank account, Cr where the money came from — the same two
+ * lines the receipt screen writes, through the same postVoucher path, so an
+ * imported receipt and a typed one are indistinguishable once posted.
+ */
+export async function importVouchers(input: {
+  companyId: string;
+  kind: "cash" | "bank";
+  filename: string;
+  rowCount: number;
+  rows: ImportedVoucher[];
+}) {
+  const { companyId, kind, filename, rows } = input;
+  if (rows.length === 0) throw new Error("There is nothing to import");
+
+  const docType = kind === "cash" ? "CASH_VOUCHER" : "BANK_VOUCHER";
+
+  return sql.begin(async (tx) => {
+    const [{ next }] = await tx`
+      select coalesce(max(substring(ref from '[0-9]+$')::int), 0) + 1 as next
+        from import_batch where company_id = ${companyId}`;
+    const ref = `IMP-${String(next).padStart(6, "0")}`;
+
+    const [batch] = await tx`
+      insert into import_batch (company_id, ref, filename, row_count)
+      values (${companyId}, ${ref}, ${filename}, ${input.rowCount})
+      returning id`;
+
+    const posted: string[] = [];
+    for (const v of rows) {
+      const doc = await _postVoucher(
+        tx,
+        {
+          companyId,
+          docDate: v.docDate,
+          memo: v.memo,
+          reference: v.reference,
+          locationId: v.locationId,
+          lines: [
+            { accountId: v.moneyAccountId, amount: v.amount },
+            { accountId: v.otherAccountId, amount: -v.amount },
+          ],
+        },
+        docType
+      );
+      await tx`update document set import_batch_id = ${batch.id} where id = ${doc.id}`;
+      posted.push(doc.docNo);
+    }
+
+    return {
+      ref,
+      batchId: batch.id as string,
+      posted: posted.length,
+      total: round4(rows.reduce((s, r) => s + r.amount, 0)),
+      documents: posted,
+    };
+  });
 }

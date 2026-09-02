@@ -2,7 +2,7 @@
 
 import { useActionState, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
-import { accountTypeLabel, accountGroupRank } from "@/lib/format";
+import { accountTypeLabel, accountGroupRank, accountSection } from "@/lib/format";
 import { ACCOUNT_TYPE_LABEL } from "./account-form";
 
 type Account = {
@@ -11,8 +11,10 @@ type Account = {
   is_cash_account: boolean; is_bank_account: boolean;
 };
 /** Every account including section headings, for resolving an account's group. */
-type TreeNode = { id: string; code: string; parent_id: string | null };
-type Location = { id: string; code: string; name: string };
+type TreeNode = {
+  id: string; code: string; name: string; parent_id: string | null; is_postable?: boolean;
+};
+type Branch = { id: string; code: string; name: string };
 
 type Row = { key: number; accountId: string; debit: string; credit: string; memo: string };
 
@@ -40,7 +42,7 @@ export function VoucherForm({
   accountTree = [],
   action,
   accounts,
-  locations,
+  branches,
   moneyAccounts,
   today,
   nextNo,
@@ -50,7 +52,7 @@ export function VoucherForm({
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   accounts: Account[];
   accountTree?: TreeNode[];
-  locations: Location[];
+  branches: Branch[];
   moneyAccounts: Account[];
   today: string;
   nextNo: string;
@@ -80,18 +82,32 @@ export function VoucherForm({
   // a manual entry, so they are not offered.
   const postable = accounts.filter((a) => !a.is_control);
 
-  // One group per section, in the chart's own order, empty groups dropped.
+  // One group per section of the chart, named and ordered as the chart names
+  // and orders them — so "General & Administration Expenses" and "Selling &
+  // Distribution Expenses" are two groups here because they are two headings
+  // there, rather than both being flattened into "Expense".
+  //
+  // Section codes carry the order (1-CA, 2-CL, 3-EQ, 4-SA, 5-CG, 6-GA, 6-SD,
+  // 7-TX), which is assets, liabilities, equity, revenue, cost of sales,
+  // expense, tax — the order Master data draws. A chart with no sections at
+  // all falls back to the account type, and to the fixed sequence that goes
+  // with it.
   const tree: TreeNode[] = accountTree.length ? accountTree : accounts;
-  const grouped = new Map<string, Account[]>();
+  const grouped = new Map<string, { sort: string; label: string; items: Account[] }>();
   for (const a of postable) {
-    const label = accountTypeLabel(a, tree, ACCOUNT_TYPE_LABEL);
-    const list = grouped.get(label) ?? [];
-    list.push(a);
-    grouped.set(label, list);
+    const section = accountSection(a, tree);
+    const label = section ? section.name : accountTypeLabel(a, tree, ACCOUNT_TYPE_LABEL);
+    const sort = section
+      ? section.code
+      : String(accountGroupRank(label)).padStart(3, "0");
+    const entry = grouped.get(label) ?? { sort, label, items: [] };
+    entry.items.push(a);
+    grouped.set(label, entry);
   }
-  const groups = [...grouped.entries()]
-    .filter(([, list]) => list.length > 0)
-    .sort((a, b) => accountGroupRank(a[0]) - accountGroupRank(b[0]) || a[0].localeCompare(b[0]));
+  const groups: Array<[string, Account[]]> = [...grouped.values()]
+    .filter((g) => g.items.length > 0)
+    .sort((a, b) => a.sort.localeCompare(b.sort) || a.label.localeCompare(b.label))
+    .map((g) => [g.label, g.items]);
 
   const setRow = (key: number, patch: Partial<Row>) =>
     setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));
@@ -142,18 +158,18 @@ export function VoucherForm({
               <input id="doc_date" name="doc_date" type="date" defaultValue={today} required />
             </div>
 
-            {locations.length > 1 ? (
+            {branches.length > 1 ? (
               <div className="field">
                 <label htmlFor="location_id">Branch</label>
                 <select id="location_id" name="location_id" defaultValue="">
                   <option value="">None</option>
-                  {locations.map((l) => (
+                  {branches.map((l) => (
                     <option key={l.id} value={l.id}>{l.code} · {l.name}</option>
                   ))}
                 </select>
               </div>
             ) : (
-              locations.length === 1 && <input type="hidden" name="location_id" value={locations[0].id} />
+              branches.length === 1 && <input type="hidden" name="location_id" value={branches[0].id} />
             )}
 
             <div className="field">
@@ -250,10 +266,16 @@ export function VoucherForm({
                     <td style={{ minWidth: 240 }}>
                       <select value={r.accountId} onChange={(e) => setRow(r.key, { accountId: e.target.value })}>
                         <option value="">Choose an account…</option>
-                        {postable.map((a) => (
-                          <option key={a.id} value={a.id}>
-                            {a.code} · {a.name} ({a.account_type.toLowerCase()})
-                          </option>
+                        {/* Grouped like the picker above and like the chart —
+                            the stored account_type in brackets said "expense"
+                            for two different headings, which is the thing the
+                            chart draws a distinction between. */}
+                        {groups.map(([label, group]) => (
+                          <optgroup key={label} label={label}>
+                            {group.map((a) => (
+                              <option key={a.id} value={a.id}>{a.code} · {a.name}</option>
+                            ))}
+                          </optgroup>
                         ))}
                       </select>
                     </td>
