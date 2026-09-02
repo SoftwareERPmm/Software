@@ -73,7 +73,26 @@ npx tsx scripts/test-finance.mjs        # cash, bank, journal, transfer, opening
 npx tsx scripts/test-inline-item.mjs    # creating items mid-voucher
 npx tsx scripts/test-category-tree.mjs  # restructuring categories
 npx tsx scripts/test-empty.mjs          # a cleared database still works
+npx tsx scripts/test-evil.mjs           # the attacks a determined user would try
+npx tsx scripts/test-grir.mjs           # goods-receipt / invoice matching, line by line
+npx tsx scripts/test-foc.mjs            # free-of-charge goods land in expense
+npx tsx scripts/test-returns.mjs        # returns bounded and costed by their source
+npx tsx scripts/test-consignment.mjs    # receipt without ownership
+npx tsx scripts/test-consignment-sale.mjs   # and settlement when it sells
+npx tsx scripts/test-branch-dimension.mjs   # every journal line carries its branch
+npx tsx scripts/test-delivery-fee.mjs   # carriage kept out of sales revenue
+npx tsx scripts/test-year-rollover.mjs  # document numbers survive a new fiscal year
+npx tsx scripts/test-item-import.mjs    # the item master from a spreadsheet
+npx tsx scripts/test-voucher-import.mjs # cash and bank receipts from a spreadsheet
+npx tsx scripts/test-units.mjs          # retiring a unit disturbs nothing counting in it
 ```
+
+Some of these assert the **seed** chart's account codes (1200, 1300, 4100,
+5100). A database running a customer's own chart — `dev` does, via
+`scripts/load-coa.mjs` — fails those checks while the ledger is perfectly
+correct. `test-posting`, `test-grir`, `test-foc` and two checks in
+`test-empty` are the ones affected. That is the tests tracking the seed, not
+a regression; confirm against a seed-chart database before chasing one.
 
 Plus the database's own invariants, which are enforced by triggers rather
 than application code:
