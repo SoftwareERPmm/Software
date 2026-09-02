@@ -2,7 +2,7 @@ import { getFinanceData, createJournalVoucher } from "@/lib/actions";
 import { VoucherForm } from "@/components/voucher-form";
 
 export default async function JournalVoucher() {
-  const { accounts, cashAccounts, bankAccounts, locations } = await getFinanceData();
+  const { accounts, accountTree, cashAccounts, bankAccounts, locations } = await getFinanceData();
   const today = new Date().toISOString().slice(0, 10);
   const money = cashAccounts;
 
@@ -30,6 +30,7 @@ export default async function JournalVoucher() {
         kind="journal"
         action={createJournalVoucher}
         accounts={accounts as never}
+        accountTree={accountTree as never}
         locations={locations as never}
         moneyAccounts={money as never}
         today={today}

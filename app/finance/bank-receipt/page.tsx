@@ -3,7 +3,7 @@ import { getFinanceData, createBankVoucher } from "@/lib/actions";
 import { VoucherForm } from "@/components/voucher-form";
 
 export default async function BankReceipt() {
-  const { accounts, bankAccounts, locations } = await getFinanceData();
+  const { accounts, accountTree, bankAccounts, locations } = await getFinanceData();
   const today = new Date().toISOString().slice(0, 10);
 
   if (bankAccounts.length === 0) {
@@ -34,6 +34,7 @@ export default async function BankReceipt() {
         kind="bank"
         action={createBankVoucher}
         accounts={accounts as never}
+        accountTree={accountTree as never}
         locations={locations as never}
         moneyAccounts={bankAccounts as never}
         today={today}

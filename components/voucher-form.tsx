@@ -2,25 +2,33 @@
 
 import { useActionState, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
+import { accountTypeLabel, accountGroupRank } from "@/lib/format";
+import { ACCOUNT_TYPE_LABEL } from "./account-form";
 
 type Account = {
-  id: string; code: string; name: string;
+  id: string; code: string; name: string; parent_id: string | null;
   account_type: string; is_control: boolean;
   is_cash_account: boolean; is_bank_account: boolean;
 };
+/** Every account including section headings, for resolving an account's group. */
+type TreeNode = { id: string; code: string; parent_id: string | null };
 type Location = { id: string; code: string; name: string };
 
 type Row = { key: number; accountId: string; debit: string; credit: string; memo: string };
 
 const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 0 });
 
-// Expense first — the common case for a cash payment — then the types a
-// day-to-day voucher touches less often, roughly in that order.
-const TYPE_ORDER = ["EXPENSE", "REVENUE", "ASSET", "LIABILITY", "EQUITY", "COGS"];
-const TYPE_LABEL: Record<string, string> = {
-  EXPENSE: "Expense", REVENUE: "Revenue", ASSET: "Asset",
-  LIABILITY: "Liability", EQUITY: "Equity", COGS: "Cost of goods sold",
-};
+// Grouped and ordered the way Master data draws the chart — assets,
+// liabilities, equity, revenue, cost of sales, expense, tax — rather than in
+// an order of this form's own invention. Someone who has just read the chart
+// should find the same shape here.
+//
+// The group comes from the section an account sits under, not from its stored
+// account_type, because the chart draws distinctions the six stored types do
+// not carry: a tax payable is a LIABILITY in the database and reads as Tax on
+// screen, and current and fixed assets are both ASSET. On a chart with no
+// sections the walk falls back to the stored type, so this still groups
+// sensibly on the seed chart.
 
 /**
  * Cash book, bank book and journal are the same voucher with different
@@ -29,6 +37,7 @@ const TYPE_LABEL: Record<string, string> = {
  */
 export function VoucherForm({
   kind,
+  accountTree = [],
   action,
   accounts,
   locations,
@@ -40,6 +49,7 @@ export function VoucherForm({
   kind: "cash" | "bank" | "journal";
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   accounts: Account[];
+  accountTree?: TreeNode[];
   locations: Location[];
   moneyAccounts: Account[];
   today: string;
@@ -69,6 +79,19 @@ export function VoucherForm({
   // Control accounts belong to their subledger; the database refuses them on
   // a manual entry, so they are not offered.
   const postable = accounts.filter((a) => !a.is_control);
+
+  // One group per section, in the chart's own order, empty groups dropped.
+  const tree: TreeNode[] = accountTree.length ? accountTree : accounts;
+  const grouped = new Map<string, Account[]>();
+  for (const a of postable) {
+    const label = accountTypeLabel(a, tree, ACCOUNT_TYPE_LABEL);
+    const list = grouped.get(label) ?? [];
+    list.push(a);
+    grouped.set(label, list);
+  }
+  const groups = [...grouped.entries()]
+    .filter(([, list]) => list.length > 0)
+    .sort((a, b) => accountGroupRank(a[0]) - accountGroupRank(b[0]) || a[0].localeCompare(b[0]));
 
   const setRow = (key: number, patch: Partial<Row>) =>
     setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));
@@ -173,17 +196,13 @@ export function VoucherForm({
                 <label htmlFor="other">{direction === "out" ? "Paid for" : "Received from"}</label>
                 <select id="other" value={otherId} onChange={(e) => setOtherId(e.target.value)} required>
                   <option value="">Choose an account…</option>
-                  {TYPE_ORDER.map((t) => {
-                    const group = postable.filter((a) => a.id !== moneyId && a.account_type === t);
-                    if (group.length === 0) return null;
-                    return (
-                      <optgroup key={t} label={TYPE_LABEL[t] ?? t}>
-                        {group.map((a) => (
-                          <option key={a.id} value={a.id}>{a.code} · {a.name}</option>
-                        ))}
-                      </optgroup>
-                    );
-                  })}
+                  {groups.map(([label, group]) => (
+                    <optgroup key={label} label={label}>
+                      {group.filter((a) => a.id !== moneyId).map((a) => (
+                        <option key={a.id} value={a.id}>{a.code} · {a.name}</option>
+                      ))}
+                    </optgroup>
+                  ))}
                 </select>
               </div>
 

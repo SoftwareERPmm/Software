@@ -1670,11 +1670,18 @@ export async function createAccountOpening(_prev: unknown, fd: FormData): Promis
 export async function getFinanceData() {
   const co = await companyId();
 
-  const [accounts, cashAccounts, bankAccounts, locations, costCenters] = await Promise.all([
-    sql`select id, code, name, account_type, is_control, is_cash_account, is_bank_account
+  const [accounts, accountTree, cashAccounts, bankAccounts, locations, costCenters] = await Promise.all([
+    sql`select id, code, name, parent_id, account_type, is_control, is_cash_account, is_bank_account
           from account
          where company_id = ${co} and is_postable and is_active
          order by code`,
+    // Every account including the non-postable section headings, which the
+    // list above deliberately excludes. Grouping a picker the way the chart
+    // groups itself means walking up to the section an account sits under —
+    // that is where the finer distinctions live, since the stored
+    // account_type has six members and the chart draws eight (a tax payable
+    // is a LIABILITY underneath and reads as Tax on screen).
+    sql`select id, code, parent_id from account where company_id = ${co}`,
     sql`select id, code, name from account
          where company_id = ${co} and is_cash_account and not is_bank_account and is_active
          order by code`,
@@ -1686,7 +1693,7 @@ export async function getFinanceData() {
          where company_id = ${co} and is_active order by code`,
   ]);
 
-  return { accounts, cashAccounts, bankAccounts, locations, costCenters };
+  return { accounts, accountTree, cashAccounts, bankAccounts, locations, costCenters };
 }
 
 /** Movements on one account with its running balance. */

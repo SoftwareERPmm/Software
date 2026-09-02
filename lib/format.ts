@@ -203,6 +203,37 @@ export const SECTION_TYPE_LABEL: Record<string, string> = {
   "7-TX": "Tax",
 };
 
+/**
+ * The order the chart itself draws its sections in: assets, liabilities,
+ * equity, then the income statement, with tax last. Any picker that groups
+ * accounts should use this rather than inventing its own sequence, so a
+ * person reading the chart and a person choosing an account in a voucher are
+ * looking at the same shape.
+ *
+ * Both the section labels above and the plain account_type labels are listed,
+ * because a database still on the seed chart has no sections to walk up to
+ * and falls back to its stored type.
+ */
+export const ACCOUNT_GROUP_ORDER: readonly string[] = [
+  "Current Asset",
+  "Fixed Asset",
+  "Asset",
+  "Liability",
+  "Equity",
+  "Revenue",
+  "COGS",
+  "Cost of sales",
+  "Cost of goods sold",
+  "Expense",
+  "Tax",
+];
+
+/** Sort key for a group label; unknown labels sort last, alphabetically. */
+export function accountGroupRank(label: string): number {
+  const i = ACCOUNT_GROUP_ORDER.indexOf(label);
+  return i === -1 ? ACCOUNT_GROUP_ORDER.length : i;
+}
+
 /** Walks up to the nearest section that names a display type. */
 export function accountTypeLabel(
   account: { parent_id: string | null; account_type: string },

@@ -3,7 +3,7 @@ import { getFinanceData, createCashVoucher } from "@/lib/actions";
 import { VoucherForm } from "@/components/voucher-form";
 
 export default async function CashPayment() {
-  const { accounts, cashAccounts, locations } = await getFinanceData();
+  const { accounts, accountTree, cashAccounts, locations } = await getFinanceData();
   const today = new Date().toISOString().slice(0, 10);
 
   if (cashAccounts.length === 0) {
@@ -34,6 +34,7 @@ export default async function CashPayment() {
         kind="cash"
         action={createCashVoucher}
         accounts={accounts as never}
+        accountTree={accountTree as never}
         locations={locations as never}
         moneyAccounts={cashAccounts as never}
         today={today}
