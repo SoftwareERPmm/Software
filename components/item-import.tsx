@@ -7,37 +7,27 @@ import type { ActionResult } from "@/lib/actions";
 
 type Issue = { row: number; column?: string; message: string };
 type PlannedRow = {
-  row: number; barcode: string; name: string; qty: number; unitCost: number;
-  locationName: string; unitName: string; categoryName: string; itemId: string | null;
-};
-type PlannedItem = {
-  barcode: string; name: string; categoryName: string;
-  isNew: boolean; locations: number; totalQty: number;
+  row: number; barcode: string; name: string; itemId: string | null; isNew: boolean;
+  serial: string; code: string; serialAssigned: boolean;
+  unitName: string; categoryName: string; brandName: string | null;
 };
 type Plan = {
   rows: PlannedRow[];
-  items: PlannedItem[];
   missingBrands: string[];
   errors: Issue[];
   warnings: Issue[];
-  summary: {
-    rows: number; newItems: number; existingItems: number;
-    stockRows: number; totalUnits: number;
-  };
+  summary: { rows: number; newItems: number; existingItems: number };
 };
 
-const num = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 4 });
-
-const TEMPLATE_HEADER = "No,Barcode,Stock Name,Category,Brand,Location,Qty,Unit,Unit Cost";
+const TEMPLATE_HEADER = "No,Barcode,Stock ID,Stock Name,Category,Brand,Unit";
 const TEMPLATE_EXAMPLE = [
-  '1,8851234567890,Coca-Cola 300ml,Beverages,Coca-Cola,Main Warehouse,100,Bottle,600',
-  '2,8851234567891,Sprite 300ml,Beverages,Sprite,Main Warehouse,80,Bottle,550',
-  '3,10001,T-Shirt Black,Clothing,ABC,Yangon Warehouse,50,Piece,4500',
+  '1,8851234567890,Item001,Coca-Cola 300ml,Beverages,Coca-Cola,Bottle',
+  '2,8851234567891,Item002,Sprite 300ml,Beverages,Sprite,Bottle',
+  '3,10001,,T-Shirt Black L,Clothing,,Piece',
 ].join("\n");
 
-export function ItemImport({ action, today }: {
+export function ItemImport({ action }: {
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
-  today: string;
 }) {
   const [state, formAction, posting] = useActionState<ActionResult | null, FormData>(action as never, null);
   const [csv, setCsv] = useState("");
@@ -71,7 +61,7 @@ export function ItemImport({ action, today }: {
           new Blob([bytes], {
             type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
           }),
-          "item-opening-stock-template.xlsx"
+          "item-import-template.xlsx"
         );
       } catch (e) {
         setReadError(e instanceof Error ? e.message : String(e));
@@ -81,7 +71,7 @@ export function ItemImport({ action, today }: {
 
   function downloadCsvTemplate() {
     save(new Blob([`${TEMPLATE_HEADER}\n${TEMPLATE_EXAMPLE}\n`], { type: "text/csv;charset=utf-8" }),
-         "item-opening-stock-template.csv");
+         "item-import-template.csv");
   }
 
   function onPick(u: Upload) {
@@ -176,29 +166,19 @@ export function ItemImport({ action, today }: {
 
             <div className="kpis" style={{ margin: "0.75rem" }}>
               <div className="kpi">
-                <span className="kpi-label">Items found</span>
-                <span className="kpi-value">{plan.items.length}</span>
-                <span className="kpi-note">
-                  {plan.summary.newItems} new · {plan.summary.existingItems} existing
-                </span>
+                <span className="kpi-label">New items</span>
+                <span className="kpi-value">{plan.summary.newItems}</span>
+                <span className="kpi-note">created when you confirm</span>
               </div>
               <div className="kpi">
-                <span className="kpi-label">Stock records found</span>
-                <span className="kpi-value">{plan.summary.stockRows}</span>
-                <span className="kpi-note">one per item and warehouse</span>
-              </div>
-              <div className="kpi">
-                <span className="kpi-label">Total units</span>
-                <span className="kpi-value">{num(plan.summary.totalUnits)}</span>
+                <span className="kpi-label">Already here</span>
+                <span className="kpi-value">{plan.summary.existingItems}</span>
+                <span className="kpi-note">matched by barcode, left untouched</span>
               </div>
               <div className="kpi">
                 <span className="kpi-label">Rows read</span>
                 <span className="kpi-value">{plan.summary.rows}</span>
-                <span className="kpi-note">
-                  {plan.summary.rows !== plan.items.length
-                    ? "more rows than items — the same product appears in several warehouses"
-                    : "one row per item"}
-                </span>
+                <span className="kpi-note">one row per item</span>
               </div>
               <div className="kpi">
                 <span className="kpi-label">Errors</span>
@@ -241,65 +221,46 @@ export function ItemImport({ action, today }: {
               </div>
             )}
 
-            {plan.items.length > 0 && (
+            {plan.rows.length > 0 && (
               <>
                 <div className="card-head" style={{ borderTop: "1px solid var(--line)" }}>
                   <h2 style={{ fontSize: "var(--t-md)" }}>Item master</h2>
                   <span className="page-sub">
-                    what will exist as products — one per barcode, however many warehouses it is in
+                    what will exist as products — no stock and no cost until a goods receipt
+                    or an opening stock adjustment gives them one. <strong>Code</strong> is the
+                    identifier the item will carry: its category&rsquo;s code followed by the
+                    Stock ID. A blank Stock ID is given the next number in that category.
                   </span>
                 </div>
                 <div className="tablewrap">
                   <table>
                     <thead>
                       <tr>
-                        <th>Barcode</th><th>Stock name</th><th>Category</th>
-                        <th className="r">Warehouses</th><th className="r">Total qty</th><th />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {plan.items.map((it) => (
-                        <tr key={it.barcode}>
-                          <td className="code">{it.barcode}</td>
-                          <td className="wrap">{it.name}</td>
-                          <td style={{ color: "var(--muted)" }}>{it.categoryName}</td>
-                          <td className="r">{it.locations}</td>
-                          <td className="r">{num(it.totalQty)}</td>
-                          <td>
-                            <span className={`pill ${it.isNew ? "" : "ok"}`}>
-                              {it.isNew ? "new" : "existing"}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                <div className="card-head" style={{ borderTop: "1px solid var(--line)" }}>
-                  <h2 style={{ fontSize: "var(--t-md)" }}>Opening stock</h2>
-                  <span className="page-sub">
-                    one balance per item and warehouse — the same product in two warehouses is two
-                    balances, not two products
-                  </span>
-                </div>
-                <div className="tablewrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Row</th><th>Item</th><th>Warehouse</th>
-                        <th className="r">Qty</th><th>Unit</th><th className="r">Unit cost</th>
+                        <th>Row</th><th>Barcode</th><th>Stock ID</th><th>Code</th>
+                        <th>Stock name</th><th>Category</th><th>Brand</th><th>Unit</th><th />
                       </tr>
                     </thead>
                     <tbody>
                       {plan.rows.map((r) => (
-                        <tr key={`${r.barcode}-${r.locationName}`}>
+                        <tr key={r.barcode}>
                           <td className="code">{r.row}</td>
+                          <td className="code">{r.barcode}</td>
+                          <td className="code">
+                            {r.serial}
+                            {r.serialAssigned && (
+                              <div className="subline" style={{ color: "var(--muted)" }}>assigned</div>
+                            )}
+                          </td>
+                          <td className="code"><strong>{r.code}</strong></td>
                           <td className="wrap">{r.name}</td>
-                          <td>{r.locationName}</td>
-                          <td className="r">{num(r.qty)}</td>
+                          <td style={{ color: "var(--muted)" }}>{r.categoryName}</td>
+                          <td style={{ color: "var(--muted)" }}>{r.brandName ?? "—"}</td>
                           <td className="code">{r.unitName}</td>
-                          <td className="r">{num(r.unitCost)}</td>
+                          <td>
+                            <span className={`pill ${r.isNew ? "" : "ok"}`}>
+                              {r.isNew ? "new" : "existing"}
+                            </span>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -365,22 +326,16 @@ export function ItemImport({ action, today }: {
             <input type="hidden" name="format" value={format} />
             <input type="hidden" name="filename" value={filename} />
             <div className="card-body">
-              <div className="row" style={{ alignItems: "flex-end" }}>
-                <div className="field">
-                  <label htmlFor="doc_date">Opening stock date</label>
-                  <input id="doc_date" name="doc_date" type="date" defaultValue={today} required />
-                  <span className="hint">The date the stock is counted as being on hand.</span>
-                </div>
-              </div>
-
               {state && "error" in state && <div className="alert">{state.error}</div>}
 
-              <p className="page-sub" style={{ marginTop: "0.5rem" }}>
+              <p className="page-sub">
                 {blocked
                   ? "Upload a file with no errors to continue."
-                  : `Creates ${plan!.summary.newItems} item${plan!.summary.newItems === 1 ? "" : "s"} and ` +
-                    `${plan!.summary.stockRows} opening stock record${plan!.summary.stockRows === 1 ? "" : "s"}. ` +
-                    `All of it lands or none of it does — there is no half-imported state.`}
+                  : `Creates ${plan!.summary.newItems} item${plan!.summary.newItems === 1 ? "" : "s"}` +
+                    (plan!.summary.existingItems > 0
+                      ? `, leaving the ${plan!.summary.existingItems} already here as they are`
+                      : "") +
+                    `. Nothing is posted and no stock moves — all of it lands or none of it does.`}
               </p>
             </div>
             <div className="card-body" style={{ paddingTop: 0 }}>

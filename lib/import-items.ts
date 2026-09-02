@@ -1,5 +1,5 @@
 /**
- * Reading and checking an item/opening-stock spreadsheet.
+ * Reading and checking an item spreadsheet.
  *
  * Everything here is pure: it takes text and existing master data and returns
  * a verdict. Nothing in this file writes. That is the point — the preview a
@@ -9,65 +9,80 @@
  * The rule throughout: the spreadsheet is input, the ERP is the source of
  * truth. The file may say "Beverages"; whether that is a category is the
  * database's answer, not the file's. Nothing here creates master data, and a
- * row naming a category, brand, unit or warehouse that does not exist is an
- * error rather than an invitation to invent one — two spellings of the same
- * category is exactly the mess an importer is supposed to prevent.
+ * row naming a category, brand or unit that does not exist is an error rather
+ * than an invitation to invent one — two spellings of the same category is
+ * exactly the mess an importer is supposed to prevent.
+ *
+ * The Stock ID column is the item's own piece of its code. The database
+ * composes the full code as the category's code followed by that piece — a
+ * Beverages category coded 001 and a sheet saying Item001 make 001Item001 —
+ * and maintains it by trigger, so `code` is never written directly here. Left
+ * blank, the next number in that category is used instead.
+ *
+ * This sheet answers one question: **what items does this company deal in?**
+ * It does not carry quantity, cost or warehouse, because none of those are
+ * properties of an item. How many there are is the result of goods receipts,
+ * deliveries, transfers and adjustments; what they cost is the FIFO layer a
+ * receipt created. An item that has never been received is a perfectly good
+ * item with no stock — so the two are imported separately, and opening stock
+ * is entered as the stock document it actually is.
  */
 
 export const IMPORT_COLUMNS = [
-  "No", "Barcode", "Stock Name", "Category", "Brand", "Location", "Qty", "Unit", "Unit Cost",
+  "No", "Barcode", "Stock ID", "Stock Name", "Category", "Brand", "Unit",
 ] as const;
 
-/** Columns a row cannot do without. "No" is a convenience for the reader and
- *  "Brand" is genuinely optional, so neither is required here. */
-const REQUIRED_COLUMNS = ["Barcode", "Stock Name", "Category", "Location", "Qty", "Unit", "Unit Cost"];
+/**
+ * Columns a row cannot do without. "No" is a convenience for the reader,
+ * "Brand" is genuinely optional, and "Stock ID" is optional in both senses —
+ * the column may be absent and a cell may be blank, in which case the next
+ * number in that category is assigned, which is what the importer did before
+ * the column existed.
+ */
+const REQUIRED_COLUMNS = ["Barcode", "Stock Name", "Category", "Unit"];
 
 export type MasterData = {
-  items: { id: string; code: string; name: string; barcode: string | null;
+  items: { id: string; code: string; serial: string; name: string; barcode: string | null;
            item_group_id: string; brand_id: string | null; base_uom_id: string }[];
   categories: { id: string; code: string; name: string }[];
   brands: { id: string; code: string; name: string }[];
   uoms: { id: string; code: string; name: string }[];
-  locations: { id: string; code: string; name: string; parent_id: string | null;
-               is_stock_location: boolean; is_active: boolean }[];
-  /** item_id + location_id pairs that already hold stock. */
-  existingStock: { item_id: string; location_id: string }[];
 };
 
 export type Issue = { row: number; column?: string; message: string };
 
+/**
+ * One item the file describes. There is exactly one row per item now — with
+ * no warehouse column there is nothing to repeat a barcode for, so a second
+ * appearance is a duplicate rather than a second balance.
+ */
 export type PlannedRow = {
   row: number;
   barcode: string;
   name: string;
   itemId: string | null;        // set when the barcode matches an existing item
+  isNew: boolean;
   categoryId: string;
   brandId: string | null;
   uomId: string;
-  locationId: string;
-  qty: number;
-  unitCost: number;
+  /**
+   * The item's own piece of the code — what the Stock ID column holds, or the
+   * next number in the category when it was left blank. `code` is this
+   * appended to the category's code, exactly as the database composes it, so
+   * the preview shows the identifier the item will actually carry.
+   */
+  serial: string;
+  code: string;
+  serialAssigned: boolean;      // true when the sheet did not say
   // Carried for the preview, so the screen can show what the file means
   // without looking anything up a second time.
-  locationName: string;
   unitName: string;
   categoryName: string;
-};
-
-/** One product the file describes, however many warehouses it appears in. */
-export type PlannedItem = {
-  barcode: string;
-  name: string;
-  categoryName: string;
-  isNew: boolean;
-  locations: number;
-  totalQty: number;
+  brandName: string | null;
 };
 
 export type ImportPlan = {
   rows: PlannedRow[];
-  /** The item master this file implies — one entry per barcode, not per row. */
-  items: PlannedItem[];
   /**
    * Brand names the file uses that the brand master does not have, in the
    * order they first appear. Reported apart from the errors because this one
@@ -77,10 +92,7 @@ export type ImportPlan = {
   missingBrands: string[];
   errors: Issue[];
   warnings: Issue[];
-  summary: {
-    rows: number; newItems: number; existingItems: number;
-    stockRows: number; totalUnits: number;
-  };
+  summary: { rows: number; newItems: number; existingItems: number };
 };
 
 /* ------------------------------------------------------------------ CSV -- */
@@ -168,12 +180,12 @@ function suggest(typed: string, candidates: { name: string }[]): string | null {
   }
   if (best) return best.name;
 
-  // Nothing close by spelling. "Mandalay WH" is seven edits from "Mandalay
-  // Warehouse" and no containment match either, but it is obviously the same
-  // place — so fall back to the first word. Requiring the FIRST word rather
-  // than any word is what keeps this honest: "Nowhere Warehouse" shares
-  // "warehouse" with every warehouse in the company and must not be answered
-  // with whichever one happens to sort first.
+  // Nothing close by spelling. "Soft Drink" is several edits from "Soft
+  // Drinks & Water" and no containment match either, but it is obviously the
+  // same thing — so fall back to the first word. Requiring the FIRST word
+  // rather than any word is what keeps this honest: "Nowhere Drinks" shares
+  // "drinks" with every drinks category and must not be answered with
+  // whichever one happens to sort first.
   const firstWord = t.split(/\s+/)[0];
   if (firstWord.length >= 3) {
     const sameStart = candidates.find((c) => norm(c.name).split(/\s+/)[0] === firstWord);
@@ -189,16 +201,17 @@ const didYouMean = (typed: string, candidates: { name: string }[]) => {
   return s ? ` Did you mean "${s}"?` : "";
 };
 
+const empty = (errors: Issue[], warnings: Issue[] = []): ImportPlan => ({
+  rows: [], missingBrands: [], errors, warnings,
+  summary: { rows: 0, newItems: 0, existingItems: 0 },
+});
+
 export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
   const errors: Issue[] = [];
   const warnings: Issue[] = [];
   const rows: PlannedRow[] = [];
 
-  if (rowsIn.length === 0) {
-    return { rows, items: [], missingBrands: [],
-             errors: [{ row: 0, message: "The file is empty." }], warnings,
-             summary: { rows: 0, newItems: 0, existingItems: 0, stockRows: 0, totalUnits: 0 } };
-  }
+  if (rowsIn.length === 0) return empty([{ row: 0, message: "The file is empty." }]);
 
   // ---- header -------------------------------------------------------------
   const header = rowsIn[0].map((h) => h.trim());
@@ -207,12 +220,30 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
 
   const missing = REQUIRED_COLUMNS.filter((c) => !indexOf.has(norm(c)));
   if (missing.length > 0) {
-    errors.push({ row: 1, message: `Missing column${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}` });
-    return { rows, items: [], missingBrands: [], errors, warnings,
-             summary: { rows: 0, newItems: 0, existingItems: 0, stockRows: 0, totalUnits: 0 } };
+    return empty([{
+      row: 1,
+      message: `Missing column${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`,
+    }], warnings);
   }
+
+  // A sheet still carrying the old stock columns is worth naming rather than
+  // ignoring: whoever filled it in meant those numbers to land somewhere, and
+  // silently dropping them would look like they had.
+  for (const stale of ["Qty", "Unit Cost", "Location"]) {
+    if (indexOf.has(norm(stale))) {
+      warnings.push({
+        row: 1, column: stale,
+        message:
+          `"${stale}" is ignored — this sheet sets up items only. Quantity, cost and ` +
+          `warehouse come from stock documents (goods receipt, or a stock adjustment ` +
+          `for opening balances), not from the item master.`,
+      });
+    }
+  }
+
   const col = (name: string) => indexOf.get(norm(name))!;
   const cell = (r: string[], name: string) => (r[col(name)] ?? "").trim();
+  const has = (name: string) => indexOf.has(norm(name));
 
   // ---- lookups, by both code and name so either spelling in the sheet works
   const byNameOrCode = <T extends { id: string; code: string; name: string }>(list: T[]) => {
@@ -223,17 +254,43 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
   const categories = byNameOrCode(master.categories);
   const brands = byNameOrCode(master.brands);
   const uoms = byNameOrCode(master.uoms);
-  const locations = byNameOrCode(master.locations);
   const itemByBarcode = new Map(
     master.items.filter((i) => i.barcode).map((i) => [i.barcode!.trim(), i])
   );
-  const stockPairs = new Set(master.existingStock.map((s) => `${s.item_id}|${s.location_id}`));
+  const itemByCode = new Map(master.items.map((i) => [norm(i.code), i]));
 
-  // Same barcode twice in the file must agree about what the item is, and the
-  // same item may not be stocked into the same warehouse twice.
+  /**
+   * The next free number in a category, for rows that name no Stock ID.
+   *
+   * Counted here rather than left to the database so the preview can show the
+   * code the item will carry instead of a blank. Only all-digit serials are
+   * considered, matching what the importer has always done — a serial of
+   * "Item001" is not a number and must not push the counter past it.
+   */
+  const nextSerial = new Map<string, number>();
+  const takeNextSerial = (categoryId: string, categoryCode: string): string => {
+    let n = nextSerial.get(categoryId);
+    if (n === undefined) {
+      n = master.items
+        .filter((i) => i.item_group_id === categoryId && /^[0-9]+$/.test(i.serial ?? ""))
+        .reduce((max, i) => Math.max(max, Number(i.serial)), 0) + 1;
+    }
+    // Step over anything already spoken for, whether by an item in the
+    // database or by a Stock ID typed further up this same file. A number
+    // nobody asked for must not be the thing that fails the import.
+    let serial = String(n).padStart(3, "0");
+    while (itemByCode.has(norm(`${categoryCode}${serial}`)) ||
+           seenCode.has(norm(`${categoryCode}${serial}`))) {
+      n++;
+      serial = String(n).padStart(3, "0");
+    }
+    nextSerial.set(categoryId, n + 1);
+    return serial;
+  };
+
   const missingBrands: string[] = [];
-  const seenBarcodeName = new Map<string, { name: string; row: number }>();
-  const seenPairs = new Map<string, number>();
+  const seenBarcode = new Map<string, number>();
+  const seenCode = new Map<string, number>();
 
   for (let i = 1; i < rowsIn.length; i++) {
     const r = rowsIn[i];
@@ -246,18 +303,16 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
     const add = (message: string, column?: string) => errors.push({ row: rowNo, column, message });
 
     const barcode = cell(r, "Barcode");
+    const stockId = has("Stock ID") ? cell(r, "Stock ID") : "";
     const name = cell(r, "Stock Name");
     const categoryText = cell(r, "Category");
-    const brandText = cell(r, "Brand");
-    const locationText = cell(r, "Location");
-    const qtyText = cell(r, "Qty");
+    const brandText = has("Brand") ? cell(r, "Brand") : "";
     const unitText = cell(r, "Unit");
-    const costText = cell(r, "Unit Cost");
 
     // ---- barcode ----------------------------------------------------------
     if (!barcode) {
-      add("Barcode is empty. Every row needs one — it is what matches a row to an item, "
-        + "and what keeps the same product in two warehouses from becoming two products.", "Barcode");
+      add("Barcode is empty. Every row needs one — it is what tells this item apart "
+        + "from every other, and what matches a row to an item already here.", "Barcode");
     }
     else if (scientificNotation(barcode)) {
       add(
@@ -269,6 +324,16 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
     }
 
     if (!name) add("Stock Name is empty.", "Stock Name");
+
+    // ---- stock id ---------------------------------------------------------
+    // Kept narrow deliberately. This becomes part of the item's code, which is
+    // printed on documents, typed into search boxes and sorted on — a space or
+    // a comma in it turns into a code nobody can type back.
+    if (stockId && !/^[0-9A-Za-z._\/-]+$/.test(stockId)) {
+      add(`Stock ID "${stockId}" contains characters that are not allowed. ` +
+          `Letters, digits, dot, dash, underscore and slash only — it becomes part ` +
+          `of the item's code, which has to stay typeable.`, "Stock ID");
+    }
 
     // ---- master data ------------------------------------------------------
     const category = categories.get(norm(categoryText));
@@ -283,6 +348,7 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
     }
 
     let brandId: string | null = null;
+    let brandName: string | null = null;
     if (brandText) {
       const brand = brands.get(norm(brandText));
       if (!brand) {
@@ -290,62 +356,20 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
         add(`Brand "${brandText}" is not in the brand list.` + didYouMean(brandText, master.brands) +
             ` Register it, or leave the cell blank if this product has no brand.`, "Brand");
       }
-      else brandId = brand.id;
+      else { brandId = brand.id; brandName = brand.name; }
     } else {
       warnings.push({ row: rowNo, column: "Brand", message: "Brand is blank." });
     }
 
     const uom = uoms.get(norm(unitText));
-    if (!unitText) add("Unit is empty — without it the quantity has no meaning.", "Unit");
+    if (!unitText) {
+      add("Unit is empty. It is the unit every quantity of this item will be counted in, "
+        + "so it has to be settled before the item exists.", "Unit");
+    }
     else if (!uom) {
       add(`Unit "${unitText}" is not a unit of measure here.` + didYouMean(unitText, master.uoms) +
           ` Abbreviations are not guessed — "Btl" is not read as "Bottle", because guessing a unit ` +
-          `changes what the quantity means.`, "Unit");
-    }
-
-    const location = locations.get(norm(locationText));
-    if (!locationText) {
-      add("Location is empty. Stock has to be somewhere — name the warehouse holding it.", "Location");
-    }
-    else if (!location) {
-      add(`Warehouse "${locationText}" does not exist.` +
-          didYouMean(locationText, master.locations.filter((l) => l.is_stock_location)) +
-          ` Warehouses are never created by an import — add it under Branches & warehouses first.`,
-          "Location");
-    } else if (!location.is_active) {
-      add(`Warehouse "${locationText}" is inactive, so stock cannot be placed in it. ` +
-          `Reactivate it under Branches & warehouses, or name a different warehouse.`, "Location");
-    } else if (!location.is_stock_location) {
-      // The case worth explaining rather than just rejecting: a branch is an
-      // organisational unit and holds nothing. Its warehouses do, and naming
-      // them is more use than telling someone they were wrong.
-      const inside = master.locations
-        .filter((l) => l.parent_id === location.id && l.is_stock_location && l.is_active)
-        .map((l) => `"${l.name}"`);
-      add(
-        `"${locationText}" is a branch, not a warehouse. A branch is an organisational unit ` +
-        `and holds no stock; the warehouses inside it do. ` +
-        (inside.length
-          ? `Use ${inside.join(" or ")} instead.`
-          : `This branch has no active warehouse yet — create one under Branches & warehouses.`),
-        "Location"
-      );
-    }
-
-    // ---- quantity and cost ------------------------------------------------
-    const qty = Number(qtyText);
-    if (!qtyText) add("Qty is empty. Use 0 if this item is stocked here but currently empty.", "Qty");
-    else if (!/^-?\d+(\.\d+)?$/.test(qtyText)) add(`Qty "${qtyText}" is not a number.`, "Qty");
-    else if (qty < 0) add("Opening stock cannot be negative.", "Qty");
-    else if (qty === 0) warnings.push({ row: rowNo, column: "Qty", message: "Qty is zero — nothing will be stocked." });
-
-    const unitCost = Number(costText);
-    if (!costText) {
-      add("Unit Cost is required — stock imported without a cost is valued at nothing.", "Unit Cost");
-    } else if (!/^\d+(\.\d+)?$/.test(costText)) {
-      add(`Unit Cost "${costText}" is not a number.`, "Unit Cost");
-    } else if (unitCost <= 0 && qty > 0) {
-      add("Unit Cost must be greater than zero.", "Unit Cost");
+          `changes what every quantity of this item means. Add it under Units first.`, "Unit");
     }
 
     // ---- the item this row refers to --------------------------------------
@@ -357,42 +381,69 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
           `Correct the sheet, or rename the item first if it really has changed.`, "Stock Name"
         );
       } else {
-        warnings.push({ row: rowNo, message: `Barcode ${barcode} already exists — the existing item will be used.` });
+        warnings.push({
+          row: rowNo,
+          message: `Barcode ${barcode} already exists — "${existing.name}" is left as it is.`,
+        });
       }
     }
 
     // ---- the file disagreeing with itself ---------------------------------
-    if (barcode && name) {
-      const seen = seenBarcodeName.get(barcode);
-      if (seen && norm(seen.name) !== norm(name)) {
-        add(`Barcode ${barcode} is used for "${seen.name}" on row ${seen.row} and "${name}" here.`, "Barcode");
-      } else if (!seen) {
-        seenBarcodeName.set(barcode, { name, row: rowNo });
-      }
-    }
-
-    if (barcode && location) {
-      const key = `${barcode}|${location.id}`;
-      const seen = seenPairs.get(key);
+    // One row per item, so a repeated barcode is a duplicate rather than a
+    // second balance somewhere. Refused rather than merged: which of the two
+    // rows was meant is not something to guess at.
+    if (barcode) {
+      const seen = seenBarcode.get(barcode);
       if (seen) {
-        add(
-          `${barcode} is already stocked into "${locationText}" on row ${seen}. ` +
-          `Combine them into one row rather than importing both.`, "Location"
-        );
+        add(`Barcode ${barcode} is already on row ${seen}. An item belongs on one row — ` +
+            `delete the duplicate.`, "Barcode");
       } else {
-        seenPairs.set(key, rowNo);
+        seenBarcode.set(barcode, rowNo);
       }
     }
 
-    // ---- stock that is already there --------------------------------------
-    // Blocked rather than added to. The user almost certainly means "the
-    // opening balance is 100", and quietly making it 200 is the kind of
-    // error nobody finds until a stock count disagrees months later.
-    if (existing && location && stockPairs.has(`${existing.id}|${location.id}`)) {
-      add(
-        `"${existing.name}" already holds stock in "${locationText}". ` +
-        `Importing would add to it. Use a stock adjustment instead.`, "Qty"
-      );
+    // A Stock ID that disagrees with an item already carrying that barcode is
+    // worth saying out loud. The item is left alone either way — an import
+    // does not renumber a catalogue — but silently ignoring the column the
+    // user just filled in would be its own kind of wrong.
+    if (existing && stockId && norm(existing.serial ?? "") !== norm(stockId)) {
+      warnings.push({
+        row: rowNo, column: "Stock ID",
+        message: `"${existing.name}" already has the Stock ID ${existing.serial} ` +
+                 `(code ${existing.code}). The sheet says ${stockId}; the existing one is kept.`,
+      });
+    }
+
+    if (errors.length > errorsBefore) continue;
+
+    // ---- the code this row will carry -------------------------------------
+    // Composed exactly as fn_set_item_code does it — the category's code
+    // followed by the item's own piece — so what the preview shows is what the
+    // database will store, not an approximation of it.
+    const assigned = !stockId;
+    const serial = existing
+      ? (existing.serial ?? "")
+      : (stockId || takeNextSerial(category!.id, category!.code));
+    const code = existing ? existing.code : `${category!.code}${serial}`;
+
+    // Two rows landing on one code, or a code an item already has. Both are
+    // refused rather than resolved: the unique constraint would abort the
+    // whole import at the very end, and a row number now is worth more than a
+    // constraint violation after four hundred rows have been read.
+    if (!existing) {
+      const key = norm(code);
+      const clash = seenCode.get(key);
+      const taken = itemByCode.get(key);
+      if (clash) {
+        add(`Stock ID ${serial} in ${category!.name} makes the code ${code}, ` +
+            `which row ${clash} already takes.`, "Stock ID");
+      } else if (taken) {
+        add(`Stock ID ${serial} in ${category!.name} makes the code ${code}, ` +
+            `which already belongs to "${taken.name}". Give this item a different ` +
+            `Stock ID, or match the existing item by its barcode.`, "Stock ID");
+      } else {
+        seenCode.set(key, rowNo);
+      }
     }
 
     if (errors.length > errorsBefore) continue;
@@ -402,50 +453,28 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
       barcode,
       name,
       itemId: existing?.id ?? null,
+      isNew: !existing,
       categoryId: category!.id,
       brandId,
       uomId: uom!.id,
-      locationId: location!.id,
-      qty,
-      unitCost,
-      locationName: location!.name,
+      serial,
+      code,
+      serialAssigned: assigned,
       unitName: uom!.name,
       categoryName: category!.name,
+      brandName,
     });
-  }
-
-  // What the file means, as the ERP reads it. One item per barcode however
-  // many warehouses it appears in — that an item repeated across locations is
-  // one product with several balances, not several products, is the single
-  // thing most worth showing back to whoever is about to press Confirm.
-  const items: PlannedItem[] = [];
-  const byBarcode = new Map<string, PlannedItem>();
-  for (const r of rows) {
-    let entry = byBarcode.get(r.barcode);
-    if (!entry) {
-      entry = {
-        barcode: r.barcode, name: r.name, categoryName: r.categoryName,
-        isNew: !r.itemId, locations: 0, totalQty: 0,
-      };
-      byBarcode.set(r.barcode, entry);
-      items.push(entry);
-    }
-    entry.locations++;
-    entry.totalQty = Math.round((entry.totalQty + r.qty) * 10000) / 10000;
   }
 
   return {
     rows,
-    items,
     missingBrands,
     errors,
     warnings,
     summary: {
       rows: Math.max(0, rowsIn.length - 1),
-      newItems: items.filter((i) => i.isNew).length,
-      existingItems: items.filter((i) => !i.isNew).length,
-      stockRows: rows.filter((r) => r.qty > 0).length,
-      totalUnits: Math.round(rows.reduce((s, r) => s + r.qty, 0) * 10000) / 10000,
+      newItems: rows.filter((r) => r.isNew).length,
+      existingItems: rows.filter((r) => !r.isNew).length,
     },
   };
 }

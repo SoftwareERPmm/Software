@@ -12,24 +12,26 @@ export default async function ImportItems() {
     status: string; created_at: string; items_created: number; documents: number;
   }>;
 
-  const today = new Date().toISOString().slice(0, 10);
-
   return (
     <>
       <div className="page-head">
         <span className="eyebrow">Master data</span>
-        <h1>Import items &amp; opening stock</h1>
+        <h1>Import items</h1>
         <span className="page-sub">
-          The spreadsheet is the input; this database stays the source of truth.
-          A row naming a category, brand, unit or warehouse that does not exist
-          here is refused rather than creating one — two spellings of the same
-          category is the mess an importer is supposed to prevent. Nothing is
-          written until you confirm, and then all of it is written or none of it.
+          The item master, from a spreadsheet — what the items <em>are</em>, not
+          how many there are. Quantity and cost are the result of stock
+          documents, so they are not on this sheet; a new item exists with no
+          stock until a goods receipt or an opening stock adjustment gives it
+          some. The spreadsheet is the input and this database stays the source
+          of truth: a row naming a category, brand or unit that does not exist
+          here is refused rather than creating one, because two spellings of the
+          same category is the mess an importer is supposed to prevent. Nothing
+          is written until you confirm, and then all of it is written or none.
         </span>
         <Link href="/items" className="btn ghost">Back to items</Link>
       </div>
 
-      <ItemImport action={runItemImport} today={today} />
+      <ItemImport action={runItemImport} />
 
       <section>
         <div className="card">

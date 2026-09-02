@@ -15,7 +15,7 @@ import {
   postSupplierPayment, postCustomerReceipt,
   postCashVoucher, postBankVoucher, postJournalVoucher,
   postCashTransfer, postAccountOpening, postStockAdjustment, postStockTransfer,
-  importItemsAndOpeningStock, importVouchers,
+  importItems, importVouchers,
   postSalesReturn, postPurchaseReturn, postConsignmentReceipt,
   type InvoiceLine, type OrderLine, type FulfillmentLine, type Allocation, type VoucherLine,
   type AdjustmentLine, type ReturnLine, type TransferLine, type ConsignmentReceiptLine,
@@ -2722,7 +2722,7 @@ export async function previewItemImport(
 export async function runItemImport(
   _prev: unknown, fd: FormData
 ): Promise<ActionResult> {
-  let done: { ref: string; itemsCreated: number; itemsMatched: number; stockRows: number };
+  let done: { ref: string; itemsCreated: number; itemsMatched: number };
   try {
     const co = await companyId();
     const content = str(fd, "csv");
@@ -2746,9 +2746,8 @@ export async function runItemImport(
     }
     if (plan.rows.length === 0) return { error: "There is nothing to import" };
 
-    done = await importItemsAndOpeningStock({
+    done = await importItems({
       companyId: co,
-      docDate: str(fd, "doc_date") || new Date().toISOString().slice(0, 10),
       filename,
       rowCount: plan.summary.rows,
       rows: plan.rows,
@@ -2758,12 +2757,10 @@ export async function runItemImport(
   }
 
   revalidatePath("/items");
-  revalidatePath("/items/stock");
-  revalidatePath("/documents");
   redirectWithToast(
     "/items/import",
-    `${done.ref}: ${done.itemsCreated} item${done.itemsCreated === 1 ? "" : "s"} created, ` +
-    `${done.stockRows} stock record${done.stockRows === 1 ? "" : "s"}`
+    `${done.ref}: ${done.itemsCreated} item${done.itemsCreated === 1 ? "" : "s"} created` +
+    (done.itemsMatched > 0 ? `, ${done.itemsMatched} already existed` : "")
   );
 }
 

@@ -1495,20 +1495,14 @@ export async function getOwnedStockForItems(companyId: string, itemIds: string[]
  * can say anything about a file.
  */
 export async function getImportMasterData(companyId: string) {
-  const [items, categories, brands, uoms, locations, existingStock] = await Promise.all([
-    sql`select id, code, name, barcode, item_group_id, brand_id, base_uom_id
+  const [items, categories, brands, uoms] = await Promise.all([
+    sql`select id, code, serial, name, barcode, item_group_id, brand_id, base_uom_id
           from item where company_id = ${companyId} and is_active`,
     sql`select id, code, name from item_group where company_id = ${companyId} and is_active`,
     sql`select id, code, name from brand where company_id = ${companyId} and is_active`,
-    sql`select id, code, name from uom where company_id = ${companyId}`,
-    sql`select id, code, name, parent_id, is_stock_location, is_active
-          from location where company_id = ${companyId}`,
-    // Item/warehouse pairs already carrying stock. An import must not quietly
-    // add to a balance that is already there.
-    sql`select item_id, location_id from v_stock_on_hand
-         where company_id = ${companyId} and qty_on_hand <> 0`,
+    sql`select id, code, name from uom where company_id = ${companyId} and is_active`,
   ]);
-  return { items, categories, brands, uoms, locations, existingStock };
+  return { items, categories, brands, uoms };
 }
 
 /** Past imports, newest first, with what each one actually created. */
