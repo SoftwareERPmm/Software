@@ -28,6 +28,7 @@ export function ConfirmDelete({
   label = "Delete",
   pendingLabel = "Deleting…",
   confirmLabel = "Delete",
+  className = "danger tiny",
   children,
 }: {
   action: (fd: FormData) => void;
@@ -40,6 +41,9 @@ export function ConfirmDelete({
   label?: string;
   pendingLabel?: string;
   confirmLabel?: string;
+  /** The trigger button's class. Defaults to the standalone red button; a
+   *  row menu passes its own so the item sits flush with the others. */
+  className?: string;
   /** Hidden inputs the action needs — id, return_to, and so on. */
   children?: React.ReactNode;
 }) {
@@ -55,7 +59,7 @@ export function ConfirmDelete({
     <>
       <button
         type="button"
-        className="danger tiny"
+        className={className}
         disabled={pending}
         onClick={() => ref.current?.showModal()}
       >

@@ -591,6 +591,48 @@ button.tiny { padding: 0.16rem 0.5rem; font-size: var(--t-sm); }
   border-radius: var(--r-md); background: var(--ground);
 }
 
+/* ----------------------------------------------------------- row menu --- */
+
+/* The last column of a list. Three actions per row, times forty rows, is a
+   wall of buttons that pushes every column of actual data narrower — so they
+   collapse behind one dot menu and the table gets its width back. */
+
+.rowmenu { position: relative; display: inline-block; }
+
+.rowmenu > button.dots {
+  background: transparent; border: 1px solid transparent; color: var(--muted);
+  padding: 0.1rem 0.4rem; line-height: 1.1; border-radius: var(--r-md);
+  font-size: 1.05rem; letter-spacing: 0.06em;
+}
+.rowmenu > button.dots:hover,
+.rowmenu > button.dots[aria-expanded="true"] {
+  border-color: var(--line); color: var(--ink); background: var(--ground);
+}
+
+.rowmenu-list {
+  position: absolute; z-index: 30; top: calc(100% + 2px); right: 0;
+  min-width: 168px; padding: 0.2rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  text-align: left;
+}
+
+/* Buttons and the forms wrapping them both have to fill the menu, or a
+   submit button sits at its natural width and the menu looks ragged. */
+.rowmenu-list form { display: block; }
+.rowmenu-list button {
+  display: block; width: 100%; text-align: left;
+  background: transparent; border: none; color: var(--ink);
+  padding: 0.34rem 0.5rem; border-radius: var(--r-md);
+  font-weight: 400; font-size: var(--t-sm);
+}
+.rowmenu-list button:hover { background: var(--ground); }
+.rowmenu-list button.warn  { color: var(--warn); }
+.rowmenu-list button.danger { color: var(--bad); }
+.rowmenu-sep { height: 1px; background: var(--line-soft); margin: 0.2rem 0; }
+
 /* ------------------------------------------------------------- picker --- */
 
 .picker {

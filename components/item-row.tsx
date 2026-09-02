@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useActionState, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
 import { ConfirmDelete } from "./confirm-delete";
+import { RowMenu } from "./row-menu";
 
 // lib/db.ts opens a real Postgres connection at import time — never import
 // it into a client component. Same formatting as money() there, kept local.
@@ -149,30 +150,32 @@ export function ItemRow({
           </div>
         )}
       </td>
-      <td>
-        <span className="actions">
-          <button type="button" className="ghost tiny" onClick={() => setEditing(true)}>Edit</button>
+      <td className="r">
+        <RowMenu label={`Actions for ${item.name}`}>
+          <button type="button" onClick={() => setEditing(true)}>Edit</button>
           {item.is_active ? (
-            <form action={deactFormAction} style={{ display: "inline" }}>
+            <form action={deactFormAction}>
               <input type="hidden" name="id" value={item.id} />
-              <button type="submit" className="warn tiny">Deactivate</button>
+              <button type="submit" className="warn">Deactivate</button>
             </form>
           ) : (
-            <form action={actFormAction} style={{ display: "inline" }}>
+            <form action={actFormAction}>
               <input type="hidden" name="id" value={item.id} />
-              <button type="submit" className="ghost tiny">Reactivate</button>
+              <button type="submit">Reactivate</button>
             </form>
           )}
+          <div className="rowmenu-sep" />
           <ConfirmDelete
             action={delFormAction}
             pending={delPending}
             error={delState && "error" in delState ? delState.error : null}
             title={`Delete ${item.name}?`}
             detail="This cannot be undone."
+            className="danger"
           >
             <input type="hidden" name="id" value={item.id} />
           </ConfirmDelete>
-        </span>
+        </RowMenu>
         {delState && "error" in delState && (
           <div className="hint" style={{ color: "var(--bad)" }}>{delState.error}</div>
         )}
