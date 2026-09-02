@@ -234,6 +234,40 @@ export function accountGroupRank(label: string): number {
   return i === -1 ? ACCOUNT_GROUP_ORDER.length : i;
 }
 
+/**
+ * The section an account is filed under — the nearest ancestor that is a
+ * heading rather than something you can post to.
+ *
+ * Used to group account pickers the way Master data draws the chart. Grouping
+ * by a fixed label instead was wrong in a way that only showed up on a real
+ * chart: the customer's has "Expense" holding two subheadings, "General &
+ * Administration Expenses" and "Selling & Distribution Expenses", and every
+ * expense account sits in one or the other. Mapping all three section codes
+ * to the word "Expense" collapsed both into a single group, so the picker
+ * disagreed with the chart it was meant to mirror.
+ *
+ * Reading the section's own name has no such ceiling: whatever headings a
+ * company puts in its chart are the headings the picker shows.
+ */
+export function accountSection(
+  account: { parent_id: string | null },
+  all: ReadonlyArray<{ id: string; code: string; name: string; parent_id: string | null; is_postable?: boolean }>
+): { code: string; name: string } | null {
+  const byId = new Map(all.map((a) => [a.id, a]));
+  let node = account.parent_id ? byId.get(account.parent_id) : undefined;
+  let guard = 0;
+  while (node && guard++ < 20) {
+    // A heading is what an account cannot be posted to. Where is_postable is
+    // absent — an older caller passing a thinner list — treat any ancestor as
+    // the section, which is what the tree meant before subheadings existed.
+    if (node.is_postable === false || node.is_postable === undefined) {
+      return { code: node.code, name: node.name };
+    }
+    node = node.parent_id ? byId.get(node.parent_id) : undefined;
+  }
+  return null;
+}
+
 /** Walks up to the nearest section that names a display type. */
 export function accountTypeLabel(
   account: { parent_id: string | null; account_type: string },

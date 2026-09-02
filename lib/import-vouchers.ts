@@ -222,10 +222,23 @@ export function planVoucherImport(
     let location: VoucherMasterData["locations"][number] | undefined;
     if (branchText) {
       location = locationsByKey.get(norm(branchText));
+      const branchesOnly = master.locations.filter((l) => l.parent_id === null && l.is_active);
       if (!location) {
-        add(`Branch "${branchText}" does not exist.` + nearest(branchText, master.locations), "Branch");
+        add(`Branch "${branchText}" does not exist.` + nearest(branchText, branchesOnly), "Branch");
       } else if (!location.is_active) {
         add(`Branch "${branchText}" is inactive.`, "Branch");
+      } else if (location.parent_id !== null) {
+        // A warehouse rolls up to its branch, so the figures would come out
+        // right either way — but a receipt is taken at a branch, not in a
+        // shed, and letting the sheet say otherwise makes the column mean two
+        // different things depending on who filled it in.
+        const parent = master.locations.find((l) => l.id === location!.parent_id);
+        add(
+          `"${branchText}" is a warehouse, not a branch. Money is received at a branch; ` +
+          (parent ? `this one sits inside "${parent.name}", so name that instead.`
+                  : `name the branch it belongs to instead.`),
+          "Branch"
+        );
       }
     } else {
       warnings.push({

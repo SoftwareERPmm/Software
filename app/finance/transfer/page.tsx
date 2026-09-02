@@ -2,7 +2,7 @@ import { getFinanceData, createCashTransfer } from "@/lib/actions";
 import { TransferForm } from "@/components/transfer-form";
 
 export default async function InterbranchTransfer() {
-  const { cashAccounts, bankAccounts, locations } = await getFinanceData();
+  const { cashAccounts, bankAccounts, branches } = await getFinanceData();
   type Acct = { id: string; code: string; name: string };
   const money = [
     ...(cashAccounts as unknown as Acct[]),
@@ -39,7 +39,7 @@ export default async function InterbranchTransfer() {
       <TransferForm
         action={createCashTransfer}
         accounts={money}
-        locations={locations as never}
+        branches={branches as never}
         today={today}
       />
     </>

@@ -4,19 +4,19 @@ import { useActionState, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
 
 type Account = { id: string; code: string; name: string };
-type Location = { id: string; code: string; name: string };
+type Branch = { id: string; code: string; name: string };
 
 const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 0 });
 
 export function TransferForm({
   action,
   accounts,
-  locations,
+  branches,
   today,
 }: {
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   accounts: Account[];
-  locations: Location[];
+  branches: Branch[];
   today: string;
 }) {
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
@@ -51,12 +51,12 @@ export function TransferForm({
               </select>
             </div>
 
-            {locations.length > 0 && (
+            {branches.length > 0 && (
               <div className="field">
                 <label htmlFor="from_location_id">From branch</label>
                 <select id="from_location_id" name="from_location_id" defaultValue="">
                   <option value="">None</option>
-                  {locations.map((l) => (
+                  {branches.map((l) => (
                     <option key={l.id} value={l.id}>{l.code} · {l.name}</option>
                   ))}
                 </select>
@@ -74,12 +74,12 @@ export function TransferForm({
               </select>
             </div>
 
-            {locations.length > 0 && (
+            {branches.length > 0 && (
               <div className="field">
                 <label htmlFor="to_location_id">To branch</label>
                 <select id="to_location_id" name="to_location_id" defaultValue="">
                   <option value="">None</option>
-                  {locations.map((l) => (
+                  {branches.map((l) => (
                     <option key={l.id} value={l.id}>{l.code} · {l.name}</option>
                   ))}
                 </select>

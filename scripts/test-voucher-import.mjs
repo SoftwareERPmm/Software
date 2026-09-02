@@ -159,6 +159,19 @@ try {
   check("an unknown branch is refused",
     (await plan(row({ branch: "Atlantis" }))).errors.some((e) => /does not exist/.test(e.message)));
 
+  // A warehouse is not a branch. The figures would roll up correctly either
+  // way, but a receipt is taken at a branch and the column has to mean one
+  // thing.
+  const [wh] = await sql`
+    select code, name from location
+     where company_id = ${co.id} and is_stock_location and is_active order by code limit 1`;
+  if (wh) {
+    const p = await plan(row({ branch: wh.name }));
+    check("a warehouse named as the branch is refused, and points at its branch",
+      p.errors.some((e) => /is a warehouse, not a branch/.test(e.message)),
+      msgs(p).slice(0, 80));
+  }
+
   // ---- a good file --------------------------------------------------------
   const good = await plan([
     row({ no: 1, amount: 150000, ref: "RCP-001", memo: "Scrap sale" }),

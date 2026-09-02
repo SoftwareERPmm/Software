@@ -1676,7 +1676,7 @@ export async function createAccountOpening(_prev: unknown, fd: FormData): Promis
 export async function getFinanceData() {
   const co = await companyId();
 
-  const [accounts, accountTree, cashAccounts, bankAccounts, locations, costCenters] = await Promise.all([
+  const [accounts, accountTree, cashAccounts, bankAccounts, branches, costCenters] = await Promise.all([
     sql`select id, code, name, parent_id, account_type, is_control, is_cash_account, is_bank_account
           from account
          where company_id = ${co} and is_postable and is_active
@@ -1687,19 +1687,24 @@ export async function getFinanceData() {
     // that is where the finer distinctions live, since the stored
     // account_type has six members and the chart draws eight (a tax payable
     // is a LIABILITY underneath and reads as Tax on screen).
-    sql`select id, code, parent_id from account where company_id = ${co}`,
+    sql`select id, code, name, parent_id, is_postable from account where company_id = ${co}`,
     sql`select id, code, name from account
          where company_id = ${co} and is_cash_account and not is_bank_account and is_active
          order by code`,
     sql`select id, code, name from account
          where company_id = ${co} and is_bank_account and is_active order by code`,
+    // Branches only, not every location. A voucher happens at a branch — a
+    // receipt is taken at an office, money is transferred between them — and
+    // a warehouse is where stock sits, which is a different question. Listing
+    // warehouses under a control labelled "Branch" invited someone to file a
+    // cash receipt into a shed.
     sql`select id, code, name from location
-         where company_id = ${co} and is_active order by code`,
+         where company_id = ${co} and parent_id is null and is_active order by code`,
     sql`select id, code, name from cost_center
          where company_id = ${co} and is_active order by code`,
   ]);
 
-  return { accounts, accountTree, cashAccounts, bankAccounts, locations, costCenters };
+  return { accounts, accountTree, cashAccounts, bankAccounts, branches, costCenters };
 }
 
 /** Movements on one account with its running balance. */
