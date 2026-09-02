@@ -92,9 +92,16 @@ const TXN = ["payment_allocation", "stock_movement", "document_line", "document"
 // truncating item_group would take every row of account_determination with it,
 // including the company-wide posting rules that reference no group at all.
 // Lose those and nothing can post again.
+// Order matters: a table is deleted before anything it points at. item
+// carries brand_id, so brand can only go once the items are gone.
 const MASTER = ["consignment_agreement_line", "consignment_agreement",
                 "item_alias", "item_uom", "item_reorder", "item_price", "item",
-                "item_group", "business_partner", "salesman", "promotion"];
+                "item_group", "brand", "business_partner", "salesman", "promotion",
+                // Last: item and document both carry import_batch_id, so the
+                // batches can only go once those are gone. Deliberately not in
+                // TXN — truncating it there would CASCADE into item, which the
+                // transactions-only mode is supposed to keep.
+                "import_batch"];
 
 try {
   // The company name is what actually distinguishes these databases from the
@@ -115,7 +122,8 @@ try {
       union all select 'stock movements', count(*)::int from stock_movement
       union all select 'partners', count(*)::int from business_partner
       union all select 'items', count(*)::int from item
-      union all select 'categories', count(*)::int from item_group`;
+      union all select 'categories', count(*)::int from item_group
+      union all select 'brands', count(*)::int from brand`;
     return rows;
   };
 
@@ -136,12 +144,10 @@ try {
       // fallbacks stay, so a cleared database can still post.
       await tx`delete from account_determination where item_group_id is not null`;
       await tx`delete from promotion`;
-      // consignment_agreement_line references item; consignment_agreement
-      // references business_partner. Both deleted before the master data
-      // they point at, same as everything else in this list.
-      for (const t of ["consignment_agreement_line", "consignment_agreement",
-                       "item_alias", "item_uom", "item_reorder", "item_price",
-                       "item", "item_group", "business_partner", "salesman"]) {
+      // MASTER, not a second copy of it. There was one here, and the two
+      // had already drifted: the list above named tables this loop never
+      // deleted, so a table added to it looked handled and was not.
+      for (const t of MASTER.filter((t) => t !== "promotion")) {
         await tx.unsafe(`delete from ${t}`);
       }
     });
