@@ -68,3 +68,54 @@ export async function xlsxToRows(base64: string): Promise<string[][]> {
 
   return rows.filter((r) => r.some((c) => c !== ""));
 }
+
+/** Column widths that make the template readable without fiddling. */
+const TEMPLATE_WIDTHS = [5, 20, 28, 18, 16, 22, 10, 10, 12];
+
+/**
+ * A blank import workbook with the Barcode column already formatted as Text.
+ *
+ * Formatting it here is what stops the barcode problem happening at all. Left
+ * to Excel's own judgement a 13-digit barcode becomes a number, loses any
+ * leading zero and rounds past fifteen digits, and by the time the file is
+ * uploaded the original is gone. A template that arrives correct is worth
+ * more than an instruction the user has to remember.
+ */
+export async function buildImportTemplate(): Promise<string> {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "ERP";
+  const ws = wb.addWorksheet("Items");
+
+  const header = ["No", "Barcode", "Stock Name", "Category", "Brand", "Location", "Qty", "Unit", "Unit Cost"];
+  ws.addRow(header);
+  ws.getRow(1).font = { bold: true };
+  ws.views = [{ state: "frozen", ySplit: 1 }];
+  header.forEach((_, i) => { ws.getColumn(i + 1).width = TEMPLATE_WIDTHS[i]; });
+
+  // '@' is Excel's text format. Applied to the whole column so it holds for
+  // rows the user adds later, not only the examples below.
+  ws.getColumn(2).numFmt = "@";
+
+  const examples = [
+    [1, "8851234567890", "Coca-Cola 300ml", "Beverages", "Coca-Cola", "Main Warehouse", 100, "Bottle", 600],
+    [2, "8851234567891", "Sprite 300ml", "Beverages", "Sprite", "Main Warehouse", 80, "Bottle", 550],
+    // The same barcode again at another warehouse: one product, two balances.
+    [3, "8851234567890", "Coca-Cola 300ml", "Beverages", "Coca-Cola", "Yangon Warehouse", 50, "Bottle", 600],
+  ];
+  for (const e of examples) {
+    const r = ws.addRow(e);
+    r.getCell(2).numFmt = "@";
+    r.font = { italic: true, color: { argb: "FF888888" } };
+  }
+
+  const note = ws.addRow([]);
+  note.getCell(1).value =
+    "Delete the three grey example rows before uploading. Category, Brand, Location and Unit must " +
+    "already exist in the ERP — they are never created by an import. The same barcode in two " +
+    "warehouses is one item with two stock balances, not two items.";
+  ws.mergeCells(`A${note.number}:I${note.number}`);
+  note.getCell(1).alignment = { wrapText: true, vertical: "top" };
+  note.height = 40;
+
+  return Buffer.from(await wb.xlsx.writeBuffer()).toString("base64");
+}

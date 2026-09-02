@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useState, useTransition } from "react";
-import { previewItemImport } from "@/lib/actions";
+import { previewItemImport, itemImportTemplate } from "@/lib/actions";
 import type { ActionResult } from "@/lib/actions";
 
 type Issue = { row: number; column?: string; message: string };
@@ -43,15 +43,42 @@ export function ItemImport({ action, today }: {
   const [filename, setFilename] = useState("");
   const [plan, setPlan] = useState<Plan | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
+  const [picked, setPicked] = useState(false);
+  const [gettingTemplate, startTemplate] = useTransition();
   const [checking, startChecking] = useTransition();
 
-  function downloadTemplate() {
-    const blob = new Blob([`${TEMPLATE_HEADER}\n${TEMPLATE_EXAMPLE}\n`], { type: "text/csv;charset=utf-8" });
+  function save(blob: Blob, name: string) {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "item-opening-stock-template.csv";
+    a.download = name;
     a.click();
     URL.revokeObjectURL(a.href);
+  }
+
+  /** The Excel template, built on the server so the Barcode column can arrive
+   *  already formatted as Text — which is what stops the barcode being
+   *  mangled before the file ever gets back here. */
+  function downloadTemplate() {
+    startTemplate(async () => {
+      setReadError(null);
+      try {
+        const { base64 } = await itemImportTemplate();
+        const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+        save(
+          new Blob([bytes], {
+            type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          }),
+          "item-opening-stock-template.xlsx"
+        );
+      } catch (e) {
+        setReadError(e instanceof Error ? e.message : String(e));
+      }
+    });
+  }
+
+  function downloadCsvTemplate() {
+    save(new Blob([`${TEMPLATE_HEADER}\n${TEMPLATE_EXAMPLE}\n`], { type: "text/csv;charset=utf-8" }),
+         "item-opening-stock-template.csv");
   }
 
   /** A workbook is sent as bytes; a CSV as text. Chunked on the way to base64
@@ -76,6 +103,7 @@ export function ItemImport({ action, today }: {
     startChecking(async () => {
       try {
         const { content, kind } = await encode(file);
+        setPicked(true);
         setCsv(content);
         setFormat(kind);
         setFilename(file.name);
@@ -106,7 +134,10 @@ export function ItemImport({ action, today }: {
                        onChange={(e) => onFile(e.target.files?.[0])} />
               </div>
               <div className="actions">
-                <button type="button" className="ghost" onClick={downloadTemplate}>Download template</button>
+                <button type="button" onClick={downloadTemplate} disabled={gettingTemplate}>
+                  {gettingTemplate ? "Preparing…" : "Download Excel template"}
+                </button>
+                <button type="button" className="ghost" onClick={downloadCsvTemplate}>CSV instead</button>
               </div>
             </div>
 
@@ -115,9 +146,11 @@ export function ItemImport({ action, today }: {
               Excel treats a long barcode as a number otherwise, which drops any leading zero
               and rounds anything past fifteen digits — damage done in the sheet, before the
               file gets here.{" "}
-              {format === "xlsx"
-                ? "Reading the workbook directly does avoid the other half of the problem: a barcode merely displayed as 8.85E+12 is stored exactly, and comes through intact."
-                : "Saving as CSV can also write out the displayed 8.85123E+12 instead of the real number, losing the digits that tell two products apart — uploading the .xlsx avoids that."}
+              {!picked
+                ? "The Excel template above already has that column formatted, so filling it in is enough."
+                : format === "xlsx"
+                  ? "Reading the workbook directly avoids the other half of the problem: a barcode merely displayed as 8.85E+12 is stored exactly, and comes through intact."
+                  : "Saving as CSV can also write out the displayed 8.85123E+12 in place of the real number, losing the digits that tell two products apart — uploading the .xlsx avoids that."}
             </div>
 
             {checking && <p className="page-sub">Checking the file…</p>}

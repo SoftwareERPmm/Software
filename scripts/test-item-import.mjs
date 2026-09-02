@@ -24,7 +24,7 @@ if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
 }
 
 const { parseCsv, planImport } = await import("../lib/import-items.ts");
-const { xlsxToRows } = await import("../lib/read-spreadsheet.ts");
+const { xlsxToRows, buildImportTemplate } = await import("../lib/read-spreadsheet.ts");
 const ExcelJS = (await import("exceljs")).default;
 const { importItemsAndOpeningStock } = await import("../lib/posting.ts");
 
@@ -126,6 +126,53 @@ try {
   const noBrand = await plan(`1,B${stamp}9,Coke,${grp.name},,${wh.name},10,${uom.name},600`);
   check("a blank brand is allowed, with a warning",
     noBrand.errors.length === 0 && noBrand.warnings.some((w) => /Brand is blank/.test(w.message)));
+
+  // ---- missing values, column by column -----------------------------------
+  // Two different kinds of missing: the column absent from the sheet
+  // altogether, and the column present but the cell blank. Both have to be
+  // caught, and neither may fall through into a row that gets imported.
+  for (const column of ["Barcode", "Stock Name", "Category", "Location", "Qty", "Unit", "Unit Cost"]) {
+    const cols = HEADER.split(",");
+    const keep = cols.filter((c) => c !== column);
+    const idx = cols.indexOf(column);
+    const full = `1,B${stamp}M,Blank Test,${grp.name},${brand.name},${wh.name},5,${uom.name},100`.split(",");
+
+    // (a) the column is not in the file at all
+    const withoutCol = planImport(
+      parseCsv(`${keep.join(",")}\n${full.filter((_, i) => i !== idx).join(",")}`), await master());
+    check(`a file with no ${column} column is refused`,
+      withoutCol.errors.some((e) => new RegExp(`Missing column.*${column}`).test(e.message)),
+      withoutCol.errors[0]?.message?.slice(0, 50));
+
+    // (b) the column is there but this row's cell is empty
+    const blanked = full.map((v, i) => (i === idx ? "" : v));
+    const withBlank = planImport(parseCsv(`${HEADER}\n${blanked.join(",")}`), await master());
+    check(`a blank ${column} cell is refused`,
+      withBlank.errors.length > 0 && withBlank.rows.length === 0,
+      withBlank.errors[0]?.message?.slice(0, 55) ?? "no error raised");
+  }
+
+  // Whitespace is not a value. " " in a cell must read as empty, not as a
+  // category named space.
+  const spaces = await plan(`1,B${stamp}W,Space Test,   ,${brand.name},${wh.name},5,${uom.name},100`);
+  check("a cell holding only spaces counts as empty",
+    spaces.errors.some((e) => /Category is empty/.test(e.message)));
+
+  // A row that stops early — Excel does this when trailing cells were never
+  // touched — must not read the next row's values into the gap.
+  const short = planImport(parseCsv(`${HEADER}\n1,B${stamp}S,Short Row,${grp.name}`), await master());
+  check("a row with fewer cells than the header is refused, not misread",
+    short.errors.length > 0 && short.rows.length === 0,
+    short.errors[0]?.message?.slice(0, 50));
+
+  // An entirely empty row between blocks of data is ignored rather than
+  // reported as seven separate failures.
+  const withGap = planImport(parseCsv(
+    `${HEADER}\n1,B${stamp}A,Gap A,${grp.name},${brand.name},${wh.name},5,${uom.name},100\n,,,,,,,,\n` +
+    `3,B${stamp}B,Gap B,${grp.name},${brand.name},${wh.name},6,${uom.name},100`), await master());
+  check("a completely blank row is skipped, not reported as errors",
+    withGap.errors.length === 0 && withGap.rows.length === 2,
+    `${withGap.errors.length} errors, ${withGap.rows.length} rows`);
 
   // ---- quantity and cost --------------------------------------------------
   check("a non-numeric quantity is refused",
@@ -285,6 +332,32 @@ try {
     check("a blank Brand cell does not shift the columns after it",
       gapRows[1][5] === wh.name && gapRows[1][6] === "7",
       `location="${gapRows[1]?.[5]}" qty="${gapRows[1]?.[6]}"`);
+  }
+
+  // ---- the template ------------------------------------------------------
+  // The template is the real fix for the barcode problem: it arrives with the
+  // column already formatted as Text, so the damage never happens. Worth
+  // proving it survives a round trip rather than assuming the format sticks.
+  {
+    const tpl64 = await buildImportTemplate();
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(Buffer.from(tpl64, "base64"));
+    const ws = wb.worksheets[0];
+
+    const head = [];
+    ws.getRow(1).eachCell({ includeEmpty: true }, (c) => head.push(String(c.value ?? "")));
+    check("the template's columns match what the importer expects",
+      head.slice(0, 9).join(",") === HEADER, head.slice(0, 9).join(","));
+
+    check("its Barcode column is formatted as Text, so Excel will not mangle one",
+      ws.getColumn(2).numFmt === "@", String(ws.getColumn(2).numFmt));
+
+    // A 13-digit barcode typed into that column must come back whole.
+    ws.addRow([9, "8851234567899", "Typed In", grp.name, brand.name, wh.name, 4, uom.name, 250]);
+    const rows = await xlsxToRows(Buffer.from(await wb.xlsx.writeBuffer()).toString("base64"));
+    const typed = rows.find((r) => r[2] === "Typed In");
+    check("a barcode typed into the template survives the round trip",
+      Boolean(typed) && typed[1] === "8851234567899", typed?.[1]);
   }
 
   // ---- invariants ---------------------------------------------------------

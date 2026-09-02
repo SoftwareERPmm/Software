@@ -2759,3 +2759,17 @@ export async function runItemImport(
     `${done.stockRows} stock record${done.stockRows === 1 ? "" : "s"}`
   );
 }
+
+/**
+ * The blank workbook to fill in.
+ *
+ * Built server-side and handed back as bytes, so the Barcode column can be
+ * formatted as Text before anyone types in it. That is the whole point: the
+ * barcode damage happens in Excel, before any file reaches us, and a template
+ * that arrives already formatted is the only fix that works by default rather
+ * than by the user remembering.
+ */
+export async function itemImportTemplate(): Promise<{ base64: string }> {
+  const { buildImportTemplate } = await import("./read-spreadsheet");
+  return { base64: await buildImportTemplate() };
+}

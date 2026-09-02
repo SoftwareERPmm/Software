@@ -229,6 +229,11 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
   for (let i = 1; i < rowsIn.length; i++) {
     const r = rowsIn[i];
     const rowNo = i + 1;                       // 1-based, counting the header
+    // Counted rather than searched for. Asking "does this row have an error?"
+    // by scanning every error found so far is quadratic, and a 5,000-row file
+    // with a systematic mistake — one wrong column name, say — is precisely
+    // the case where every row fails and the scan is longest.
+    const errorsBefore = errors.length;
     const add = (message: string, column?: string) => errors.push({ row: rowNo, column, message });
 
     const barcode = cell(r, "Barcode");
@@ -241,7 +246,10 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
     const costText = cell(r, "Unit Cost");
 
     // ---- barcode ----------------------------------------------------------
-    if (!barcode) add("Barcode is required.", "Barcode");
+    if (!barcode) {
+      add("Barcode is empty. Every row needs one — it is what matches a row to an item, "
+        + "and what keeps the same product in two warehouses from becoming two products.", "Barcode");
+    }
     else if (scientificNotation(barcode)) {
       add(
         `Barcode reads "${barcode}" — Excel has stored it as a number and lost digits. ` +
@@ -251,11 +259,13 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
       add(`Barcode "${barcode}" contains characters that are not allowed.`, "Barcode");
     }
 
-    if (!name) add("Stock Name is required.", "Stock Name");
+    if (!name) add("Stock Name is empty.", "Stock Name");
 
     // ---- master data ------------------------------------------------------
     const category = categories.get(norm(categoryText));
-    if (!categoryText) add("Category is required.", "Category");
+    if (!categoryText) {
+      add("Category is empty. Every item belongs to one, and an import will not invent it.", "Category");
+    }
     else if (!category) {
       add(`Category "${categoryText}" is not in the item categories.` +
           didYouMean(categoryText, master.categories) +
@@ -276,7 +286,7 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
     }
 
     const uom = uoms.get(norm(unitText));
-    if (!unitText) add("Unit is required.", "Unit");
+    if (!unitText) add("Unit is empty — without it the quantity has no meaning.", "Unit");
     else if (!uom) {
       add(`Unit "${unitText}" is not a unit of measure here.` + didYouMean(unitText, master.uoms) +
           ` Abbreviations are not guessed — "Btl" is not read as "Bottle", because guessing a unit ` +
@@ -284,7 +294,9 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
     }
 
     const location = locations.get(norm(locationText));
-    if (!locationText) add("Location is required.", "Location");
+    if (!locationText) {
+      add("Location is empty. Stock has to be somewhere — name the warehouse holding it.", "Location");
+    }
     else if (!location) {
       add(`Warehouse "${locationText}" does not exist.` +
           didYouMean(locationText, master.locations.filter((l) => l.is_stock_location)) +
@@ -312,7 +324,7 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
 
     // ---- quantity and cost ------------------------------------------------
     const qty = Number(qtyText);
-    if (!qtyText) add("Qty is required.", "Qty");
+    if (!qtyText) add("Qty is empty. Use 0 if this item is stocked here but currently empty.", "Qty");
     else if (!/^-?\d+(\.\d+)?$/.test(qtyText)) add(`Qty "${qtyText}" is not a number.`, "Qty");
     else if (qty < 0) add("Opening stock cannot be negative.", "Qty");
     else if (qty === 0) warnings.push({ row: rowNo, column: "Qty", message: "Qty is zero — nothing will be stocked." });
@@ -373,7 +385,7 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
       );
     }
 
-    if (errors.some((e) => e.row === rowNo)) continue;
+    if (errors.length > errorsBefore) continue;
 
     rows.push({
       row: rowNo,
