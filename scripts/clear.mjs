@@ -156,6 +156,11 @@ try {
   // Document numbering starts from 1 again, so the first voucher you enter
   // is the first of its fiscal year — SI-2627-000001 — rather than
   // continuing the demo sequence.
+  // Day counters are removed outright rather than reset: each is a row for a
+  // date that now has no documents, and a fresh one is created the first time
+  // something is posted on that day. The older per-fiscal-year rows are kept
+  // and rewound, since those are the series the pre-0035 numbers came from.
+  await sql`delete from number_series where series_date is not null`;
   await sql`update number_series set next_value = 1`;
 
   console.log("\n  after:");

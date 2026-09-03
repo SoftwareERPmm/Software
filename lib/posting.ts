@@ -800,7 +800,7 @@ async function writeJournal(
   }
 
   const noRows = await tx`
-    select fn_next_document_no(${companyId}, 'JOURNAL', ${fiscalYear}::uuid) as no`;
+    select fn_next_document_no(${companyId}, 'JOURNAL', ${entryDate}::date) as no`;
 
   const [entry] = await tx`
     insert into journal_entry
@@ -850,7 +850,7 @@ async function postOrder(input: OrderInput, docType: "SALES_ORDER" | "PURCHASE_O
     const fiscalYear = fyRows[0]?.fy ?? null;
     if (!fiscalYear) throw new Error(`No fiscal year covers ${docDate}`);
 
-    const noRows = await tx`select fn_next_document_no(${companyId}, ${docType}, ${fiscalYear}::uuid) as no`;
+    const noRows = await tx`select fn_next_document_no(${companyId}, ${docType}, ${docDate}::date) as no`;
     const docNo = noRows[0].no;
 
     const netTotal = round4(input.lines.reduce((s, l) => s + l.qty * (l.unitPrice ?? 0), 0));
@@ -907,7 +907,7 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
   const fiscalYear = fyRows[0]?.fy ?? null;
   if (!fiscalYear) throw new Error(`No fiscal year covers ${docDate}`);
 
-  const noRows = await tx`select fn_next_document_no(${companyId}, 'DELIVERY', ${fiscalYear}::uuid) as no`;
+  const noRows = await tx`select fn_next_document_no(${companyId}, 'DELIVERY', ${docDate}::date) as no`;
   const docNo = noRows[0].no;
 
   // A delivery continues either the order that asked for the goods or the
@@ -1141,7 +1141,7 @@ async function settleConsignmentSales(
     if (!fiscalYear) throw new Error(`No fiscal year covers ${docDate}`);
 
     const noRows = await tx`
-      select fn_next_document_no(${companyId}, 'PURCHASE_INVOICE', ${fiscalYear}::uuid) as no`;
+      select fn_next_document_no(${companyId}, 'PURCHASE_INVOICE', ${docDate}::date) as no`;
     const docNo = noRows[0].no;
 
     // Same convention the sales/purchase vouchers use to prefill a due date
@@ -1240,7 +1240,7 @@ async function _postSalesInvoice(
   if (!fiscalYear) throw new Error(`No fiscal year covers ${docDate}`);
 
   const noRows = await tx`
-    select fn_next_document_no(${companyId}, 'SALES_INVOICE', ${fiscalYear}::uuid) as no`;
+    select fn_next_document_no(${companyId}, 'SALES_INVOICE', ${docDate}::date) as no`;
   const docNo = noRows[0].no;
 
   const goodsTotal = round4(
@@ -1396,7 +1396,7 @@ async function _postSalesInvoice(
     }
 
     const rcNoRows = await tx`
-      select fn_next_document_no(${companyId}, 'CUSTOMER_RECEIPT', ${fiscalYear}::uuid) as no`;
+      select fn_next_document_no(${companyId}, 'CUSTOMER_RECEIPT', ${docDate}::date) as no`;
     receiptNo = rcNoRows[0].no;
 
     const [receipt] = await tx`
@@ -1502,7 +1502,7 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
   if (!fiscalYear) throw new Error(`No fiscal year covers ${docDate}`);
 
   const noRows = await tx`
-    select fn_next_document_no(${companyId}, 'GOODS_RECEIPT', ${fiscalYear}::uuid) as no`;
+    select fn_next_document_no(${companyId}, 'GOODS_RECEIPT', ${docDate}::date) as no`;
   const docNo = noRows[0].no;
 
   const netTotal = round4(input.lines.reduce((s, l) => s + l.qty * (l.unitCost ?? 0), 0));
@@ -1679,7 +1679,7 @@ async function _postPurchaseInvoice(
   if (!fiscalYear) throw new Error(`No fiscal year covers ${docDate}`);
 
   const noRows = await tx`
-    select fn_next_document_no(${companyId}, 'PURCHASE_INVOICE', ${fiscalYear}::uuid) as no`;
+    select fn_next_document_no(${companyId}, 'PURCHASE_INVOICE', ${docDate}::date) as no`;
   const docNo = noRows[0].no;
 
   const netTotal = round4(input.lines.reduce((s, l) => s + l.qty * l.unitPrice, 0));
@@ -1848,7 +1848,7 @@ async function _postPurchaseInvoice(
     }
 
     const pmtNoRows = await tx`
-      select fn_next_document_no(${companyId}, 'SUPPLIER_PAYMENT', ${fiscalYear}::uuid) as no`;
+      select fn_next_document_no(${companyId}, 'SUPPLIER_PAYMENT', ${docDate}::date) as no`;
     paymentNo = pmtNoRows[0].no;
 
     const [payment] = await tx`
@@ -1985,7 +1985,7 @@ async function _postStockAdjustment(
     if (!fiscalYear) throw new Error(`No fiscal year covers ${docDate}`);
 
     const noRows = await tx`
-      select fn_next_document_no(${companyId}, 'STOCK_ADJUSTMENT', ${fiscalYear}::uuid) as no`;
+      select fn_next_document_no(${companyId}, 'STOCK_ADJUSTMENT', ${docDate}::date) as no`;
     const docNo = noRows[0].no;
 
     const [doc] = await tx`
@@ -2130,7 +2130,7 @@ export async function postStockTransfer(input: TransferInput) {
     if (!fiscalYear) throw new Error(`No fiscal year covers ${docDate}`);
 
     const noRows = await tx`
-      select fn_next_document_no(${companyId}, 'STOCK_TRANSFER', ${fiscalYear}::uuid) as no`;
+      select fn_next_document_no(${companyId}, 'STOCK_TRANSFER', ${docDate}::date) as no`;
     const docNo = noRows[0].no;
 
     const [doc] = await tx`
@@ -2281,7 +2281,7 @@ export async function postSalesReturn(input: ReturnInput) {
     if (!fiscalYear) throw new Error(`No fiscal year covers ${docDate}`);
 
     const noRows = await tx`
-      select fn_next_document_no(${companyId}, 'SALES_RETURN', ${fiscalYear}::uuid) as no`;
+      select fn_next_document_no(${companyId}, 'SALES_RETURN', ${docDate}::date) as no`;
     const docNo = noRows[0].no;
 
     const netTotal = round4(
@@ -2454,7 +2454,7 @@ export async function postPurchaseReturn(input: ReturnInput) {
     if (!fiscalYear) throw new Error(`No fiscal year covers ${docDate}`);
 
     const noRows = await tx`
-      select fn_next_document_no(${companyId}, 'PURCHASE_RETURN', ${fiscalYear}::uuid) as no`;
+      select fn_next_document_no(${companyId}, 'PURCHASE_RETURN', ${docDate}::date) as no`;
     const docNo = noRows[0].no;
 
     const netTotal = round4(input.lines.reduce((s, l) => s + l.qty * l.unitPrice, 0));
@@ -2688,7 +2688,7 @@ async function postSettlement(
       input.locationId ?? (settledLocations.length === 1 ? settledLocations[0] : null);
 
     const noRows = await tx`
-      select fn_next_document_no(${companyId}, ${kind}, ${fiscalYear}::uuid) as no`;
+      select fn_next_document_no(${companyId}, ${kind}, ${docDate}::date) as no`;
     const docNo = noRows[0].no;
 
     const [doc] = await tx`
@@ -2808,8 +2808,34 @@ async function _postVoucher(
     const fiscalYear = fyRows[0]?.fy ?? null;
     if (!fiscalYear) throw new Error(`No fiscal year covers ${docDate}`);
 
+    // Which way the money went, decided once and recorded, rather than left
+    // to be re-derived from the sign of a journal line every time something
+    // asks. A cash voucher that debits cash is money in; one that credits it
+    // is money out. Only cash and bank vouchers carry it — a journal voucher
+    // or an opening balance is neither.
+    const direction =
+      docType === "CASH_VOUCHER" || docType === "BANK_VOUCHER"
+        ? await (async () => {
+            const cashRows = await tx`
+              select id from account
+               where company_id = ${companyId}
+                 and id in ${tx(lines.map((l) => l.accountId))}
+                 and ${docType === "CASH_VOUCHER"
+                        ? tx`is_cash_account`
+                        : tx`is_bank_account`}`;
+            const ids = new Set((cashRows as unknown as { id: string }[]).map((r) => r.id));
+            const moneySide = round4(
+              lines.filter((l) => ids.has(l.accountId)).reduce((s, l) => s + l.amount, 0)
+            );
+            // Debit to the till is money arriving. A voucher touching no cash
+            // account at all leaves it unset rather than guessing.
+            return moneySide > 0 ? "IN" : moneySide < 0 ? "OUT" : null;
+          })()
+        : null;
+
     const noRows = await tx`
-      select fn_next_document_no(${companyId}, ${docType}, ${fiscalYear}::uuid) as no`;
+      select fn_next_document_no(${companyId}, ${docType}, ${docDate}::date,
+                                 ${direction}) as no`;
     const docNo = noRows[0].no;
 
     // The document total is the debit side, which is what people expect a
@@ -2819,11 +2845,11 @@ async function _postVoucher(
     const [doc] = await tx`
       insert into document
         (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
-         location_id, currency, exchange_rate, status,
+         location_id, currency, exchange_rate, status, voucher_direction,
          net_total, tax_total, gross_total, memo, reference, posted_at)
       values
         (${companyId}, ${docType}, ${docNo}, ${fiscalYear}, ${docDate}::date, ${docDate}::date,
-         ${input.locationId ?? null}, 'MMK', 1, 'POSTED',
+         ${input.locationId ?? null}, 'MMK', 1, 'POSTED', ${direction},
          ${total}, 0, ${total}, ${input.memo ?? null}, ${input.reference ?? null}, now())
       returning id`;
 
@@ -2991,7 +3017,7 @@ async function _postConsignmentReceipt(tx: TransactionSql, input: ConsignmentRec
   }
 
   const noRows = await tx`
-    select fn_next_document_no(${companyId}, 'CONSIGNMENT_RECEIPT', ${fiscalYear}::uuid) as no`;
+    select fn_next_document_no(${companyId}, 'CONSIGNMENT_RECEIPT', ${docDate}::date) as no`;
   const docNo = noRows[0].no;
 
   // net_total/gross_total are 0 deliberately, not a $0 sale wearing a real

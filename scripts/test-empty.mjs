@@ -80,7 +80,11 @@ try {
     lines: [{ itemId: item.id, qty: 50, unitPrice: 2000 }],
   });
   check("receiving and billing posts on a cleared database", Boolean(pi.docNo), pi.docNo);
-  check("numbering restarted at 1", pi.docNo.endsWith("000001"), pi.docNo);
+  // Type, date, then a sequence that restarts daily (migration 0035). The
+  // date is asserted as well as the "001": a number that merely ends in 001
+  // would also pass on a scheme that had lost the date entirely.
+  check("numbering restarted at 1 for today",
+    pi.docNo === `DP${today.replace(/-/g, "")}001`, pi.docNo);
   check("stock arrived",
     n((await sql`select fn_qty_on_hand(${co.id}, ${item.id}, ${loc.id}) as q`)[0].q) === 50);
 

@@ -245,6 +245,72 @@ try {
       `${finalOrder} / ${finalMatch?.state} / paid`);
   }
 
+  // ---- the dashboard and the order list must agree ------------------------
+  // They count the same orders and used the same word for different things:
+  // the list calls an order Open only when nothing has arrived, the dashboard
+  // called every order with anything still to come "open". Two partly
+  // received orders therefore showed as "2 purchase orders open" beside a
+  // list showing none of them Open — which reads as a wrong number rather
+  // than a wrong word.
+  {
+    const { getActionItems } = await import("../lib/queries.ts");
+    const a = await getActionItems(co.id);
+
+    // Ground truth straight from the documents, labelled the way
+    // orderDisplayStatus labels it.
+    // Credited both ways, as the receipts themselves are linked: by the order
+    // line a receipt line names, and failing that by the order its document
+    // names. Computing it only the first way is exactly the mistake that put
+    // the dashboard and the order list out of step.
+    const rows = await sql`
+      with ord as (
+        select o.id, ol.item_id, sum(ol.base_qty) as ordered
+          from document o join document_line ol on ol.document_id = o.id
+         where o.company_id = ${co.id} and o.doc_type = ${"PURCHASE_ORDER"}
+           and o.status = ${"POSTED"}
+         group by o.id, ol.item_id
+      ),
+      got as (
+        select coalesce(ol.document_id, dd.source_document_id) as order_id,
+               dl.item_id, sum(dl.base_qty) as fulfilled
+          from document_line dl
+          join document dd on dd.id = dl.document_id
+          left join document_line ol on ol.id = dl.source_line_id
+         where dd.company_id = ${co.id} and dd.doc_type = ${"GOODS_RECEIPT"}
+           and dd.status = ${"POSTED"}
+           and coalesce(ol.document_id, dd.source_document_id) is not null
+         group by 1, dl.item_id
+      )
+      select ord.id,
+             sum(ord.ordered) as ordered,
+             sum(least(coalesce(got.fulfilled, 0), ord.ordered)) as done
+        from ord
+        left join got on got.order_id = ord.id and got.item_id = ord.item_id
+       group by ord.id`;
+
+    const awaiting = rows.filter((r) => n(r.ordered) - n(r.done) > 0.0001);
+    const listOpen = awaiting.filter((r) => n(r.done) <= 0.0001).length;
+    const listPartial = awaiting.filter((r) => n(r.done) > 0.0001).length;
+
+    check("the dashboard counts every order with goods still to come",
+      a.purchaseOrders.open === awaiting.length,
+      `dashboard ${a.purchaseOrders.open}, actually ${awaiting.length}`);
+    check("and splits them exactly as the list labels them",
+      a.purchaseOrders.notStarted === listOpen && a.purchaseOrders.partial === listPartial,
+      `dashboard ${a.purchaseOrders.notStarted}/${a.purchaseOrders.partial}, ` +
+      `list ${listOpen} Open / ${listPartial} Partially Fulfilled`);
+    check("the two halves account for the whole",
+      a.purchaseOrders.notStarted + a.purchaseOrders.partial === a.purchaseOrders.open,
+      `${a.purchaseOrders.notStarted} + ${a.purchaseOrders.partial} vs ${a.purchaseOrders.open}`);
+
+    // A fully received order must not be counted as awaiting anything, even
+    // though the same order is still unpaid and its invoice still open.
+    const fulfilled = rows.filter((r) => n(r.ordered) - n(r.done) <= 0.0001).length;
+    check("a fully received order is counted as awaiting nothing",
+      fulfilled > 0 && a.purchaseOrders.open === rows.length - fulfilled,
+      `${fulfilled} fulfilled of ${rows.length}`);
+  }
+
   // ---- the invariants still hold ------------------------------------------
   const [tb] = await sql`
     select coalesce(sum(base_amount), 0) as t from journal_line where company_id = ${co.id}`;

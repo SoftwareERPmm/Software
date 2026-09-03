@@ -67,20 +67,34 @@ records that a reversal exists, it does not erase anything.
 
 ## Numbering
 
-Per company, per document type, per fiscal year. Numbers are assigned at
-posting, never at draft, and are gapless — a reversed document keeps its
-number and the reversal gets its own.
+Type, date, sequence — `R20260901001`. Per company, per document type, per
+day. Numbers are assigned at posting, never at draft, and are gapless — a
+reversed document keeps its number and the reversal gets its own.
 
-The fiscal year is part of the number, because the count restarts with it
-while `document.doc_no` and `journal_entry.entry_no` must stay unique for the
-life of the company:
+The date is what keeps `document.doc_no` and `journal_entry.entry_no` unique
+for the life of the company while the count restarts, and it restarts daily:
 
-```
-FY 2026-27    PI-2627-000001    JE-2627-000001
-FY 2027-28    PI-2728-000001    JE-2728-000001
-```
+| | | | |
+| --- | --- | --- | --- |
+| `R` cash received | `P` cash payment | `CR` customer received | `CP` supplier payment |
+| `J` journal | `DS` direct sales | `SR` sales return | `DP` direct purchase |
+| `PR` purchase return | `ST` stock transfer | `STR` stock received | `SI` stock issued |
+| `SAJ` stock adjustment | `PO` purchase order | `SO` sales order | `CT` cash transfer |
+| `BR` bank received | `BP` bank payment | `OB` opening balance | `CNR` consignment receipt |
 
-A fiscal year that sits inside one calendar year carries the single year
-instead — `PI-26-000001`. Without the year segment the second year of trading
-reissues the first year's numbers and nothing posts at all; see migration
-0025.
+`SI` is Stock Issued — a delivery. A sales invoice is Direct Sales, `DS`.
+
+Cash and bank vouchers are one document type each carrying money in *or* out,
+so `document.voucher_direction` records which and the prefix follows it. It
+is set at posting from the sign of the money line (migration 0035).
+
+Two prefixes must never collide: a journal voucher is `J` and a journal entry
+is `JE`, because sharing a prefix would mean sharing a counter and issuing the
+same number twice.
+
+Documents numbered before migration 0035 keep the previous
+`PI-2627-000001` shape — posted documents are immutable and nothing rewrites
+them — so a database that was trading before the change carries both. The two
+shapes cannot collide, and the earlier fiscal-year segment existed for the
+same reason the date does now: without it the second year of trading reissued
+the first year's numbers and nothing posted at all (migration 0025).

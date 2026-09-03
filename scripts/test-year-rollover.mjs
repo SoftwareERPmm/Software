@@ -127,11 +127,20 @@ try {
   check("the new year can post at all", !!grB.id && !!piB.id);
   check("its numbers do not collide with last year's",
     grB.docNo !== grA.docNo && piB.docNo !== piA.docNo);
-  check("each number says which year it belongs to",
-    /^GR-\d{2,4}-\d+$/.test(grA.docNo) && /^GR-\d{2,4}-\d+$/.test(grB.docNo),
+  // Migration 0035 replaced the fiscal-year segment with the document's own
+  // date, so the year is still in the number — more of it than before. The
+  // guarantee this suite exists for is unchanged: crossing a year boundary
+  // must not reissue last year's numbers.
+  check("each number carries the date it belongs to",
+    /^STR\d{8}\d{3,}$/.test(grA.docNo) && /^STR\d{8}\d{3,}$/.test(grB.docNo),
     `${grA.docNo} / ${grB.docNo}`);
-  check("the count restarts in the new year, as documented",
-    grA.docNo.split("-").pop() === grB.docNo.split("-").pop(), "both end 000001");
+  check("and the year in it is the year the document was posted in",
+    grA.docNo.slice(3, 7) === String(lastMonth.getFullYear()) &&
+    grB.docNo.slice(3, 7) === String(firstMonth.getFullYear()),
+    `${grA.docNo.slice(3, 7)} then ${grB.docNo.slice(3, 7)}`);
+  check("the count restarts, as it now does every day",
+    grA.docNo.slice(-3) === "001" && grB.docNo.slice(-3) === "001",
+    `${grA.docNo.slice(-3)} / ${grB.docNo.slice(-3)}`);
 
   const sale = await postSaleWithDelivery({ companyId: co.id, partnerId: cust.id,
     locationId: loc.id, docDate: iso(firstMonth), dueDate: null,
@@ -142,8 +151,8 @@ try {
   check("journal entry numbers are unique across the boundary",
     new Set(entries.map((e) => e.entry_no)).size === entries.length,
     `${entries.length} entries`);
-  check("and they carry the year as well",
-    entries.every((e) => /^JE-\d{2,4}-\d+$/.test(e.entry_no)),
+  check("and they carry their date as well",
+    entries.every((e) => /^JE\d{8}\d{3,}$/.test(e.entry_no)),
     entries[0]?.entry_no);
 
   const [tb] = await sql`select coalesce(sum(balance),0) as v from v_trial_balance`;
