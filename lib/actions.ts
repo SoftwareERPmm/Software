@@ -1923,10 +1923,9 @@ export async function getFormData() {
     // else posts first.
     //
     // Asked of the database rather than assembled here: the number carries
-    // the fiscal year, and a second hand-written copy of that format is how
-    // the two drift apart.
-    sql`select fn_peek_document_no(${co}, 'SALES_INVOICE',
-                 fn_fiscal_year_for(${co}, current_date)) as no`,
+    // the date and a daily sequence, and a second hand-written copy of that
+    // format is how the two drift apart.
+    sql`select fn_peek_document_no(${co}, 'SALES_INVOICE', current_date) as no`,
 
     // Per item, per location — what the company-wide on_hand above can't
     // show: whether the specific warehouse making this sale actually has it.
