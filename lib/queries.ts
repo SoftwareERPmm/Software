@@ -50,38 +50,90 @@ const GRIR_AGE_DAYS = 7;
 
 export async function getActionItems(companyId: string) {
   const [so] = await sql`
+    with ord as (
+      select o.id, o.due_date, ol.item_id, sum(ol.base_qty) as ordered
+        from document o
+        join document_line ol on ol.document_id = o.id
+       where o.company_id = ${companyId} and o.doc_type = 'SALES_ORDER' and o.status = 'POSTED'
+       group by o.id, o.due_date, ol.item_id
+    ),
+    -- Each fulfilment line credited to an order: by the order line it names,
+    -- and failing that by the order the document itself names. Matching only
+    -- on source_line_id missed every receipt posted without line-level
+    -- linkage, so orders that were fully received still counted as awaiting
+    -- goods — the same fallback getOrderProgress documents, for the same
+    -- reason.
+    got as (
+      select coalesce(ol.document_id, dd.source_document_id) as order_id,
+             dl.item_id, sum(dl.base_qty) as fulfilled
+        from document_line dl
+        join document dd on dd.id = dl.document_id
+        left join document_line ol on ol.id = dl.source_line_id
+       where dd.company_id = ${companyId}
+         and dd.doc_type = 'DELIVERY' and dd.status = 'POSTED'
+         and coalesce(ol.document_id, dd.source_document_id) is not null
+       group by 1, dl.item_id
+    ),
+    -- Per item, then summed: capping each item at what was ordered stops an
+    -- over-delivery of one product hiding a shortfall in another.
+    per_order as (
+      select ord.id, ord.due_date,
+             sum(least(coalesce(got.fulfilled, 0), ord.ordered)) as done,
+             sum(greatest(ord.ordered - coalesce(got.fulfilled, 0), 0)) as remaining
+        from ord
+        left join got on got.order_id = ord.id and got.item_id = ord.item_id
+       group by ord.id, ord.due_date
+    )
     select
-      count(distinct o.id)::int as open,
-      count(distinct o.id) filter (
-        where o.due_date is not null and o.due_date < current_date
-      )::int as overdue
-      from document o
-      join document_line ol on ol.document_id = o.id
-      left join (
-        select dl.source_line_id, sum(dl.base_qty) as delivered_qty
-          from document_line dl join document dd on dd.id = dl.document_id
-         where dd.doc_type = 'DELIVERY' and dd.status = 'POSTED'
-         group by dl.source_line_id
-      ) d on d.source_line_id = ol.id
-     where o.company_id = ${companyId} and o.doc_type = 'SALES_ORDER' and o.status = 'POSTED'
-       and (ol.base_qty - coalesce(d.delivered_qty, 0)) > 0.0001`;
+      count(*)::int as open,
+      count(*) filter (where done < 0.0001)::int as not_started,
+      count(*) filter (where done >= 0.0001)::int as partial,
+      count(*) filter (where due_date is not null and due_date < current_date)::int as overdue
+      from per_order
+     where remaining > 0.0001`;
 
   const [po] = await sql`
+    with ord as (
+      select o.id, o.due_date, ol.item_id, sum(ol.base_qty) as ordered
+        from document o
+        join document_line ol on ol.document_id = o.id
+       where o.company_id = ${companyId} and o.doc_type = 'PURCHASE_ORDER' and o.status = 'POSTED'
+       group by o.id, o.due_date, ol.item_id
+    ),
+    -- Each fulfilment line credited to an order: by the order line it names,
+    -- and failing that by the order the document itself names. Matching only
+    -- on source_line_id missed every receipt posted without line-level
+    -- linkage, so orders that were fully received still counted as awaiting
+    -- goods — the same fallback getOrderProgress documents, for the same
+    -- reason.
+    got as (
+      select coalesce(ol.document_id, dd.source_document_id) as order_id,
+             dl.item_id, sum(dl.base_qty) as fulfilled
+        from document_line dl
+        join document dd on dd.id = dl.document_id
+        left join document_line ol on ol.id = dl.source_line_id
+       where dd.company_id = ${companyId}
+         and dd.doc_type = 'GOODS_RECEIPT' and dd.status = 'POSTED'
+         and coalesce(ol.document_id, dd.source_document_id) is not null
+       group by 1, dl.item_id
+    ),
+    -- Per item, then summed: capping each item at what was ordered stops an
+    -- over-delivery of one product hiding a shortfall in another.
+    per_order as (
+      select ord.id, ord.due_date,
+             sum(least(coalesce(got.fulfilled, 0), ord.ordered)) as done,
+             sum(greatest(ord.ordered - coalesce(got.fulfilled, 0), 0)) as remaining
+        from ord
+        left join got on got.order_id = ord.id and got.item_id = ord.item_id
+       group by ord.id, ord.due_date
+    )
     select
-      count(distinct o.id)::int as open,
-      count(distinct o.id) filter (
-        where o.due_date is not null and o.due_date < current_date
-      )::int as overdue
-      from document o
-      join document_line ol on ol.document_id = o.id
-      left join (
-        select dl.source_line_id, sum(dl.base_qty) as received_qty
-          from document_line dl join document dd on dd.id = dl.document_id
-         where dd.doc_type = 'GOODS_RECEIPT' and dd.status = 'POSTED'
-         group by dl.source_line_id
-      ) r on r.source_line_id = ol.id
-     where o.company_id = ${companyId} and o.doc_type = 'PURCHASE_ORDER' and o.status = 'POSTED'
-       and (ol.base_qty - coalesce(r.received_qty, 0)) > 0.0001`;
+      count(*)::int as open,
+      count(*) filter (where done < 0.0001)::int as not_started,
+      count(*) filter (where done >= 0.0001)::int as partial,
+      count(*) filter (where due_date is not null and due_date < current_date)::int as overdue
+      from per_order
+     where remaining > 0.0001`;
 
   const [pd] = await sql`
     select count(*)::int as n
@@ -136,8 +188,17 @@ export async function getActionItems(companyId: string) {
   };
 
   return {
-    salesOrders: { open: Number(so.open), overdue: Number(so.overdue) },
-    purchaseOrders: { open: Number(po.open), overdue: Number(po.overdue) },
+    // open counts every order with something still to come; notStarted and
+    // partial split that same set the way the order lists label it, so the
+    // dashboard and the list can never appear to disagree.
+    salesOrders: {
+      open: Number(so.open), overdue: Number(so.overdue),
+      notStarted: Number(so.not_started), partial: Number(so.partial),
+    },
+    purchaseOrders: {
+      open: Number(po.open), overdue: Number(po.overdue),
+      notStarted: Number(po.not_started), partial: Number(po.partial),
+    },
     pendingDeliveryInvoices: pd.n as number,
     openDeliveries: openDeliv.n as number,
     customerInvoicesOverdue: { n: Number(custOverdue.n), total: Number(custOverdue.total) },

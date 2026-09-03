@@ -76,10 +76,31 @@ export default async function Dashboard() {
 
   // Work in progress is the neutral counterpart — normal open business, no
   // threshold, nothing implying anyone forgot anything.
+  // "Open" is not used here, deliberately. On the order lists it is a status
+  // with a narrower meaning — nothing fulfilled at all — while this panel
+  // counts every order with goods still to come, partly received ones
+  // included. Saying "2 purchase orders open" next to a list showing none of
+  // them as Open is the same word meaning two things, and it reads as a bug
+  // in the figure rather than in the wording. These say what they count.
+  const orderSplit = (o: { notStarted: number; partial: number }) =>
+    o.notStarted > 0 && o.partial > 0
+      ? `${o.notStarted} not started · ${o.partial} partly done`
+      : o.partial > 0 ? "partly done" : "none started yet";
+
   const wip = [
-    { n: actionItems.salesOrders.open, label: "sales orders open", href: "/documents?type=SALES_ORDER" },
+    {
+      n: actionItems.salesOrders.open,
+      label: "sales orders awaiting delivery",
+      detail: orderSplit(actionItems.salesOrders),
+      href: "/documents?type=SALES_ORDER",
+    },
     { n: actionItems.openDeliveries, label: "deliveries pending invoice", href: "/documents?type=DELIVERY" },
-    { n: actionItems.purchaseOrders.open, label: "purchase orders open", href: "/documents?type=PURCHASE_ORDER" },
+    {
+      n: actionItems.purchaseOrders.open,
+      label: "purchase orders awaiting goods",
+      detail: orderSplit(actionItems.purchaseOrders),
+      href: "/documents?type=PURCHASE_ORDER",
+    },
     { n: actionItems.goodsReceipts.open, label: "goods receipts pending invoice", href: "/documents?type=GOODS_RECEIPT&open=grir" },
     { n: Number(kpis.ar.n), label: "unpaid customer invoices", href: "/receivables" },
     { n: Number(kpis.ap.n), label: "unpaid supplier bills", href: "/payables" },
@@ -173,7 +194,12 @@ export default async function Dashboard() {
               {wip.map((w) => (
                 <Link key={w.href + w.label} href={w.href} className="wip-item">
                   <span className="pill">{w.n}</span>
-                  <span>{w.label}</span>
+                  <span>
+                    {w.label}
+                    {w.n > 0 && "detail" in w && w.detail && (
+                      <span className="subline" style={{ color: "var(--muted)" }}>{w.detail}</span>
+                    )}
+                  </span>
                 </Link>
               ))}
             </div>
