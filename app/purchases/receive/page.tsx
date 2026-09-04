@@ -16,7 +16,8 @@ export default async function Receive({
 
   const orders = new Map<string, {
     orderId: string; orderNo: string; partnerId: string; partnerName: string; locationId: string;
-    lines: { lineId: string; itemId: string; itemCode: string; itemName: string; remainingQty: number; expectedPrice: number }[];
+    lines: { lineId: string; itemId: string; itemCode: string; itemName: string;
+             uomCode: string; remainingQty: number; expectedPrice: number }[];
   }>();
   for (const r of openLines as any[]) {
     if (!orders.has(r.order_id)) {
@@ -27,7 +28,7 @@ export default async function Receive({
     }
     orders.get(r.order_id)!.lines.push({
       lineId: r.line_id, itemId: r.item_id, itemCode: r.item_code, itemName: r.item_name,
-      remainingQty: Number(r.remaining_qty), expectedPrice: Number(r.expected_price ?? 0),
+      uomCode: r.uom_code, remainingQty: Number(r.remaining_qty), expectedPrice: Number(r.expected_price ?? 0),
     });
   }
 

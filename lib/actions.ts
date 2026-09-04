@@ -15,7 +15,7 @@ import {
   postSupplierPayment, postCustomerReceipt,
   postCashVoucher, postBankVoucher, postJournalVoucher,
   postCashTransfer, postAccountOpening, postStockAdjustment, postStockTransfer,
-  importItems, importVouchers, voidDocument,
+  importItems, importVouchers, voidDocument, reconcileNegativeStock,
   postSalesReturn, postPurchaseReturn, postConsignmentReceipt,
   type InvoiceLine, type OrderLine, type FulfillmentLine, type Allocation, type VoucherLine,
   type AdjustmentLine, type ReturnLine, type TransferLine, type ConsignmentReceiptLine,
@@ -932,6 +932,7 @@ export type NewItemInput = {
 export type PickerItem = {
   id: string; code: string; name: string; is_stocked: boolean;
   item_group_id: string; on_hand: string; sale_price: string; next_cost: string;
+  uom_code: string;
 };
 
 /**
@@ -951,6 +952,10 @@ export async function createItemInline(
     if (!name) return { ok: false, error: "Name is required" };
     if (!input.groupId) return { ok: false, error: "Choose a category" };
     if (!input.uomId) return { ok: false, error: "Choose a unit" };
+    // Read here rather than returned from the insert, because the picker
+    // quotes quantities in it and only has the code to show.
+    const [uomRow] = await sql`select code from uom where id = ${input.uomId}`;
+    const uomCode: string | null = uomRow?.code ?? null;
 
     const [grp] = await sql`
       select code from item_group where id = ${input.groupId} and company_id = ${co}`;
@@ -983,7 +988,7 @@ export async function createItemInline(
         values
           (${co}, ${input.groupId}, ${serial}, ${fullCode}, ${name},
            ${input.nameMy?.trim() || null}, ${input.uomId}, ${input.isStocked})
-        returning id, code, name, is_stocked, item_group_id`;
+        returning id, code, name, is_stocked, item_group_id, base_uom_id`;
 
       if (input.price && input.price > 0) {
         const [level] = await tx`
@@ -1019,6 +1024,10 @@ export async function createItemInline(
         on_hand: "0",
         sale_price: String(input.price ?? 0),
         next_cost: "0",
+        // The unit it was just created in — the picker needs it to quote a
+        // quantity back, and this item is not in the list that was loaded
+        // with the page.
+        uom_code: uomCode ?? "",
       },
     };
   } catch (e) {
@@ -1044,6 +1053,7 @@ function parseLines(fd: FormData): InvoiceLine[] {
       itemId: String(l.itemId ?? ""),
       qty: Number(l.qty),
       unitPrice: Number(l.unitPrice),
+      discountPct: Number(l.discountPct) || 0,
       focReasonId: l.focReasonId || null,
       sourceLineId: l.sourceLineId || null,
     }))
@@ -1099,6 +1109,10 @@ export async function createSalesInvoice(_prev: unknown, fd: FormData): Promise<
       cashIn,
       cashAccountId: str(fd, "cash_account_id") || null,
       deliveryFee,
+      // Present only when the confirmation dialog was answered. The engine
+      // refuses to issue stock it has no record of without it, so a form
+      // that never asked cannot post negative stock by omission.
+      allowNegativeStock: fd.get("allow_negative_stock") !== null,
       lines,
     };
 
@@ -1319,6 +1333,11 @@ function parseFulfillmentLines(fd: FormData): FulfillmentLine[] {
       itemId: String(l.itemId ?? ""),
       qty: Number(l.qty),
       unitCost: l.unitCost ? Number(l.unitCost) : undefined,
+      // The engine has always accepted this; the parser dropped it, so a
+      // delivery raised anywhere but the sales voucher could not mark units
+      // free and their cost went to cost of sales instead of the expense the
+      // reason names.
+      focReasonId: l.focReasonId || null,
       sourceLineId: l.sourceLineId || null,
     }))
     .filter((l) => l.itemId && l.qty > 0);
@@ -1422,6 +1441,10 @@ export async function createDelivery(_prev: unknown, fd: FormData): Promise<Acti
       sourceDocumentId: str(fd, "source_document_id") || null,
       // Recorded here, billed by the invoice that follows this delivery.
       deliveryFee: num(fd, "delivery_fee"),
+      // Present only when the confirmation dialog was answered — the same
+      // rule the sales voucher follows, so the two routes to moving stock
+      // cannot disagree about whether someone had to be asked.
+      allowNegativeStock: fd.get("allow_negative_stock") !== null,
       lines,
     });
 
@@ -1855,7 +1878,7 @@ export async function getFormData() {
   const co = await companyId();
 
   const [
-    customers, suppliers, items, locations, groups, uoms,
+    customers, suppliers, items, locations, volumeDiscounts, groups, uoms,
     salesmen, promotions, cashAccounts, focReasons, itemPrices, priceLevels,
     openInvoices, nextNo, stockByLocation,
   ] = await Promise.all([
@@ -1864,6 +1887,10 @@ export async function getFormData() {
     sql`select id, code, name, payment_terms_days from business_partner
          where company_id = ${co} and is_supplier and is_active order by code`,
     sql`select i.id, i.code, i.name, i.is_stocked, i.item_group_id,
+                -- The unit every quantity of this item is counted in, so a
+                -- figure quoted back to the user can carry it rather than
+                -- being a bare number.
+                u.code as uom_code,
                 coalesce(s.qty, 0) as on_hand,
                 coalesce((
                   select unit_cost from v_stock_lot_open
@@ -1872,12 +1899,22 @@ export async function getFormData() {
                 ), 0) as next_cost,
                 0 as sale_price
            from item i
+           join uom u on u.id = i.base_uom_id
            left join (select item_id, sum(qty_on_hand) as qty
                         from v_stock_on_hand group by item_id) s on s.item_id = i.id
           where i.company_id = ${co} and i.is_active
           order by i.code`,
     sql`select id, code, name from location
          where company_id = ${co} and is_stock_location and is_active order by code`,
+    // Volume bands in force today, so the voucher previews the same discounts
+    // the engine will apply.
+    sql`select id, code, name, basis, item_id, item_group_id,
+               min_value, max_value, discount_pct
+          from volume_discount
+         where company_id = ${co} and is_active
+           and valid_from <= current_date
+           and (valid_to is null or valid_to >= current_date)
+         order by basis, min_value`,
     sql`select g.id, g.code, g.name, g.name_my, g.parent_id, p.name as parent_name
            from item_group g
            left join item_group p on p.id = g.parent_id
@@ -1933,7 +1970,7 @@ export async function getFormData() {
   ]);
 
   return {
-    customers, suppliers, items, locations, groups, uoms,
+    customers, suppliers, items, locations, volumeDiscounts, groups, uoms,
     salesmen, promotions, cashAccounts, focReasons, itemPrices, priceLevels, openInvoices,
     // Null until the first invoice of the year exists, since the format
     // depends on a series that has not been created yet.
@@ -2297,6 +2334,8 @@ export async function createStockTransfer(_prev: unknown, fd: FormData): Promise
       receivedAt: dateTime(fd, "doc_date", "received_time"),
       memo: str(fd, "memo") || null,
       reference: str(fd, "reference") || null,
+      // Same rule as a delivery: present only when the dialog was answered.
+      allowNegativeStock: fd.get("allow_negative_stock") !== null,
       lines,
     });
 
@@ -2822,6 +2861,127 @@ export async function createConsignmentSale(_prev: unknown, fd: FormData): Promi
   revalidatePath("/inventory/consignment");
   revalidatePath("/purchases/invoices");
   redirectWithToast(`/documents/${docId}`, toastMsg);
+}
+
+// -------------------------------------------------------- volume discount --
+
+/**
+ * A discount band: a quantity range, or an invoice-total range, and the
+ * percentage it earns.
+ *
+ * Bands are not validated against each other for overlap. Two that both cover
+ * 100 units is a legitimate configuration — a general rule and an exception
+ * for one product — and the pricing resolves it by taking the narrowest
+ * scope, then the larger discount. Refusing overlaps here would forbid the
+ * ordinary case in order to prevent a confusion that does not arise.
+ */
+export async function createVolumeDiscount(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  const code = str(fd, "code").toUpperCase();
+  try {
+    const co = await companyId();
+    const basis = str(fd, "basis") === "INVOICE_TOTAL" ? "INVOICE_TOTAL" : "QUANTITY";
+    const name = str(fd, "name");
+    const minValue = num(fd, "min_value");
+    const maxRaw = str(fd, "max_value");
+    const maxValue = maxRaw === "" ? null : Number(maxRaw);
+    const pct = num(fd, "discount_pct");
+
+    if (!code) return { error: "Code is required" };
+    if (!name) return { error: "Name is required" };
+    if (pct <= 0 || pct > 100) return { error: "Discount must be between 0 and 100 percent" };
+    if (maxValue !== null && maxValue < minValue) {
+      return { error: "The upper bound cannot be below the lower one" };
+    }
+
+    // An invoice-total band applies to the whole bill, so scoping it to an
+    // item would describe a rule that could never be evaluated. The database
+    // refuses it too; this says so in words first.
+    const itemId = basis === "QUANTITY" ? str(fd, "item_id") || null : null;
+    const groupId = basis === "QUANTITY" ? str(fd, "item_group_id") || null : null;
+    if (itemId && groupId) {
+      return { error: "Scope a band to an item or a category, not both" };
+    }
+
+    await sql`
+      insert into volume_discount
+        (company_id, code, name, basis, item_id, item_group_id,
+         min_value, max_value, discount_pct, valid_from, valid_to)
+      values (${co}, ${code}, ${name}, ${basis}, ${itemId}, ${groupId},
+              ${minValue}, ${maxValue}, ${pct},
+              ${str(fd, "valid_from") || new Date().toISOString().slice(0, 10)},
+              ${str(fd, "valid_to") || null})`;
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/sales/discounts");
+  redirectWithToast("/sales/discounts", "Discount band added");
+}
+
+export async function deactivateVolumeDiscount(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose a band" };
+    // Retired rather than deleted: invoices point at the band that priced
+    // them, and an invoice unable to say which rule gave its discount is the
+    // thing this feature exists to prevent.
+    await sql`update volume_discount set is_active = false where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/sales/discounts");
+  redirectWithToast("/sales/discounts", "Band retired");
+}
+
+export async function activateVolumeDiscount(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose a band" };
+    await sql`update volume_discount set is_active = true where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/sales/discounts");
+  redirectWithToast("/sales/discounts", "Band reinstated");
+}
+
+// ------------------------------------------------ negative stock --
+
+/**
+ * Brings recorded stock back up to what is physically on the shelf.
+ *
+ * Takes only which shortfalls to clear — no price. The figure was decided
+ * when the goods left and is stored with the shortfall; asking for it again
+ * here would let the correction and the cost of sale disagree.
+ */
+export async function reconcileNegativeStockAction(
+  _prev: unknown, fd: FormData
+): Promise<ActionResult> {
+  let msg: string;
+  try {
+    const co = await companyId();
+    const ids = fd.getAll("negative_stock_id").map(String).filter(Boolean);
+    if (ids.length === 0) return { error: "Choose at least one line to reconcile" };
+
+    const done = await reconcileNegativeStock({
+      companyId: co,
+      negativeStockIds: ids,
+      docDate: str(fd, "doc_date") || new Date().toISOString().slice(0, 10),
+      memo: str(fd, "memo") || null,
+    });
+    msg = `${done.units} unit${done.units === 1 ? "" : "s"} reconciled — ${done.documents.join(", ")}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/inventory/negative-stock");
+  revalidatePath("/items/stock");
+  revalidatePath("/documents");
+  financeRevalidate();
+  redirectWithToast("/inventory/negative-stock", msg);
 }
 
 // ------------------------------------------------------------------ void --

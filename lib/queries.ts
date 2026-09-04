@@ -823,12 +823,14 @@ export async function getOpenSalesOrders(companyId: string) {
     select o.id as order_id, o.doc_no as order_no, o.partner_id, p.name as partner_name,
            o.location_id,
            ol.id as line_id, ol.item_id, i.code as item_code, i.name as item_name,
+           u.code as uom_code,
            ol.base_qty as ordered_qty,
            coalesce(d.delivered_qty, 0) as delivered_qty,
            ol.base_qty - coalesce(d.delivered_qty, 0) as remaining_qty
       from document o
       join document_line ol on ol.document_id = o.id
       join item i on i.id = ol.item_id
+      join uom u on u.id = i.base_uom_id
       join business_partner p on p.id = o.partner_id
       left join (
         select dl.source_line_id, sum(dl.base_qty) as delivered_qty
@@ -854,6 +856,7 @@ export async function getOpenPurchaseOrders(companyId: string) {
       from document o
       join document_line ol on ol.document_id = o.id
       join item i on i.id = ol.item_id
+      join uom u on u.id = i.base_uom_id
       join business_partner p on p.id = o.partner_id
       left join (
         select dl.source_line_id, sum(dl.base_qty) as received_qty
@@ -1684,6 +1687,21 @@ export async function getDocumentHistory(companyId: string, limit = 200) {
      where h.company_id = ${companyId}
      order by h.acted_at desc
      limit ${limit}`;
+}
+
+/**
+ * Negative Stock — Pending Reconciliation.
+ *
+ * Stock that went out before anything recorded it arriving, still awaiting a
+ * receipt or an adjustment. Each row carries the price it was charged out at
+ * and the document that price came from, so the reconciliation screen states
+ * both rather than asking someone to supply a figure.
+ */
+export async function getNegativeStock(companyId: string) {
+  return sql`
+    select * from v_negative_stock
+     where company_id = ${companyId}
+     order by created_at`;
 }
 
 /** Past imports, newest first, with what each one actually created. */

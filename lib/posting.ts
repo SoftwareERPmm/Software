@@ -1,6 +1,7 @@
 import type { TransactionSql } from "postgres";
 import { sql } from "./db";
 import { planVoidIn, type VoidBlocker } from "./void";
+import { priceLines, type VolumeBand, type LineDiscounts } from "./discount";
 
 // The posting engine.
 //
@@ -15,7 +16,15 @@ import { planVoidIn, type VoidBlocker } from "./void";
 export type InvoiceLine = {
   itemId: string;
   qty: number;
+  /**
+   * The list price. Discounts are NOT netted into it by the caller — the
+   * engine applies them, so the invoice can record which part of a reduction
+   * was typed and which was earned. A browser that nets them first leaves the
+   * server unable to tell the two apart, and unable to check either.
+   */
   unitPrice: number;
+  /** The discount typed on this line, in percent. */
+  discountPct?: number;
   focReasonId?: string | null;
 
   /** Purchase side: which goods-receipt line this bills. Optional — when it
@@ -45,6 +54,10 @@ export type InvoiceInput = {
 export type SalesInvoiceInput = InvoiceInput & {
   salesmanId?: string | null;
   paymentType?: "CASH" | "CREDIT";
+
+  /** Someone confirmed the goods physically exist though the ERP records
+   *  none. Reaches the delivery this voucher posts alongside the invoice. */
+  allowNegativeStock?: boolean;
 
   /** Goods leave later. When true, this invoice posts revenue only — no
    *  delivery is created, and stock doesn't move until one is. */
@@ -95,6 +108,12 @@ export type FulfillmentInput = {
   partnerId: string;
   locationId: string;
   docDate: string;
+  /**
+   * Someone confirmed the goods physically exist though the ERP records none.
+   * Without it an issue exceeding recorded stock is refused, which is the
+   * behaviour every caller gets by default.
+   */
+  allowNegativeStock?: boolean;
   memo?: string | null;
   reference?: string | null;
   sourceDocumentId?: string | null;
@@ -467,7 +486,22 @@ export function grirMatcher(lines: ReadonlyArray<MatchableLine>) {
 // is always qty_received less the sum of what has been drawn from it.
 
 type FifoDraw = { lotId: string; qty: number; unitCost: number };
-type FifoPlan = { totalCost: number; unitCost: number; draws: FifoDraw[] };
+type FifoPlan = {
+  totalCost: number; unitCost: number; draws: FifoDraw[];
+  /**
+   * Quantity no layer covered. Zero unless the caller allowed a shortfall —
+   * without permission this function still refuses, exactly as before, so no
+   * existing path can drift negative by accident.
+   */
+  uncoveredQty: number;
+  /** What the uncovered quantity was charged out at. */
+  provisionalUnitCost: number;
+  /** The document that price came from, so the screen can say where it got
+   *  it rather than presenting a figure from nowhere. */
+  priceSourceNo: string | null;
+  /** PURCHASE_INVOICE, GOODS_RECEIPT, or NONE when never bought. */
+  priceSource: string;
+};
 
 /**
  * Reads the open lots oldest-first and decides what this issue draws from
@@ -478,7 +512,17 @@ type FifoPlan = { totalCost: number; unitCost: number; draws: FifoDraw[] };
  * against the same remaining quantity.
  */
 async function planFifoConsumption(
-  tx: TransactionSql, companyId: string, itemId: string, locationId: string, qty: number
+  tx: TransactionSql, companyId: string, itemId: string, locationId: string, qty: number,
+  /**
+   * Allow issuing more than the layers cover.
+   *
+   * Off by default and passed only where someone has confirmed the goods
+   * physically exist. The refusal is the safe behaviour and stays the
+   * default: a caller that forgets this argument cannot create negative
+   * stock, which is the property worth keeping when the guard is relaxed
+   * anywhere at all.
+   */
+  allowNegative = false
 ): Promise<FifoPlan> {
   // Take the lock first, on its own. Postgres refuses FOR UPDATE on a query
   // that groups, so the aggregate below cannot carry it — and without a lock
@@ -515,12 +559,186 @@ async function planFifoConsumption(
     need = round4(need - take);
   }
 
+  let uncoveredQty = 0;
+  let provisionalUnitCost = 0;
+  let priceSourceNo: string | null = null;
+  let priceSource = "NONE";
+
   if (need > 0.0001) {
-    throw new Error("Not enough stock in any lot at this location to cover the quantity requested");
+    if (!allowNegative) {
+      throw new Error("Not enough stock in any lot at this location to cover the quantity requested");
+    }
+    // Charged out at what this item last cost, so the sale carries a
+    // believable margin rather than a free one. The figure is provisional and
+    // is trued up against the receipt that eventually covers it — the
+    // difference goes to variance, the same treatment a purchase price
+    // difference already gets.
+    uncoveredQty = need;
+    const priced = await lastKnownCost(tx, companyId, itemId, locationId);
+    provisionalUnitCost = priced.unitCost;
+    priceSourceNo = priced.sourceNo;
+    priceSource = priced.source;
+    totalCost += uncoveredQty * provisionalUnitCost;
+    need = 0;
   }
 
   totalCost = round4(totalCost);
-  return { totalCost, unitCost: qty > 0 ? round4(totalCost / qty) : 0, draws };
+  return {
+    totalCost,
+    unitCost: qty > 0 ? round4(totalCost / qty) : 0,
+    draws,
+    uncoveredQty: round4(uncoveredQty),
+    provisionalUnitCost: round4(provisionalUnitCost),
+    priceSourceNo,
+    priceSource,
+  };
+}
+
+export type StockPrice = { unitCost: number; sourceNo: string | null; source: string };
+
+/**
+ * What a unit of this item is worth, for goods leaving before any receipt
+ * recorded them arriving.
+ *
+ * The supplier's purchase invoice first. That is the price actually agreed
+ * and billed — the stock price, in the sense the business uses the term —
+ * where a goods receipt's figure is what someone entered when the goods
+ * turned up, before the bill confirmed it. Freight, customs and other landed
+ * costs are deliberately not in it: this system does not capitalise them into
+ * inventory, so including them here would value these units differently from
+ * every other unit on the shelf.
+ *
+ * Falling back to the last cost layer when the item has been received but
+ * never invoiced, and to zero only when it has never been bought at all — at
+ * which point there is genuinely nothing to go on, and a zero that is visibly
+ * zero beats a number invented to look plausible.
+ */
+async function lastKnownCost(
+  tx: TransactionSql, companyId: string, itemId: string, locationId: string
+): Promise<StockPrice> {
+  const [billed] = await tx`
+    select dl.unit_price, d.doc_no from document_line dl
+      join document d on d.id = dl.document_id
+     where d.company_id = ${companyId} and dl.item_id = ${itemId}
+       and d.doc_type = 'PURCHASE_INVOICE' and d.status = 'POSTED'
+       and dl.unit_price > 0
+     order by d.doc_date desc, d.created_at desc limit 1`;
+  if (billed) {
+    return { unitCost: Number(billed.unit_price), sourceNo: billed.doc_no, source: "PURCHASE_INVOICE" };
+  }
+
+  const [here] = await tx`
+    select sl.unit_cost, d.doc_no
+      from stock_lot sl
+      left join stock_movement sm on sm.id = sl.stock_movement_id
+      left join document d on d.id = sm.document_id
+     where sl.company_id = ${companyId} and sl.item_id = ${itemId}
+       and sl.location_id = ${locationId}
+     order by sl.received_date desc, sl.created_at desc limit 1`;
+  if (here) {
+    return { unitCost: Number(here.unit_cost), sourceNo: here.doc_no ?? null, source: "GOODS_RECEIPT" };
+  }
+
+  const [anywhere] = await tx`
+    select sl.unit_cost, d.doc_no
+      from stock_lot sl
+      left join stock_movement sm on sm.id = sl.stock_movement_id
+      left join document d on d.id = sm.document_id
+     where sl.company_id = ${companyId} and sl.item_id = ${itemId}
+     order by sl.received_date desc, sl.created_at desc limit 1`;
+  if (anywhere) {
+    return { unitCost: Number(anywhere.unit_cost), sourceNo: anywhere.doc_no ?? null, source: "GOODS_RECEIPT" };
+  }
+
+  return { unitCost: 0, sourceNo: null, source: "NONE" };
+}
+
+/**
+ * Records what a plan could not cover, so it can be reconciled later.
+ *
+ * Written only when a shortfall actually happened, so the table is a worklist
+ * of real cases rather than a log of every issue.
+ */
+async function recordNegativeStock(
+  tx: TransactionSql, companyId: string, documentId: string,
+  itemId: string, locationId: string, plan: FifoPlan
+) {
+  if (plan.uncoveredQty <= 0.0001) return;
+  await tx`
+    insert into negative_stock
+      (company_id, item_id, location_id, document_id, qty, provisional_unit_cost,
+       price_source, price_source_no)
+    values (${companyId}, ${itemId}, ${locationId}, ${documentId},
+            ${plan.uncoveredQty}, ${plan.provisionalUnitCost},
+            ${plan.priceSource}, ${plan.priceSourceNo})`;
+}
+
+/**
+ * Covers outstanding shortfalls with goods that have just arrived, and
+ * returns the variance between what they were charged out at and what they
+ * actually cost.
+ *
+ * Called before the receipt's own lot is created, and it reduces the quantity
+ * that becomes a lot: goods that were already sold never sat on the shelf, so
+ * making a layer for them and immediately consuming it would be a fiction
+ * with a date on it.
+ *
+ * Oldest shortfall first, for the same reason FIFO draws oldest-first — the
+ * earliest sale is the one these goods were really for.
+ */
+async function settleNegativeStock(
+  tx: TransactionSql, companyId: string, documentId: string,
+  itemId: string, locationId: string, qty: number, actualUnitCost: number,
+  stockMovementId: string
+): Promise<{ covered: number; variance: number }> {
+  // The lock goes first, on its own: Postgres refuses FOR UPDATE on a query
+  // that groups, so the aggregate below cannot carry it. Same shape, and the
+  // same reason, as planFifoConsumption above — without it two receipts could
+  // each read the same outstanding quantity and both settle against it.
+  await tx`
+    select ns.id from negative_stock ns
+     where ns.company_id = ${companyId} and ns.item_id = ${itemId}
+       and ns.location_id = ${locationId}
+     order by ns.created_at
+       for update`;
+
+  const open = await tx`
+    select ns.id, ns.qty, ns.provisional_unit_cost,
+           ns.qty - coalesce(sum(s.qty), 0) as outstanding
+      from negative_stock ns
+      left join negative_stock_settlement s on s.negative_stock_id = ns.id
+     where ns.company_id = ${companyId} and ns.item_id = ${itemId}
+       and ns.location_id = ${locationId}
+     group by ns.id, ns.qty, ns.provisional_unit_cost, ns.created_at
+    having ns.qty - coalesce(sum(s.qty), 0) > 0.0001
+     order by ns.created_at`;
+
+  let left = round4(qty);
+  let covered = 0;
+  let variance = 0;
+
+  for (const ns of open as unknown as {
+    id: string; provisional_unit_cost: string; outstanding: string;
+  }[]) {
+    if (left <= 0.0001) break;
+    const take = Math.min(round4(Number(ns.outstanding)), left);
+    if (take <= 0.0001) continue;
+
+    await tx`
+      insert into negative_stock_settlement
+        (company_id, negative_stock_id, document_id, stock_movement_id, qty, actual_unit_cost)
+      values (${companyId}, ${ns.id}, ${documentId}, ${stockMovementId},
+              ${take}, ${actualUnitCost})`;
+
+    // Charged out at the provisional figure, actually cost this. The
+    // difference is the same kind of thing as a purchase price variance and
+    // goes to the same place.
+    variance += take * (actualUnitCost - Number(ns.provisional_unit_cost));
+    covered = round4(covered + take);
+    left = round4(left - take);
+  }
+
+  return { covered, variance: round4(variance) };
 }
 
 /** Writes the consumption rows a plan decided on, against the movement it belongs to. */
@@ -930,12 +1148,17 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
       (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
        partner_id, location_id, currency, exchange_rate, status,
        net_total, tax_total, gross_total, memo, posted_at, reference, source_document_id,
-       delivery_fee)
+       delivery_fee, negative_stock_confirmed, negative_stock_confirmed_at)
     values
       (${companyId}, 'DELIVERY', ${docNo}, ${fiscalYear}, ${docDate}::date,
        ${docDate}::date, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
        0, 0, 0, ${input.memo ?? null}, now(), ${input.reference ?? null}, ${input.sourceDocumentId ?? null},
-       ${round4(input.deliveryFee ?? 0)})
+       ${round4(input.deliveryFee ?? 0)},
+       -- Recorded on the document rather than inferred later from the fact
+       -- that stock went negative: the question asked was whether the goods
+       -- physically exist, and the answer belongs where it was given.
+       ${input.allowNegativeStock === true},
+       ${input.allowNegativeStock === true ? new Date().toISOString() : null})
     returning id`;
 
   const journal: JournalLine[] = [];
@@ -985,7 +1208,12 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
       select fn_qty_on_hand(${companyId}, ${line.itemId}, ${locationId}) as on_hand`;
     const onHand = Number(onHandRows[0].on_hand);
 
-    if (onHand < line.qty) {
+    // Refused unless someone has confirmed the goods are physically there.
+    // This check and the FIFO planner both have to agree about it: this one
+    // reads the quantity, that one reads the cost layers, and relaxing only
+    // one of them would either refuse a confirmed sale or let an unconfirmed
+    // one through.
+    if (onHand < line.qty && input.allowNegativeStock !== true) {
       throw new Error(
         `Not enough ${item.code} (${item.name}) at this location — ` +
           `${onHand} on hand, ${line.qty} requested`
@@ -995,7 +1223,12 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
     // FIFO: drawn from the oldest open lots at this location, frozen onto
     // the movement. Recomputing it later would silently restate closed
     // periods.
-    const plan = await planFifoConsumption(tx, companyId, line.itemId, locationId, line.qty);
+    // allowNegativeStock is set only when someone confirmed the goods
+    // physically exist. Without it this still refuses, so no route reaches
+    // negative stock without a person having said so.
+    const plan = await planFifoConsumption(
+      tx, companyId, line.itemId, locationId, line.qty, input.allowNegativeStock === true
+    );
     const unitCost = plan.unitCost;
     const totalCost = plan.totalCost;
     deliveredValue += totalCost;
@@ -1028,6 +1261,10 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
          ${-line.qty}, ${unitCost}, ${-totalCost}, ${doc.id})
       returning id`;
     await recordFifoConsumption(tx, companyId, movement.id, plan);
+    // Whatever no layer covered goes on the reconciliation worklist, with the
+    // cost it was charged out at, so the receipt that eventually arrives can
+    // true it up rather than leaving an unexplained negative balance.
+    await recordNegativeStock(tx, companyId, doc.id, line.itemId, locationId, plan);
 
     const inventory = await tx`
       select fn_resolve_account_for_item(${companyId}, 'INVENTORY', ${line.itemId}) as a`;
@@ -1244,9 +1481,48 @@ async function _postSalesInvoice(
     select fn_next_document_no(${companyId}, 'SALES_INVOICE', ${docDate}::date) as no`;
   const docNo = noRows[0].no;
 
-  const goodsTotal = round4(
-    input.lines.reduce((s, l) => s + (l.focReasonId ? 0 : l.qty * l.unitPrice), 0)
+  // Priced here rather than trusting figures the browser worked out. The
+  // bands are company data, the arithmetic is the same pure function the
+  // voucher previews with, and doing it server-side is what lets the line
+  // record which part of the reduction was typed and which was earned.
+  //
+  // Free-of-charge lines are left out of it entirely: they carry no revenue
+  // to discount, and letting them count towards an invoice-total band would
+  // have a giveaway earning the customer a discount on everything else.
+  const bands = await tx`
+    select id, code, name, basis, item_id, item_group_id,
+           min_value, max_value, discount_pct
+      from volume_discount
+     where company_id = ${companyId} and is_active
+       and valid_from <= ${docDate}::date
+       and (valid_to is null or valid_to >= ${docDate}::date)`;
+
+  const charged = input.lines.filter((l) => !l.focReasonId);
+  const itemGroups = new Map<string, string | null>();
+  for (const l of charged) {
+    if (itemGroups.has(l.itemId)) continue;
+    const [g] = await tx`select item_group_id from item where id = ${l.itemId}`;
+    itemGroups.set(l.itemId, g?.item_group_id ?? null);
+  }
+
+  const priced = priceLines(
+    charged.map((l) => ({
+      itemId: l.itemId,
+      itemGroupId: itemGroups.get(l.itemId) ?? null,
+      qty: l.qty,
+      unitPrice: l.unitPrice,
+      discountPct: l.discountPct ?? 0,
+    })),
+    bands as unknown as VolumeBand[]
   );
+
+  const pricedFor = new Map<InvoiceLine, LineDiscounts>();
+  charged.forEach((l, i) => pricedFor.set(l, priced.lines[i]));
+
+  // The goods total is what the pricing arrived at, not the list prices it
+  // started from. Computing it separately is how the receivable and the
+  // revenue came to disagree by exactly one volume discount.
+  const goodsTotal = priced.total;
 
   // The fee comes from the delivery unless this invoice states its own. A
   // charge entered when the goods went out must not be lost just because
@@ -1321,17 +1597,24 @@ async function _postSalesInvoice(
       select id, code, name, is_stocked, base_uom_id from item where id = ${line.itemId}`;
     if (!item) throw new Error("Item not found");
 
-    const net = line.focReasonId ? 0 : round4(line.qty * line.unitPrice);
+    const d = pricedFor.get(line);
+    const net = line.focReasonId ? 0 : round4(d?.net ?? line.qty * line.unitPrice);
 
     await tx`
       insert into document_line
         (company_id, document_id, line_no, item_id, location_id,
          entered_qty, entered_uom_id, base_qty, unit_price,
+         discount_pct, discount_amount,
+         volume_discount_pct, volume_discount_amount, volume_discount_id,
+         invoice_discount_pct, invoice_discount_amount, invoice_discount_id,
          net_amount, tax_amount, gross_amount, foc_reason_id)
       values
         (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
          ${line.qty}, ${item.base_uom_id}, ${line.qty},
          ${line.focReasonId ? 0 : line.unitPrice},
+         ${d?.itemDiscountPct ?? 0}, ${d?.itemDiscountAmount ?? 0},
+         ${d?.volumeDiscountPct ?? 0}, ${d?.volumeDiscountAmount ?? 0}, ${d?.volumeDiscountId ?? null},
+         ${d?.invoiceDiscountPct ?? 0}, ${d?.invoiceDiscountAmount ?? 0}, ${d?.invoiceDiscountId ?? null},
          ${net}, 0, ${net}, ${line.focReasonId ?? null})`;
 
     // Revenue only — stock and COGS belong to the delivery, not the invoice.
@@ -1471,6 +1754,10 @@ export async function postSaleWithDelivery(input: SalesInvoiceInput) {
         // writes no journal, and the invoice uses its own value rather than
         // reading the delivery's back.
         deliveryFee: input.deliveryFee,
+        // The sales voucher posts invoice and delivery together, so the
+        // confirmation given on the voucher has to reach the half that
+        // actually moves the stock.
+        allowNegativeStock: input.allowNegativeStock,
         lines: toDeliver.map((l) => ({
           itemId: l.itemId, qty: l.qty, focReasonId: l.focReasonId, source: l.source,
         })),
@@ -1551,11 +1838,33 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
         (${companyId}, ${line.itemId}, ${locationId}, ${docDate}::date,
          ${line.qty}, ${unitCost}, ${net}, ${doc.id})
       returning id`;
-    await createFifoLot(tx, companyId, line.itemId, locationId, receivedAt, unitCost, line.qty, movement.id);
+
+    // Goods already sold before anyone recorded them arriving are covered
+    // first, at what this receipt says they really cost. They never sat on
+    // the shelf, so no layer is made for them — a lot created and instantly
+    // consumed would be a fiction with a date on it. Only the remainder
+    // becomes stock.
+    const { covered, variance } = await settleNegativeStock(
+      tx, companyId, doc.id, line.itemId, locationId, line.qty, unitCost, movement.id
+    );
+    const toShelf = round4(line.qty - covered);
+    if (toShelf > 0.0001) {
+      await createFifoLot(tx, companyId, line.itemId, locationId, receivedAt, unitCost, toShelf, movement.id);
+    }
 
     const inventory = await tx`
       select fn_resolve_account_for_item(${companyId}, 'INVENTORY', ${line.itemId}) as a`;
     journal.push({ accountId: inventory[0].a, amount: net, locationId });
+
+    // The sale charged the provisional figure; this receipt says what the
+    // goods actually cost. The difference belongs on the same account a
+    // purchase price difference goes to — it is the same kind of thing, a
+    // cost known later than the entry that needed it.
+    if (Math.abs(variance) > 0.0001) {
+      const v = await tx`select fn_system_account(${companyId}, 'PURCHASE_PRICE_VARIANCE') as a`;
+      journal.push({ accountId: v[0].a, amount: variance, locationId });
+      journal.push({ accountId: inventory[0].a, amount: -variance, locationId });
+    }
   }
 
   // Matched to an invoice that already arrived: the GR/IR line clears
@@ -2109,6 +2418,12 @@ export type TransferInput = {
   fromLocationId: string;
   toLocationId: string;
   docDate: string;
+  /**
+   * Someone confirmed the goods physically exist at the source though the ERP
+   * records fewer. Same rule as a delivery: without it a transfer of stock
+   * that is not recorded is refused.
+   */
+  allowNegativeStock?: boolean;
   memo?: string | null;
   reference?: string | null;
   /** When stock actually arrived at the destination, if more precise than docDate. */
@@ -2160,14 +2475,21 @@ export async function postStockTransfer(input: TransferInput) {
       const onHandRows = await tx`
         select fn_qty_on_hand(${companyId}, ${line.itemId}, ${fromLocationId}) as on_hand`;
       const onHand = Number(onHandRows[0].on_hand);
-      if (onHand < line.qty) {
+      // Both guards have to agree, as on a delivery: this one reads the
+      // quantity, the planner reads the cost layers, and relaxing one without
+      // the other either refuses a confirmed transfer or lets an unconfirmed
+      // one through.
+      if (onHand < line.qty && input.allowNegativeStock !== true) {
         throw new Error(
           `Not enough ${item.code} (${item.name}) at the source location — ` +
             `${onHand} on hand, ${line.qty} requested`
         );
       }
 
-      const plan = await planFifoConsumption(tx, companyId, line.itemId, fromLocationId, line.qty);
+      const plan = await planFifoConsumption(
+        tx, companyId, line.itemId, fromLocationId, line.qty,
+        input.allowNegativeStock === true
+      );
       const unitCost = plan.unitCost;
       const totalCost = plan.totalCost;
       totalValue += totalCost;
@@ -2188,6 +2510,10 @@ export async function postStockTransfer(input: TransferInput) {
            ${-line.qty}, ${unitCost}, ${-totalCost}, ${doc.id})
         returning id`;
       await recordFifoConsumption(tx, companyId, outMovement.id, plan);
+      // The source warehouse goes negative exactly as it would on a delivery,
+      // so the shortfall lands on the same worklist and is reconciled the
+      // same way.
+      await recordNegativeStock(tx, companyId, doc.id, line.itemId, fromLocationId, plan);
 
       const [inMovement] = await tx`
         insert into stock_movement
@@ -3173,6 +3499,105 @@ export async function importItems(input: {
       batchId: batch.id as string,
       itemsCreated: created,
       itemsMatched: matched,
+    };
+  });
+}
+
+// -------------------------------------------- negative stock reconcile --
+
+/**
+ * Brings recorded stock back up to what is physically there, at the price the
+ * goods were charged out at.
+ *
+ * The user confirms; they do not type a figure. The price was decided when
+ * the goods left — from the supplier's purchase invoice where there is one —
+ * and is stored on the shortfall, so the adjustment values the returning
+ * units at exactly what the sale charged for them. Letting someone key a
+ * different number here would put the correction and the cost of sale out of
+ * step, which is the whole thing this is fixing.
+ *
+ * It posts a real stock adjustment: a movement, a FIFO layer at that price,
+ * and Dr Inventory / Cr Stock Adjustment. Then it settles the shortfall
+ * against that document, so the same units cannot be reconciled twice.
+ */
+export async function reconcileNegativeStock(input: {
+  companyId: string;
+  /** Which shortfalls to clear. Each is settled in full. */
+  negativeStockIds: string[];
+  docDate: string;
+  memo?: string | null;
+}) {
+  const { companyId, negativeStockIds } = input;
+  if (negativeStockIds.length === 0) throw new Error("Nothing selected to reconcile");
+
+  return sql.begin(async (tx) => {
+    // Locked before reading, so two people reconciling the same shortfall
+    // cannot both find it outstanding and both post an adjustment for it.
+    await tx`
+      select id from negative_stock
+       where company_id = ${companyId} and id in ${tx(negativeStockIds)}
+         for update`;
+
+    const rows = await tx`
+      select ns.id, ns.item_id, ns.location_id, ns.provisional_unit_cost,
+             ns.qty - coalesce(sum(s.qty), 0) as outstanding
+        from negative_stock ns
+        left join negative_stock_settlement s on s.negative_stock_id = ns.id
+       where ns.company_id = ${companyId} and ns.id in ${tx(negativeStockIds)}
+       group by ns.id, ns.item_id, ns.location_id, ns.provisional_unit_cost
+      having ns.qty - coalesce(sum(s.qty), 0) > 0.0001`;
+
+    if (rows.length === 0) throw new Error("Those shortfalls have already been reconciled");
+
+    // One adjustment per location: a stock adjustment belongs to a warehouse,
+    // and lumping two warehouses into one document would post movements at a
+    // location the document does not name.
+    const byLocation = new Map<string, {
+      id: string; itemId: string; qty: number; unitCost: number;
+    }[]>();
+    for (const r of rows as unknown as {
+      id: string; item_id: string; location_id: string;
+      provisional_unit_cost: string; outstanding: string;
+    }[]) {
+      const list = byLocation.get(r.location_id) ?? [];
+      list.push({
+        id: r.id, itemId: r.item_id,
+        qty: round4(Number(r.outstanding)),
+        unitCost: Number(r.provisional_unit_cost),
+      });
+      byLocation.set(r.location_id, list);
+    }
+
+    const documents: string[] = [];
+    for (const [locationId, list] of byLocation) {
+      const doc = await _postStockAdjustment(tx, {
+        companyId,
+        locationId,
+        docDate: input.docDate,
+        memo: input.memo ?? "Negative stock reconciliation",
+        lines: list.map((l) => ({ itemId: l.itemId, qty: l.qty, unitCost: l.unitCost })),
+      });
+      documents.push(doc.docNo);
+
+      // Settled at the same price it was charged out at, so there is no
+      // variance here by construction — unlike a receipt arriving later,
+      // where the supplier's real figure may differ from what was assumed.
+      for (const l of list) {
+        const [mv] = await tx`
+          select id from stock_movement
+           where document_id = ${doc.id} and item_id = ${l.itemId}
+           limit 1`;
+        await tx`
+          insert into negative_stock_settlement
+            (company_id, negative_stock_id, document_id, stock_movement_id, qty, actual_unit_cost)
+          values (${companyId}, ${l.id}, ${doc.id}, ${mv?.id ?? null}, ${l.qty}, ${l.unitCost})`;
+      }
+    }
+
+    return {
+      documents,
+      reconciled: rows.length,
+      units: round4(rows.reduce((t: number, r: any) => t + Number(r.outstanding), 0)),
     };
   });
 }

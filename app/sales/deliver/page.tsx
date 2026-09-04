@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { shortDate } from "@/lib/db";
 import { getCompany, getOpenSalesOrders, getPendingDeliveries, getStockByLocation } from "@/lib/queries";
+import { sql } from "@/lib/db";
 import { createDelivery, deliverPendingInvoice } from "@/lib/actions";
 import { FulfillOrderForm } from "@/components/fulfill-order-form";
 import { DeliverNowButton } from "@/components/deliver-now-button";
@@ -14,15 +15,20 @@ export default async function Deliver({
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
-  const [openLines, pending, stockByLocation] = await Promise.all([
+  const [openLines, pending, stockByLocation, focReasons] = await Promise.all([
     getOpenSalesOrders(company.id),
     getPendingDeliveries(company.id),
     getStockByLocation(company.id),
+    // Why units might leave free — a delivery can carry a giveaway alongside
+    // what was ordered, and the reason decides where its cost lands.
+    sql`select id, code, name from foc_reason
+         where company_id = ${company.id} order by code`,
   ]);
 
   const orders = new Map<string, {
     orderId: string; orderNo: string; partnerId: string; partnerName: string; locationId: string;
-    lines: { lineId: string; itemId: string; itemCode: string; itemName: string; remainingQty: number }[];
+    lines: { lineId: string; itemId: string; itemCode: string; itemName: string;
+             uomCode: string; remainingQty: number }[];
   }>();
   for (const r of openLines as any[]) {
     if (!orders.has(r.order_id)) {
@@ -33,7 +39,7 @@ export default async function Deliver({
     }
     orders.get(r.order_id)!.lines.push({
       lineId: r.line_id, itemId: r.item_id, itemCode: r.item_code, itemName: r.item_name,
-      remainingQty: Number(r.remaining_qty),
+      uomCode: r.uom_code, remainingQty: Number(r.remaining_qty),
     });
   }
 
@@ -111,6 +117,7 @@ export default async function Deliver({
             lines={o.lines}
             action={createDelivery}
             stockByLocation={stockByLocation as never}
+            focReasons={focReasons as never}
           />
         ))
       )}
