@@ -618,6 +618,155 @@ export async function getChainDocuments(documentId: string) {
   return [...seen.values()];
 }
 
+export type RelatedDoc = {
+  id: string;
+  docType: string;
+  docNo: string;
+  docDate: string;
+  status: string;
+  amount: number;
+  /** How it is related, in the words the screen shows. */
+  note?: string | null;
+};
+export type RelatedDocuments = {
+  /** What this document came from. */
+  source: { label: string; docs: RelatedDoc[] }[];
+  /** What was raised from it, or settled against it. */
+  downstream: { label: string; docs: RelatedDoc[] }[];
+};
+
+const REL_LABEL: Record<string, string> = {
+  SALES_ORDER: "Sales order",
+  DELIVERY: "Delivery",
+  SALES_INVOICE: "Sales invoice",
+  CUSTOMER_RECEIPT: "Receive payment",
+  SALES_RETURN: "Customer return",
+  PURCHASE_ORDER: "Purchase order",
+  GOODS_RECEIPT: "Goods receipt",
+  PURCHASE_INVOICE: "Purchase invoice",
+  SUPPLIER_PAYMENT: "Supplier payment",
+  PURCHASE_RETURN: "Purchase return",
+};
+
+/**
+ * What this document is actually linked to, in both directions.
+ *
+ * Distinct from the workflow pipeline above it, which draws the shape a sale
+ * or a purchase usually takes. This states only what exists: a heading with
+ * nothing under it says "None", because a document raised without an order is
+ * an ordinary thing here and must not read as an incomplete one. A missing
+ * link is not an error unless some particular operation needs it.
+ *
+ * Two kinds of link, deliberately kept apart. `source_document_id` is the
+ * document this was raised from; `payment_allocation` is money settled
+ * against an invoice, which is not a parent-child relationship at all — a
+ * payment is not "made from" an invoice, it is applied to one, and several
+ * payments can be applied to the same bill.
+ */
+export async function getRelatedDocuments(documentId: string): Promise<RelatedDocuments> {
+  const [doc] = await sql`
+    select id, company_id, doc_type, source_document_id, to_deliver
+      from document where id = ${documentId}`;
+  if (!doc) return { source: [], downstream: [] };
+
+  const shape = (rows: readonly unknown[]): RelatedDoc[] =>
+    ([...rows] as {
+      id: string; doc_type: string; doc_no: string; doc_date: string;
+      status: string; gross_total: string; note?: string;
+    }[]).map((r) => ({
+      id: r.id, docType: r.doc_type, docNo: r.doc_no, docDate: String(r.doc_date),
+      status: r.status, amount: Number(r.gross_total), note: r.note ?? null,
+    }));
+
+  const parent = doc.source_document_id
+    ? shape(await sql`
+        select id, doc_type, doc_no, to_char(doc_date,'YYYY-MM-DD') as doc_date,
+               status, gross_total
+          from document where id = ${doc.source_document_id}`)
+    : [];
+
+  const children = shape(await sql`
+    select id, doc_type, doc_no, to_char(doc_date,'YYYY-MM-DD') as doc_date,
+           status, gross_total
+      from document
+     where company_id = ${doc.company_id} and source_document_id = ${documentId}
+     order by doc_date, doc_no`);
+
+  // Money applied to this invoice, or the invoices this payment was applied
+  // to — whichever way round this document sits.
+  const isInvoice = doc.doc_type === "SALES_INVOICE" || doc.doc_type === "PURCHASE_INVOICE";
+  const settlements = shape(
+    isInvoice
+      ? await sql`
+          select d.id, d.doc_type, d.doc_no, to_char(d.doc_date,'YYYY-MM-DD') as doc_date,
+                 d.status, pa.amount as gross_total
+            from payment_allocation pa
+            join document d on d.id = pa.payment_id
+           where pa.invoice_id = ${documentId} and d.status = 'POSTED'
+           order by d.doc_date, d.doc_no`
+      : await sql`
+          select d.id, d.doc_type, d.doc_no, to_char(d.doc_date,'YYYY-MM-DD') as doc_date,
+                 d.status, pa.amount as gross_total
+            from payment_allocation pa
+            join document d on d.id = pa.invoice_id
+           where pa.payment_id = ${documentId} and d.status = 'POSTED'
+           order by d.doc_date, d.doc_no`
+  );
+
+  // Headings are listed even when empty, so the answer to "was there an
+  // order?" is visible rather than absent. Which headings belong depends on
+  // the document: an invoice can come from an order or a delivery, a payment
+  // comes from neither.
+  const group = (label: string, docs: RelatedDoc[]) => ({ label, docs });
+  const byType = (docs: RelatedDoc[], type: string) => docs.filter((d) => d.docType === type);
+
+  const sales = ["SALES_ORDER", "DELIVERY", "SALES_INVOICE", "CUSTOMER_RECEIPT", "SALES_RETURN"]
+    .includes(doc.doc_type);
+
+  const source: RelatedDocuments["source"] = [];
+  const downstream: RelatedDocuments["downstream"] = [];
+
+  if (doc.doc_type === "SALES_INVOICE" || doc.doc_type === "PURCHASE_INVOICE") {
+    const orderType = sales ? "SALES_ORDER" : "PURCHASE_ORDER";
+    const moveType = sales ? "DELIVERY" : "GOODS_RECEIPT";
+    source.push(group(REL_LABEL[orderType], byType(parent, orderType)));
+    source.push(group(REL_LABEL[moveType], byType(parent, moveType)));
+    downstream.push(group(sales ? "Payments" : "Payments made", settlements));
+    downstream.push(group(REL_LABEL[sales ? "SALES_RETURN" : "PURCHASE_RETURN"],
+      byType(children, sales ? "SALES_RETURN" : "PURCHASE_RETURN")));
+    // Only where goods are still owed. An invoice that already names its
+    // delivery as a source has nothing pending, and a "Delivery — None" under
+    // Downstream would read as something missing rather than something that
+    // already happened further up the panel.
+    if (doc.to_deliver || byType(children, moveType).length > 0) {
+      downstream.push(group(REL_LABEL[moveType], byType(children, moveType)));
+    }
+  } else if (doc.doc_type === "DELIVERY" || doc.doc_type === "GOODS_RECEIPT") {
+    const orderType = sales ? "SALES_ORDER" : "PURCHASE_ORDER";
+    const invType = sales ? "SALES_INVOICE" : "PURCHASE_INVOICE";
+    source.push(group(REL_LABEL[orderType], byType(parent, orderType)));
+    source.push(group(REL_LABEL[invType], byType(parent, invType)));
+    downstream.push(group(REL_LABEL[invType], byType(children, invType)));
+    downstream.push(group(REL_LABEL[sales ? "SALES_RETURN" : "PURCHASE_RETURN"],
+      byType(children, sales ? "SALES_RETURN" : "PURCHASE_RETURN")));
+  } else if (doc.doc_type === "SALES_ORDER" || doc.doc_type === "PURCHASE_ORDER") {
+    const moveType = sales ? "DELIVERY" : "GOODS_RECEIPT";
+    const invType = sales ? "SALES_INVOICE" : "PURCHASE_INVOICE";
+    downstream.push(group(REL_LABEL[moveType], byType(children, moveType)));
+    downstream.push(group(REL_LABEL[invType], byType(children, invType)));
+  } else if (doc.doc_type === "CUSTOMER_RECEIPT" || doc.doc_type === "SUPPLIER_PAYMENT") {
+    // A payment is applied to invoices; it is not raised from one. Shown as
+    // "applied to" rather than as a parent, because calling an invoice the
+    // payment's source would be the wrong relationship.
+    source.push(group("Applied to", settlements));
+  } else {
+    if (parent.length) source.push(group("Raised from", parent));
+    if (children.length) downstream.push(group("Raised from this", children));
+  }
+
+  return { source, downstream };
+}
+
 /**
  * The payment that settled this invoice, if any — payments allocate against
  * invoices via payment_allocation, not source_document_id, so they sit

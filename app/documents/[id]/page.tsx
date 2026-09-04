@@ -1,5 +1,6 @@
 import { Fragment } from "react";
 import { planVoid } from "@/lib/void";
+import { RelatedDocumentsPanel } from "@/components/related-documents";
 import { VoidDocument } from "@/components/void-document";
 import { voidDocumentAction } from "@/lib/actions";
 import Link from "next/link";
@@ -19,6 +20,7 @@ import {
   getMatchStatus,
   getStockByLocation,
   getOrderProgress,
+  getRelatedDocuments,
 } from "@/lib/queries";
 import { createDelivery, createGoodsReceipt } from "@/lib/actions";
 import { FulfillOrderForm } from "@/components/fulfill-order-form";
@@ -120,6 +122,13 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
   // engine re-runs before it writes, so the screen cannot promise something
   // the action then refuses.
   const voidPlan = doc.status === "POSTED" ? await planVoid(doc.id) : null;
+
+  // What this document is genuinely linked to, in both directions. Shown
+  // alongside the workflow pipeline rather than instead of it: the pipeline
+  // is the shape a sale usually takes and carries the "create the next one"
+  // links, while this states only what exists — including the headings with
+  // nothing under them.
+  const related = await getRelatedDocuments(doc.id);
 
   /**
    * Where the next stage of the chain gets created from this document.
@@ -306,6 +315,8 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
         </>
       }
     >
+
+      <RelatedDocumentsPanel related={related} />
 
       {voidInfo && (
         <div className="alert" style={{ marginTop: "0.75rem" }}>
