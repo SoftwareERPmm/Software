@@ -1,13 +1,12 @@
 // A completely empty database becoming a working company.
 //
 // DESTRUCTIVE, and more so than the other suites: it truncates `company` and
-// `account` too, then scaffolds "Bootstrap Test Co" with the default chart.
-// Run it against the dev database and the chart loaded there is gone — the
-// app is single-company, so the UI then drives this fixture. Put the real one
-// back afterwards:
+// `account` too, then scaffolds "Bootstrap Test Co". The chart comes back
+// identical now that there is only one, but the company name and code are
+// this fixture's — and the app is single-company, so the UI then reads them.
+// Afterwards:
 //
-//   node scripts/load-coa.mjs --confirm     -- reload the MTK chart
-//   then set the company name back to "MTK Co Ltd — DEV"
+//   update company set name = 'MTK Co Ltd — DEV', code = 'MTK';
 
 
 import { readFileSync } from "node:fs";
@@ -59,13 +58,15 @@ try {
   check("company created", Boolean(co.id));
 
   const count = async (t) => Number((await sql.unsafe(`select count(*)::int as n from ${t}`))[0].n);
-  check("30 accounts", await count("account") === 30, String(await count("account")));
+  // One chart everywhere now: the same 65 the loader and the seed build.
+  check("65 accounts", await count("account") === 65, String(await count("account")));
   check("12 fiscal periods", await count("fiscal_period") === 12);
   // Twelve since delivery income got an account of its own: a scaffolded
   // company that cannot charge carriage is not fully set up.
   check("12 system accounts", await count("system_account") === 12,
     String(await count("system_account")));
-  check("6 posting rules", await count("account_determination") === 6);
+  check("6 posting rules", await count("account_determination") === 6,
+    String(await count("account_determination")));
   check("2 locations", await count("location") === 2);
   check("4 units", await count("uom") === 4);
   check("18 numbering series", await count("number_series") === 18);

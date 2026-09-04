@@ -117,10 +117,18 @@ chrome again.
 
 ## The customer's chart of accounts
 
-`scripts/load-coa.mjs` loads MTK's own 69-account chart, replacing whatever is
-there. It is **not** seed data: `db/seed.sql` keeps the original 29-account
-chart that the test suites assert against, and the two are deliberately
-separate so adopting one does not silently rewrite the other.
+MTK's own 65-account chart lives in `db/chart.mjs`, and everything that
+builds a chart reads it: `lib/setup.ts` when a company is created,
+`scripts/load-coa.mjs` when an existing one is re-charted, and `db/seed.sql`
+through a generated block (`node scripts/gen-seed-chart.mjs`, `--check` to
+prove it has not drifted).
+
+It used to be three different charts — a 29-account one in the seed that the
+suites asserted against, another in `setup.ts`, and this one. That is how a
+company created through Setup ended up on a chart nobody used, unable to
+charge a delivery fee because its chart had no account for one. The suites
+resolve accounts by role now (`scripts/accounts.mjs`), so nothing depends on
+a particular set of codes.
 
 ```bash
 node scripts/load-coa.mjs             # dry run — shows the target and what it would add

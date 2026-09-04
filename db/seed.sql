@@ -100,9 +100,10 @@ for m in 0..11 loop
 end loop;
 
 -- -------------------------------------------------------------- accounts --
--- The MTK chart, the same 65 accounts scripts/load-coa.mjs loads. Kept
--- identical on purpose: the demo and the chart a real company runs on are
--- then the same shape, and a report that reads right here reads right there.
+-- The MTK chart, generated from db/chart.mjs by scripts/gen-seed-chart.mjs.
+-- The same 65 accounts lib/setup.ts scaffolds and scripts/load-coa.mjs
+-- loads: the demo and a real company are the same shape, so a report that
+-- reads right here reads right there. Regenerate after changing the chart.
 
 -- Sections. Not postable — they are the headings the chart is read under.
 insert into account (company_id, code, name, account_type, is_postable) values
