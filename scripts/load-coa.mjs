@@ -12,10 +12,14 @@
 // existing journal lines would leave those lines pointing at accounts that no
 // longer exist, or — worse — at accounts that now mean something else.
 //
-// Why this file exists: the chart is not seed data. db/seed.sql carries the
-// original 29-account chart that every test asserts against; this is the
-// customer's own chart, and the two are deliberately separate so that
-// adopting one does not silently rewrite the other.
+// Why this file exists: the chart is not seed data. It replaces the chart on
+// a database that already exists, which the seed cannot do.
+//
+// db/seed.sql now builds this same chart, generated from the CHART array
+// below, so the demo and a real company are the same shape. Keep the two in
+// step: change this array and regenerate that block, never one alone. What
+// used to keep them apart — suites asserting on the seed's own account codes
+// — is gone; they resolve accounts through scripts/accounts.mjs instead.
 //
 // Three accounts marked `added: true` are not in the customer's chart. Every
 // other role the engine resolves was pointed at an account the chart already

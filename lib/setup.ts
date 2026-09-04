@@ -59,6 +59,12 @@ const ACCOUNTS: AcctSpec[] = [
   ["4000", "4200", "Sales Returns", null, "REVENUE", false, false, false],
   ["4000", "4300", "Purchase Discount Received", null, "REVENUE", false, false, false],
   ["4000", "4400", "FX Gain on Settlement", null, "REVENUE", false, false, false],
+  // Carriage charged to the customer. Its own account on purpose: sending it
+  // to Sales Revenue inflates what the goods sold for and flatters gross
+  // margin by the same amount, which is the mistake migration 0032 was
+  // written to undo. A chart with nowhere to put it leaves the company
+  // unable to charge a delivery fee at all.
+  ["4000", "4500", "Delivery Income", null, "REVENUE", false, false, false],
   ["5000", "5100", "Cost of Goods Sold", "ကုန်ကျစရိတ်", "COGS", false, false, false],
   ["5000", "5200", "Purchase Price Variance", null, "COGS", false, false, false],
   ["5000", "5300", "Stock Adjustment", null, "COGS", false, false, false],
@@ -83,6 +89,7 @@ const SYSTEM_ROLES: [role: string, code: string][] = [
   ["ROUNDING_DIFFERENCE", "6600"],
   ["OPENING_BALANCE_EQUITY", "3900"],
   ["RETAINED_EARNINGS", "3200"],
+  ["DELIVERY_INCOME", "4500"],
 ];
 
 /** Company-wide defaults. Categories can override these later. */
