@@ -284,3 +284,47 @@ export function accountTypeLabel(
   }
   return fallback[account.account_type] ?? account.account_type;
 }
+
+/**
+ * Accounts grouped into the sections the chart draws them under, in the
+ * chart's own order.
+ *
+ * One implementation rather than one per screen. The voucher form, the
+ * general ledger and the opening balances form all ask the same question —
+ * "which heading does this account sit under?" — and three copies of the
+ * answer is three chances for a screen to group the chart differently from
+ * the way Master data draws it, which is the thing that makes someone
+ * re-learn the shape on every page.
+ *
+ * The group comes from the section an account sits under, not from its stored
+ * account_type, because the chart draws distinctions the six stored types do
+ * not carry: a tax payable is a LIABILITY in the database and reads as Tax on
+ * screen, and current and fixed assets are both ASSET. Section codes carry
+ * the order (1-CA, 2-CL, 3-EQ, 4-SA, 5-CG, 6-GA, 6-SD, 7-TX). A chart with no
+ * sections falls back to the stored type and the fixed sequence for it, so
+ * this still groups sensibly on the seed chart.
+ */
+export function groupAccountsBySection<
+  T extends { id: string; code: string; name: string; parent_id?: string | null; account_type?: string }
+>(
+  accounts: T[],
+  tree: { id: string; code: string; name: string; parent_id: string | null; is_postable?: boolean }[],
+  typeLabels: Record<string, string>
+): Array<[string, T[]]> {
+  const nodes = tree.length ? tree : (accounts as unknown as typeof tree);
+  const grouped = new Map<string, { sort: string; label: string; items: T[] }>();
+
+  for (const a of accounts) {
+    const section = accountSection(a as never, nodes as never);
+    const label = section ? section.name : accountTypeLabel(a as never, nodes as never, typeLabels);
+    const sort = section ? section.code : String(accountGroupRank(label)).padStart(3, "0");
+    const entry = grouped.get(label) ?? { sort, label, items: [] };
+    entry.items.push(a);
+    grouped.set(label, entry);
+  }
+
+  return [...grouped.values()]
+    .filter((g) => g.items.length > 0)
+    .sort((a, b) => a.sort.localeCompare(b.sort) || a.label.localeCompare(b.label))
+    .map((g) => [g.label, g.items] as [string, T[]]);
+}

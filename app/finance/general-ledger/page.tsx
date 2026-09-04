@@ -9,7 +9,14 @@ export default async function GeneralLedger({
 }) {
   const { account, from, to } = await searchParams;
   const data = await getFinanceData();
-  const list = data.accounts as never as { id: string; code: string; name: string }[];
+  const list = data.accounts as never as {
+    id: string; code: string; name: string; parent_id: string | null; account_type: string;
+  }[];
+  // The chart including its headings, so the picker can group accounts under
+  // the same sections Master data draws them under.
+  const tree = data.accountTree as never as {
+    id: string; code: string; name: string; parent_id: string | null; is_postable?: boolean;
+  }[];
 
   const selected = list.find((a) => a.id === account) ?? list[0];
   const rows = selected ? await getAccountLedger(selected.id, from, to) : [];
@@ -35,7 +42,8 @@ export default async function GeneralLedger({
         <div className="empty">No accounts are set up.</div>
       ) : (
         <>
-          <AccountPicker accounts={list} selectedId={selected.id} basePath="/finance/general-ledger" />
+          <AccountPicker accounts={list} selectedId={selected.id} tree={tree}
+                         basePath="/finance/general-ledger" />
 
           <section>
             <div className="card">
