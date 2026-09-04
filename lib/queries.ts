@@ -394,9 +394,13 @@ export async function isGrirOutstanding(documentId: string): Promise<boolean> {
  */
 export async function getOpenGoodsReceipts(companyId: string) {
   const docs = await sql`
-    select d.id, d.doc_no, d.doc_date, d.partner_id
+    select d.id, d.doc_no, d.doc_date, d.partner_id,
+           -- The purchase order this receipt came in against, so an invoice
+           -- billing it can show which of our orders it belongs to.
+           src.doc_no as source_no
       from document d
       join v_grir_balance g on g.document_id = d.id and g.company_id = d.company_id
+      left join document src on src.id = d.source_document_id
      where d.company_id = ${companyId} and d.doc_type = 'GOODS_RECEIPT' and d.status = 'POSTED'
      order by d.doc_date desc, d.doc_no desc
      limit 200`;
@@ -491,6 +495,10 @@ export async function getOpenPurchaseInvoices(companyId: string) {
 export async function getOpenDeliveries(companyId: string) {
   return sql`
     select d.id, d.doc_no, d.doc_date, d.partner_id, d.location_id,
+           -- The order this delivery was raised from, so an invoice made from
+           -- it can show which of our orders it belongs to rather than making
+           -- someone go and look it up.
+           src.doc_no as source_no,
            coalesce(json_agg(json_build_object(
              'itemId', dl.item_id, 'itemCode', i.code, 'itemName', i.name,
              'qty', dl.base_qty
@@ -498,13 +506,14 @@ export async function getOpenDeliveries(companyId: string) {
       from document d
       join document_line dl on dl.document_id = d.id
       join item i on i.id = dl.item_id
+      left join document src on src.id = d.source_document_id
      where d.company_id = ${companyId} and d.doc_type = 'DELIVERY' and d.status = 'POSTED'
        and not exists (
          select 1 from document si
           where si.doc_type = 'SALES_INVOICE' and si.status = 'POSTED'
             and (si.source_document_id = d.id or d.source_document_id = si.id)
        )
-     group by d.id, d.doc_no, d.doc_date, d.partner_id, d.location_id
+     group by d.id, d.doc_no, d.doc_date, d.partner_id, d.location_id, src.doc_no
      order by d.doc_date desc, d.doc_no desc
      limit 200`;
 }

@@ -5,7 +5,12 @@ import { createDelivery, deliverPendingInvoice } from "@/lib/actions";
 import { FulfillOrderForm } from "@/components/fulfill-order-form";
 import { DeliverNowButton } from "@/components/deliver-now-button";
 
-export default async function Deliver() {
+export default async function Deliver({
+  searchParams,
+}: {
+  searchParams: Promise<{ order?: string }>;
+}) {
+  const { order } = await searchParams;
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
@@ -88,7 +93,13 @@ export default async function Deliver() {
           <Link href="/sales/orders/new" style={{ color: "var(--brand)" }}>New sales order</Link>
         </div>
       ) : (
-        [...orders.values()].map((o) => (
+        // Arrived from one order's own row or its document page: show that
+        // order alone. The worklist is where you pick from everything open;
+        // following a link from a particular order and then having to find it
+        // again in the list is the step this parameter removes.
+        [...orders.values()]
+          .filter((o) => !order || o.orderId === order)
+          .map((o) => (
           <FulfillOrderForm
             key={o.orderId}
             kind="sales"
@@ -102,6 +113,22 @@ export default async function Deliver() {
             stockByLocation={stockByLocation as never}
           />
         ))
+      )}
+
+      {order && orders.size > 1 && (
+        <div className="actions" style={{ marginTop: "0.75rem" }}>
+          <Link href="/sales/deliver" className="btn ghost">
+            Show all {orders.size} open orders
+          </Link>
+        </div>
+      )}
+      {order && !orders.has(order) && (
+        <div className="empty">
+          That order has nothing left to deliver.{" "}
+          <Link href="/sales/deliver" style={{ color: "var(--brand)" }}>
+            See what is still open
+          </Link>
+        </div>
       )}
     </>
   );

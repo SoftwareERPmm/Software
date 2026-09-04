@@ -146,6 +146,11 @@
 /* A stage nothing has reached yet is dimmed, not hidden — the shape of the
    workflow should be legible from the first step, not assembled as you go. */
 .erp-stage.todo { opacity: 0.55; }
+/* The one step that can be taken from here. Dimmed like the rest of the
+   unreached workflow, but not as far, and it responds to the pointer — the
+   difference between "not yet" and "not yet, and this is how". */
+.erp-stage.todo.next { opacity: 0.85; cursor: pointer; }
+.erp-stage.todo.next a:hover { color: var(--erp-brand); }
 .erp-stage-no { font-family: var(--erp-font-mono); font-size: var(--erp-text-xs); opacity: 0.75; }
 
 /* The sheet: a page floating on the app background, which is what separates

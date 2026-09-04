@@ -3,7 +3,12 @@ import { getCompany, getOpenPurchaseOrders } from "@/lib/queries";
 import { createGoodsReceipt } from "@/lib/actions";
 import { FulfillOrderForm } from "@/components/fulfill-order-form";
 
-export default async function Receive() {
+export default async function Receive({
+  searchParams,
+}: {
+  searchParams: Promise<{ order?: string }>;
+}) {
+  const { order } = await searchParams;
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
@@ -52,7 +57,11 @@ export default async function Receive() {
           {" "}above instead.
         </div>
       ) : (
-        [...orders.values()].map((o) => (
+        // Arrived from one order's own row or its document page: show that
+        // order alone, rather than making someone find it again in the list.
+        [...orders.values()]
+          .filter((o) => !order || o.orderId === order)
+          .map((o) => (
           <FulfillOrderForm
             key={o.orderId}
             kind="purchase"
@@ -65,6 +74,22 @@ export default async function Receive() {
             action={createGoodsReceipt}
           />
         ))
+      )}
+
+      {order && orders.size > 1 && (
+        <div className="actions" style={{ marginTop: "0.75rem" }}>
+          <Link href="/purchases/receive" className="btn ghost">
+            Show all {orders.size} open orders
+          </Link>
+        </div>
+      )}
+      {order && !orders.has(order) && (
+        <div className="empty">
+          That order has nothing left to receive.{" "}
+          <Link href="/purchases/receive" style={{ color: "var(--brand)" }}>
+            See what is still open
+          </Link>
+        </div>
       )}
     </>
   );

@@ -30,7 +30,12 @@ type OpenInvoice = {
   gross_total: string; outstanding: string; aging_bucket: string;
 };
 type MatchLine = { itemId: string; itemCode: string; itemName: string; qty: number };
-type OpenDelivery = { id: string; doc_no: string; doc_date: string; partner_id: string; location_id: string; lines: MatchLine[] };
+type OpenDelivery = {
+  id: string; doc_no: string; doc_date: string; partner_id: string; location_id: string;
+  /** The sales order this delivery was raised from, when it came from one. */
+  source_no?: string | null;
+  lines: MatchLine[];
+};
 
 type Line = { key: number; itemId: string; qty: string; unitPrice: string; discountPct: string };
 
@@ -84,6 +89,7 @@ export function SalesVoucher({
   const [customerId, setCustomerId] = useState("");
   const [locationId, setLocationId] = useState(locations[0]?.id ?? "");
   const [matchedDeliveryId, setMatchedDeliveryId] = useState("");
+  const [reference, setReference] = useState("");
   const [docDate, setDocDate] = useState(today);
   const [dueDate, setDueDate] = useState("");
   const [paymentType, setPaymentType] = useState<"CASH" | "CREDIT">("CREDIT");
@@ -157,6 +163,17 @@ export function SalesVoucher({
 
   const openDeliveries = (deliveries ?? []).filter((d) => d.partner_id === customerId);
 
+  /**
+   * Our own number for the job this invoice belongs to — the sales order it
+   * traces back to, or the delivery itself when it was raised without one.
+   *
+   * Filled in rather than left blank because stepping order → delivery →
+   * invoice already knows the answer, and making someone copy it across from
+   * another screen is how an invoice ends up with no order on it at all. It
+   * stays an ordinary input: a customer's own PO can be typed over it.
+   */
+  const referenceFor = (d: OpenDelivery) => d.source_no || d.doc_no;
+
   function matchDelivery(id: string) {
     setMatchedDeliveryId(id);
     const d = (deliveries ?? []).find((x) => x.id === id);
@@ -180,6 +197,12 @@ export function SalesVoucher({
   useEffect(() => {
     if (!initialDeliveryId) return;
     matchDelivery(initialDeliveryId);
+    // Only when the invoice was opened from a document — walking the chain is
+    // what makes the order relevant. Someone who opened a blank invoice and
+    // chose a delivery from the list is composing it themselves, and having a
+    // number appear under their hands is noise rather than help.
+    const d = (deliveries ?? []).find((x) => x.id === initialDeliveryId);
+    if (d) setReference(referenceFor(d));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialDeliveryId]);
 
@@ -345,7 +368,14 @@ export function SalesVoucher({
 
             <div className="field">
               <label htmlFor="reference">Ref / order ID</label>
-              <input id="reference" name="reference" type="text" placeholder="Customer PO or phone order" />
+              <input id="reference" name="reference" type="text"
+                     value={reference} onChange={(e) => setReference(e.target.value)}
+                     placeholder="Sales order, customer PO or phone order" />
+              {initialDeliveryId && reference && (
+                <span className="hint">
+                  The order this delivery came from. Type over it for a customer&rsquo;s own PO.
+                </span>
+              )}
               <span className="hint">Their number, not ours</span>
             </div>
 

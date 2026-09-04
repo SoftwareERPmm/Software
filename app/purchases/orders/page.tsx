@@ -66,7 +66,7 @@ export default async function PurchaseOrders({
         </td>
         <td className="tight">
           {(o.display === "OPEN" || o.display === "PARTIALLY_FULFILLED") && (
-            <Link href="/purchases/receive" className="btn ghost tiny">Receive</Link>
+            <Link href={`/purchases/receive?order=${o.id}`} className="btn ghost tiny">Receive</Link>
           )}
         </td>
       </tr>

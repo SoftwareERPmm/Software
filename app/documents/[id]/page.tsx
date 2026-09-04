@@ -121,6 +121,30 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
   // the action then refuses.
   const voidPlan = doc.status === "POSTED" ? await planVoid(doc.id) : null;
 
+  /**
+   * Where the next stage of the chain gets created from this document.
+   *
+   * Only the step immediately after this one: a purchase order can be
+   * received, a receipt can be invoiced, and nothing further down has
+   * anything to be made from yet. This is what makes the pipeline walkable
+   * forwards — clicking Delivery on an order takes you to that order's
+   * delivery, carrying the order with it, so the invoice at the end can show
+   * which order it belongs to.
+   */
+  const nextStageHref = (stageType: string): string | null => {
+    if (doc.status !== "POSTED") return null;
+    const from = doc.doc_type;
+    if (from === "PURCHASE_ORDER" && stageType === "GOODS_RECEIPT")
+      return `/purchases/receive?order=${doc.id}`;
+    if (from === "SALES_ORDER" && stageType === "DELIVERY")
+      return `/sales/deliver?order=${doc.id}`;
+    if (from === "GOODS_RECEIPT" && stageType === "PURCHASE_INVOICE")
+      return `/purchases/new?goods_receipt_id=${doc.id}`;
+    if (from === "DELIVERY" && stageType === "SALES_INVOICE")
+      return `/sales/new?delivery_id=${doc.id}`;
+    return null;
+  };
+
   // A voided document must say so on its face. Finding out only by noticing
   // the status pill, on a document whose figures all still read normally, is
   // how someone acts on a number that has already been reversed.
@@ -231,6 +255,7 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
           type: step,
           label: label(step).replace(/\b\w/g, (c) => c.toUpperCase()),
           doc: stageDoc[step] ?? null,
+          href: stageDoc[step] ? null : nextStageHref(step),
         }))}
         actions={
           isOpenOrder && orderLines.length > 0 ? (
@@ -263,6 +288,7 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
         type: step,
         label: label(step).replace(/\b\w/g, (c) => c.toUpperCase()),
         doc: stageDoc[step] ?? null,
+        href: stageDoc[step] ? null : nextStageHref(step),
       }))}
       badges={
         <>
