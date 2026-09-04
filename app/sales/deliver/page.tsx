@@ -91,6 +91,7 @@ export default async function Deliver({
 
       <div className="page-head" style={{ marginTop: "1.5rem" }}>
         <h2 style={{ margin: 0 }}>Open sales orders</h2>
+        <Link href="/sales/deliver/new" className="btn">Deliver without an order</Link>
       </div>
 
       {orders.size === 0 ? (
