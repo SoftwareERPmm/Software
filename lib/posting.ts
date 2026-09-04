@@ -1,5 +1,6 @@
 import type { TransactionSql } from "postgres";
 import { sql } from "./db";
+import { planVoidIn, type VoidBlocker } from "./void";
 
 // The posting engine.
 //
@@ -2640,8 +2641,13 @@ async function postSettlement(
     for (const a of lines) {
       const [inv] = await tx`
         select d.doc_no, d.doc_type, d.status, d.partner_id, d.gross_total, d.location_id,
-               coalesce((select sum(amount) from payment_allocation
-                          where invoice_id = d.id), 0) as allocated
+               -- Only allocations whose payment still stands. A voided
+               -- payment must stop reserving room against the invoice, or a
+               -- bill whose payment was voided could never be settled again.
+               coalesce((select sum(pa.amount) from payment_allocation pa
+                           join document pay on pay.id = pa.payment_id
+                          where pa.invoice_id = d.id
+                            and pay.status = 'POSTED'), 0) as allocated
           from document d
          where d.id = ${a.invoiceId} and d.company_id = ${companyId}
          for update of d`;
@@ -3168,6 +3174,206 @@ export async function importItems(input: {
       itemsCreated: created,
       itemsMatched: matched,
     };
+  });
+}
+
+// ------------------------------------------------------------------ void --
+
+/**
+ * Voids a posted document by posting its mirror image.
+ *
+ * Every line of the original entry is negated into a new entry, so the two
+ * together net to zero on every account, in every currency, at every branch.
+ * Nothing is edited: the original keeps its number, its lines and its entry,
+ * and gains a link to the reversal. The subledgers and the control accounts
+ * therefore move together, which is the whole reason this is a reversal
+ * rather than a flag.
+ *
+ * The reversal is its own document, numbered in its own right, so it appears
+ * in the ledger and on reports as the event it is. It carries the same
+ * partner and totals as the original — negated — because a reversal that
+ * looked like nothing in particular would be impossible to read six months
+ * later.
+ */
+export async function voidDocument(input: {
+  documentId: string;
+  reason?: string | null;
+}) {
+  const { documentId } = input;
+
+  return sql.begin(async (tx) => {
+    // Locked before anything is read, so two people voiding the same document
+    // at once cannot both find it un-voided and both post a reversal.
+    const [doc] = await tx`
+      select id, company_id, doc_type, doc_no, partner_id, location_id, currency,
+             exchange_rate, net_total, tax_total, gross_total, journal_entry_id,
+             status, reversed_by_document_id, fiscal_year_id, voucher_direction,
+             to_char(doc_date, 'YYYY-MM-DD') as doc_date,
+             to_char(posting_date, 'YYYY-MM-DD') as posting_date
+        from document where id = ${documentId} for update`;
+    if (!doc) throw new Error("That document no longer exists");
+    if (doc.status === "DRAFT") {
+      throw new Error(`${doc.doc_no} is a draft — delete it rather than voiding it`);
+    }
+    if (doc.status !== "POSTED" || doc.reversed_by_document_id) {
+      throw new Error(`${doc.doc_no} is already ${String(doc.status).toLowerCase()}`);
+    }
+
+    // The same analysis the confirmation screen showed, re-run against the
+    // database as it is now rather than as it was when the screen was drawn.
+    // Something downstream can be posted between looking and confirming, and
+    // that is exactly the case worth catching.
+    const plan = await planVoidIn(tx, documentId);
+    if (!plan.canVoid) {
+      throw new Error(plan.blockers.map((b: VoidBlocker) => b.reason).join(" "));
+    }
+
+    const lines = await tx`
+      -- Cost centre and project are deliberately not read: writeJournal has
+      -- nowhere to put them, and nothing in this system has ever set one, so
+      -- reading them would imply a fidelity the reversal does not have.
+      select account_id, amount, location_id, partner_id
+        from journal_line where journal_entry_id = ${doc.journal_entry_id}
+       order by line_no`;
+    if (lines.length === 0) {
+      throw new Error(`${doc.doc_no} has no entry to reverse`);
+    }
+
+    // The original's own direction, so a voided cash receipt is numbered on
+    // the receipt series rather than starting a second one. 0038 keys the
+    // counter on the prefix, so this can no longer collide either way — but
+    // passing it keeps the reversal filed where a reader would look for it.
+    const docNoRows = await tx`
+      select fn_next_document_no(${doc.company_id}, ${doc.doc_type},
+                                 ${plan.reversalDate}::date,
+                                 ${doc.voucher_direction ?? null}) as no`;
+    const reversalNo = docNoRows[0].no;
+
+    const [reversal] = await tx`
+      insert into document
+        (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
+         partner_id, location_id, currency, exchange_rate, status,
+         net_total, tax_total, gross_total, memo, reverses_document_id,
+         voucher_direction, posted_at)
+      values
+        (${doc.company_id}, ${doc.doc_type}, ${reversalNo},
+         fn_fiscal_year_for(${doc.company_id}, ${plan.reversalDate}::date),
+         ${plan.reversalDate}::date, ${plan.reversalDate}::date,
+         ${doc.partner_id}, ${doc.location_id}, ${doc.currency}, ${doc.exchange_rate},
+         'POSTED',
+         ${-Number(doc.net_total)}, ${-Number(doc.tax_total)}, ${-Number(doc.gross_total)},
+         ${`Void of ${doc.doc_no}${input.reason ? ` — ${input.reason}` : ""}`},
+         ${doc.id}, ${doc.voucher_direction ?? null}, now())
+      returning id`;
+
+    // Negated one for one rather than recomputed. A reversal derived by
+    // re-running the posting rules would follow today's rules, and those may
+    // have been edited since — the point is to undo what was actually posted.
+    const entryId = await writeJournal(
+      tx, doc.company_id, plan.reversalDate, doc.doc_type, reversal.id,
+      `${reversalNo} void of ${doc.doc_no}`,
+      (lines as unknown as {
+        account_id: string; amount: string;
+        location_id: string | null; partner_id: string | null;
+      }[]).map((l) => ({
+        accountId: l.account_id,
+        amount: -Number(l.amount),
+        locationId: l.location_id,
+        partnerId: l.partner_id,
+      }))
+    );
+    await tx`update document set journal_entry_id = ${entryId} where id = ${reversal.id}`;
+
+    // The original may only move to REVERSED with the reversal attached —
+    // 0037 refuses the status change on its own, so this single statement is
+    // the only way a document can become voided.
+    await tx`
+      update document
+         set status = 'REVERSED',
+             reversed_by_document_id = ${reversal.id},
+             void_reason = ${input.reason ?? null}
+       where id = ${doc.id}`;
+
+    await tx`
+      insert into document_history (company_id, document_id, action, reason, related_id, detail)
+      values (${doc.company_id}, ${doc.id}, 'VOID', ${input.reason ?? null}, ${reversal.id},
+              ${tx.json({
+                doc_no: doc.doc_no,
+                doc_type: doc.doc_type,
+                gross_total: Number(doc.gross_total),
+                posting_date: doc.posting_date,
+                reversal_no: reversalNo,
+                reversal_date: plan.reversalDate,
+              })})`;
+
+    return {
+      id: doc.id as string,
+      docNo: doc.doc_no as string,
+      reversalId: reversal.id as string,
+      reversalNo: reversalNo as string,
+      reversalDate: plan.reversalDate,
+    };
+  });
+}
+
+/**
+ * Links a freshly posted document to the one it replaces, and records the
+ * edit.
+ *
+ * An edit is a void plus a re-entry, and the re-entry has to go through the
+ * posting function for its own type — a sales invoice knows things about
+ * itself that nothing generic does. So this is deliberately not a
+ * `amendDocument(id, newValues)` that would have to re-implement every
+ * document type: the caller voids, posts the corrected document however that
+ * type is posted, and then says here that the two are versions of one thing.
+ *
+ * Both halves in one transaction is the caller's job, and matters: a void
+ * with no replacement is a delete, and a replacement with no void is a
+ * duplicate. Neither is what was asked for.
+ */
+export async function linkAmendment(input: {
+  companyId: string;
+  /** The document that was voided. */
+  originalId: string;
+  /** Its replacement, already posted. */
+  replacementId: string;
+  reason?: string | null;
+}) {
+  return sql.begin(async (tx) => {
+    const [orig] = await tx`
+      select id, doc_no, status, gross_total, reversed_by_document_id
+        from document where id = ${input.originalId} and company_id = ${input.companyId}`;
+    if (!orig) throw new Error("The document being replaced no longer exists");
+    if (orig.status !== "REVERSED" || !orig.reversed_by_document_id) {
+      throw new Error(
+        `${orig.doc_no} has not been voided. An edit is a void followed by a ` +
+        `replacement — posting the replacement without voiding the original ` +
+        `would leave both standing`
+      );
+    }
+
+    const [repl] = await tx`
+      select id, doc_no, gross_total, supersedes_document_id
+        from document where id = ${input.replacementId} and company_id = ${input.companyId}`;
+    if (!repl) throw new Error("The replacement document no longer exists");
+    if (repl.supersedes_document_id) {
+      throw new Error(`${repl.doc_no} already replaces something else`);
+    }
+
+    await tx`
+      update document set supersedes_document_id = ${orig.id}
+       where id = ${repl.id}`;
+
+    await tx`
+      insert into document_history (company_id, document_id, action, reason, related_id, detail)
+      values (${input.companyId}, ${orig.id}, 'AMEND', ${input.reason ?? null}, ${repl.id},
+              ${tx.json({
+                replaced_by: repl.doc_no,
+                total_before: Number(orig.gross_total),
+                total_after: Number(repl.gross_total),
+              })})`;
+
+    return { originalNo: orig.doc_no as string, replacementNo: repl.doc_no as string };
   });
 }
 

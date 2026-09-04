@@ -65,6 +65,36 @@ A draft posts nothing and can be freely edited. Once posted, the document is
 immutable — a correction is a reversal document plus a new one. `reversed`
 records that a reversal exists, it does not erase anything.
 
+### Void and edit
+
+Both are offered in the UI, and neither rewrites anything (migration 0037).
+
+**Void** posts the mirror image of the document's entry, so every account it
+touched returns to where it was. The original keeps its number, its lines and
+its journal entry, becomes `REVERSED`, and points at the reversal. It is not
+a delete: the row stays, the entry stays, and both appear in the ledger.
+
+**Edit** is a void followed by a fresh document that names the one it
+replaces (`supersedes_document_id`), so the net movement is only the
+correction.
+
+Both are written to `document_history`, which is append-only and readable at
+**Documents → History log**. `acted_by` is null until there is a login to
+attribute an action to.
+
+Voiding is refused while anything depends on the document — an invoice raised
+from a receipt, a payment settled against an invoice, stock since issued. The
+blocker names the document in the way, so the answer is "void that first".
+
+The guard that makes this safe is worth knowing. `v_trial_balance` reads
+`journal_line` and applies no document filter; `v_open_item` reads `document`
+and selects `status = 'POSTED'`. Marking a document deleted *without* a
+reversing entry therefore drops a receivable from the aging while AR control
+still carries it — the two disagree and neither looks broken. That is the hole
+migration 0023 closed, and 0037 keeps it closed by permitting the move to
+`REVERSED` only when the reversal is supplied in the same statement. A status
+cannot be flipped on its own.
+
 ## Numbering
 
 Type, date, sequence — `R20260901001`. Per company, per document type, per

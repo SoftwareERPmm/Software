@@ -620,6 +620,9 @@ export async function getSettlingPayment(invoiceId: string) {
       from payment_allocation pa
       join document d on d.id = pa.payment_id
      where pa.invoice_id = ${invoiceId}
+       -- A voided payment no longer settles anything, so it must not be
+       -- offered as the one that did.
+       and d.status = 'POSTED'
      order by d.posting_date desc
      limit 1`;
   return row ?? null;
@@ -1636,6 +1639,42 @@ export async function getImportMasterData(companyId: string) {
     sql`select id, code, name from uom where company_id = ${companyId} and is_active`,
   ]);
   return { items, categories, brands, uoms };
+}
+
+/**
+ * Everything that has been voided or edited, newest first.
+ *
+ * The log is the point of the feature: a document that vanished from a list
+ * with no trace is indistinguishable from one that was never entered, and
+ * that is precisely the property this system is sold as not having. So every
+ * void and every edit is readable here, with what the document said before,
+ * what replaced or reversed it, and when.
+ *
+ * `acted_by` is selected even though nothing sets it yet. When there are
+ * users, rows written from that day carry one and older rows keep their
+ * honest null — which is a better answer than attributing them to whoever
+ * happened to be added first.
+ */
+export async function getDocumentHistory(companyId: string, limit = 200) {
+  return sql`
+    select h.id, h.action, h.reason, h.detail, h.acted_by, h.acted_at,
+           d.id            as document_id,
+           d.doc_no        as document_no,
+           d.doc_type,
+           d.status,
+           to_char(d.doc_date, 'YYYY-MM-DD') as doc_date,
+           d.gross_total,
+           p.name          as partner_name,
+           r.id            as related_document_id,
+           r.doc_no        as related_no,
+           r.doc_type      as related_type
+      from document_history h
+      join document d on d.id = h.document_id
+      left join document r on r.id = h.related_id
+      left join business_partner p on p.id = d.partner_id
+     where h.company_id = ${companyId}
+     order by h.acted_at desc
+     limit ${limit}`;
 }
 
 /** Past imports, newest first, with what each one actually created. */

@@ -15,7 +15,7 @@ import {
   postSupplierPayment, postCustomerReceipt,
   postCashVoucher, postBankVoucher, postJournalVoucher,
   postCashTransfer, postAccountOpening, postStockAdjustment, postStockTransfer,
-  importItems, importVouchers,
+  importItems, importVouchers, voidDocument,
   postSalesReturn, postPurchaseReturn, postConsignmentReceipt,
   type InvoiceLine, type OrderLine, type FulfillmentLine, type Allocation, type VoucherLine,
   type AdjustmentLine, type ReturnLine, type TransferLine, type ConsignmentReceiptLine,
@@ -2822,6 +2822,45 @@ export async function createConsignmentSale(_prev: unknown, fd: FormData): Promi
   revalidatePath("/inventory/consignment");
   revalidatePath("/purchases/invoices");
   redirectWithToast(`/documents/${docId}`, toastMsg);
+}
+
+// ------------------------------------------------------------------ void --
+
+/**
+ * Voids a posted document.
+ *
+ * The confirmation screen has already shown what this would do, but the
+ * engine re-checks against the database as it is now: something can be built
+ * on top of a document between looking at it and pressing the button, and a
+ * half-undone chain is worse than a refusal.
+ */
+export async function voidDocumentAction(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  let msg: string;
+  let docId: string;
+  try {
+    const co = await companyId();
+    docId = str(fd, "id");
+    if (!docId) return { error: "Choose a document" };
+
+    const [owned] = await sql`
+      select id from document where id = ${docId} and company_id = ${co}`;
+    if (!owned) return { error: "That document no longer exists" };
+
+    const done = await voidDocument({
+      documentId: docId,
+      reason: str(fd, "reason") || null,
+    });
+    msg = `${done.docNo} voided — reversed by ${done.reversalNo}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/documents");
+  revalidatePath(`/documents/${docId}`);
+  revalidatePath("/documents/history");
+  revalidatePath("/");
+  financeRevalidate();
+  redirectWithToast(`/documents/${docId}`, msg);
 }
 
 // --------------------------------------------------- item/stock import --

@@ -1,7 +1,10 @@
 import { Fragment } from "react";
+import { planVoid } from "@/lib/void";
+import { VoidDocument } from "@/components/void-document";
+import { voidDocumentAction } from "@/lib/actions";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { money, qty, shortDate } from "@/lib/db";
+import { sql, money, qty, shortDate } from "@/lib/db";
 import {
   getDocument,
   getDocumentLines,
@@ -112,6 +115,27 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
   // matcher the posting engine uses, so the page cannot claim a line is
   // settled that the ledger still holds open.
   const match = (isGr || isPi || isDel || isSi) ? await getMatchStatus(doc.id) : null;
+
+  // What voiding would do, and what stands in the way. The same analysis the
+  // engine re-runs before it writes, so the screen cannot promise something
+  // the action then refuses.
+  const voidPlan = doc.status === "POSTED" ? await planVoid(doc.id) : null;
+
+  // A voided document must say so on its face. Finding out only by noticing
+  // the status pill, on a document whose figures all still read normally, is
+  // how someone acts on a number that has already been reversed.
+  const voidInfo = doc.status === "REVERSED" ? (await sql`
+    select r.id, r.doc_no, to_char(r.doc_date, 'YYYY-MM-DD') as doc_date,
+           d.void_reason,
+           s.id as replacement_id, s.doc_no as replacement_no
+      from document d
+      left join document r on r.id = d.reversed_by_document_id
+      left join document s on s.supersedes_document_id = d.id
+     where d.id = ${doc.id}`)[0] as unknown as {
+       id: string | null; doc_no: string | null; doc_date: string | null;
+       void_reason: string | null;
+       replacement_id: string | null; replacement_no: string | null;
+     } | undefined : undefined;
   const openToMatch = match ? match.lines.some((l) => l.remaining > 0) : grirOutstanding;
   const needsInvoiceMatch = isGr && openToMatch;
   const needsReceiptMatch = isPi && openToMatch;
@@ -256,6 +280,48 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
         </>
       }
     >
+
+      {voidInfo && (
+        <div className="alert" style={{ marginTop: "0.75rem" }}>
+          <strong>This document has been voided.</strong>{" "}
+          Its figures below are what it said when posted; they no longer
+          affect any account.
+          {voidInfo.doc_no && (
+            <>
+              {" "}Reversed by{" "}
+              <a href={`/documents/${voidInfo.id}`} style={{ color: "var(--brand)" }}>
+                {voidInfo.doc_no}
+              </a>
+              {voidInfo.doc_date ? ` on ${voidInfo.doc_date}` : ""}.
+            </>
+          )}
+          {voidInfo.replacement_no && (
+            <>
+              {" "}Replaced by{" "}
+              <a href={`/documents/${voidInfo.replacement_id}`} style={{ color: "var(--brand)" }}>
+                {voidInfo.replacement_no}
+              </a>.
+            </>
+          )}
+          {voidInfo.void_reason && <> Reason: {voidInfo.void_reason}.</>}
+          {" "}
+          <a href="/documents/history" style={{ color: "var(--brand)" }}>History log</a>
+        </div>
+      )}
+
+      {/* Voiding sits with the document rather than on the list, because it
+          needs the whole picture — what it would reverse, and what has been
+          built on top of it — and that is only assembled here. */}
+      {voidPlan && (
+        <VoidDocument
+          action={voidDocumentAction}
+          documentId={doc.id}
+          docNo={doc.doc_no}
+          canVoid={voidPlan.canVoid}
+          blockers={voidPlan.blockers}
+          effects={voidPlan.effects}
+        />
+      )}
 
       {(needsInvoiceMatch || needsReceiptMatch) && (
         <div className="actions" style={{ marginTop: "-0.5rem" }}>

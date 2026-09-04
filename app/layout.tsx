@@ -70,7 +70,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 
             <NavGroup label="Overview" icon={<LayoutDashboard size={14} />} match={["/"]}>
               <NavLink href="/">Dashboard</NavLink>
-              <NavLink href="/documents">All documents</NavLink>
+              <NavLink href="/documents" exact>All documents</NavLink>
+              <NavLink href="/documents/history">History log</NavLink>
             </NavGroup>
 
             <NavGroup label="Sales" icon={<ShoppingCart size={14} />} match={["/sales", "/receivables"]}>
