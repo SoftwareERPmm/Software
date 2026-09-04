@@ -45,11 +45,30 @@ try {
     document, journal_line, journal_entry restart identity cascade`);
   await sql`update number_series set next_value = 1`;
 
-  const cash = await acct("1110");   // Cash in Hand
-  const bank = await acct("1120");   // Bank - KBZ
-  const rent = await acct("6400");   // Rent
-  const salary = await acct("6300"); // Salaries
-  const capital = await acct("3100");
+  // Chosen by what an account *is*, not by the code the demo seed gave it.
+  // On the chart this ran against, 1110 is Building — so the old fixture was
+  // one posting away from putting the month's rent into a fixed asset, and
+  // the accounts it could not find at all left vouchers with a single line.
+  const pick = async (where) => {
+    const [a] = await where;
+    if (!a) throw new Error("the chart has no account for this fixture");
+    return a.id;
+  };
+  const cash = await pick(sql`
+    select id from account where company_id = ${co.id}
+       and is_cash_account and is_postable and is_active order by code limit 1`);
+  const bank = await pick(sql`
+    select id from account where company_id = ${co.id}
+       and is_bank_account and is_postable and is_active order by code limit 1`);
+  const [rent, salary] = (await sql`
+    select id from account where company_id = ${co.id}
+       and account_type = 'EXPENSE' and is_postable and is_active
+       and not is_cash_account and not is_bank_account
+     order by code limit 2`).map((a) => a.id);
+  const capital = await pick(sql`
+    select id from account where company_id = ${co.id}
+       and account_type = 'EQUITY' and is_postable and is_active order by code limit 1`);
+  if (!rent || !salary) throw new Error("the chart has no expense accounts to post to");
   const today = new Date().toISOString().slice(0, 10);
   console.log("");
 
@@ -68,8 +87,10 @@ try {
     select a.code, jl.base_amount from journal_line jl
       join account a on a.id = jl.account_id
      where jl.journal_entry_id = (select journal_entry_id from document where id = ${ob.id})`;
+  const { accountsFor } = await import("./accounts.mjs");
+  const OBE = await accountsFor(sql, co.id).role("OPENING_BALANCE_EQUITY");
   check("balancing figure went to Opening Balance Equity",
-    obLines.some((l) => l.code === "3900" && n(l.base_amount) === -3200000),
+    obLines.some((l) => l.code === OBE && n(l.base_amount) === -3200000),
     obLines.map((l) => `${l.code}:${n(l.base_amount)}`).join(" "));
 
   // ---- Cash book ---------------------------------------------------------
@@ -82,7 +103,9 @@ try {
     ],
   });
   check("cash voucher posts", Boolean(cv.docNo), cv.docNo);
-  check("cash voucher is numbered CV-", cv.docNo.startsWith("CV-"), cv.docNo);
+  // Type + date + daily sequence since 0035: a cash payment prints P, a cash
+  // receipt R. The dashed CV-/BV-/JV- prefixes are three schemes ago.
+  check("cash payment is numbered P + date", /^P\d{8}\d{3}$/.test(cv.docNo), cv.docNo);
 
   const [cashBal] = await sql`
     select coalesce(sum(base_amount), 0) as v from journal_line where account_id = ${cash}`;
@@ -97,7 +120,7 @@ try {
       { accountId: bank, amount: -900000 },
     ],
   });
-  check("bank voucher is numbered BV-", bv.docNo.startsWith("BV-"), bv.docNo);
+  check("bank payment is numbered BP + date", /^BP\d{8}\d{3}$/.test(bv.docNo), bv.docNo);
 
   // ---- Journal -----------------------------------------------------------
 
@@ -108,7 +131,7 @@ try {
       { accountId: capital, amount: -500000 },
     ],
   });
-  check("journal voucher is numbered JV-", jv.docNo.startsWith("JV-"), jv.docNo);
+  check("journal voucher is numbered J + date", /^J\d{8}\d{3}$/.test(jv.docNo), jv.docNo);
 
   let refusedUnbalanced = false;
   try {
@@ -123,7 +146,9 @@ try {
   check("refuses an unbalanced journal", refusedUnbalanced);
 
   // A manual entry to a control account must still be refused by the database.
-  const ar = await acct("1200");
+  const [arRow] = await sql`
+    select fn_resolve_control_account(${co.id}, 'AR_CONTROL', null) as id`;
+  const ar = arRow.id;
   let refusedControl = false;
   try {
     await postJournalVoucher({
@@ -143,7 +168,7 @@ try {
     fromAccountId: bank, toAccountId: cash, amount: 300000,
     memo: "Cash drawn for Mandalay branch",
   });
-  check("transfer is numbered CT-", ct.docNo.startsWith("CT-"), ct.docNo);
+  check("transfer is numbered CT + date", /^CT\d{8}\d{3}$/.test(ct.docNo), ct.docNo);
 
   const [cashAfter] = await sql`
     select coalesce(sum(base_amount), 0) as v from journal_line where account_id = ${cash}`;

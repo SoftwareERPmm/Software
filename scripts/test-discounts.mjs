@@ -168,10 +168,13 @@ console.log("\n  posted, and the invoice remembers why\n");
     select id from location where company_id = ${co.id} and is_stock_location and is_active
      order by code limit 1`;
 
+  // Scoped to this test's own item. An unscoped quantity band is company-wide
+  // master data that outlives the run, and it silently repriced every later
+  // suite's sales — a test that changes what other tests mean.
   await sql`
-    insert into volume_discount (company_id, code, name, basis, min_value, max_value,
+    insert into volume_discount (company_id, code, name, basis, item_id, min_value, max_value,
                                  discount_pct, valid_from)
-    values (${co.id}, ${"Q5-" + stamp}, '100 or more', 'QUANTITY', 100, null, 5, ${today}::date)`;
+    values (${co.id}, ${"Q5-" + stamp}, '100 or more', 'QUANTITY', ${item.id}, 100, null, 5, ${today}::date)`;
   await sql`
     insert into volume_discount (company_id, code, name, basis, min_value,
                                  discount_pct, valid_from)
@@ -227,6 +230,14 @@ console.log("\n  posted, and the invoice remembers why\n");
      where je.source_id = ${big.id} and a.account_type = 'REVENUE'`;
   check("revenue posted is the discounted figure, not the list price",
     Math.abs(n(rev.v) - 11058000) < 0.01, String(n(rev.v)));
+
+  // Retire the bands this run created. The invoice-total band cannot be
+  // scoped to an item by design, so leaving it active would discount every
+  // large invoice posted in this database afterwards — which is exactly what
+  // it was doing to the suites that run after this one.
+  await sql`
+    update volume_discount set is_active = false
+     where company_id = ${co.id} and code like ${"%-" + stamp}`;
 
   const [tb] = await sql`
     select coalesce(sum(base_amount), 0) t from journal_line where company_id = ${co.id}`;
@@ -308,13 +319,19 @@ console.log("\n  free of charge, which is not a discount\n");
       join journal_entry je on je.id = jl.journal_entry_id
       join document d on d.journal_entry_id = je.id
      where a.account_type = 'COGS'
-       and (d.id = ${sale.id} or d.source_document_id = ${sale.id})`;
+       and (d.id = ${sale.id}
+            or d.source_document_id = ${sale.id}
+            -- A counter sale posts the delivery first and points the invoice
+            -- at it, so the delivery carrying the cost is the invoice's
+            -- parent, not its child. Looking only downwards found nothing.
+            or d.id = (select source_document_id from document where id = ${sale.id}))`;
   check("cost of sales carries only the ten that were sold",
     Math.abs(n(cogs[0].v) - 300000) < 0.01, String(n(cogs[0].v)));
 
   const [tb] = await sql`
     select coalesce(sum(base_amount), 0) t from journal_line where company_id = ${co.id}`;
   check("trial balance nets to zero", Math.abs(n(tb.t)) < 0.0001, String(n(tb.t)));
+
   await sql.end();
 }
 

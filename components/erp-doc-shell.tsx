@@ -26,6 +26,13 @@ export type ChainStage = {
    * further down the chain has nothing to be created from yet.
    */
   href?: string | null;
+  /**
+   * A stage the chain does not require. A sale can start at a delivery and a
+   * purchase at an invoice, so a missing order is not a gap in the chain —
+   * and a strip that draws it the same as a step still owed says the wrong
+   * thing. Hatched rather than solid: absent by choice, not outstanding.
+   */
+  optional?: boolean;
 };
 
 export function ErpDocShell({
@@ -77,7 +84,11 @@ export function ErpDocShell({
                 return (
                   <div key={stage.type} role="listitem"
                        className={`erp-stage ${here ? "here" : done ? "done" : "todo"}${
-                         !done && stage.href ? " next" : ""}`}
+                         !done && stage.href ? " next" : ""}${
+                         !done && stage.optional ? " optional" : ""}`}
+                       title={!done && stage.optional
+                         ? `${stage.label} is optional — this chain is valid without one`
+                         : undefined}
                        aria-current={here ? "step" : undefined}>
                     {stage.doc && !here
                       ? <Link href={`/documents/${stage.doc.id}`}>{body}</Link>

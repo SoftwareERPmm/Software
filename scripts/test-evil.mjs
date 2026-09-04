@@ -75,6 +75,14 @@ try {
   const [loc] = await sql`
     select id, code from location where company_id = ${co.id} and is_stock_location order by code limit 1`;
 
+  // The two accounts this suite watches, resolved from the chart rather than
+  // spelled out. Every assertion below read 0 on a chart that numbers GR/IR
+  // anything but 1310 — a silent pass into a sum of nothing.
+  const { accountsFor } = await import("./accounts.mjs");
+  const evilAcct = accountsFor(sql, co.id);
+  const GRIR = await evilAcct.role("GRIR_CLEARING");
+  const PPV = await evilAcct.role("PURCHASE_PRICE_VARIANCE");
+
   await sql.unsafe(`truncate table payment_allocation, stock_lot_consumption, stock_lot,
     stock_movement, document_line, document, journal_line, journal_entry
     restart identity cascade`);
@@ -365,19 +373,19 @@ try {
     lines: [{ itemId: item.id, qty: 20, unitPrice: 1000 }] });
 
   const grirBefore = n((await sql`select coalesce(sum(jl.amount),0) as v from journal_line jl
-    join account a on a.id = jl.account_id where a.code = '1310'`)[0].v);
+    join account a on a.id = jl.account_id where a.code = ${GRIR}`)[0].v);
 
   await postPurchaseInvoice({ ...buy, dueDate: null, goodsReceiptId: gr.id,
     lines: [{ itemId: item.id, qty: 20, unitPrice: 1000 }] });
 
   const grirAfter = n((await sql`select coalesce(sum(jl.amount),0) as v from journal_line jl
-    join account a on a.id = jl.account_id where a.code = '1310'`)[0].v);
+    join account a on a.id = jl.account_id where a.code = ${GRIR}`)[0].v);
 
   check("a second invoice for the same receipt clears nothing more from GR/IR",
     grirAfter === grirBefore, `${grirBefore} → ${grirAfter}`);
   check("and its value lands in variance where it is visible, not hidden in GR/IR",
     n((await sql`select coalesce(sum(jl.amount),0) as v from journal_line jl
-        join account a on a.id = jl.account_id where a.code = '5200'`)[0].v) === 20000);
+        join account a on a.id = jl.account_id where a.code = ${PPV}`)[0].v) === 20000);
 
   // ---- Continuing a document that is not what it claims ------------------
 
@@ -555,7 +563,7 @@ try {
       join account a on a.id = jl.account_id
       join journal_entry je on je.id = jl.journal_entry_id
       join document d on d.id = je.source_id
-     where a.code = '1310' and d.doc_type = 'PURCHASE_INVOICE'
+     where a.code = ${GRIR} and d.doc_type = 'PURCHASE_INVOICE'
        and d.source_document_id = ${raceGr.id}`)[0].v);
   check("four invoices racing one receipt relieve GR/IR once, not four times",
     relievedTogether === 100000, `${relievedTogether} of 100000`);
@@ -570,7 +578,7 @@ try {
       join account a on a.id = jl.account_id
       join journal_entry je on je.id = jl.journal_entry_id
       join document d on d.id = je.source_id
-     where a.code = '1310' and d.doc_type = 'GOODS_RECEIPT'
+     where a.code = ${GRIR} and d.doc_type = 'GOODS_RECEIPT'
        and d.source_document_id = ${racePi.id}`)[0].v);
   check("and four receipts racing one invoice release it once",
     releasedTogether === -100000, `${releasedTogether} of -100000`);

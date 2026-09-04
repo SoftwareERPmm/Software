@@ -625,6 +625,10 @@ export type RelatedDoc = {
   docDate: string;
   status: string;
   amount: number;
+  /** Units on that document. A delivery against an order is read as "6
+   *  units" long before anyone reads its value, so the quantity is the more
+   *  useful figure on a link between two stock documents. */
+  qty: number;
   /** How it is related, in the words the screen shows. */
   note?: string | null;
 };
@@ -672,25 +676,31 @@ export async function getRelatedDocuments(documentId: string): Promise<RelatedDo
   const shape = (rows: readonly unknown[]): RelatedDoc[] =>
     ([...rows] as {
       id: string; doc_type: string; doc_no: string; doc_date: string;
-      status: string; gross_total: string; note?: string;
+      status: string; gross_total: string; qty?: string; note?: string;
     }[]).map((r) => ({
       id: r.id, docType: r.doc_type, docNo: r.doc_no, docDate: String(r.doc_date),
-      status: r.status, amount: Number(r.gross_total), note: r.note ?? null,
+      status: r.status, amount: Number(r.gross_total), qty: Number(r.qty ?? 0),
+      note: r.note ?? null,
     }));
+
 
   const parent = doc.source_document_id
     ? shape(await sql`
-        select id, doc_type, doc_no, to_char(doc_date,'YYYY-MM-DD') as doc_date,
-               status, gross_total
-          from document where id = ${doc.source_document_id}`)
+        select d.id, d.doc_type, d.doc_no, to_char(d.doc_date,'YYYY-MM-DD') as doc_date,
+               d.status, d.gross_total,
+               coalesce((select sum(dl.base_qty) from document_line dl
+                          where dl.document_id = d.id), 0) as qty
+          from document d where d.id = ${doc.source_document_id}`)
     : [];
 
   const children = shape(await sql`
-    select id, doc_type, doc_no, to_char(doc_date,'YYYY-MM-DD') as doc_date,
-           status, gross_total
-      from document
-     where company_id = ${doc.company_id} and source_document_id = ${documentId}
-     order by doc_date, doc_no`);
+    select d.id, d.doc_type, d.doc_no, to_char(d.doc_date,'YYYY-MM-DD') as doc_date,
+           d.status, d.gross_total,
+           coalesce((select sum(dl.base_qty) from document_line dl
+                      where dl.document_id = d.id), 0) as qty
+      from document d
+     where d.company_id = ${doc.company_id} and d.source_document_id = ${documentId}
+     order by d.doc_date, d.doc_no`);
 
   // Money applied to this invoice, or the invoices this payment was applied
   // to — whichever way round this document sits.
@@ -738,7 +748,12 @@ export async function getRelatedDocuments(documentId: string): Promise<RelatedDo
     // delivery as a source has nothing pending, and a "Delivery — None" under
     // Downstream would read as something missing rather than something that
     // already happened further up the panel.
-    if (doc.to_deliver || byType(children, moveType).length > 0) {
+    // `to_deliver` says how the invoice was raised, not whether the goods
+    // have since gone: a deliver-later invoice that has since been delivered
+    // still carries the flag, so the source link has to be checked too or the
+    // heading contradicts the one printed above it.
+    if (byType(children, moveType).length > 0
+        || (doc.to_deliver && byType(parent, moveType).length === 0)) {
       downstream.push(group(REL_LABEL[moveType], byType(children, moveType)));
     }
   } else if (doc.doc_type === "DELIVERY" || doc.doc_type === "GOODS_RECEIPT") {

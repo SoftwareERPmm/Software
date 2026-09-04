@@ -80,10 +80,11 @@ try {
     docDate: "2026-04-15", dueDate: null,
     lines: [{ itemId: item.id, qty: 10, unitPrice: 1000 }],
   });
-  // The number carries the fiscal year it belongs to, because the count
-  // restarts each year — PI-2627-000001 for an April 2026 to March 2027 year.
+  // Type + document date + that day's sequence since 0035, so a purchase
+  // invoice dated 15 April 2026 prints DP20260415001. The fiscal-year form
+  // PI-2627-000001 is the scheme this replaced.
   check("a freshly set up company can post",
-    /^PI-\d{2,4}-000001$/.test(pi.docNo), pi.docNo);
+    /^DP20260415\d{3}$/.test(pi.docNo), pi.docNo);
 
   const [tb] = await sql`select coalesce(sum(balance),0) as v from v_trial_balance`;
   check("ledger balances", Math.abs(Number(tb.v)) < 0.0001);

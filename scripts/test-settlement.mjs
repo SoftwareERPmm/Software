@@ -97,9 +97,15 @@ try {
   check("the invoice itself was not edited",
     n(invoiceRow.gross_total) === 100000 && invoiceRow.status === "POSTED");
 
+  // Control accounts as this chart resolves them for these partners.
+  const { accountsFor } = await import("./accounts.mjs");
+  const acctS = accountsFor(sql, co.id);
+  const AP = await acctS.control("AP_CONTROL", sup.id);
+  const AR = await acctS.control("AR_CONTROL", cus.id);
+
   const payJournal = await sql`
     select account_code, debit, credit from v_journal_line where source_id = ${pay1.id}`;
-  check("payment debits payables", payJournal.some((l) => n(l.debit) === 40000 && l.account_code === "2100"));
+  check("payment debits payables", payJournal.some((l) => n(l.debit) === 40000 && l.account_code === AP));
   check("payment credits the bank", payJournal.some((l) => n(l.credit) === 40000 && l.account_code === cash.code));
 
   const pay2 = await postSupplierPayment({
@@ -152,7 +158,7 @@ try {
   const rcJournal = await sql`
     select account_code, debit, credit from v_journal_line where source_id = ${rc.id}`;
   check("receipt debits cash", rcJournal.some((l) => n(l.debit) === 100000 && l.account_code === cash.code));
-  check("receipt credits receivables", rcJournal.some((l) => n(l.credit) === 100000 && l.account_code === "1200"));
+  check("receipt credits receivables", rcJournal.some((l) => n(l.credit) === 100000 && l.account_code === AR));
 
   // ---- Balances and invariants -------------------------------------------
 

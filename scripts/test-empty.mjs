@@ -100,14 +100,26 @@ try {
   // The sale posts across two documents now: the delivery carries cost, the
   // invoice carries revenue. Every account has to resolve from the posting
   // rules on a database that was set up from scratch.
+  // What the determination is supposed to resolve to on *this* chart. Asking
+  // it and then checking the ledger used those accounts is the real test;
+  // naming the demo seed's codes only ever tested the seed.
+  const { accountsFor } = await import("./accounts.mjs");
+  const acct = accountsFor(sql, co.id);
+  const want = {
+    receivables: await acct.control("AR_CONTROL", cust.id),
+    revenue: await acct.forItem("REVENUE", item.id),
+    cogs: await acct.forItem("COGS", item.id),
+    inventory: await acct.forItem("INVENTORY", item.id),
+  };
+  const codes = Object.values(want);
   const j = await sql`
     select account_code from v_journal_line
-     where company_id = ${co.id} and account_code in ('1200', '4100', '5100', '1300')`;
+     where company_id = ${co.id} and account_code = any(${codes})`;
   const hit = new Set(j.map((r) => r.account_code));
   check("account determination resolves receivables and revenue",
-    hit.has("1200") && hit.has("4100"));
+    hit.has(want.receivables) && hit.has(want.revenue));
   check("account determination resolves COGS and inventory",
-    hit.has("5100") && hit.has("1300"),
+    hit.has(want.cogs) && hit.has(want.inventory),
     [...hit].sort().join(" "));
 
   const [tb] = await sql`select coalesce(sum(balance),0) as v from v_trial_balance`;

@@ -151,6 +151,11 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
       return `/purchases/new?goods_receipt_id=${doc.id}`;
     if (from === "DELIVERY" && stageType === "SALES_INVOICE")
       return `/sales/new?delivery_id=${doc.id}`;
+    // An invoice raised "deliver later" still owes the goods. The pending
+    // list is where that delivery is posted, and without this the chain runs
+    // forwards everywhere except the one place it is actually waiting.
+    if (from === "SALES_INVOICE" && stageType === "DELIVERY" && doc.to_deliver)
+      return "/sales/deliver";
     return null;
   };
 
@@ -221,6 +226,12 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
   // Orders render on the ERP form. Only the two order types for now: the
   // shell is adopted screen by screen rather than switched on globally, so
   // anything not yet moved keeps working exactly as it did.
+  // Which stages this chain can simply do without. The orders are the clear
+  // case — a walk-in sale starts at the delivery and a phoned-in purchase at
+  // the receipt — and drawing them like a step still owed is what made an
+  // ordinary counter sale look unfinished.
+  const OPTIONAL_STAGE = new Set(["SALES_ORDER", "PURCHASE_ORDER"]);
+
   const isOrder = doc.doc_type === "SALES_ORDER" || doc.doc_type === "PURCHASE_ORDER";
 
   if (isOrder) {
@@ -260,11 +271,13 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
         memo={doc.memo ?? null}
         lines={erpLines}
         netTotal={Number(doc.net_total)}
+        related={<RelatedDocumentsPanel related={related} />}
         chain={chain.map((step) => ({
           type: step,
           label: label(step).replace(/\b\w/g, (c) => c.toUpperCase()),
           doc: stageDoc[step] ?? null,
           href: stageDoc[step] ? null : nextStageHref(step),
+          optional: OPTIONAL_STAGE.has(step),
         }))}
         actions={
           isOpenOrder && orderLines.length > 0 ? (
@@ -298,6 +311,7 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
         label: label(step).replace(/\b\w/g, (c) => c.toUpperCase()),
         doc: stageDoc[step] ?? null,
         href: stageDoc[step] ? null : nextStageHref(step),
+        optional: OPTIONAL_STAGE.has(step),
       }))}
       badges={
         <>
@@ -316,7 +330,16 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
       }
     >
 
-      <RelatedDocumentsPanel related={related} />
+      <RelatedDocumentsPanel
+        related={related}
+        accounting={(journal as unknown as {
+          account_name: string; debit: string; credit: string;
+        }[]).map((l) => ({
+          accountName: l.account_name,
+          debit: Number(l.debit),
+          credit: Number(l.credit),
+        }))}
+      />
 
       {voidInfo && (
         <div className="alert" style={{ marginTop: "0.75rem" }}>
@@ -467,18 +490,43 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
         />
       )}
 
-      {isInvoice && outstanding > 0 && (
-        <div className="actions" style={{ marginBottom: "1.5rem" }}>
-          <Link
-            href={
-              doc.doc_type === "SALES_INVOICE"
-                ? `/receivables/receive?partner=${doc.partner_id}&invoice=${doc.id}`
-                : `/payables/pay?partner=${doc.partner_id}&invoice=${doc.id}`
-            }
-            className="btn"
-          >
-            {doc.doc_type === "SALES_INVOICE" ? "Receive payment" : "Pay supplier"} — {money(outstanding)} outstanding
-          </Link>
+      {/* What the invoice is worth, what has come in, and what is still
+          owed — the three figures anyone opening an invoice is looking for,
+          side by side rather than inferred from a pill and a journal.
+          Paid is derived here for display; only the total and the
+          outstanding balance are ever read from the ledger. */}
+      {isInvoice && (
+        <div className="erp-settle">
+          <div className="erp-settle-figs">
+            <div className="erp-settle-fig">
+              <span className="erp-settle-label">Total</span>
+              <span className="erp-settle-value">{money(doc.gross_total)}</span>
+            </div>
+            <div className="erp-settle-fig">
+              <span className="erp-settle-label">Paid</span>
+              <span className="erp-settle-value">
+                {money(Math.max(0, Number(doc.gross_total) - outstanding))}
+              </span>
+            </div>
+            <div className="erp-settle-fig">
+              <span className="erp-settle-label">Outstanding</span>
+              <span className={`erp-settle-value ${outstanding > 0 ? "due" : "clear"}`}>
+                {money(outstanding)}
+              </span>
+            </div>
+          </div>
+          {outstanding > 0 && (
+            <Link
+              href={
+                doc.doc_type === "SALES_INVOICE"
+                  ? `/receivables/receive?partner=${doc.partner_id}&invoice=${doc.id}`
+                  : `/payables/pay?partner=${doc.partner_id}&invoice=${doc.id}`
+              }
+              className="erp-btn erp-btn-primary erp-settle-act"
+            >
+              {doc.doc_type === "SALES_INVOICE" ? "Receive payment" : "Pay supplier"}
+            </Link>
+          )}
         </div>
       )}
 
@@ -512,13 +560,22 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
                   <dd className="m">{doc.reference}</dd>
                 </>
               )}
-              {doc.to_deliver && (
+              {isSi && (
                 <>
-                  <dt>Delivery</dt>
+                  <dt>Fulfilment</dt>
                   <dd>
-                    <span className={`pill ${doc.delivered_at ? "ok" : "warn"}`}>
-                      {doc.delivered_at ? "Delivered" : "To deliver"}
-                    </span>
+                    {/* Which way this invoice was raised, and whether the
+                        goods have gone. "Take now" and "Deliver later" are
+                        two different promises to the customer, and an invoice
+                        that has not shipped yet should say so on its face
+                        rather than in the absence of a delivery link. */}
+                    {doc.to_deliver ? (
+                      <span className={`pill ${stageDoc["DELIVERY"] ? "ok" : "warn"}`}>
+                        {stageDoc["DELIVERY"] ? "Delivered" : "Delivery pending"}
+                      </span>
+                    ) : (
+                      <span className="pill ok">Taken now</span>
+                    )}
                   </dd>
                 </>
               )}
@@ -538,29 +595,11 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
           </div>
         </div>
 
-        <div className="card">
-          <div className="card-head"><h2>Downstream</h2></div>
-          {downstream.length > 0 ? (
-            <div className="tablewrap">
-              <table>
-                <thead><tr><th>Document</th><th>Type</th><th className="r">Amount</th></tr></thead>
-                <tbody>
-                  {downstream.map((d: any) => (
-                    <tr key={d.id}>
-                      <td className="code">
-                        <Link href={`/documents/${d.id}`} style={{ color: "var(--brand)" }}>{d.doc_no}</Link>
-                      </td>
-                      <td className="m">{label(d.doc_type)}</td>
-                      <td className="r">{money(d.gross_total)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="empty">Nothing has been created from this document yet</div>
-          )}
-        </div>
+        {/* The old Downstream card lived here. It is gone because the
+            Related Documents panel above says the same thing and more: both
+            directions, and the headings that have nothing under them. Two
+            lists of the same links, disagreeing about which ones count, is
+            worse than either. */}
       </div>
 
       {lines.length > 0 && (

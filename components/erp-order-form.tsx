@@ -44,7 +44,7 @@ export type OrderFormConfig = {
 
 export function ErpOrderForm({
   config, docId, docNo, status, partnerName, partnerCode, docDate, dueDate,
-  locationName, reference, memo, lines, netTotal, chain, actions,
+  locationName, reference, memo, lines, netTotal, chain, actions, related,
 }: {
   config: OrderFormConfig;
   docId: string;
@@ -62,6 +62,12 @@ export function ErpOrderForm({
   chain: ChainStage[];
   /** Rendered left of the pipeline, the way the reference puts workflow actions there. */
   actions?: React.ReactNode;
+  /**
+   * The related-documents panel. An order earns one as much as anything
+   * downstream of it does — it is the head of the chain, and the question
+   * "what came of this order" is the one the page exists to answer.
+   */
+  related?: React.ReactNode;
 }) {
   const totalOrdered = lines.reduce((s, l) => s + l.ordered, 0);
   const totalFulfilled = lines.reduce((s, l) => s + l.fulfilled, 0);
@@ -90,6 +96,8 @@ export function ErpOrderForm({
         ) : null
       }
     >
+        {related}
+
         <div className="erp-fields">
           <div>
             <dl className="erp-kv">
@@ -117,6 +125,7 @@ export function ErpOrderForm({
           <table className="erp-table">
             <thead>
               <tr>
+                <th className="erp-th erp-lineno">#</th>
                 <th className="erp-th">Item</th>
                 <th className="erp-th erp-num">Ordered</th>
                 <th className="erp-th erp-num">{config.fulfilledLabel}</th>
@@ -126,10 +135,11 @@ export function ErpOrderForm({
               </tr>
             </thead>
             <tbody>
-              {lines.map((l) => {
+              {lines.map((l, n) => {
                 const left = Math.max(0, Math.round((l.ordered - l.fulfilled) * 10000) / 10000);
                 return (
                   <tr key={l.id} className="erp-tr">
+                    <td className="erp-td erp-lineno">{n + 1}</td>
                     <td className="erp-td erp-item">
                       <span className="erp-item-code">{l.itemCode}</span>
                       <span className="erp-item-name">{l.itemName}</span>

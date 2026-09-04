@@ -37,6 +37,14 @@
 
 .erp-num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--erp-font-mono); }
 
+/* Line numbers: present so a line can be named out loud, quiet enough that
+   they never compete with the figures beside them. */
+.erp-lineno {
+  width: 2.25rem; text-align: right; padding-right: 0.5rem;
+  font-family: var(--erp-font-mono); font-variant-numeric: tabular-nums;
+  color: var(--erp-fg-muted);
+}
+
 .erp-btn {
   height: var(--erp-btn-h); padding: 0 0.5rem;
   font-family: inherit; font-size: var(--erp-text-sm); font-weight: var(--erp-weight-med);
@@ -244,4 +252,40 @@
   .erp-actionbar { border: 0; padding-left: 0; }
   .erp-actions { display: none; }
   .erp-tr { break-inside: avoid; }
+}
+
+/* The money summary an invoice is opened for: total, paid, outstanding,
+   with the settlement action beside them. Outstanding carries the only
+   colour — nothing else here competes with the figure that is still owed. */
+.erp-settle {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap;
+  padding: 0.75rem 1rem; margin-bottom: 1rem;
+  border: 1px solid var(--erp-border); border-radius: var(--erp-radius);
+  background: var(--erp-surface-sunken);
+}
+.erp-settle-figs { display: flex; gap: 2rem; flex-wrap: wrap; }
+.erp-settle-fig { display: flex; flex-direction: column; gap: 0.125rem; }
+.erp-settle-label {
+  font-size: var(--erp-text-sm); color: var(--erp-fg-muted);
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.erp-settle-value {
+  font-family: var(--erp-font-mono); font-variant-numeric: tabular-nums;
+  font-size: 1.05rem; font-weight: var(--erp-weight-med);
+}
+.erp-settle-value.due { color: var(--warn); }
+.erp-settle-value.clear { color: var(--erp-success); }
+.erp-settle-act { height: auto; padding: 0.5rem 0.9rem; text-decoration: none; }
+
+/* An optional stage that has not happened. Hatched, not dimmed further:
+   dimming says "still owed", and the whole point is that a sale without an
+   order is finished, not incomplete. A border would be clipped away by the
+   chevron, so the texture is a gradient. */
+.erp-stage.todo.optional {
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent 0 5px,
+    color-mix(in srgb, var(--erp-fg-muted) 14%, transparent) 5px 6px
+  );
 }

@@ -127,10 +127,19 @@ try {
 
   // Charging it out at something is the point: a sale with no cost shows a
   // margin of 100% and nothing ever corrects it.
+  // Scoped to this sale, not to the company: a company-wide sum reads
+  // whatever else the database happens to hold, so the assertion passed or
+  // failed on how many times the suite had been run before it.
   const cogs = await sql`
     select coalesce(sum(jl.base_amount), 0) as v
-      from journal_line jl join account a on a.id = jl.account_id
-     where jl.company_id = ${co.id} and a.account_type = 'COGS'`;
+      from journal_line jl
+      join account a on a.id = jl.account_id
+      join journal_entry je on je.id = jl.journal_entry_id
+      join document d on d.journal_entry_id = je.id
+     where jl.company_id = ${co.id} and a.account_type = 'COGS'
+       and (d.id = ${sale.id}
+            or d.source_document_id = ${sale.id}
+            or d.id = (select source_document_id from document where id = ${sale.id}))`;
   check("cost of sales was charged, not left at zero", n(cogs[0].v) === 50000, String(n(cogs[0].v)));
 
   // ---- the reconciliation -------------------------------------------------
@@ -173,7 +182,9 @@ try {
     select coalesce(sum(jl.base_amount), 0) as v
       from journal_line jl join account a on a.id = jl.account_id
       join system_account sa on sa.account_id = a.id and sa.role = 'PURCHASE_PRICE_VARIANCE'
-     where jl.company_id = ${co.id}`;
+      join journal_entry je on je.id = jl.journal_entry_id
+      join document d on d.journal_entry_id = je.id
+     where jl.company_id = ${co.id} and d.id = ${gr.id}`;
   check("the 200 a unit it was under-costed by reaches variance",
     Math.abs(n(variance[0].v) - 2000) < 0.0001, String(n(variance[0].v)));
 
