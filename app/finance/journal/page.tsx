@@ -1,9 +1,10 @@
-import { getFinanceData, createJournalVoucher } from "@/lib/actions";
+import { getFinanceData, peekVoucherNo, createJournalVoucher } from "@/lib/actions";
 import { VoucherForm } from "@/components/voucher-form";
 
 export default async function JournalVoucher() {
   const { accounts, accountTree, cashAccounts, bankAccounts, branches } = await getFinanceData();
   const today = new Date().toISOString().slice(0, 10);
+  const nextNo = await peekVoucherNo("JOURNAL_VOUCHER");
   const money = cashAccounts;
 
   if (accounts.length === 0) {
@@ -34,7 +35,7 @@ export default async function JournalVoucher() {
         branches={branches as never}
         moneyAccounts={money as never}
         today={today}
-        nextNo="JV-"
+        nextNo={nextNo}
       />
     </>
   );

@@ -1,10 +1,11 @@
 import Link from "next/link";
-import { getFinanceData, createCashVoucher } from "@/lib/actions";
+import { getFinanceData, peekVoucherNo, createCashVoucher } from "@/lib/actions";
 import { VoucherForm } from "@/components/voucher-form";
 
 export default async function CashPayment() {
   const { accounts, accountTree, cashAccounts, branches } = await getFinanceData();
   const today = new Date().toISOString().slice(0, 10);
+  const nextNo = await peekVoucherNo("CASH_VOUCHER", "OUT");
 
   if (cashAccounts.length === 0) {
     return (
@@ -38,7 +39,7 @@ export default async function CashPayment() {
         branches={branches as never}
         moneyAccounts={cashAccounts as never}
         today={today}
-        nextNo="CV-"
+        nextNo={nextNo}
         presetDirection="out"
       />
     </>

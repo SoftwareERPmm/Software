@@ -132,9 +132,8 @@ export function VoucherForm({
       {state && "error" in state && <div className="alert">{state.error}</div>}
       <input type="hidden" name="lines" value={JSON.stringify(lines)} />
 
-      <div className="card">
+      <div className="card doc-meta">
         <div className="card-head">
-          <h2>Voucher</h2>
           <span className="m" style={{ color: "var(--muted)" }}>No. {nextNo}</span>
         </div>
         <div className="card-body">
@@ -302,7 +301,7 @@ export function VoucherForm({
         <textarea id="memo" name="memo" rows={2} placeholder="What this voucher is for — English or Myanmar" />
       </div>
 
-      <div className="actions">
+      <div className="actions form-commit">
         <button type="submit" disabled={pending || !ready}>
           {pending ? "Posting…" : ready ? `Post ${fmt(totalDr)}` : "Post voucher"}
         </button>

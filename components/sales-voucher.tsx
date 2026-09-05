@@ -406,9 +406,8 @@ export function SalesVoucher({
       <input type="hidden" name="lines" value={payload} />
       <input type="hidden" name="payment_type" value={paymentType} />
 
-      <div className="card">
+      <div className="card doc-meta">
         <div className="card-head">
-          <h2>Voucher</h2>
           <span className="actions">
             <span className="pill">Sales invoice</span>
             {activeLevel && (
@@ -460,7 +459,7 @@ export function SalesVoucher({
                   <option key={l.id} value={l.id}>{l.code} · {l.name}</option>
                 ))}
               </select>
-              <span className="hint">Stock leaves from here — On hand below is what&rsquo;s at this location</span>
+              <span className="hint">Stock leaves from here</span>
             </div>
 
             <div className="field">
@@ -473,7 +472,6 @@ export function SalesVoucher({
                   The order this delivery came from. Type over it for a customer&rsquo;s own PO.
                 </span>
               )}
-              <span className="hint">Their number, not ours</span>
             </div>
 
             <div className="field">
@@ -484,6 +482,28 @@ export function SalesVoucher({
                 <option value="CASH">Cash</option>
               </select>
             </div>
+
+            {(deliveries?.length ?? 0) > 0 && (
+              <div className="field">
+                <label htmlFor="delivery_id">Match delivery</label>
+                <select id="delivery_id" name="delivery_id" value={matchedDeliveryId}
+                  onChange={(e) => matchDelivery(e.target.value)} disabled={!customerId}>
+                  <option value="">
+                    {customerId ? "Not matched" : "Choose a customer first"}
+                  </option>
+                  {openDeliveries.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.doc_no} · {String(d.doc_date).slice(0, 10)} · {d.lines.length} line{d.lines.length === 1 ? "" : "s"}
+                    </option>
+                  ))}
+                </select>
+                <span className="hint">
+                  {matchedDeliveryId
+                    ? "Lines filled from it — stock already left, so Fulfilment no longer applies"
+                    : "For stock that already left and just needs its invoice"}
+                </span>
+              </div>
+            )}
 
             <div className="field">
               <label htmlFor="due_date">Due date</label>
@@ -497,35 +517,6 @@ export function SalesVoucher({
           </div>
         </div>
       </div>
-
-      {(deliveries?.length ?? 0) > 0 && (
-        <div className="card">
-          <div className="card-head">
-            <h2>Matching</h2>
-          </div>
-          <div className="card-body">
-            <div className="field">
-              <label htmlFor="delivery_id">Match existing delivery</label>
-              <select id="delivery_id" name="delivery_id" value={matchedDeliveryId}
-                onChange={(e) => matchDelivery(e.target.value)} disabled={!customerId}>
-                <option value="">
-                  {customerId ? "Not matched — invoice fresh, or deliver later" : "Choose a customer first"}
-                </option>
-                {openDeliveries.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.doc_no} · {String(d.doc_date).slice(0, 10)} · {d.lines.length} line{d.lines.length === 1 ? "" : "s"}
-                  </option>
-                ))}
-              </select>
-              <span className="hint">
-                {matchedDeliveryId
-                  ? "Lines are filled from this delivery, priced normally — stock already left, so Fulfilment below no longer applies."
-                  : "Stock already left and just needs its invoice written — pick which delivery this is for."}
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="card">
         <div className="card-head">
@@ -855,7 +846,7 @@ export function SalesVoucher({
         onConfirm={() => { setNegativeConfirmed(true); setAskNegative(false); }}
       />
 
-      <div className="actions">
+      <div className="actions form-commit">
         <button
           type={shortages.length > 0 && !negativeConfirmed ? "button" : "submit"}
           onClick={

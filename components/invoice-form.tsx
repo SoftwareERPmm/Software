@@ -197,10 +197,7 @@ export function InvoiceForm({
 
       <input type="hidden" name="lines" value={payload} />
 
-      <div className="card">
-        <div className="card-head">
-          <h2>{isSales ? "Customer" : "Supplier"} and dates</h2>
-        </div>
+      <div className="card doc-meta">
         <div className="card-body">
           <div className="row">
             <div className="field">
@@ -244,6 +241,28 @@ export function InvoiceForm({
               />
             </div>
 
+            {!isSales && (
+              <div className="field">
+                <label htmlFor="goods_receipt_id">Match goods receipt</label>
+                <select id="goods_receipt_id" name="goods_receipt_id" value={matchedGrId}
+                  onChange={(e) => matchGoodsReceipt(e.target.value)} disabled={!partnerId}>
+                  <option value="">
+                    {partnerId ? "Not matched" : "Choose a supplier first"}
+                  </option>
+                  {openReceipts.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.doc_no} · {String(d.doc_date).slice(0, 10)} · {d.lines.length} line{d.lines.length === 1 ? "" : "s"}
+                    </option>
+                  ))}
+                </select>
+                <span className="hint">
+                  {matchedGr
+                    ? "Lines filled from it — check against the actual bill"
+                    : "For goods already in the warehouse, awaiting their bill"}
+                </span>
+              </div>
+            )}
+
             <div className="field">
               <label htmlFor="due_date">Due date</label>
               <input
@@ -261,35 +280,6 @@ export function InvoiceForm({
           </div>
         </div>
       </div>
-
-      {!isSales && (
-        <div className="card">
-          <div className="card-head">
-            <h2>Matching</h2>
-          </div>
-          <div className="card-body">
-            <div className="field">
-              <label htmlFor="goods_receipt_id">Match existing goods receipt</label>
-              <select id="goods_receipt_id" name="goods_receipt_id" value={matchedGrId}
-                onChange={(e) => matchGoodsReceipt(e.target.value)} disabled={!partnerId}>
-                <option value="">
-                  {partnerId ? "Not matched — new receipt or bill first" : "Choose a supplier first"}
-                </option>
-                {openReceipts.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.doc_no} · {String(d.doc_date).slice(0, 10)} · {d.lines.length} line{d.lines.length === 1 ? "" : "s"}
-                  </option>
-                ))}
-              </select>
-              <span className="hint">
-                {matchedGr
-                  ? "Lines are filled from this receipt — check quantities and prices against the actual bill before posting."
-                  : "The goods are already in the warehouse and just need their bill recorded — pick which receipt this invoice is for."}
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="card">
         <div className="card-head">
@@ -480,7 +470,7 @@ export function InvoiceForm({
         <textarea id="memo" name="memo" rows={2} placeholder="Optional — English or Myanmar" />
       </div>
 
-      <div className="actions">
+      <div className="actions form-commit">
         <button type="submit"
           disabled={pending || total === 0 || shortages.length > 0 || cashOverpaid || (Number(cashOut) > 0 && !cashAccountId)}>
           {pending ? "Posting…" : `Post ${isSales ? "sales" : "purchase"} invoice`}

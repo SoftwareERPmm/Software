@@ -1825,6 +1825,28 @@ export async function createAccountOpening(_prev: unknown, fd: FormData): Promis
 }
 
 /** Accounts and locations for the finance voucher screens. */
+/**
+ * The number the next voucher of this kind will carry, asked of the database
+ * rather than spelled out on the page.
+ *
+ * The five voucher screens each printed a literal prefix — "CV-", "BV-",
+ * "JV-" — which stopped being true when numbering moved to type + date +
+ * daily sequence in migration 0035. They showed "No. CV-" with no number at
+ * all, next to a form that posts P20260905001.
+ *
+ * Read-only on purpose: fn_peek_document_no takes no lock and consumes
+ * nothing, so opening a screen never burns a number.
+ */
+export async function peekVoucherNo(
+  type: "CASH_VOUCHER" | "BANK_VOUCHER" | "JOURNAL_VOUCHER",
+  direction?: "IN" | "OUT",
+): Promise<string> {
+  const co = await companyId();
+  const [row] = await sql`
+    select fn_peek_document_no(${co}, ${type}, current_date, ${direction ?? null}) as no`;
+  return (row?.no as string) ?? "";
+}
+
 export async function getFinanceData() {
   const co = await companyId();
 
