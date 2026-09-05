@@ -149,7 +149,10 @@
 .erp-stage:last-child  { clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 9px 50%); }
 .erp-stage a { color: inherit; text-decoration: none; display: flex; align-items: center; gap: 0.4rem; }
 .erp-stage.done { color: var(--erp-fg); }
-.erp-stage.done a:hover { color: var(--erp-brand); }
+/* Hover changes the ground, not the text. Recolouring the label green said
+   nothing a pointer had not already said, and green is the accent that marks
+   the stage you are actually on — spending it on hover blurs that. */
+.erp-stage.done a:hover { background: var(--erp-surface-sunken); }
 .erp-stage.here { background: var(--erp-brand); color: var(--erp-brand-fg); font-weight: 700; }
 /* A stage nothing has reached yet is dimmed, not hidden — the shape of the
    workflow should be legible from the first step, not assembled as you go. */
@@ -158,7 +161,7 @@
    unreached workflow, but not as far, and it responds to the pointer — the
    difference between "not yet" and "not yet, and this is how". */
 .erp-stage.todo.next { opacity: 0.85; cursor: pointer; }
-.erp-stage.todo.next a:hover { color: var(--erp-brand); }
+.erp-stage.todo.next a:hover { color: var(--erp-fg); }
 .erp-stage-no { font-family: var(--erp-font-mono); font-size: var(--erp-text-xs); opacity: 0.75; }
 
 /* The sheet: a page floating on the app background, which is what separates
