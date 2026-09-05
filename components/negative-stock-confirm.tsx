@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { AlertTriangle } from "lucide-react";
 
 export type Shortfall = {
   itemCode: string;
@@ -51,7 +52,14 @@ export function NegativeStockConfirm({
       onClick={(e) => { if (e.target === ref.current) onCancel(); }}
     >
       <div className="confirm-panel">
-        <div className="confirm-icon" aria-hidden="true">⚠️</div>
+        {/* The icon, not the emoji. An emoji is rendered by the operating
+            system, so it changes shape between a Mac, a Windows PC and an
+            Android phone, ignores the colour it is given, and sits on the
+            baseline differently in each — none of which a warning that
+            gates a stock movement should be subject to. */}
+        <div className="confirm-icon" aria-hidden="true">
+          <AlertTriangle size={19} strokeWidth={2.25} />
+        </div>
         <h2 className="confirm-title">Insufficient recorded stock</h2>
         <p className="confirm-detail">
           This will result in negative stock for
