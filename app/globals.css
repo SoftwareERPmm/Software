@@ -24,7 +24,7 @@
   --ok:        #1F7A4D;
   --warn:      #B4691A;
   --bad:       #B4283C;
-  --ghost:     #9AA4B2;
+  --ghost:     #6E7787;
 
   /* Plex Sans and Plex Mono are a designed pair, which matters here because
      mono carries every label, header and figure — more of the screen than the
@@ -87,7 +87,7 @@
     --ok:        #4FB784;
     --warn:      #DDA24E;
     --bad:       #E8697C;
-    --ghost:     #5A6472;
+    --ghost:     #7A8494;
   }
 }
 
@@ -464,9 +464,16 @@ button {
   color: var(--brand-fg); background: var(--brand);
   border: 1px solid var(--brand); border-radius: var(--r-md);
   padding: 0.46rem 1rem; cursor: pointer;
-  transition: background-color 150ms, border-color 150ms, color 150ms, opacity 150ms;
+  transition: background-color 150ms, border-color 150ms, color 150ms;
 }
-button:hover { opacity: 0.88; }
+/* Hover darkens the surface. It used to drop opacity to 0.88, which is the
+   same mechanism :disabled uses at 0.5 — so pointing at a button made it
+   look faintly unavailable, and took the label's contrast down with it.
+   Mixing toward --ink deepens on light and lifts on dark, both correct. */
+button:hover:not(:disabled):not(.ghost):not(.warn):not(.danger) {
+  background: color-mix(in srgb, var(--brand) 88%, var(--ink));
+  border-color: color-mix(in srgb, var(--brand) 88%, var(--ink));
+}
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 
@@ -765,14 +772,18 @@ a.btn {
   color: var(--brand-fg); background: var(--brand);
   border: 1px solid var(--brand); border-radius: var(--r-md);
   padding: 0.46rem 1rem; cursor: pointer;
-  transition: opacity 150ms;
+  transition: background-color 150ms, border-color 150ms;
   text-decoration: none;
 }
-a.btn:hover { opacity: 0.88; }
+/* Same as button:hover — the surface deepens, the label does not fade. */
+a.btn:hover:not(.ghost) {
+  background: color-mix(in srgb, var(--brand) 88%, var(--ink));
+  border-color: color-mix(in srgb, var(--brand) 88%, var(--ink));
+}
 a.btn:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 
 a.btn.ghost { color: var(--ink-soft); background: transparent; border-color: var(--line); }
-a.btn.ghost:hover { background: var(--line-soft); opacity: 1; }
+a.btn.ghost:hover { background: var(--line-soft); }
 
 a.btn.tiny { padding: 0.16rem 0.5rem; font-size: var(--t-sm); }
 
@@ -928,8 +939,8 @@ tbody tr.coa-section > td { padding-top: 10px; padding-bottom: 10px; }
   padding: var(--s2) var(--s3);
   margin: 0 calc(-1 * var(--s5)) calc(-1 * var(--s6));
   border-top: 1px solid var(--line);
-  background: color-mix(in srgb, var(--ground) 88%, transparent);
-  backdrop-filter: blur(8px);
+  background: var(--ground);
+  box-shadow: 0 -1px 0 var(--line), 0 -8px 16px -12px rgb(0 0 0 / 0.25);
 }
 .form-commit .page-sub { font-size: var(--t-sm); }
 @media (max-width: 720px) {
