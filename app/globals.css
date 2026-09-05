@@ -470,7 +470,14 @@ button {
    same mechanism :disabled uses at 0.5 — so pointing at a button made it
    look faintly unavailable, and took the label's contrast down with it.
    Mixing toward --ink deepens on light and lifts on dark, both correct. */
-button:hover:not(:disabled):not(.ghost):not(.warn):not(.danger) {
+/* Only the filled primary button, which is the one that carries no class.
+   Every other button here has already opted out of the filled style through
+   a class — .ghost, .warn, .danger, and the sidebar's own .navhead and
+   .navsubhead, which are buttons too. Excluding by naming the variants
+   missed the nav and put a green fill behind the section headings.
+   .tiny is a size, not a restyle, so a bare .tiny keeps the hover. */
+button:hover:not(:disabled):not([class]),
+button.tiny:hover:not(:disabled):not(.ghost):not(.warn):not(.danger) {
   background: color-mix(in srgb, var(--brand) 88%, var(--ink));
   border-color: color-mix(in srgb, var(--brand) 88%, var(--ink));
 }
