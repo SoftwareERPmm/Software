@@ -87,6 +87,14 @@ try {
       values (${co.id}, ${grp.id}, '001', 'x', 'GR/IR Test Item', ${uom.id}) returning id, code`;
   }
 
+  // The codes this chart uses for the two accounts this suite is about,
+  // asked of the chart rather than assumed. On any chart but the demo seed,
+  // "1310" and "5200" are somebody else's accounts or nobody's.
+  const { accountsFor } = await import("./accounts.mjs");
+  const acct = accountsFor(sql, co.id);
+  const GRIR = await acct.role("GRIR_CLEARING");
+  const PPV = await acct.role("PURCHASE_PRICE_VARIANCE");
+
   const today = new Date().toISOString().slice(0, 10);
   const base = { companyId: co.id, partnerId: supp.id, locationId: loc.id, docDate: today };
 
@@ -103,22 +111,22 @@ try {
   const grLines = await sql`
     select id from document_line where document_id = ${gr.id} order by line_no`;
 
-  check("the receipt holds the full 150,000 in GR/IR", (await balance("1310")) === -150000,
-    `${-(await balance("1310"))}`);
+  check("the receipt holds the full 150,000 in GR/IR", (await balance(GRIR)) === -150000,
+    `${-(await balance(GRIR))}`);
 
   const pi1 = await postPurchaseInvoice({ ...base, dueDate: null, goodsReceiptId: gr.id,
     lines: [{ itemId: item.id, qty: 50, unitPrice: 1000, sourceLineId: grLines[0].id }] });
 
   check("billing the cheap line settles 50,000, not an averaged 75,000",
-    (await balance("1310")) === -100000, `${-(await balance("1310"))} still owed`);
+    (await balance(GRIR)) === -100000, `${-(await balance(GRIR))} still owed`);
   check("and books no variance, because it matched exactly",
-    (await balance("5200")) === 0, `${await balance("5200")}`);
+    (await balance(PPV)) === 0, `${await balance(PPV)}`);
 
   const pi2 = await postPurchaseInvoice({ ...base, dueDate: null, goodsReceiptId: gr.id,
     lines: [{ itemId: item.id, qty: 50, unitPrice: 2000, sourceLineId: grLines[1].id }] });
 
-  check("billing the dear line clears the rest", (await balance("1310")) === 0);
-  check("still no variance across the pair", (await balance("5200")) === 0);
+  check("billing the dear line clears the rest", (await balance(GRIR)) === 0);
+  check("still no variance across the pair", (await balance(PPV)) === 0);
   check("both invoices recorded which receipt line they billed",
     (await sql`select count(*)::int as c from document_line dl join document d on d.id = dl.document_id
                 where d.doc_type = 'PURCHASE_INVOICE' and dl.source_line_id is not null`)[0].c === 2);
@@ -136,13 +144,13 @@ try {
     lines: [{ itemId: item.id, qty: 50, unitPrice: 1000 }] });
 
   check("an unnamed line settles the oldest layer, at 1,000",
-    (await balance("1310")) === -100000, `${-(await balance("1310"))} still owed`);
-  check("no variance invented", (await balance("5200")) === 0);
+    (await balance(GRIR)) === -100000, `${-(await balance(GRIR))} still owed`);
+  check("no variance invented", (await balance(PPV)) === 0);
 
   await postPurchaseInvoice({ ...base, dueDate: null, goodsReceiptId: gr2.id,
     lines: [{ itemId: item.id, qty: 50, unitPrice: 2200 }] });
   check("a genuine overcharge does reach variance",
-    (await balance("5200")) === 10000, `${await balance("5200")} on 50 × 200`);
+    (await balance(PPV)) === 10000, `${await balance(PPV)} on 50 × 200`);
 
   // ---- Bill first, goods in two shipments --------------------------------
 
@@ -151,18 +159,18 @@ try {
 
   const pi3 = await postPurchaseInvoice({ ...base, dueDate: null,
     lines: [{ itemId: item.id, qty: 100, unitPrice: 1000 }] });
-  check("the invoice alone holds 100,000 in GR/IR", (await balance("1310")) === 100000);
+  check("the invoice alone holds 100,000 in GR/IR", (await balance(GRIR)) === 100000);
 
   await postGoodsReceipt({ ...base, sourceDocumentId: pi3.id,
     lines: [{ itemId: item.id, qty: 50, unitCost: 1000 }] });
   check("half the goods release half the invoice, not all of it",
-    (await balance("1310")) === 50000, `${await balance("1310")} still awaited`);
-  check("and book no variance", (await balance("5200")) === 0, `${await balance("5200")}`);
+    (await balance(GRIR)) === 50000, `${await balance(GRIR)} still awaited`);
+  check("and book no variance", (await balance(PPV)) === 0, `${await balance(PPV)}`);
 
   await postGoodsReceipt({ ...base, sourceDocumentId: pi3.id,
     lines: [{ itemId: item.id, qty: 50, unitCost: 1000 }] });
-  check("the second half clears it exactly", (await balance("1310")) === 0);
-  check("with no variance across the pair", (await balance("5200")) === 0);
+  check("the second half clears it exactly", (await balance(GRIR)) === 0);
+  check("with no variance across the pair", (await balance(PPV)) === 0);
 
   // ---- Goods dearer than billed ------------------------------------------
 
@@ -174,9 +182,9 @@ try {
   await postGoodsReceipt({ ...base, sourceDocumentId: pi4.id,
     lines: [{ itemId: item.id, qty: 50, unitCost: 1100 }] });
 
-  check("only the invoiced half is released", (await balance("1310")) === 50000);
+  check("only the invoiced half is released", (await balance(GRIR)) === 50000);
   check("stock capitalised above what is owed is a favourable variance",
-    (await balance("5200")) === -5000, `${await balance("5200")} credit on 50 × 100`);
+    (await balance(PPV)) === -5000, `${await balance(PPV)} credit on 50 × 100`);
 
   // ---- Invariants --------------------------------------------------------
 

@@ -1,23 +1,34 @@
 import Link from "next/link";
 import { shortDate } from "@/lib/db";
 import { getCompany, getOpenSalesOrders, getPendingDeliveries, getStockByLocation } from "@/lib/queries";
+import { sql } from "@/lib/db";
 import { createDelivery, deliverPendingInvoice } from "@/lib/actions";
 import { FulfillOrderForm } from "@/components/fulfill-order-form";
 import { DeliverNowButton } from "@/components/deliver-now-button";
 
-export default async function Deliver() {
+export default async function Deliver({
+  searchParams,
+}: {
+  searchParams: Promise<{ order?: string }>;
+}) {
+  const { order } = await searchParams;
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
-  const [openLines, pending, stockByLocation] = await Promise.all([
+  const [openLines, pending, stockByLocation, focReasons] = await Promise.all([
     getOpenSalesOrders(company.id),
     getPendingDeliveries(company.id),
     getStockByLocation(company.id),
+    // Why units might leave free — a delivery can carry a giveaway alongside
+    // what was ordered, and the reason decides where its cost lands.
+    sql`select id, code, name from foc_reason
+         where company_id = ${company.id} order by code`,
   ]);
 
   const orders = new Map<string, {
     orderId: string; orderNo: string; partnerId: string; partnerName: string; locationId: string;
-    lines: { lineId: string; itemId: string; itemCode: string; itemName: string; remainingQty: number }[];
+    lines: { lineId: string; itemId: string; itemCode: string; itemName: string;
+             uomCode: string; remainingQty: number }[];
   }>();
   for (const r of openLines as any[]) {
     if (!orders.has(r.order_id)) {
@@ -28,7 +39,7 @@ export default async function Deliver() {
     }
     orders.get(r.order_id)!.lines.push({
       lineId: r.line_id, itemId: r.item_id, itemCode: r.item_code, itemName: r.item_name,
-      remainingQty: Number(r.remaining_qty),
+      uomCode: r.uom_code, remainingQty: Number(r.remaining_qty),
     });
   }
 
@@ -80,6 +91,7 @@ export default async function Deliver() {
 
       <div className="page-head" style={{ marginTop: "1.5rem" }}>
         <h2 style={{ margin: 0 }}>Open sales orders</h2>
+        <Link href="/sales/deliver/new" className="btn">Deliver without an order</Link>
       </div>
 
       {orders.size === 0 ? (
@@ -88,7 +100,13 @@ export default async function Deliver() {
           <Link href="/sales/orders/new" style={{ color: "var(--brand)" }}>New sales order</Link>
         </div>
       ) : (
-        [...orders.values()].map((o) => (
+        // Arrived from one order's own row or its document page: show that
+        // order alone. The worklist is where you pick from everything open;
+        // following a link from a particular order and then having to find it
+        // again in the list is the step this parameter removes.
+        [...orders.values()]
+          .filter((o) => !order || o.orderId === order)
+          .map((o) => (
           <FulfillOrderForm
             key={o.orderId}
             kind="sales"
@@ -100,8 +118,25 @@ export default async function Deliver() {
             lines={o.lines}
             action={createDelivery}
             stockByLocation={stockByLocation as never}
+            focReasons={focReasons as never}
           />
         ))
+      )}
+
+      {order && orders.size > 1 && (
+        <div className="actions" style={{ marginTop: "0.75rem" }}>
+          <Link href="/sales/deliver" className="btn ghost">
+            Show all {orders.size} open orders
+          </Link>
+        </div>
+      )}
+      {order && !orders.has(order) && (
+        <div className="empty">
+          That order has nothing left to deliver.{" "}
+          <Link href="/sales/deliver" style={{ color: "var(--brand)" }}>
+            See what is still open
+          </Link>
+        </div>
       )}
     </>
   );

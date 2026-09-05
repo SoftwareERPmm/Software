@@ -62,10 +62,17 @@ try {
   const [loc] = await sql`
     select id from location where company_id = ${co.id} and is_stock_location limit 1`;
   const [cash] = await sql`
-    select id, code from account where company_id = ${co.id} and code = '1110'`;
+    select id, code from account where company_id = ${co.id}
+       and is_cash_account and is_postable and is_active order by code limit 1`;
   const [sup] = await sql`
     insert into business_partner (company_id, code, name, is_supplier)
     values (${co.id}, 'AP-SUP', 'AP Test Supplier', true) returning id`;
+
+  // The payables control account this chart uses for this supplier. Asserting
+  // on "2100" summed a column of nothing wherever the chart differs, and a
+  // subledger reconciliation that reads zero on both sides proves nothing.
+  const { accountsFor } = await import("./accounts.mjs");
+  const AP = await accountsFor(sql, co.id).control("AP_CONTROL", sup.id);
 
   const today = new Date().toISOString().slice(0, 10);
 
@@ -89,7 +96,7 @@ try {
       from v_journal_line jl
       join journal_entry je on je.id = jl.journal_entry_id
       join account a on a.id = jl.account_id
-     where jl.company_id = ${co.id} and a.code = '2100'
+     where jl.company_id = ${co.id} and a.code = ${AP}
      order by je.entry_no`;
 
   console.log("  Accounts Payable movements");
@@ -126,7 +133,7 @@ try {
   const [ctrl] = await sql`
     select coalesce(sum(-jl.base_amount), 0) as v
       from journal_line jl join account a on a.id = jl.account_id
-     where jl.company_id = ${co.id} and a.code = '2100'`;
+     where jl.company_id = ${co.id} and a.code = ${AP}`;
   const [sub] = await sql`
     select coalesce(sum(outstanding), 0) as v from v_invoice_status
      where company_id = ${co.id} and doc_type = 'PURCHASE_INVOICE'`;
@@ -162,7 +169,7 @@ try {
   console.log(`  ${"".padEnd(52)}${m(tDr).padStart(11)}${m(tCr).padStart(11)}
 `);
 
-  const ap = tb.find((r) => r.code === "2100");
+  const ap = tb.find((r) => r.code === AP);
   check("AP shows 50,000 in the debit column", n(ap.debit) === 50000);
   check("AP shows 500,000 in the credit column", n(ap.credit) === 500000);
   check("AP closing sits on the credit side, not as a negative",

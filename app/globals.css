@@ -854,3 +854,47 @@ tbody tr.coa-section > td { padding-top: 10px; padding-bottom: 10px; }
   white-space: nowrap;
   border: 0;
 }
+
+/* ------------------------------------------------- document form layout -- */
+
+/* A document form has a header and a line table, and they are not equals.
+   The header answers "which document is this" — date, partner, references.
+   The table is the work. Given the same weight they were given, the header
+   won on area alone: on a 1440x900 laptop it filled the screen and pushed
+   both the first line and the Post button below the fold, so writing an
+   invoice began by scrolling past the part already filled in.
+   So the header is deliberately quieter and denser than the table: smaller
+   controls, tighter rows, a sunken ground, and no heading of its own. */
+.doc-meta { background: var(--line-soft); }
+.doc-meta .card-body { padding: var(--s2) var(--s3) 0.85rem; }
+.doc-meta .row {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.55rem var(--s3);
+}
+.doc-meta .field { gap: 0.1rem; }
+.doc-meta .field label { font-size: var(--t-2xs); }
+.doc-meta input[type="text"], .doc-meta input[type="number"],
+.doc-meta input[type="date"], .doc-meta select {
+  min-height: 1.95rem; padding: 0.25rem 0.5rem; font-size: var(--t-md);
+}
+.doc-meta select { background-position: right 0.5rem center; padding-right: 1.75rem; }
+/* Hints in the header carry a rule worth keeping, but at header weight —
+   they were 13px sentences under 15px controls, two lines each. */
+.doc-meta .field .hint { font-size: var(--t-2xs); line-height: 1.3; }
+
+/* The control that commits the document, always reachable. It used to sit
+   under whatever the document happened to contain, so a long invoice put
+   Post off the bottom of the screen — the one control the form exists for. */
+.form-commit {
+  position: sticky; bottom: 0; z-index: 4;
+  display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap;
+  padding: var(--s2) var(--s3);
+  margin: 0 calc(-1 * var(--s5)) calc(-1 * var(--s6));
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ground) 88%, transparent);
+  backdrop-filter: blur(8px);
+}
+.form-commit .page-sub { font-size: var(--t-sm); }
+@media (max-width: 720px) {
+  .form-commit { margin: 0 calc(-1 * var(--s3)) calc(-1 * var(--s5)); }
+}

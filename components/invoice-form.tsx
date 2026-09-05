@@ -11,7 +11,12 @@ type Partner = { id: string; code: string; name: string; payment_terms_days: num
 type Location = { id: string; code: string; name: string };
 type CashAccount = { id: string; code: string; name: string };
 type MatchLine = { lineId: string; itemId: string; itemCode: string; itemName: string; qty: number; unitPrice: number };
-type OpenDoc = { id: string; doc_no: string; doc_date: string; partner_id: string; lines: MatchLine[] };
+type OpenDoc = {
+  id: string; doc_no: string; doc_date: string; partner_id: string;
+  /** The purchase order this receipt came in against, when it came from one. */
+  source_no?: string | null;
+  lines: MatchLine[];
+};
 
 // sourceLineId is set only when the line was prefilled from a goods receipt.
 // It is what lets GR/IR be settled at the rate that particular line came in
@@ -68,11 +73,23 @@ export function InvoiceForm({
   const [cashOut, setCashOut] = useState("");
   const [cashAccountId, setCashAccountId] = useState("");
   const [matchedGrId, setMatchedGrId] = useState("");
+  const [reference, setReference] = useState("");
 
   const isSales = kind === "sales";
   const byId = (id: string) => items.find((i) => i.id === id);
   const openReceipts = (goodsReceipts ?? []).filter((d) => d.partner_id === partnerId);
   const matchedGr = openReceipts.find((d) => d.id === matchedGrId) ?? null;
+
+  /**
+   * Our own number for the job this bill belongs to — the purchase order it
+   * traces back to, or the receipt itself when it came in without one.
+   *
+   * Filled in rather than left blank because stepping order → receipt →
+   * invoice already knows the answer, and making someone copy it across from
+   * another screen is how a bill ends up with no order on it at all. It stays
+   * an ordinary input: the supplier's own invoice number can be typed over it.
+   */
+  const referenceFor = (d: OpenDoc) => d.source_no || d.doc_no;
 
   function matchGoodsReceipt(id: string) {
     setMatchedGrId(id);
@@ -98,6 +115,10 @@ export function InvoiceForm({
     if (!gr) return;
     setPartnerId(gr.partner_id);
     setMatchedGrId(gr.id);
+    // Only when the invoice was opened from a receipt — walking the chain is
+    // what makes the order relevant. Someone who opened a blank invoice and
+    // chose a receipt from the list is composing it themselves.
+    setReference(referenceFor(gr));
     setLines(
       gr.lines.map((l, idx) => ({
         key: idx + 1,
@@ -176,10 +197,7 @@ export function InvoiceForm({
 
       <input type="hidden" name="lines" value={payload} />
 
-      <div className="card">
-        <div className="card-head">
-          <h2>{isSales ? "Customer" : "Supplier"} and dates</h2>
-        </div>
+      <div className="card doc-meta">
         <div className="card-body">
           <div className="row">
             <div className="field">
@@ -223,6 +241,28 @@ export function InvoiceForm({
               />
             </div>
 
+            {!isSales && (
+              <div className="field">
+                <label htmlFor="goods_receipt_id">Match goods receipt</label>
+                <select id="goods_receipt_id" name="goods_receipt_id" value={matchedGrId}
+                  onChange={(e) => matchGoodsReceipt(e.target.value)} disabled={!partnerId}>
+                  <option value="">
+                    {partnerId ? "Not matched" : "Choose a supplier first"}
+                  </option>
+                  {openReceipts.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.doc_no} · {String(d.doc_date).slice(0, 10)} · {d.lines.length} line{d.lines.length === 1 ? "" : "s"}
+                    </option>
+                  ))}
+                </select>
+                <span className="hint">
+                  {matchedGr
+                    ? "Lines filled from it — check against the actual bill"
+                    : "For goods already in the warehouse, awaiting their bill"}
+                </span>
+              </div>
+            )}
+
             <div className="field">
               <label htmlFor="due_date">Due date</label>
               <input
@@ -240,35 +280,6 @@ export function InvoiceForm({
           </div>
         </div>
       </div>
-
-      {!isSales && (
-        <div className="card">
-          <div className="card-head">
-            <h2>Matching</h2>
-          </div>
-          <div className="card-body">
-            <div className="field">
-              <label htmlFor="goods_receipt_id">Match existing goods receipt</label>
-              <select id="goods_receipt_id" name="goods_receipt_id" value={matchedGrId}
-                onChange={(e) => matchGoodsReceipt(e.target.value)} disabled={!partnerId}>
-                <option value="">
-                  {partnerId ? "Not matched — new receipt or bill first" : "Choose a supplier first"}
-                </option>
-                {openReceipts.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.doc_no} · {String(d.doc_date).slice(0, 10)} · {d.lines.length} line{d.lines.length === 1 ? "" : "s"}
-                  </option>
-                ))}
-              </select>
-              <span className="hint">
-                {matchedGr
-                  ? "Lines are filled from this receipt — check quantities and prices against the actual bill before posting."
-                  : "The goods are already in the warehouse and just need their bill recorded — pick which receipt this invoice is for."}
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="card">
         <div className="card-head">
@@ -439,12 +450,27 @@ export function InvoiceForm({
         </div>
       )}
 
+      <div className="row">
+        <div className="field">
+          <label htmlFor="reference">Ref / order ID</label>
+          <input id="reference" name="reference" type="text"
+                 value={reference} onChange={(e) => setReference(e.target.value)}
+                 placeholder={isSales ? "Sales order or customer PO" : "Purchase order or supplier invoice no"} />
+          {initialGoodsReceiptId && reference && (
+            <span className="hint">
+              The order this {isSales ? "delivery" : "receipt"} came from. Type over it for the
+              {isSales ? " customer's" : " supplier's"} own number.
+            </span>
+          )}
+        </div>
+      </div>
+
       <div className="field">
         <label htmlFor="memo">Note</label>
         <textarea id="memo" name="memo" rows={2} placeholder="Optional — English or Myanmar" />
       </div>
 
-      <div className="actions">
+      <div className="actions form-commit">
         <button type="submit"
           disabled={pending || total === 0 || shortages.length > 0 || cashOverpaid || (Number(cashOut) > 0 && !cashAccountId)}>
           {pending ? "Posting…" : `Post ${isSales ? "sales" : "purchase"} invoice`}

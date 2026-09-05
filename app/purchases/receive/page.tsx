@@ -3,7 +3,12 @@ import { getCompany, getOpenPurchaseOrders } from "@/lib/queries";
 import { createGoodsReceipt } from "@/lib/actions";
 import { FulfillOrderForm } from "@/components/fulfill-order-form";
 
-export default async function Receive() {
+export default async function Receive({
+  searchParams,
+}: {
+  searchParams: Promise<{ order?: string }>;
+}) {
+  const { order } = await searchParams;
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
@@ -11,7 +16,8 @@ export default async function Receive() {
 
   const orders = new Map<string, {
     orderId: string; orderNo: string; partnerId: string; partnerName: string; locationId: string;
-    lines: { lineId: string; itemId: string; itemCode: string; itemName: string; remainingQty: number; expectedPrice: number }[];
+    lines: { lineId: string; itemId: string; itemCode: string; itemName: string;
+             uomCode: string; remainingQty: number; expectedPrice: number }[];
   }>();
   for (const r of openLines as any[]) {
     if (!orders.has(r.order_id)) {
@@ -22,7 +28,7 @@ export default async function Receive() {
     }
     orders.get(r.order_id)!.lines.push({
       lineId: r.line_id, itemId: r.item_id, itemCode: r.item_code, itemName: r.item_name,
-      remainingQty: Number(r.remaining_qty), expectedPrice: Number(r.expected_price ?? 0),
+      uomCode: r.uom_code, remainingQty: Number(r.remaining_qty), expectedPrice: Number(r.expected_price ?? 0),
     });
   }
 
@@ -52,7 +58,11 @@ export default async function Receive() {
           {" "}above instead.
         </div>
       ) : (
-        [...orders.values()].map((o) => (
+        // Arrived from one order's own row or its document page: show that
+        // order alone, rather than making someone find it again in the list.
+        [...orders.values()]
+          .filter((o) => !order || o.orderId === order)
+          .map((o) => (
           <FulfillOrderForm
             key={o.orderId}
             kind="purchase"
@@ -65,6 +75,22 @@ export default async function Receive() {
             action={createGoodsReceipt}
           />
         ))
+      )}
+
+      {order && orders.size > 1 && (
+        <div className="actions" style={{ marginTop: "0.75rem" }}>
+          <Link href="/purchases/receive" className="btn ghost">
+            Show all {orders.size} open orders
+          </Link>
+        </div>
+      )}
+      {order && !orders.has(order) && (
+        <div className="empty">
+          That order has nothing left to receive.{" "}
+          <Link href="/purchases/receive" style={{ color: "var(--brand)" }}>
+            See what is still open
+          </Link>
+        </div>
       )}
     </>
   );

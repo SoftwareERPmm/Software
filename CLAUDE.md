@@ -69,6 +69,18 @@ the repo across machines, not just the one they were written on.
   still posts end to end — but it writes data, so re-clear after running it.
   Do not use `migrate.mjs --reset --seed` for a fresh start: `db/seed.sql`
   contains demo *transactions*, not just foundation.
+- **`scripts/test-setup.mjs` is destructive beyond the other suites**: it
+  truncates `company` and `account` as well, then scaffolds "Bootstrap Test
+  Co". The chart it rebuilds is now the same MTK one, so that part comes back
+  identical — but the company name and code are the fixture's, and since the
+  app is single-company the sidebar then reads "Bootstrap Test Co". Put it
+  back with `update company set name = 'MTK Co Ltd — DEV', code = 'MTK'`.
+- **One chart, three places that build it.** `db/chart.mjs` holds it;
+  `lib/setup.ts` scaffolds from it, `scripts/load-coa.mjs` re-charts an
+  existing company from it, and `db/seed.sql` carries a generated copy —
+  regenerate that with `node scripts/gen-seed-chart.mjs`, and
+  `--check` fails if it has drifted. Three different charts is what left a
+  freshly set-up company unable to charge a delivery fee.
 - If Vercel MCP tools are connected, use `get_runtime_errors`/
   `get_runtime_logs` against the project/team above to diagnose a reported
   production error directly, rather than asking for server logs to be

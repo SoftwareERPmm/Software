@@ -88,6 +88,7 @@ npx tsx scripts/test-units.mjs          # retiring a unit disturbs nothing count
 npx tsx scripts/test-match-direction.mjs    # a receipt and its invoice see each other both ways
 npx tsx scripts/test-purchase-states.mjs    # ordered / received / invoiced / paid, every combination
 npx tsx scripts/test-reference-numbers.mjs  # Type + Date + sequence, and nothing repeating
+npx tsx scripts/test-void.mjs           # voiding and editing without rewriting anything
 ```
 
 Some of these assert the **seed** chart's account codes (1200, 1300, 4100,

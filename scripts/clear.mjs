@@ -95,6 +95,9 @@ const TXN = ["payment_allocation", "stock_movement", "document_line", "document"
 // Order matters: a table is deleted before anything it points at. item
 // carries brand_id, so brand can only go once the items are gone.
 const MASTER = ["consignment_agreement_line", "consignment_agreement",
+                // Before item: a quantity band may be scoped to one item, and
+                // that reference is what stops the item going.
+                "volume_discount",
                 "item_alias", "item_uom", "item_reorder", "item_price", "item",
                 "item_group", "brand", "business_partner", "salesman", "promotion",
                 // Last: item and document both carry import_batch_id, so the

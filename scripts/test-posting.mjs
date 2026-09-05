@@ -25,6 +25,7 @@ const {
   postDelivery, postSalesInvoice,
   postPurchaseWithReceipt, postSaleWithDelivery,
 } = await import("../lib/posting.ts");
+const { accountsFor } = await import("./accounts.mjs");
 
 const url = process.env.DATABASE_URL;
 const local = url.includes("localhost") || url.includes("127.0.0.1");
@@ -93,6 +94,16 @@ try {
 
   // ---- GOODS RECEIPT: stock in, nothing owed yet -------------------------
 
+  // The codes this chart actually uses, asked of the same resolvers the
+  // posting code asks. Hard-coded demo codes made a real chart look broken.
+  const acct = accountsFor(sql, co.id);
+  const INVENTORY = await acct.forItem("INVENTORY", item.id);
+  const COGS = await acct.forItem("COGS", item.id);
+  const REVENUE = await acct.forItem("REVENUE", item.id);
+  const GRIR = await acct.role("GRIR_CLEARING");
+  const AR = await acct.control("AR_CONTROL", cust.id);
+  const AP = await acct.control("AP_CONTROL", supp.id);
+
   const gr = await postGoodsReceipt({
     companyId: co.id, partnerId: supp.id, locationId: loc.id,
     docDate: today, memo: "first layer",
@@ -103,10 +114,10 @@ try {
   check("goods receipt brings stock in", (await onHand(co.id, item.id, loc.id)) === 100);
 
   const grJ = await journalOf(gr.id);
-  check("receipt debits inventory", grJ.some((l) => n(l.debit) === 100000 && l.account_code === "1300"));
+  check("receipt debits inventory", grJ.some((l) => n(l.debit) === 100000 && l.account_code === INVENTORY));
   check("receipt credits GR/IR, not payables",
-    grJ.some((l) => n(l.credit) === 100000 && l.account_code === "1310") &&
-    !grJ.some((l) => l.account_code === "2100"));
+    grJ.some((l) => n(l.credit) === 100000 && l.account_code === GRIR) &&
+    !grJ.some((l) => l.account_code === AP));
 
   // ---- PURCHASE INVOICE: the bill, no stock movement ---------------------
 
@@ -120,8 +131,8 @@ try {
   check("invoice moves no stock", (await onHand(co.id, item.id, loc.id)) === 100);
 
   const piJ = await journalOf(pi.id);
-  check("invoice clears GR/IR", piJ.some((l) => n(l.debit) === 100000 && l.account_code === "1310"));
-  check("invoice credits payables", piJ.some((l) => n(l.credit) === 100000 && l.account_code === "2100"));
+  check("invoice clears GR/IR", piJ.some((l) => n(l.debit) === 100000 && l.account_code === GRIR));
+  check("invoice credits payables", piJ.some((l) => n(l.credit) === 100000 && l.account_code === AP));
   check("invoice opens a payable",
     n((await sql`select outstanding from v_open_item where document_id = ${pi.id}`)[0]?.outstanding) === 100000);
 
@@ -156,13 +167,13 @@ try {
   check("delivery reduces stock", (await onHand(co.id, item.id, loc.id)) === 50);
 
   const delJ = await journalOf(del.id);
-  const cogs = delJ.find((l) => l.account_code === "5100");
+  const cogs = delJ.find((l) => l.account_code === COGS);
   check("delivery debits COGS", Boolean(cogs));
   check("COGS is FIFO: oldest layer first", Math.abs(n(cogs?.debit) - 175000) < 1,
     `${n(cogs?.debit)} (expected 175,000; average would be 187,500)`);
   check("delivery credits inventory for the same",
-    delJ.some((l) => Math.abs(n(l.credit) - 175000) < 1 && l.account_code === "1300"));
-  check("delivery raises no revenue", !delJ.some((l) => l.account_code === "4100"));
+    delJ.some((l) => Math.abs(n(l.credit) - 175000) < 1 && l.account_code === INVENTORY));
+  check("delivery raises no revenue", !delJ.some((l) => l.account_code === REVENUE));
 
   // ---- SALES INVOICE: revenue, no stock movement -------------------------
 
@@ -176,10 +187,10 @@ try {
   check("invoice moves no stock", (await onHand(co.id, item.id, loc.id)) === 50);
 
   const siJ = await journalOf(si.id);
-  check("invoice debits receivables", siJ.some((l) => n(l.debit) === 375000 && l.account_code === "1200"));
-  check("invoice credits revenue", siJ.some((l) => n(l.credit) === 375000 && l.account_code === "4100"));
+  check("invoice debits receivables", siJ.some((l) => n(l.debit) === 375000 && l.account_code === AR));
+  check("invoice credits revenue", siJ.some((l) => n(l.credit) === 375000 && l.account_code === REVENUE));
   check("invoice posts no COGS — the delivery already did",
-    !siJ.some((l) => l.account_code === "5100"));
+    !siJ.some((l) => l.account_code === COGS));
 
   // ---- Counter sale: one step, both effects ------------------------------
 

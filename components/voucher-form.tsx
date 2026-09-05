@@ -2,7 +2,7 @@
 
 import { useActionState, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
-import { accountTypeLabel, accountGroupRank, accountSection } from "@/lib/format";
+import { groupAccountsBySection } from "@/lib/format";
 import { ACCOUNT_TYPE_LABEL } from "./account-form";
 
 type Account = {
@@ -93,21 +93,7 @@ export function VoucherForm({
   // all falls back to the account type, and to the fixed sequence that goes
   // with it.
   const tree: TreeNode[] = accountTree.length ? accountTree : accounts;
-  const grouped = new Map<string, { sort: string; label: string; items: Account[] }>();
-  for (const a of postable) {
-    const section = accountSection(a, tree);
-    const label = section ? section.name : accountTypeLabel(a, tree, ACCOUNT_TYPE_LABEL);
-    const sort = section
-      ? section.code
-      : String(accountGroupRank(label)).padStart(3, "0");
-    const entry = grouped.get(label) ?? { sort, label, items: [] };
-    entry.items.push(a);
-    grouped.set(label, entry);
-  }
-  const groups: Array<[string, Account[]]> = [...grouped.values()]
-    .filter((g) => g.items.length > 0)
-    .sort((a, b) => a.sort.localeCompare(b.sort) || a.label.localeCompare(b.label))
-    .map((g) => [g.label, g.items]);
+  const groups = groupAccountsBySection(postable, tree, ACCOUNT_TYPE_LABEL);
 
   const setRow = (key: number, patch: Partial<Row>) =>
     setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));
@@ -146,9 +132,8 @@ export function VoucherForm({
       {state && "error" in state && <div className="alert">{state.error}</div>}
       <input type="hidden" name="lines" value={JSON.stringify(lines)} />
 
-      <div className="card">
+      <div className="card doc-meta">
         <div className="card-head">
-          <h2>Voucher</h2>
           <span className="m" style={{ color: "var(--muted)" }}>No. {nextNo}</span>
         </div>
         <div className="card-body">
@@ -316,7 +301,7 @@ export function VoucherForm({
         <textarea id="memo" name="memo" rows={2} placeholder="What this voucher is for — English or Myanmar" />
       </div>
 
-      <div className="actions">
+      <div className="actions form-commit">
         <button type="submit" disabled={pending || !ready}>
           {pending ? "Posting…" : ready ? `Post ${fmt(totalDr)}` : "Post voucher"}
         </button>

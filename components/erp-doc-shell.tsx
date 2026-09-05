@@ -19,6 +19,20 @@ export type ChainStage = {
   type: string;
   label: string;
   doc: { id: string; doc_no: string } | null;
+  /**
+   * Where to go to create this stage, when it does not exist yet and this
+   * document is what it would be created from. Set only on the immediate next
+   * step, so the pipeline is walkable forwards as well as backwards — a stage
+   * further down the chain has nothing to be created from yet.
+   */
+  href?: string | null;
+  /**
+   * A stage the chain does not require. A sale can start at a delivery and a
+   * purchase at an invoice, so a missing order is not a gap in the chain —
+   * and a strip that draws it the same as a step still owed says the wrong
+   * thing. Hatched rather than solid: absent by choice, not outstanding.
+   */
+  optional?: boolean;
 };
 
 export function ErpDocShell({
@@ -64,15 +78,23 @@ export function ErpDocShell({
                   <>
                     {stage.label}
                     {stage.doc && !here && <span className="erp-stage-no">{stage.doc.doc_no}</span>}
+                    {!stage.doc && stage.href && <span className="erp-stage-no">create</span>}
                   </>
                 );
                 return (
                   <div key={stage.type} role="listitem"
-                       className={`erp-stage ${here ? "here" : done ? "done" : "todo"}`}
+                       className={`erp-stage ${here ? "here" : done ? "done" : "todo"}${
+                         !done && stage.href ? " next" : ""}${
+                         !done && stage.optional ? " optional" : ""}`}
+                       title={!done && stage.optional
+                         ? `${stage.label} is optional — this chain is valid without one`
+                         : undefined}
                        aria-current={here ? "step" : undefined}>
                     {stage.doc && !here
                       ? <Link href={`/documents/${stage.doc.id}`}>{body}</Link>
-                      : body}
+                      : !stage.doc && stage.href
+                        ? <Link href={stage.href}>{body}</Link>
+                        : body}
                   </div>
                 );
               })}

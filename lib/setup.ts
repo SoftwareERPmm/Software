@@ -1,4 +1,5 @@
 import { sql } from "./db";
+import { CHART, SYSTEM, DETERMINATION, FOC_REASONS } from "../db/chart.mjs";
 
 /**
  * First-run setup: turns an empty database into a working company.
@@ -8,9 +9,13 @@ import { sql } from "./db";
  * role, and the rules that map item groups to them. None of it is demo data;
  * there are no customers, products or documents.
  *
- * The chart below is a conventional Myanmar trading layout. It is a starting
- * point, not a constraint: accounts nest to any depth and can be renamed,
- * added to, or deactivated afterwards.
+ * The chart itself lives in db/chart.mjs, shared with scripts/load-coa.mjs
+ * and the block in db/seed.sql. Three charts used to exist — one here, one
+ * for re-charting, one for the demo — which meant a company created through
+ * this screen ran on a chart nobody used, and had to be re-charted by hand
+ * before it could even charge a delivery fee. It is a starting point, not a
+ * constraint: accounts nest to any depth and can be renamed, added to, or
+ * deactivated afterwards.
  */
 
 export type SetupInput = {
@@ -24,83 +29,22 @@ export type SetupInput = {
   warehouseName: string;
 };
 
-type AcctSpec = [
-  parent: string | null,
+type AccountType = "ASSET" | "LIABILITY" | "EQUITY" | "REVENUE" | "COGS" | "EXPENSE";
+
+/** One row of db/chart.mjs: code, name, type, whether it can be posted to,
+ *  then the flags that are true of only a few accounts. */
+type ChartRow = [
   code: string,
   name: string,
-  nameMy: string | null,
-  type: "ASSET" | "LIABILITY" | "EQUITY" | "REVENUE" | "COGS" | "EXPENSE",
-  control: boolean,
-  cash: boolean,
-  bank: boolean,
+  type: AccountType,
+  postable: boolean,
+  flags?: { control?: boolean; cash?: boolean; bank?: boolean; under?: string; added?: boolean },
 ];
 
-const HEADINGS: AcctSpec[] = [
-  [null, "1000", "Assets", null, "ASSET", false, false, false],
-  [null, "2000", "Liabilities", null, "LIABILITY", false, false, false],
-  [null, "3000", "Equity", null, "EQUITY", false, false, false],
-  [null, "4000", "Revenue", null, "REVENUE", false, false, false],
-  [null, "5000", "Cost of Sales", null, "COGS", false, false, false],
-  [null, "6000", "Expenses", null, "EXPENSE", false, false, false],
-];
-
-const ACCOUNTS: AcctSpec[] = [
-  ["1000", "1110", "Cash in Hand", "လက်ကျန်ငွေ", "ASSET", false, true, false],
-  ["1000", "1120", "Bank", "ဘဏ်", "ASSET", false, true, true],
-  ["1000", "1200", "Accounts Receivable", "ရရန်ရှိငွေ", "ASSET", true, false, false],
-  ["1000", "1300", "Inventory", "ကုန်ပစ္စည်း", "ASSET", false, false, false],
-  ["1000", "1310", "GR/IR Clearing", null, "ASSET", false, false, false],
-  ["2000", "2100", "Accounts Payable", "ပေးရန်ရှိငွေ", "LIABILITY", true, false, false],
-  ["2000", "2200", "Commercial Tax Payable", "ကုန်သွယ်လုပ်ငန်းခွန်", "LIABILITY", false, false, false],
-  ["3000", "3100", "Share Capital", "ရင်းနှီးငွေ", "EQUITY", false, false, false],
-  ["3000", "3200", "Retained Earnings", null, "EQUITY", false, false, false],
-  ["3000", "3900", "Opening Balance Equity", null, "EQUITY", false, false, false],
-  ["4000", "4100", "Sales Revenue", "ရောင်းရငွေ", "REVENUE", false, false, false],
-  ["4000", "4200", "Sales Returns", null, "REVENUE", false, false, false],
-  ["4000", "4300", "Purchase Discount Received", null, "REVENUE", false, false, false],
-  ["4000", "4400", "FX Gain on Settlement", null, "REVENUE", false, false, false],
-  ["5000", "5100", "Cost of Goods Sold", "ကုန်ကျစရိတ်", "COGS", false, false, false],
-  ["5000", "5200", "Purchase Price Variance", null, "COGS", false, false, false],
-  ["5000", "5300", "Stock Adjustment", null, "COGS", false, false, false],
-  ["6000", "6100", "Promotion Expense", null, "EXPENSE", false, false, false],
-  ["6000", "6200", "Sales Discount Allowed", null, "EXPENSE", false, false, false],
-  ["6000", "6300", "Salaries", "လစာ", "EXPENSE", false, false, false],
-  ["6000", "6400", "Rent", "အငှားခ", "EXPENSE", false, false, false],
-  ["6000", "6500", "FX Loss on Settlement", null, "EXPENSE", false, false, false],
-  ["6000", "6600", "Rounding Difference", null, "EXPENSE", false, false, false],
-];
-
-/** Accounts the posting engine resolves by role rather than by code. */
-const SYSTEM_ROLES: [role: string, code: string][] = [
-  ["GRIR_CLEARING", "1310"],
-  ["PURCHASE_PRICE_VARIANCE", "5200"],
-  ["PURCHASE_DISCOUNT_RECEIVED", "4300"],
-  ["SALES_DISCOUNT_ALLOWED", "6200"],
-  ["STOCK_ADJUSTMENT", "5300"],
-  ["PROMOTION_EXPENSE", "6100"],
-  ["FX_GAIN", "4400"],
-  ["FX_LOSS", "6500"],
-  ["ROUNDING_DIFFERENCE", "6600"],
-  ["OPENING_BALANCE_EQUITY", "3900"],
-  ["RETAINED_EARNINGS", "3200"],
-];
-
-/** Company-wide defaults. Categories can override these later. */
-const RULES: [role: string, code: string][] = [
-  ["INVENTORY", "1300"],
-  ["COGS", "5100"],
-  ["REVENUE", "4100"],
-  ["SALES_RETURN", "4200"],
-  ["AR_CONTROL", "1200"],
-  ["AP_CONTROL", "2100"],
-];
-
-const FOC_REASONS: [code: string, name: string, acct: string][] = [
-  ["PROMOTION", "Promotional giveaway", "6100"],
-  ["SAMPLE", "Customer sample", "6100"],
-  ["OFFICE", "Office use", "6100"],
-  ["DAMAGED", "Damaged or expired", "5300"],
-];
+const chart = CHART as ChartRow[];
+const systemRoles = Object.entries(SYSTEM as Record<string, string>);
+const rules = Object.entries(DETERMINATION as Record<string, string>);
+const focReasons = FOC_REASONS as [code: string, name: string, acct: string][];
 
 const SERIES: [type: string, prefix: string][] = [
   ["PURCHASE_ORDER", "PO-"], ["GOODS_RECEIPT", "GR-"], ["PURCHASE_INVOICE", "PI-"],
@@ -153,42 +97,47 @@ export async function scaffoldCompany(input: SetupInput) {
     }
 
     // ---- chart of accounts ----------------------------------------------
-    for (const [, code, name, nameMy, type] of HEADINGS) {
-      await tx`
-        insert into account (company_id, code, name, name_my, account_type, is_postable)
-        values (${co.id}, ${code}, ${name}, ${nameMy}, ${type}, false)`;
-    }
-
-    for (const [parent, code, name, nameMy, type, control, cash, bank] of ACCOUNTS) {
-      const [p] = await tx`
-        select id from account where company_id = ${co.id} and code = ${parent}`;
-      await tx`
+    // A postable account belongs to the section it follows in the chart; a
+    // section belongs to whatever it says it sits under, or to nothing. The
+    // same rule scripts/load-coa.mjs applies, because it is reading the same
+    // array — the order of the rows is what carries the hierarchy.
+    const id = new Map<string, string>();
+    let section: string | null = null;
+    for (const [code, name, type, postable, flags = {}] of chart) {
+      const parent = postable ? section : (flags.under ? id.get(flags.under) ?? null : null);
+      const [row] = await tx`
         insert into account
-          (company_id, parent_id, code, name, name_my, account_type,
-           is_control, is_cash_account, is_bank_account)
-        values (${co.id}, ${p.id}, ${code}, ${name}, ${nameMy}, ${type},
-                ${control}, ${cash}, ${bank})`;
+          (company_id, parent_id, code, name, account_type,
+           is_postable, is_control, is_cash_account, is_bank_account)
+        values (${co.id}, ${parent}, ${code}, ${name}, ${type},
+                ${postable}, ${!!flags.control}, ${!!flags.cash}, ${!!flags.bank})
+        returning id`;
+      id.set(code, row.id as string);
+      if (!postable) section = row.id as string;
     }
 
-    const acctId = async (code: string) =>
-      (await tx`select id from account where company_id = ${co.id} and code = ${code}`)[0].id;
+    const acctId = (code: string) => {
+      const found = id.get(code);
+      if (!found) throw new Error(`Setup: the chart has no account ${code}`);
+      return found;
+    };
 
-    for (const [role, code] of SYSTEM_ROLES) {
+    for (const [role, code] of systemRoles) {
       await tx`
         insert into system_account (company_id, role, account_id)
-        values (${co.id}, ${role}, ${await acctId(code)})`;
+        values (${co.id}, ${role}, ${acctId(code)})`;
     }
 
-    for (const [role, code] of RULES) {
+    for (const [role, code] of rules) {
       await tx`
         insert into account_determination (company_id, role, account_id)
-        values (${co.id}, ${role}, ${await acctId(code)})`;
+        values (${co.id}, ${role}, ${acctId(code)})`;
     }
 
-    for (const [code, name, acct] of FOC_REASONS) {
+    for (const [code, name, acct] of focReasons) {
       await tx`
         insert into foc_reason (company_id, code, name, account_id)
-        values (${co.id}, ${code}, ${name}, ${await acctId(acct)})`;
+        values (${co.id}, ${code}, ${name}, ${acctId(acct)})`;
     }
 
     // ---- locations, units, price levels, tax -----------------------------

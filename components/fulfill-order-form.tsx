@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useActionState, useState } from "react";
+import { NegativeStockConfirm, type Shortfall } from "./negative-stock-confirm";
+import { useActionState, useEffect, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
 
 type Line = {
@@ -9,6 +10,7 @@ type Line = {
   itemId: string;
   itemCode: string;
   itemName: string;
+  uomCode?: string;
   remainingQty: number;
   expectedPrice?: number;
 };
@@ -30,6 +32,7 @@ export function FulfillOrderForm({
   lines,
   action,
   stockByLocation,
+  focReasons = [],
 }: {
   kind: "sales" | "purchase";
   orderId: string;
@@ -41,12 +44,21 @@ export function FulfillOrderForm({
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   /** On-hand per item/location, checked against what's being delivered — receiving isn't limited by it, so purchase call sites can leave this out. */
   stockByLocation?: StockRow[];
+  /** Why units might go out free. Sales only — a receipt has no giveaway. */
+  focReasons?: { id: string; code: string; name: string }[];
 }) {
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     action as never,
     null
   );
   const [open, setOpen] = useState(false);
+  // Free units per order line, and why. A delivery can carry a giveaway
+  // alongside what was ordered — the goods leave either way, and the reason
+  // is what decides whether the cost is a sale or an expense.
+  const [free, setFree] = useState<Record<string, string>>({});
+  const [freeReason, setFreeReason] = useState<Record<string, string>>({});
+  const [negativeConfirmed, setNegativeConfirmed] = useState(false);
+  const [askNegative, setAskNegative] = useState(false);
   const [qty, setQty] = useState<Record<string, string>>(
     Object.fromEntries(lines.map((l) => [l.lineId, String(l.remainingQty)]))
   );
@@ -64,10 +76,28 @@ export function FulfillOrderForm({
       .filter((r) => r.item_id === itemId)
       .reduce((s, r) => s + Number(r.qty_on_hand), 0);
 
+  const issuing = (lineId: string) =>
+    (Number(qty[lineId]) || 0) + (Number(free[lineId]) || 0);
   const shortages = kind === "sales" && stockByLocation
-    ? lines.filter((l) => Number(qty[l.lineId]) > onHandHere(l.itemId))
+    ? lines.filter((l) => issuing(l.lineId) > onHandHere(l.itemId))
     : [];
-  const shortEverywhere = shortages.filter((l) => Number(qty[l.lineId]) > onHandAnywhere(l.itemId));
+  const shortEverywhere = shortages.filter((l) => issuing(l.lineId) > onHandAnywhere(l.itemId));
+
+  // Short at this warehouse is what drives the balance here negative, whether
+  // or not another warehouse has some — delivering from an empty shelf makes
+  // this shelf negative either way. The advice to transfer stock in stays
+  // below, because that is usually the better answer; this is for when the
+  // goods are genuinely here and the paperwork is not.
+  const shortfalls: Shortfall[] = shortages.map((l) => ({
+    itemCode: l.itemCode,
+    itemName: l.itemName,
+    uomCode: l.uomCode ?? "",
+    required: issuing(l.lineId),
+    recorded: onHandHere(l.itemId),
+  }));
+  const shortfallKey = shortfalls
+    .map((s) => `${s.itemCode}:${s.required}:${s.recorded}`).join("|");
+  useEffect(() => { setNegativeConfirmed(false); }, [shortfallKey]);
 
   const payload = JSON.stringify(
     lines
@@ -78,6 +108,21 @@ export function FulfillOrderForm({
         unitCost: kind === "purchase" ? Number(cost[l.lineId]) || 0 : undefined,
         sourceLineId: l.lineId,
       }))
+      // Free units go as their own zero-price line carrying the reason, the
+      // same shape the sales voucher sends, so both routes post identically.
+      .concat(
+        kind === "sales"
+          ? lines
+              .filter((l) => Number(free[l.lineId]) > 0)
+              .map((l) => ({
+                itemId: l.itemId,
+                qty: Number(free[l.lineId]),
+                unitCost: undefined,
+                sourceLineId: l.lineId,
+                focReasonId: freeReason[l.lineId] || focReasons[0]?.id,
+              })) as never[]
+          : []
+      )
   );
 
   return (
@@ -113,12 +158,13 @@ export function FulfillOrderForm({
                     <th>Item</th><th className="r">Remaining</th>
                     {stockByLocation && kind === "sales" && <th className="r">Available here</th>}
                     <th className="r">{kind === "sales" ? "Deliver now" : "Receive now"}</th>
+                    {kind === "sales" && focReasons.length > 0 && <th className="r">Free</th>}
                     {kind === "purchase" && <th className="r">Unit cost</th>}
                   </tr>
                 </thead>
                 <tbody>
                   {lines.map((l) => {
-                    const short = kind === "sales" && stockByLocation && Number(qty[l.lineId]) > onHandHere(l.itemId);
+                    const short = kind === "sales" && stockByLocation && issuing(l.lineId) > onHandHere(l.itemId);
                     return (
                       <tr key={l.lineId}>
                         <td className="wrap"><span className="code">{l.itemCode}</span> {l.itemName}</td>
@@ -136,6 +182,32 @@ export function FulfillOrderForm({
                             onChange={(e) => setQty((q) => ({ ...q, [l.lineId]: e.target.value }))}
                           />
                         </td>
+                        {/* Given away with this delivery. Not capped by the
+                            order's remaining quantity — a giveaway is extra,
+                            not part of what was ordered. */}
+                        {kind === "sales" && focReasons.length > 0 && (
+                          <td className="narrow">
+                            <input
+                              type="number" min="0" step="any" placeholder="0"
+                              value={free[l.lineId] ?? ""}
+                              aria-label="Free quantity"
+                              onChange={(e) => setFree((f) => ({ ...f, [l.lineId]: e.target.value }))}
+                            />
+                            {Number(free[l.lineId]) > 0 && (
+                              <select
+                                aria-label="Reason free"
+                                style={{ marginTop: "0.2rem" }}
+                                value={freeReason[l.lineId] ?? focReasons[0].id}
+                                onChange={(e) =>
+                                  setFreeReason((r) => ({ ...r, [l.lineId]: e.target.value }))}
+                              >
+                                {focReasons.map((r) => (
+                                  <option key={r.id} value={r.id}>{r.name}</option>
+                                ))}
+                              </select>
+                            )}
+                          </td>
+                        )}
                         {kind === "purchase" && (
                           <td className="narrow">
                             <input
@@ -175,7 +247,17 @@ export function FulfillOrderForm({
                 first, or lower the quantity to what the company actually has.
               </div>
             )}
-            {shortages.length > shortEverywhere.length && (
+            {shortages.length > 0 && negativeConfirmed && (
+              <div className="alert">
+                <strong>Confirmed:</strong> the goods physically exist though
+                the record shows fewer. This delivery will post negative stock,
+                listed under Inventory &rarr; Negative stock until a receipt
+                covers it.{" "}
+                <button type="button" className="ghost tiny"
+                        onClick={() => setNegativeConfirmed(false)}>Undo</button>
+              </div>
+            )}
+            {shortages.length > shortEverywhere.length && !negativeConfirmed && (
               <div className="alert">
                 Not enough {shortages.filter((l) => !shortEverywhere.includes(l)).map((l) => l.itemCode).join(", ")}
                 {" "}at this location to deliver that much, though the company has it elsewhere.{" "}
@@ -186,8 +268,26 @@ export function FulfillOrderForm({
               </div>
             )}
 
+            {negativeConfirmed && (
+              <input type="hidden" name="allow_negative_stock" value="true" />
+            )}
+
+            <NegativeStockConfirm
+              open={askNegative}
+              shortfalls={shortfalls}
+              onCancel={() => setAskNegative(false)}
+              onConfirm={() => { setNegativeConfirmed(true); setAskNegative(false); }}
+            />
+
             <div className="actions" style={{ marginTop: "0.5rem" }}>
-              <button type="submit" disabled={pending || shortages.length > 0}>
+              <button
+                type={shortages.length > 0 && !negativeConfirmed ? "button" : "submit"}
+                onClick={
+                  shortages.length > 0 && !negativeConfirmed
+                    ? () => setAskNegative(true)
+                    : undefined
+                }
+                disabled={pending}>
                 {pending ? "Posting…" : kind === "sales" ? "Post delivery" : "Post goods receipt"}
               </button>
             </div>

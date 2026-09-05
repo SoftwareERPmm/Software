@@ -394,9 +394,13 @@ export async function isGrirOutstanding(documentId: string): Promise<boolean> {
  */
 export async function getOpenGoodsReceipts(companyId: string) {
   const docs = await sql`
-    select d.id, d.doc_no, d.doc_date, d.partner_id
+    select d.id, d.doc_no, d.doc_date, d.partner_id,
+           -- The purchase order this receipt came in against, so an invoice
+           -- billing it can show which of our orders it belongs to.
+           src.doc_no as source_no
       from document d
       join v_grir_balance g on g.document_id = d.id and g.company_id = d.company_id
+      left join document src on src.id = d.source_document_id
      where d.company_id = ${companyId} and d.doc_type = 'GOODS_RECEIPT' and d.status = 'POSTED'
      order by d.doc_date desc, d.doc_no desc
      limit 200`;
@@ -491,6 +495,10 @@ export async function getOpenPurchaseInvoices(companyId: string) {
 export async function getOpenDeliveries(companyId: string) {
   return sql`
     select d.id, d.doc_no, d.doc_date, d.partner_id, d.location_id,
+           -- The order this delivery was raised from, so an invoice made from
+           -- it can show which of our orders it belongs to rather than making
+           -- someone go and look it up.
+           src.doc_no as source_no,
            coalesce(json_agg(json_build_object(
              'itemId', dl.item_id, 'itemCode', i.code, 'itemName', i.name,
              'qty', dl.base_qty
@@ -498,13 +506,14 @@ export async function getOpenDeliveries(companyId: string) {
       from document d
       join document_line dl on dl.document_id = d.id
       join item i on i.id = dl.item_id
+      left join document src on src.id = d.source_document_id
      where d.company_id = ${companyId} and d.doc_type = 'DELIVERY' and d.status = 'POSTED'
        and not exists (
          select 1 from document si
           where si.doc_type = 'SALES_INVOICE' and si.status = 'POSTED'
             and (si.source_document_id = d.id or d.source_document_id = si.id)
        )
-     group by d.id, d.doc_no, d.doc_date, d.partner_id, d.location_id
+     group by d.id, d.doc_no, d.doc_date, d.partner_id, d.location_id, src.doc_no
      order by d.doc_date desc, d.doc_no desc
      limit 200`;
 }
@@ -609,6 +618,170 @@ export async function getChainDocuments(documentId: string) {
   return [...seen.values()];
 }
 
+export type RelatedDoc = {
+  id: string;
+  docType: string;
+  docNo: string;
+  docDate: string;
+  status: string;
+  amount: number;
+  /** Units on that document. A delivery against an order is read as "6
+   *  units" long before anyone reads its value, so the quantity is the more
+   *  useful figure on a link between two stock documents. */
+  qty: number;
+  /** How it is related, in the words the screen shows. */
+  note?: string | null;
+};
+export type RelatedDocuments = {
+  /** What this document came from. */
+  source: { label: string; docs: RelatedDoc[] }[];
+  /** What was raised from it, or settled against it. */
+  downstream: { label: string; docs: RelatedDoc[] }[];
+};
+
+const REL_LABEL: Record<string, string> = {
+  SALES_ORDER: "Sales order",
+  DELIVERY: "Delivery",
+  SALES_INVOICE: "Sales invoice",
+  CUSTOMER_RECEIPT: "Receive payment",
+  SALES_RETURN: "Customer return",
+  PURCHASE_ORDER: "Purchase order",
+  GOODS_RECEIPT: "Goods receipt",
+  PURCHASE_INVOICE: "Purchase invoice",
+  SUPPLIER_PAYMENT: "Supplier payment",
+  PURCHASE_RETURN: "Purchase return",
+};
+
+/**
+ * What this document is actually linked to, in both directions.
+ *
+ * Distinct from the workflow pipeline above it, which draws the shape a sale
+ * or a purchase usually takes. This states only what exists: a heading with
+ * nothing under it says "None", because a document raised without an order is
+ * an ordinary thing here and must not read as an incomplete one. A missing
+ * link is not an error unless some particular operation needs it.
+ *
+ * Two kinds of link, deliberately kept apart. `source_document_id` is the
+ * document this was raised from; `payment_allocation` is money settled
+ * against an invoice, which is not a parent-child relationship at all — a
+ * payment is not "made from" an invoice, it is applied to one, and several
+ * payments can be applied to the same bill.
+ */
+export async function getRelatedDocuments(documentId: string): Promise<RelatedDocuments> {
+  const [doc] = await sql`
+    select id, company_id, doc_type, source_document_id, to_deliver
+      from document where id = ${documentId}`;
+  if (!doc) return { source: [], downstream: [] };
+
+  const shape = (rows: readonly unknown[]): RelatedDoc[] =>
+    ([...rows] as {
+      id: string; doc_type: string; doc_no: string; doc_date: string;
+      status: string; gross_total: string; qty?: string; note?: string;
+    }[]).map((r) => ({
+      id: r.id, docType: r.doc_type, docNo: r.doc_no, docDate: String(r.doc_date),
+      status: r.status, amount: Number(r.gross_total), qty: Number(r.qty ?? 0),
+      note: r.note ?? null,
+    }));
+
+
+  const parent = doc.source_document_id
+    ? shape(await sql`
+        select d.id, d.doc_type, d.doc_no, to_char(d.doc_date,'YYYY-MM-DD') as doc_date,
+               d.status, d.gross_total,
+               coalesce((select sum(dl.base_qty) from document_line dl
+                          where dl.document_id = d.id), 0) as qty
+          from document d where d.id = ${doc.source_document_id}`)
+    : [];
+
+  const children = shape(await sql`
+    select d.id, d.doc_type, d.doc_no, to_char(d.doc_date,'YYYY-MM-DD') as doc_date,
+           d.status, d.gross_total,
+           coalesce((select sum(dl.base_qty) from document_line dl
+                      where dl.document_id = d.id), 0) as qty
+      from document d
+     where d.company_id = ${doc.company_id} and d.source_document_id = ${documentId}
+     order by d.doc_date, d.doc_no`);
+
+  // Money applied to this invoice, or the invoices this payment was applied
+  // to — whichever way round this document sits.
+  const isInvoice = doc.doc_type === "SALES_INVOICE" || doc.doc_type === "PURCHASE_INVOICE";
+  const settlements = shape(
+    isInvoice
+      ? await sql`
+          select d.id, d.doc_type, d.doc_no, to_char(d.doc_date,'YYYY-MM-DD') as doc_date,
+                 d.status, pa.amount as gross_total
+            from payment_allocation pa
+            join document d on d.id = pa.payment_id
+           where pa.invoice_id = ${documentId} and d.status = 'POSTED'
+           order by d.doc_date, d.doc_no`
+      : await sql`
+          select d.id, d.doc_type, d.doc_no, to_char(d.doc_date,'YYYY-MM-DD') as doc_date,
+                 d.status, pa.amount as gross_total
+            from payment_allocation pa
+            join document d on d.id = pa.invoice_id
+           where pa.payment_id = ${documentId} and d.status = 'POSTED'
+           order by d.doc_date, d.doc_no`
+  );
+
+  // Headings are listed even when empty, so the answer to "was there an
+  // order?" is visible rather than absent. Which headings belong depends on
+  // the document: an invoice can come from an order or a delivery, a payment
+  // comes from neither.
+  const group = (label: string, docs: RelatedDoc[]) => ({ label, docs });
+  const byType = (docs: RelatedDoc[], type: string) => docs.filter((d) => d.docType === type);
+
+  const sales = ["SALES_ORDER", "DELIVERY", "SALES_INVOICE", "CUSTOMER_RECEIPT", "SALES_RETURN"]
+    .includes(doc.doc_type);
+
+  const source: RelatedDocuments["source"] = [];
+  const downstream: RelatedDocuments["downstream"] = [];
+
+  if (doc.doc_type === "SALES_INVOICE" || doc.doc_type === "PURCHASE_INVOICE") {
+    const orderType = sales ? "SALES_ORDER" : "PURCHASE_ORDER";
+    const moveType = sales ? "DELIVERY" : "GOODS_RECEIPT";
+    source.push(group(REL_LABEL[orderType], byType(parent, orderType)));
+    source.push(group(REL_LABEL[moveType], byType(parent, moveType)));
+    downstream.push(group(sales ? "Payments" : "Payments made", settlements));
+    downstream.push(group(REL_LABEL[sales ? "SALES_RETURN" : "PURCHASE_RETURN"],
+      byType(children, sales ? "SALES_RETURN" : "PURCHASE_RETURN")));
+    // Only where goods are still owed. An invoice that already names its
+    // delivery as a source has nothing pending, and a "Delivery — None" under
+    // Downstream would read as something missing rather than something that
+    // already happened further up the panel.
+    // `to_deliver` says how the invoice was raised, not whether the goods
+    // have since gone: a deliver-later invoice that has since been delivered
+    // still carries the flag, so the source link has to be checked too or the
+    // heading contradicts the one printed above it.
+    if (byType(children, moveType).length > 0
+        || (doc.to_deliver && byType(parent, moveType).length === 0)) {
+      downstream.push(group(REL_LABEL[moveType], byType(children, moveType)));
+    }
+  } else if (doc.doc_type === "DELIVERY" || doc.doc_type === "GOODS_RECEIPT") {
+    const orderType = sales ? "SALES_ORDER" : "PURCHASE_ORDER";
+    const invType = sales ? "SALES_INVOICE" : "PURCHASE_INVOICE";
+    source.push(group(REL_LABEL[orderType], byType(parent, orderType)));
+    source.push(group(REL_LABEL[invType], byType(parent, invType)));
+    downstream.push(group(REL_LABEL[invType], byType(children, invType)));
+    downstream.push(group(REL_LABEL[sales ? "SALES_RETURN" : "PURCHASE_RETURN"],
+      byType(children, sales ? "SALES_RETURN" : "PURCHASE_RETURN")));
+  } else if (doc.doc_type === "SALES_ORDER" || doc.doc_type === "PURCHASE_ORDER") {
+    const moveType = sales ? "DELIVERY" : "GOODS_RECEIPT";
+    const invType = sales ? "SALES_INVOICE" : "PURCHASE_INVOICE";
+    downstream.push(group(REL_LABEL[moveType], byType(children, moveType)));
+    downstream.push(group(REL_LABEL[invType], byType(children, invType)));
+  } else if (doc.doc_type === "CUSTOMER_RECEIPT" || doc.doc_type === "SUPPLIER_PAYMENT") {
+    // A payment is applied to invoices; it is not raised from one. Shown as
+    // "applied to" rather than as a parent, because calling an invoice the
+    // payment's source would be the wrong relationship.
+    source.push(group("Applied to", settlements));
+  } else {
+    if (parent.length) source.push(group("Raised from", parent));
+    if (children.length) downstream.push(group("Raised from this", children));
+  }
+
+  return { source, downstream };
+}
+
 /**
  * The payment that settled this invoice, if any — payments allocate against
  * invoices via payment_allocation, not source_document_id, so they sit
@@ -620,6 +793,9 @@ export async function getSettlingPayment(invoiceId: string) {
       from payment_allocation pa
       join document d on d.id = pa.payment_id
      where pa.invoice_id = ${invoiceId}
+       -- A voided payment no longer settles anything, so it must not be
+       -- offered as the one that did.
+       and d.status = 'POSTED'
      order by d.posting_date desc
      limit 1`;
   return row ?? null;
@@ -811,12 +987,14 @@ export async function getOpenSalesOrders(companyId: string) {
     select o.id as order_id, o.doc_no as order_no, o.partner_id, p.name as partner_name,
            o.location_id,
            ol.id as line_id, ol.item_id, i.code as item_code, i.name as item_name,
+           u.code as uom_code,
            ol.base_qty as ordered_qty,
            coalesce(d.delivered_qty, 0) as delivered_qty,
            ol.base_qty - coalesce(d.delivered_qty, 0) as remaining_qty
       from document o
       join document_line ol on ol.document_id = o.id
       join item i on i.id = ol.item_id
+      join uom u on u.id = i.base_uom_id
       join business_partner p on p.id = o.partner_id
       left join (
         select dl.source_line_id, sum(dl.base_qty) as delivered_qty
@@ -842,6 +1020,7 @@ export async function getOpenPurchaseOrders(companyId: string) {
       from document o
       join document_line ol on ol.document_id = o.id
       join item i on i.id = ol.item_id
+      join uom u on u.id = i.base_uom_id
       join business_partner p on p.id = o.partner_id
       left join (
         select dl.source_line_id, sum(dl.base_qty) as received_qty
@@ -1636,6 +1815,57 @@ export async function getImportMasterData(companyId: string) {
     sql`select id, code, name from uom where company_id = ${companyId} and is_active`,
   ]);
   return { items, categories, brands, uoms };
+}
+
+/**
+ * Everything that has been voided or edited, newest first.
+ *
+ * The log is the point of the feature: a document that vanished from a list
+ * with no trace is indistinguishable from one that was never entered, and
+ * that is precisely the property this system is sold as not having. So every
+ * void and every edit is readable here, with what the document said before,
+ * what replaced or reversed it, and when.
+ *
+ * `acted_by` is selected even though nothing sets it yet. When there are
+ * users, rows written from that day carry one and older rows keep their
+ * honest null — which is a better answer than attributing them to whoever
+ * happened to be added first.
+ */
+export async function getDocumentHistory(companyId: string, limit = 200) {
+  return sql`
+    select h.id, h.action, h.reason, h.detail, h.acted_by, h.acted_at,
+           d.id            as document_id,
+           d.doc_no        as document_no,
+           d.doc_type,
+           d.status,
+           to_char(d.doc_date, 'YYYY-MM-DD') as doc_date,
+           d.gross_total,
+           p.name          as partner_name,
+           r.id            as related_document_id,
+           r.doc_no        as related_no,
+           r.doc_type      as related_type
+      from document_history h
+      join document d on d.id = h.document_id
+      left join document r on r.id = h.related_id
+      left join business_partner p on p.id = d.partner_id
+     where h.company_id = ${companyId}
+     order by h.acted_at desc
+     limit ${limit}`;
+}
+
+/**
+ * Negative Stock — Pending Reconciliation.
+ *
+ * Stock that went out before anything recorded it arriving, still awaiting a
+ * receipt or an adjustment. Each row carries the price it was charged out at
+ * and the document that price came from, so the reconciliation screen states
+ * both rather than asking someone to supply a figure.
+ */
+export async function getNegativeStock(companyId: string) {
+  return sql`
+    select * from v_negative_stock
+     where company_id = ${companyId}
+     order by created_at`;
 }
 
 /** Past imports, newest first, with what each one actually created. */

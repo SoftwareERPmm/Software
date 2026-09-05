@@ -76,11 +76,16 @@ try {
   const buy = { companyId: co.id, partnerId: supp.id, locationId: loc.id, docDate: today };
   const sell = { companyId: co.id, partnerId: cust.id, locationId: loc.id, docDate: today };
 
+  // Whichever account this chart posts this item's stock to — the demo seed's
+  // "1300" is not a fact about inventory, it is a fact about that seed.
+  const { accountsFor } = await import("./accounts.mjs");
+  const INVENTORY = await accountsFor(sql, co.id).forItem("INVENTORY", item.id);
+
   const inventoryOf = async (docId) => n((await sql`
     select coalesce(sum(jl.amount), 0) as v from journal_line jl
       join account a on a.id = jl.account_id
       join journal_entry je on je.id = jl.journal_entry_id
-     where je.source_id = ${docId} and a.code = '1300'`)[0].v);
+     where je.source_id = ${docId} and a.code = ${INVENTORY}`)[0].v);
 
   console.log(`\n  ${co.name}\n`);
 

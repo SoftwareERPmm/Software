@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState, useEffect, useMemo, useState } from "react";
+import { NegativeStockConfirm, type Shortfall } from "./negative-stock-confirm";
 import type { ActionResult, PickerItem } from "@/lib/actions";
 import { ItemPicker } from "./item-picker";
 
@@ -83,6 +84,9 @@ export function StockTransferForm({
   );
 
   const sameLocation = fromLocationId && toLocationId && fromLocationId === toLocationId;
+
+  const [negativeConfirmed, setNegativeConfirmed] = useState(false);
+  const [askNegative, setAskNegative] = useState(false);
 
   const shortages = lines.filter((l) => {
     if (!l.itemId) return false;
@@ -196,13 +200,45 @@ export function StockTransferForm({
         </div>
       </div>
 
-      {shortages.length > 0 && (
+      {shortages.length > 0 && !negativeConfirmed && (
         <div className="alert">
-          Not enough stock at the source warehouse for{" "}
-          {shortages.map((l) => byId(l.itemId)?.code).join(", ")}. Posting will
-          be rejected — reduce the quantity.
+          <strong>Recorded stock is insufficient</strong> at the source
+          warehouse for {shortages.map((l) => byId(l.itemId)?.code).join(", ")}.
+          Reduce the quantity, or confirm the goods physically exist &mdash;
+          posting will ask before recording negative stock.
         </div>
       )}
+
+      {shortages.length > 0 && negativeConfirmed && (
+        <div className="alert">
+          <strong>Confirmed:</strong> the goods physically exist at the source
+          though the record shows fewer. This will post negative stock there,
+          listed under Inventory &rarr; Negative stock until a receipt covers
+          it.{" "}
+          <button type="button" className="ghost tiny"
+                  onClick={() => setNegativeConfirmed(false)}>Undo</button>
+        </div>
+      )}
+
+      {negativeConfirmed && (
+        <input type="hidden" name="allow_negative_stock" value="true" />
+      )}
+
+      <NegativeStockConfirm
+        open={askNegative}
+        shortfalls={shortages.map((l): Shortfall => {
+          const item = byId(l.itemId);
+          return {
+            itemCode: item?.code ?? "",
+            itemName: item?.name ?? "",
+            uomCode: item?.uom_code ?? "",
+            required: Number(l.qty),
+            recorded: availableHere(l.itemId),
+          };
+        })}
+        onCancel={() => setAskNegative(false)}
+        onConfirm={() => { setNegativeConfirmed(true); setAskNegative(false); }}
+      />
 
       <div className="field">
         <label htmlFor="memo">Note</label>
@@ -211,9 +247,14 @@ export function StockTransferForm({
 
       <div className="actions">
         <button
-          type="submit"
+          type={shortages.length > 0 && !negativeConfirmed ? "button" : "submit"}
+          onClick={
+            shortages.length > 0 && !negativeConfirmed
+              ? () => setAskNegative(true)
+              : undefined
+          }
           disabled={
-            pending || Boolean(sameLocation) || shortages.length > 0 ||
+            pending || Boolean(sameLocation) ||
             lines.every((l) => !l.itemId || Number(l.qty) <= 0)
           }
         >

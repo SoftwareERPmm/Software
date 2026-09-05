@@ -2,6 +2,8 @@
 
 import { useActionState, useEffect, useMemo, useState } from "react";
 import type { ActionResult, PickerItem } from "@/lib/actions";
+import { NegativeStockConfirm, type Shortfall } from "./negative-stock-confirm";
+import { priceLines, type VolumeBand } from "@/lib/discount";
 import { ItemPicker } from "./item-picker";
 
 type Item = PickerItem;
@@ -30,9 +32,21 @@ type OpenInvoice = {
   gross_total: string; outstanding: string; aging_bucket: string;
 };
 type MatchLine = { itemId: string; itemCode: string; itemName: string; qty: number };
-type OpenDelivery = { id: string; doc_no: string; doc_date: string; partner_id: string; location_id: string; lines: MatchLine[] };
+type OpenDelivery = {
+  id: string; doc_no: string; doc_date: string; partner_id: string; location_id: string;
+  /** The sales order this delivery was raised from, when it came from one. */
+  source_no?: string | null;
+  lines: MatchLine[];
+};
 
-type Line = { key: number; itemId: string; qty: string; unitPrice: string; discountPct: string };
+type Line = {
+  key: number; itemId: string; qty: string; unitPrice: string; discountPct: string;
+  /** Given away on this line, on top of anything a promotion earns. */
+  focQty: string;
+  /** Why they are free — promotion, sample, office use, damaged. Blank
+   *  defaults to the promotional reason. */
+  focReasonId: string;
+};
 
 const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 0 });
 const day = (d: string | null) =>
@@ -46,6 +60,7 @@ function addDays(iso: string, days: number) {
 
 export function SalesVoucher({
   action, customers, items: initialItems, locations, salesmen, cashAccounts, promotions,
+  volumeDiscounts,
   focReasons, openInvoices, nextInvoiceNo, today, categories, uoms,
   itemPrices, priceLevels, stockByLocation, deliveries, initialDeliveryId,
 }: {
@@ -59,6 +74,9 @@ export function SalesVoucher({
   salesmen: Salesman[];
   cashAccounts: CashAccount[];
   promotions: Promotion[];
+  /** Quantity and invoice-total discount bands, for previewing what the
+   *  engine will apply. */
+  volumeDiscounts?: VolumeBand[];
   focReasons: FocReason[];
   itemPrices: ItemPrice[];
   priceLevels: PriceLevel[];
@@ -79,11 +97,17 @@ export function SalesVoucher({
   const addItem = (i: Item) => setItems((xs) => [...xs, i]);
 
   const [lines, setLines] = useState<Line[]>([
-    { key: 1, itemId: "", qty: "", unitPrice: "", discountPct: "" },
+    { key: 1, itemId: "", qty: "", unitPrice: "", discountPct: "", focQty: "", focReasonId: "" },
   ]);
   const [customerId, setCustomerId] = useState("");
   const [locationId, setLocationId] = useState(locations[0]?.id ?? "");
   const [matchedDeliveryId, setMatchedDeliveryId] = useState("");
+  const [reference, setReference] = useState("");
+  // Set only by answering the dialog. It rides along as a hidden field, so
+  // the posting engine is told a person confirmed rather than inferring it
+  // from the fact that stock happened to be short.
+  const [negativeConfirmed, setNegativeConfirmed] = useState(false);
+  const [askNegative, setAskNegative] = useState(false);
   const [docDate, setDocDate] = useState(today);
   const [dueDate, setDueDate] = useState("");
   const [paymentType, setPaymentType] = useState<"CASH" | "CREDIT">("CREDIT");
@@ -157,6 +181,17 @@ export function SalesVoucher({
 
   const openDeliveries = (deliveries ?? []).filter((d) => d.partner_id === customerId);
 
+  /**
+   * Our own number for the job this invoice belongs to — the sales order it
+   * traces back to, or the delivery itself when it was raised without one.
+   *
+   * Filled in rather than left blank because stepping order → delivery →
+   * invoice already knows the answer, and making someone copy it across from
+   * another screen is how an invoice ends up with no order on it at all. It
+   * stays an ordinary input: a customer's own PO can be typed over it.
+   */
+  const referenceFor = (d: OpenDelivery) => d.source_no || d.doc_no;
+
   function matchDelivery(id: string) {
     setMatchedDeliveryId(id);
     const d = (deliveries ?? []).find((x) => x.id === id);
@@ -169,7 +204,8 @@ export function SalesVoucher({
     setLines(
       d.lines.map((l, idx) => {
         const p = priceFor(l.itemId);
-        return { key: idx + 1, itemId: l.itemId, qty: String(l.qty), unitPrice: p > 0 ? String(p) : "", discountPct: "" };
+        return { key: idx + 1, itemId: l.itemId, qty: String(l.qty), unitPrice: p > 0 ? String(p) : "",
+                 discountPct: "", focQty: "", focReasonId: "" };
       })
     );
   }
@@ -180,13 +216,20 @@ export function SalesVoucher({
   useEffect(() => {
     if (!initialDeliveryId) return;
     matchDelivery(initialDeliveryId);
+    // Only when the invoice was opened from a document — walking the chain is
+    // what makes the order relevant. Someone who opened a blank invoice and
+    // chose a delivery from the list is composing it themselves, and having a
+    // number appear under their hands is noise rather than help.
+    const d = (deliveries ?? []).find((x) => x.id === initialDeliveryId);
+    if (d) setReference(referenceFor(d));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialDeliveryId]);
 
   const addLine = () =>
     setLines((ls) => [
       ...ls,
-      { key: Math.max(0, ...ls.map((l) => l.key)) + 1, itemId: "", qty: "", unitPrice: "", discountPct: "" },
+      { key: Math.max(0, ...ls.map((l) => l.key)) + 1, itemId: "", qty: "", unitPrice: "",
+        discountPct: "", focQty: "", focReasonId: "" },
     ]);
 
   const removeLine = (key: number) =>
@@ -215,14 +258,51 @@ export function SalesVoucher({
     );
   }
 
-  /** Free units earned by a line. Whole multiples only — 25 of a buy-10-get-1 earns 2. */
-  function freeQty(l: Line): number {
+  /** Free units earned by a promotion. Whole multiples only — 25 of a
+   *  buy-10-get-1 earns 2. */
+  function earnedFree(l: Line): number {
     const p = promoFor(l.itemId);
     if (!p || !promoReason) return 0;
     return Math.floor((Number(l.qty) || 0) / Number(p.buy_qty)) * Number(p.free_qty);
   }
 
-  const goodsTotal = lines.reduce((s, l) => s + amount(l), 0);
+  /** Typed on the line: a giveaway the seller decided on, for whatever
+   *  reason they pick. Independent of any promotion. */
+  const givenFree = (l: Line) => Math.max(0, Number(l.focQty) || 0);
+
+  // A free quantity with no reason has nowhere to put its cost, so the first
+  // reason stands in until one is chosen rather than leaving the select blank.
+  useEffect(() => {
+    const fallback = promoReason?.id ?? focReasons[0]?.id;
+    if (!fallback) return;
+    setLines((ls) =>
+      ls.some((l) => Number(l.focQty) > 0 && !l.focReasonId)
+        ? ls.map((l) => (Number(l.focQty) > 0 && !l.focReasonId ? { ...l, focReasonId: fallback } : l))
+        : ls
+    );
+  }, [lines, promoReason, focReasons]);
+
+  /** Everything leaving the warehouse free on this line. Both kinds count
+   *  against stock — a free unit is still a unit off the shelf. */
+  const freeQty = (l: Line) => earnedFree(l) + givenFree(l);
+
+  // The same function the posting engine runs, so the figure previewed is the
+  // figure posted. Two implementations of "which band applies" is exactly how
+  // a voucher comes to show one total and post another.
+  const chargedLines = lines.filter((l) => l.itemId && Number(l.qty) > 0);
+  const pricing = priceLines(
+    chargedLines.map((l) => ({
+      itemId: l.itemId,
+      itemGroupId: byId(l.itemId)?.item_group_id ?? null,
+      qty: Number(l.qty) || 0,
+      unitPrice: Number(l.unitPrice) || 0,
+      discountPct: Number(l.discountPct) || 0,
+    })),
+    volumeDiscounts ?? []
+  );
+  const pricedFor = new Map(chargedLines.map((l, i) => [l.key, pricing.lines[i]]));
+
+  const goodsTotal = pricing.total;
   // Carriage charged to the customer. It is part of what they owe — so it
   // belongs in the total, the cash-in sync and the balance — but it is
   // credited to delivery income rather than to sales, which is why it is
@@ -251,11 +331,29 @@ export function SalesVoucher({
       .filter((l) => l.itemId && Number(l.qty) > 0)
       .flatMap((l) => {
         const qty = Number(l.qty);
-        const paid = { itemId: l.itemId, qty, unitPrice: qty > 0 ? amount(l) / qty : 0 };
-        const free = freeQty(l);
-        return free > 0
-          ? [paid, { itemId: l.itemId, qty: free, unitPrice: 0, focReasonId: promoReason!.id }]
-          : [paid];
+        // The list price and the discount typed against it, rather than one
+        // netted figure — the engine applies the bands and records which part
+        // of the reduction came from where.
+        const paid = {
+          itemId: l.itemId, qty,
+          unitPrice: Number(l.unitPrice) || 0,
+          discountPct: Number(l.discountPct) || 0,
+        };
+        // Kept as two lines when both apply, because they are two different
+        // events with two different reasons — a promotion the customer
+        // triggered, and a giveaway someone decided on. Merging them would
+        // put the whole cost against one reason and lose the other.
+        const earned = earnedFree(l);
+        const given = givenFree(l);
+        const out: unknown[] = [paid];
+        if (earned > 0 && promoReason) {
+          out.push({ itemId: l.itemId, qty: earned, unitPrice: 0, focReasonId: promoReason.id });
+        }
+        if (given > 0) {
+          const reason = l.focReasonId || promoReason?.id;
+          if (reason) out.push({ itemId: l.itemId, qty: given, unitPrice: 0, focReasonId: reason });
+        }
+        return out;
       })
   );
 
@@ -270,6 +368,28 @@ export function SalesVoucher({
         const item = byId(l.itemId);
         return item?.is_stocked && Number(l.qty) + freeQty(l) > onHandHere(l.itemId);
       });
+
+  /** What the dialog states, per item, in the words someone can actually
+   *  confirm: this many needed, this many recorded, this many after. */
+  const shortfalls: Shortfall[] = shortages.map((l) => {
+    const item = byId(l.itemId);
+    return {
+      itemCode: item?.code ?? "",
+      itemName: item?.name ?? "",
+      uomCode: item?.uom_code ?? "",
+      required: Number(l.qty) + freeQty(l),
+      recorded: onHandHere(l.itemId),
+    };
+  });
+
+  // Answering yes and then editing the lines must not carry the old answer
+  // forward — the figures it was given no longer describe what is about to
+  // post. Cleared whenever the shortage picture changes.
+  const shortfallKey = shortfalls
+    .map((s) => `${s.itemCode}:${s.required}:${s.recorded}`).join("|");
+  useEffect(() => {
+    setNegativeConfirmed(false);
+  }, [shortfallKey]);
 
   const customerInvoices = useMemo(
     () => openInvoices.filter((i) => i.partner_id === customerId),
@@ -286,9 +406,8 @@ export function SalesVoucher({
       <input type="hidden" name="lines" value={payload} />
       <input type="hidden" name="payment_type" value={paymentType} />
 
-      <div className="card">
+      <div className="card doc-meta">
         <div className="card-head">
-          <h2>Voucher</h2>
           <span className="actions">
             <span className="pill">Sales invoice</span>
             {activeLevel && (
@@ -340,13 +459,19 @@ export function SalesVoucher({
                   <option key={l.id} value={l.id}>{l.code} · {l.name}</option>
                 ))}
               </select>
-              <span className="hint">Stock leaves from here — On hand below is what&rsquo;s at this location</span>
+              <span className="hint">Stock leaves from here</span>
             </div>
 
             <div className="field">
               <label htmlFor="reference">Ref / order ID</label>
-              <input id="reference" name="reference" type="text" placeholder="Customer PO or phone order" />
-              <span className="hint">Their number, not ours</span>
+              <input id="reference" name="reference" type="text"
+                     value={reference} onChange={(e) => setReference(e.target.value)}
+                     placeholder="Sales order, customer PO or phone order" />
+              {initialDeliveryId && reference && (
+                <span className="hint">
+                  The order this delivery came from. Type over it for a customer&rsquo;s own PO.
+                </span>
+              )}
             </div>
 
             <div className="field">
@@ -357,6 +482,28 @@ export function SalesVoucher({
                 <option value="CASH">Cash</option>
               </select>
             </div>
+
+            {(deliveries?.length ?? 0) > 0 && (
+              <div className="field">
+                <label htmlFor="delivery_id">Match delivery</label>
+                <select id="delivery_id" name="delivery_id" value={matchedDeliveryId}
+                  onChange={(e) => matchDelivery(e.target.value)} disabled={!customerId}>
+                  <option value="">
+                    {customerId ? "Not matched" : "Choose a customer first"}
+                  </option>
+                  {openDeliveries.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.doc_no} · {String(d.doc_date).slice(0, 10)} · {d.lines.length} line{d.lines.length === 1 ? "" : "s"}
+                    </option>
+                  ))}
+                </select>
+                <span className="hint">
+                  {matchedDeliveryId
+                    ? "Lines filled from it — stock already left, so Fulfilment no longer applies"
+                    : "For stock that already left and just needs its invoice"}
+                </span>
+              </div>
+            )}
 
             <div className="field">
               <label htmlFor="due_date">Due date</label>
@@ -370,35 +517,6 @@ export function SalesVoucher({
           </div>
         </div>
       </div>
-
-      {(deliveries?.length ?? 0) > 0 && (
-        <div className="card">
-          <div className="card-head">
-            <h2>Matching</h2>
-          </div>
-          <div className="card-body">
-            <div className="field">
-              <label htmlFor="delivery_id">Match existing delivery</label>
-              <select id="delivery_id" name="delivery_id" value={matchedDeliveryId}
-                onChange={(e) => matchDelivery(e.target.value)} disabled={!customerId}>
-                <option value="">
-                  {customerId ? "Not matched — invoice fresh, or deliver later" : "Choose a customer first"}
-                </option>
-                {openDeliveries.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.doc_no} · {String(d.doc_date).slice(0, 10)} · {d.lines.length} line{d.lines.length === 1 ? "" : "s"}
-                  </option>
-                ))}
-              </select>
-              <span className="hint">
-                {matchedDeliveryId
-                  ? "Lines are filled from this delivery, priced normally — stock already left, so Fulfilment below no longer applies."
-                  : "Stock already left and just needs its invoice written — pick which delivery this is for."}
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="card">
         <div className="card-head">
@@ -414,6 +532,7 @@ export function SalesVoucher({
                 <th className="r">Qty</th>
                 <th className="r">Price</th>
                 <th className="r">Disc %</th>
+                <th className="r">Free</th>
                 <th className="r">Amount</th>
                 <th />
               </tr>
@@ -436,6 +555,7 @@ export function SalesVoucher({
                       <td className="r" style={{ color: "var(--muted)" }}>free</td>
                       <td className="r">{fmt(free)}</td>
                       <td className="r" style={{ color: "var(--muted)" }}>0</td>
+                      <td />
                       <td />
                       <td className="r" style={{ color: "var(--muted)" }}>0</td>
                       <td />
@@ -476,6 +596,23 @@ export function SalesVoucher({
                     <td className="tight">
                       <input type="number" min="0" max="100" step="any" value={l.discountPct} aria-label="Discount percent"
                         onChange={(e) => setLine(l.key, { discountPct: e.target.value })} />
+                    </td>
+                    {/* Given away on this line. Not a discount: these units
+                        are charged at nothing and still leave the warehouse,
+                        so they need a reason of their own to cost against. */}
+                    <td className="narrow">
+                      <input type="number" min="0" step="any" value={l.focQty} aria-label="Free quantity"
+                        placeholder="0"
+                        onChange={(e) => setLine(l.key, { focQty: e.target.value })} />
+                      {givenFree(l) > 0 && (
+                        <select value={l.focReasonId} aria-label="Reason free"
+                                style={{ marginTop: "0.2rem" }}
+                                onChange={(e) => setLine(l.key, { focReasonId: e.target.value })}>
+                          {focReasons.map((r) => (
+                            <option key={r.id} value={r.id}>{r.name}</option>
+                          ))}
+                        </select>
+                      )}
                     </td>
                     <td className="r">{fmt(amount(l))}</td>
                     <td className="tight">
@@ -657,10 +794,24 @@ export function SalesVoucher({
         </div>
       </div>
 
-      {shortages.length > 0 && (
+      {shortages.length > 0 && !negativeConfirmed && (
         <div className="alert">
-          Not enough stock for {shortages.map((l) => byId(l.itemId)?.code).join(", ")}.
-          Reduce the quantity or receive stock first.
+          <strong>Recorded stock is insufficient</strong> for{" "}
+          {shortages.map((l) => byId(l.itemId)?.code).join(", ")}. Reduce the
+          quantity, receive the stock first, or confirm the goods physically
+          exist &mdash; posting will ask before recording negative stock.
+        </div>
+      )}
+
+      {shortages.length > 0 && negativeConfirmed && (
+        <div className="alert">
+          <strong>Confirmed:</strong> the goods physically exist though none are
+          recorded. This will post negative stock, listed under Inventory
+          &rarr; Negative stock until a receipt covers it.{" "}
+          <button type="button" className="ghost tiny"
+                  onClick={() => setNegativeConfirmed(false)}>
+            Undo
+          </button>
         </div>
       )}
 
@@ -681,9 +832,29 @@ export function SalesVoucher({
         </div>
       )}
 
-      <div className="actions">
-        <button type="submit"
-          disabled={pending || total === 0 || shortages.length > 0 || cashTooMuch}>
+      {/* Carried to the engine, which refuses negative stock without it. The
+          flag comes from answering the dialog, never from the shortage
+          merely existing. */}
+      {negativeConfirmed && (
+        <input type="hidden" name="allow_negative_stock" value="true" />
+      )}
+
+      <NegativeStockConfirm
+        open={askNegative}
+        shortfalls={shortfalls}
+        onCancel={() => setAskNegative(false)}
+        onConfirm={() => { setNegativeConfirmed(true); setAskNegative(false); }}
+      />
+
+      <div className="actions form-commit">
+        <button
+          type={shortages.length > 0 && !negativeConfirmed ? "button" : "submit"}
+          onClick={
+            shortages.length > 0 && !negativeConfirmed
+              ? () => setAskNegative(true)
+              : undefined
+          }
+          disabled={pending || total === 0 || cashTooMuch}>
           {pending ? "Posting…" : "Post voucher"}
         </button>
         <span className="page-sub">

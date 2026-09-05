@@ -121,8 +121,18 @@ try {
   const [inv] = await sql`select net_total, gross_total from document where id = ${sale.id}`;
   check("the customer is billed for the ten only", n(inv.net_total) === 15000, `${n(inv.net_total)}`);
 
+  // Which account revenue lands in is the chart's business, not this test's.
+  // Asking the same resolver the posting code asks keeps the assertion true
+  // on any chart; hard-coded codes only ever matched the demo seed.
+  const acct = async (purpose) => (await sql`
+    select code from account
+     where id = fn_resolve_account_for_item(${co.id}, ${purpose}, ${item.id})`)[0].code;
+  const [revenueCode, inventoryCode, cogsCode] =
+    await Promise.all([acct("REVENUE"), acct("INVENTORY"), acct("COGS")]);
+
   const invJ = await journalOf(sale.id);
-  check("revenue is the ten only", invJ.some((l) => n(l.credit) === 15000 && l.account_code === "4100"));
+  check("revenue is the ten only",
+    invJ.some((l) => n(l.credit) === 15000 && l.account_code === revenueCode));
   check("receivable is the ten only", invJ.some((l) => n(l.debit) === 15000));
 
   // postSaleWithDelivery posts the delivery first, so it is the invoice that
@@ -135,8 +145,9 @@ try {
   const delJ = await journalOf(del.id);
 
   check("inventory is relieved of all twelve at cost",
-    delJ.some((l) => n(l.credit) === 12000 && l.account_code === "1300"), "12 × 1000");
-  check("the ten sold hit COGS", delJ.some((l) => n(l.debit) === 10000 && l.account_code === "5100"));
+    delJ.some((l) => n(l.credit) === 12000 && l.account_code === inventoryCode), "12 × 1000");
+  check("the ten sold hit COGS",
+    delJ.some((l) => n(l.debit) === 10000 && l.account_code === cogsCode));
   check(`the two free hit ${focAcct.code} ${focAcct.name}, not COGS`,
     delJ.some((l) => n(l.debit) === 2000 && l.account_code === focAcct.code));
 
