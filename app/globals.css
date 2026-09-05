@@ -308,17 +308,54 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-num
 
 /* --------------------------------------------------------------- pills --- */
 
+/* Status badges. A document's state is a fact about it, not a decoration,
+   and these were reading as a wash: a 15% tint with no edge and text in the
+   same hue as its own background, which at this size looks tentative next to
+   the figures it sits beside.
+   Three changes, none of them louder colour. A definite border, so the badge
+   has a shape rather than a stain. Text mixed toward --ink, which raises
+   contrast while keeping the hue — and does the right thing in both themes,
+   since --ink inverts. And the weight the rest of the mono micro-type uses.
+   The fill stays translucent on purpose: these sit on white cards, on the
+   grey card heads and on striped table rows, and an opaque chip would read
+   as a patch on two of the three. */
 .pill {
-  display: inline-block; font-family: var(--mono); font-size: var(--t-2xs);
-  letter-spacing: var(--track-caps); padding: 0.14rem 0.48rem; border-radius: var(--r-sm);
-  background: color-mix(in srgb, var(--muted) 13%, transparent);
-  color: var(--muted); text-transform: uppercase; border: none;
+  display: inline-flex; align-items: center;
+  font-family: var(--mono); font-size: var(--t-2xs); font-weight: 600;
+  letter-spacing: var(--track-caps); padding: 0.18rem 0.5rem;
+  border-radius: var(--r-sm); text-transform: uppercase;
+  background: color-mix(in srgb, var(--muted) 12%, transparent);
+  color: color-mix(in srgb, var(--muted) 70%, var(--ink));
+  border: 1px solid color-mix(in srgb, var(--muted) 30%, transparent);
+  white-space: nowrap;
 }
-.pill.posted  { background: color-mix(in srgb, var(--ok) 15%, transparent);   color: var(--ok); }
-.pill.draft   { background: color-mix(in srgb, var(--muted) 13%, transparent); color: var(--muted); }
-.pill.overdue { background: color-mix(in srgb, var(--bad) 15%, transparent);  color: var(--bad); }
-.pill.warn    { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
-.pill.ok      { background: color-mix(in srgb, var(--ok) 15%, transparent);   color: var(--ok); }
+.pill.posted, .pill.ok {
+  background: color-mix(in srgb, var(--ok) 13%, transparent);
+  color: color-mix(in srgb, var(--ok) 80%, var(--ink));
+  border-color: color-mix(in srgb, var(--ok) 36%, transparent);
+}
+.pill.draft {
+  background: color-mix(in srgb, var(--muted) 12%, transparent);
+  color: color-mix(in srgb, var(--muted) 70%, var(--ink));
+  border-color: color-mix(in srgb, var(--muted) 30%, transparent);
+}
+.pill.overdue {
+  background: color-mix(in srgb, var(--bad) 13%, transparent);
+  color: color-mix(in srgb, var(--bad) 80%, var(--ink));
+  border-color: color-mix(in srgb, var(--bad) 36%, transparent);
+}
+.pill.warn {
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: color-mix(in srgb, var(--warn) 80%, var(--ink));
+  border-color: color-mix(in srgb, var(--warn) 38%, transparent);
+}
+/* Reversed is not a state to read past: the document still shows its
+   figures, and they no longer affect any account. */
+.pill.reversed {
+  background: color-mix(in srgb, var(--bad) 13%, transparent);
+  color: color-mix(in srgb, var(--bad) 80%, var(--ink));
+  border-color: color-mix(in srgb, var(--bad) 36%, transparent);
+}
 
 .dr { color: var(--dr); }
 .cr { color: var(--cr); }
