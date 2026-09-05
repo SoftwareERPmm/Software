@@ -330,16 +330,7 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
       }
     >
 
-      <RelatedDocumentsPanel
-        related={related}
-        accounting={(journal as unknown as {
-          account_name: string; debit: string; credit: string;
-        }[]).map((l) => ({
-          accountName: l.account_name,
-          debit: Number(l.debit),
-          credit: Number(l.credit),
-        }))}
-      />
+      <RelatedDocumentsPanel related={related} />
 
       {voidInfo && (
         <div className="alert" style={{ marginTop: "0.75rem" }}>

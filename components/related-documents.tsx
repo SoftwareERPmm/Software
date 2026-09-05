@@ -26,22 +26,20 @@ const STATUS_PILL: Record<string, string> = {
  * Nothing here is styled as a warning. A missing link is only a problem when
  * some particular operation needs it, and the operation says so at the time.
  */
-export type AccountingLine = { accountName: string; debit: number; credit: number };
-
+/*
+ * This panel deliberately carries no accounting summary. It had one, and it
+ * was a second, shorter copy of the journal printed a few centimetres above
+ * the real one — two renderings of the same entry inviting the reader to
+ * check whether they agree. What a document did to the ledger is answered
+ * once, in full, under Posting.
+ */
 export function RelatedDocumentsPanel({
-  related, accounting = [],
+  related,
 }: {
   related: RelatedDocuments;
-  /** What the document did to the ledger, in Dr/Cr form. Shown beside the
-   *  links because "what did this do" and "what is it attached to" are the
-   *  two questions someone opens a posted document to answer, and both were
-   *  previously below the fold. The full entry, with line numbers, account
-   *  codes and the balance proof, stays further down — this is the headline,
-   *  not a second copy of the ledger. */
-  accounting?: AccountingLine[];
 }) {
   const { source, downstream } = related;
-  if (source.length === 0 && downstream.length === 0 && accounting.length === 0) return null;
+  if (source.length === 0 && downstream.length === 0) return null;
 
   const section = (heading: string, groups: RelatedDocuments["source"]) =>
     groups.length === 0 ? null : (
@@ -104,42 +102,6 @@ export function RelatedDocumentsPanel({
       <div className="card-body" style={{ display: "flex", gap: "2rem", flexWrap: "wrap" }}>
         {section("Source", source)}
         {section("Downstream", downstream)}
-        {accounting.length > 0 && (
-          <div style={{ minWidth: 0, flex: "1 1 240px" }}>
-            <div className="page-sub" style={{
-              textTransform: "uppercase", letterSpacing: "0.06em",
-              fontSize: "var(--t-xs)", marginBottom: "0.35rem",
-            }}>
-              Accounting impact
-            </div>
-            <table style={{ width: "100%" }}>
-              <tbody>
-                {/* Debits first, credits under them — the order an entry is
-                    written in, regardless of the order the posting code
-                    happened to insert the lines. The full journal below
-                    keeps the real line numbers; this is the reading. */}
-                {[...accounting]
-                  .sort((a, b) => (a.credit ? 1 : 0) - (b.credit ? 1 : 0))
-                  .map((a, i) => (
-                  <tr key={i}>
-                    {/* Credits are indented under their debit, the way an
-                        entry is written by hand. The shape carries the
-                        meaning before any number is read. */}
-                    <td style={{ paddingLeft: a.credit ? "1rem" : 0 }}>
-                      <span style={{ color: "var(--muted)" }}>{a.credit ? "Cr" : "Dr"}</span>{" "}
-                      {a.accountName}
-                    </td>
-                    <td className="r" style={{ whiteSpace: "nowrap" }}>
-                      <span className={a.credit ? "cr" : "dr"}>
-                        {money(a.credit || a.debit)}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
       </div>
     </div>
   );
