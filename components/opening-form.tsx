@@ -7,7 +7,7 @@ import { ACCOUNT_TYPE_LABEL } from "./account-form";
 
 type Account = {
   id: string; code: string; name: string; parent_id?: string | null;
-  account_type: string; is_control: boolean;
+  account_type: string; is_control: boolean; subledger?: string | null;
 };
 /** Every account including the non-postable headings, so an account's section
  *  can be found by walking up to it. */
@@ -53,9 +53,13 @@ export function OpeningForm({
     { key: 3, accountId: "", debit: "", credit: "" },
   ]);
 
-  // Receivables and payables open through their own subledger, not here, or
-  // the control account would stop agreeing with the invoices behind it.
-  const postable = accounts.filter((a) => !a.is_control);
+  // A subledger owns its balance, so an opening figure typed against one puts
+  // a number in the general ledger that its subledger has never heard of —
+  // inventory value with no stock behind it, receivables no invoice explains.
+  // Opening stock is entered as stock; opening receivables as their invoices.
+  // The database refuses these too (migration 0046); this keeps them out of
+  // the picker so the refusal is never the first anyone hears of it.
+  const postable = accounts.filter((a) => !a.is_control && !a.subledger);
   const groups = groupAccountsBySection(
     postable, accountTree.length ? accountTree : (postable as never), ACCOUNT_TYPE_LABEL
   );

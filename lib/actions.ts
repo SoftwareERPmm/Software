@@ -1852,7 +1852,8 @@ export async function getFinanceData() {
   const co = await companyId();
 
   const [accounts, accountTree, cashAccounts, bankAccounts, branches, costCenters] = await Promise.all([
-    sql`select id, code, name, parent_id, account_type, is_control, is_cash_account, is_bank_account
+    sql`select id, code, name, parent_id, account_type, is_control, is_cash_account,
+               is_bank_account, subledger
           from account
          where company_id = ${co} and is_postable and is_active
          order by code`,

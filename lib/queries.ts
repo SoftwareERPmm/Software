@@ -1389,37 +1389,61 @@ export async function getCashFlowStatement(
   companyId: string, from: string, to: string, branchId?: string | null
 ) {
   const [rows, beginning, ending] = await Promise.all([
+    // Each cash movement counted once. Joining every cash line to every
+    // contra line and summing the contra repeated the entry once per cash
+    // line: Dr Cash 60,000 + Dr Bank 40,000 / Cr Capital 100,000 reported
+    // 200,000 of financing inflow against 100,000 of actual cash.
+    //
+    // So the amount is the cash line's own movement — which is the cash that
+    // truly moved — apportioned across the entry's contra lines in
+    // proportion to them. One cash line against one contra keeps its whole
+    // value; a payment split across an expense and an asset splits in the
+    // same ratio. The parts always add back to the cash line.
     sql`
+      with cash_line as (
+        select jl.id, jl.journal_entry_id, jl.base_amount, jl.location_id
+          from journal_line jl
+          join account a on a.id = jl.account_id
+         where jl.company_id = ${companyId}
+           and (a.is_cash_account or a.is_bank_account)
+      ),
+      contra as (
+        select jl.journal_entry_id, jl.base_amount, a.account_type
+          from journal_line jl
+          join account a on a.id = jl.account_id
+         where jl.company_id = ${companyId}
+           and not (a.is_cash_account or a.is_bank_account)
+      ),
+      contra_total as (
+        select journal_entry_id, sum(base_amount) as total
+          from contra group by journal_entry_id
+      )
       select
         case
           when je.source_type in ('CUSTOMER_RECEIPT', 'SALES_INVOICE') then 'Received from customers'
           when je.source_type = 'SUPPLIER_PAYMENT' then 'Paid to suppliers'
-          when a2.account_type = 'REVENUE' then 'Received from customers'
-          when a2.account_type = 'COGS' then 'Paid to suppliers'
-          when a2.account_type = 'EXPENSE' then 'Operating expenses paid'
-          when a2.account_type = 'EQUITY' then 'Owner contributions / drawings'
-          when a2.account_type = 'LIABILITY' then 'Loans and other liabilities'
-          when a2.account_type = 'ASSET' then 'Purchase / sale of fixed assets'
+          when k.account_type = 'REVENUE' then 'Received from customers'
+          when k.account_type = 'COGS' then 'Paid to suppliers'
+          when k.account_type = 'EXPENSE' then 'Operating expenses paid'
+          when k.account_type = 'EQUITY' then 'Owner contributions / drawings'
+          when k.account_type = 'LIABILITY' then 'Loans and other liabilities'
+          when k.account_type = 'ASSET' then 'Purchase / sale of fixed assets'
           else 'Other'
         end as category,
         case
           when je.source_type in ('CUSTOMER_RECEIPT', 'SALES_INVOICE', 'SUPPLIER_PAYMENT')
-            or a2.account_type in ('REVENUE', 'COGS', 'EXPENSE') then 'operating'
-          when a2.account_type = 'ASSET' then 'investing'
-          when a2.account_type in ('EQUITY', 'LIABILITY') then 'financing'
+            or k.account_type in ('REVENUE', 'COGS', 'EXPENSE') then 'operating'
+          when k.account_type = 'ASSET' then 'investing'
+          when k.account_type in ('EQUITY', 'LIABILITY') then 'financing'
           else 'operating'
         end as section,
-        -sum(jl2.base_amount) as amount
-        from journal_line jl_cash
-        join journal_entry je on je.id = jl_cash.journal_entry_id
-        join account a_cash on a_cash.id = jl_cash.account_id
-        join journal_line jl2 on jl2.journal_entry_id = je.id and jl2.id <> jl_cash.id
-        join account a2 on a2.id = jl2.account_id
-       where jl_cash.company_id = ${companyId}
-         and (a_cash.is_cash_account or a_cash.is_bank_account)
-         and not (a2.is_cash_account or a2.is_bank_account)
-         and je.entry_date between ${from}::date and ${to}::date
-         ${branchFilterOn(sql`jl_cash`, branchId)}
+        sum(c.base_amount * k.base_amount / nullif(ct.total, 0)) as amount
+        from cash_line c
+        join journal_entry je on je.id = c.journal_entry_id
+        join contra k on k.journal_entry_id = c.journal_entry_id
+        join contra_total ct on ct.journal_entry_id = c.journal_entry_id
+       where je.entry_date between ${from}::date and ${to}::date
+         ${branchFilterOn(sql`c`, branchId)}
        group by category, section
        order by section, category`,
     sql`

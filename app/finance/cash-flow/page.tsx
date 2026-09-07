@@ -42,10 +42,21 @@ export default async function CashFlow({
     await getCashFlowStatement(company.id, range.from, range.to, branchId);
   const typed = rows as unknown as Array<{ category: string; section: string; amount: string }>;
 
+  // Beginning plus what the statement explains should be what the ledger
+  // holds. A branch view legitimately differs: a transfer between branches
+  // moves that branch's cash but has no contra line to classify, so it is
+  // shown as a difference rather than quietly folded into a category.
   const netChange = SECTIONS.reduce(
     (s, sec) => s + typed.filter((r) => r.section === sec.key).reduce((s2, r) => s2 + Number(r.amount), 0),
     0
   );
+
+  // Beginning plus what the statement explains should be what the ledger
+  // holds. A branch view legitimately differs: a transfer between branches
+  // moves that branch's cash but has no contra line to classify, so it shows
+  // as a difference rather than being quietly folded into a category.
+  const difference = Number(endingCash) - (Number(beginningCash) + netChange);
+  const unreconciled = Math.abs(difference) > 0.01;
 
   return (
     <>
@@ -118,6 +129,19 @@ export default async function CashFlow({
                 <tr><td>Net change in cash</td><td className="r" style={{ fontWeight: 700 }}>{money(netChange)}</td></tr>
                 <tr><td>Cash at beginning of period</td><td className="r">{money(beginningCash)}</td></tr>
                 <tr><td>Cash at end of period</td><td className="r" style={{ fontWeight: 700 }}>{money(endingCash)}</td></tr>
+                {/* The statement's own proof. Ending cash is read straight
+                    from the ledger while the movements above are classified
+                    from it, so the two are arrived at independently and
+                    printing both without comparing them hides exactly the
+                    errors this report can make. */}
+                <tr>
+                  <td style={{ color: unreconciled ? "var(--bad)" : "var(--muted)" }}>
+                    {unreconciled ? "Unexplained difference" : "Reconciles"}
+                  </td>
+                  <td className="r" style={{ color: unreconciled ? "var(--bad)" : "var(--muted)" }}>
+                    {money(difference)}
+                  </td>
+                </tr>
               </tfoot>
             </table>
           </div>
