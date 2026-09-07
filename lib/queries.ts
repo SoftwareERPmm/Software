@@ -1171,16 +1171,27 @@ export async function getBranches(companyId: string) {
 export const UNASSIGNED_BRANCH = "none";
 
 function branchFilter(branchId?: string | null) {
+  return branchFilterOn(sql`jl`, branchId);
+}
+
+/**
+ * The same rule against whichever alias the caller is using. A branch is a
+ * top-level location and its warehouses are its children, so a line stamped
+ * with a warehouse belongs to the branch above it — comparing the line's
+ * location straight to a branch id matches nothing and reads as "this branch
+ * has no activity", which is worse than an error.
+ */
+function branchFilterOn(alias: ReturnType<typeof sql>, branchId?: string | null) {
   if (!branchId) return sql``;
   // Entries posted before the branch dimension was stamped carry no location
   // and belong to no branch. They still count in the consolidated company
   // figures, so without a way to see them the branches would silently fail to
   // add up to the company total and there would be nothing on screen saying
   // why. This makes that remainder selectable instead of invisible.
-  if (branchId === UNASSIGNED_BRANCH) return sql`and jl.location_id is null`;
+  if (branchId === UNASSIGNED_BRANCH) return sql`and ${alias}.location_id is null`;
   return sql`and exists (
           select 1 from location w
-           where w.id = jl.location_id
+           where w.id = ${alias}.location_id
              and coalesce(w.parent_id, w.id) = ${branchId})`;
 }
 
@@ -1951,7 +1962,8 @@ export async function getJournalEntries(companyId: string, f: JournalEntryFilter
                       where x.journal_entry_id = je.id and x.account_id = ${f.accountId})` : sql``}
        ${f.locationId ? sql`
          and exists (select 1 from journal_line x
-                      where x.journal_entry_id = je.id and x.location_id = ${f.locationId})` : sql``}
+                      where x.journal_entry_id = je.id
+                        ${branchFilterOn(sql`x`, f.locationId)})` : sql``}
      group by je.id, je.entry_no, je.entry_date, je.memo, je.source_type,
               d.id, d.doc_no, d.doc_type, d.status, p.name
      order by je.entry_date desc, je.entry_no desc
@@ -2032,7 +2044,7 @@ export async function getTrialBalanceAsOf(companyId: string, f: TrialBalanceFilt
       left join account sec on sec.id = a.parent_id
      where jl.company_id = ${companyId}
        ${f.asOf ? sql`and je.entry_date <= ${f.asOf}::date` : sql``}
-       ${f.locationId ? sql`and jl.location_id = ${f.locationId}` : sql``}
+       ${branchFilter(f.locationId)}
        ${f.accountType ? sql`and a.account_type = ${f.accountType}` : sql``}
      group by a.id, a.code, a.name, a.account_type, sec.name
      -- An account that moved and came back to nil is still part of the

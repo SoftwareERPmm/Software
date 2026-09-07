@@ -4,7 +4,10 @@ import {
   Scale, TriangleAlert, X,
 } from "lucide-react";
 import { money } from "@/lib/db";
-import { getCompany, getTrialBalanceAsOf, getHealth } from "@/lib/queries";
+import {
+  getCompany, getTrialBalanceAsOf, getHealth,
+  getUnassignedBranchActivity, UNASSIGNED_BRANCH,
+} from "@/lib/queries";
 import { getFinanceData } from "@/lib/actions";
 
 /**
@@ -42,12 +45,13 @@ export default async function TrialBalance({
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
-  const [rows, health, finance] = await Promise.all([
+  const [rows, health, finance, unassigned] = await Promise.all([
     getTrialBalanceAsOf(company.id, {
       asOf: p.asOf, locationId: p.location, accountType: p.type,
     }) as Promise<any[]>,
     getHealth(company.id),
     getFinanceData(),
+    getUnassignedBranchActivity(company.id),
   ]);
   const locations = finance.branches as never as { id: string; code: string; name: string }[];
 
@@ -121,6 +125,9 @@ export default async function TrialBalance({
                 {locations.map((l) => (
                   <option key={l.id} value={l.id}>{l.code} · {l.name}</option>
                 ))}
+                {unassigned > 0 && (
+                  <option value={UNASSIGNED_BRANCH}>— No branch ({unassigned} lines) —</option>
+                )}
               </select>
             </div>
             <div className="field">

@@ -1,7 +1,10 @@
 import Link from "next/link";
 import { ArrowRight, Scale } from "lucide-react";
 import { getFinanceData, getAccountLedger, getAccountLedgerSummary } from "@/lib/actions";
-import { getCompany, getJournalEntries, getJournalEntryLines } from "@/lib/queries";
+import {
+  getCompany, getJournalEntries, getJournalEntryLines,
+  getUnassignedBranchActivity, UNASSIGNED_BRANCH,
+} from "@/lib/queries";
 import { money } from "@/lib/db";
 import { AccountPicker } from "@/components/account-picker";
 import { JournalEntryList, type Entry } from "@/components/journal-entry-list";
@@ -76,6 +79,9 @@ export default async function GeneralLedger({
     id: string; code: string; name: string; parent_id: string | null; is_postable?: boolean;
   }[];
   const locationList = data.branches as never as { id: string; code: string; name: string }[];
+  // Lines carrying no branch at all still count in the company total, so the
+  // remainder has to be selectable or the branches silently fail to add up.
+  const unassigned = await getUnassignedBranchActivity(company.id);
 
   // The querystring carries the whole view, so a link back to the other tab
   // keeps the period someone has already chosen.
@@ -120,8 +126,9 @@ export default async function GeneralLedger({
       </div>
 
       {byAccount ? <AccountView p={p} list={list} tree={tree} carry={carry} />
-                 : <EntriesView p={p} companyId={company.id}
-                                accounts={list} locations={locationList} />}
+                 : <EntriesView p={p} companyId={company.id} accounts={list}
+                                locations={locationList}
+                                unassignedLines={unassigned} />}
     </>
   );
 }
@@ -129,12 +136,13 @@ export default async function GeneralLedger({
 // ------------------------------------------------------------ all entries --
 
 async function EntriesView({
-  p, companyId, accounts, locations,
+  p, companyId, accounts, locations, unassignedLines,
 }: {
   p: Record<string, string | undefined>;
   companyId: string;
   accounts: { id: string; code: string; name: string }[];
   locations: { id: string; code: string; name: string }[];
+  unassignedLines: number;
 }) {
   const rows = (await getJournalEntries(companyId, {
     from: p.from, to: p.to, accountId: p.account, locationId: p.location,
@@ -215,6 +223,9 @@ async function EntriesView({
                 {locations.map((l) => (
                   <option key={l.id} value={l.id}>{l.code} · {l.name}</option>
                 ))}
+                {unassignedLines > 0 && (
+                  <option value={UNASSIGNED_BRANCH}>— No branch ({unassignedLines} lines) —</option>
+                )}
               </select>
             </div>
             <div className="field">
@@ -272,6 +283,22 @@ async function AccountView({
     <>
       <AccountPicker accounts={list} selectedId={selected.id} tree={tree}
                      basePath="/finance/general-ledger" />
+
+      {/* Said plainly rather than left to be discovered. The running balance
+          is a window over every movement on the account, so filtering the
+          rows underneath it would leave a balance that no longer matches the
+          column it sits beside. Better to state that this view is the whole
+          account than to show a figure that is quietly wrong. */}
+      {p.location && (
+        <div className="alert" style={{ marginBottom: "1rem" }}>
+          The branch filter does not apply here — a running balance is only
+          meaningful over every movement on the account. Use{" "}
+          <Link href={carry({ view: undefined })} style={{ color: "var(--brand)" }}>
+            All entries
+          </Link>{" "}
+          to read this branch on its own.
+        </div>
+      )}
 
       {/* What it held before, what moved each way, what it holds now. The
           movements below are the working; these are the answer. */}
