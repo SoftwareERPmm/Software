@@ -38,6 +38,8 @@ export type InvoiceLine = {
    *  another — defaults to OWNED, and CONSIGNMENT never falls back to
    *  owned stock if there is not enough consigned to cover it. */
   source?: "OWNED" | "CONSIGNMENT";
+  /** Whose consigned goods. Only read when source is CONSIGNMENT. */
+  consignorId?: string | null;
 };
 
 export type InvoiceInput = {
@@ -102,6 +104,9 @@ export type FulfillmentLine = {
   /** Which stock pool a delivery line draws from. See InvoiceLine.source —
    *  same rule, same reason: never blend owned and consigned FIFO. */
   source?: "OWNED" | "CONSIGNMENT";
+  /** Whose consigned goods, when more than one consignor holds this item
+   *  here. Ignored unless the source is CONSIGNMENT. */
+  consignorId?: string | null;
 };
 export type FulfillmentInput = {
   companyId: string;
@@ -778,16 +783,23 @@ type ConsignmentDraw = {
 type ConsignmentPlan = { draws: ConsignmentDraw[] };
 
 async function planConsignmentConsumption(
-  tx: TransactionSql, companyId: string, itemId: string, locationId: string, qty: number
+  tx: TransactionSql, companyId: string, itemId: string, locationId: string, qty: number,
+  // Whose goods. Left out, the draw runs FIFO across every consignor at this
+  // location, which is right when there is only one and a coin toss when
+  // there are two — and the consignor whose shirt left is the one who gets
+  // paid for it, so it is not a detail the system should decide by date.
+  consignorId?: string | null,
 ): Promise<ConsignmentPlan> {
   // Same lock-then-aggregate shape as planFifoConsumption, for the same
   // reason: Postgres refuses FOR UPDATE on a query that groups, so the lock
   // is taken on its own first and held for the rest of the transaction.
   await tx`
     select cl.id from consignment_lot cl
+      join document d on d.id = cl.receipt_document_id
      where cl.company_id = ${companyId} and cl.item_id = ${itemId} and cl.location_id = ${locationId}
+       ${consignorId ? tx`and d.partner_id = ${consignorId}` : tx``}
      order by cl.received_date, cl.created_at
-       for update`;
+       for update of cl`;
 
   const lots = await tx`
     select cl.id, cl.pricing_method, cl.pricing_value, d.partner_id as consignor_id,
@@ -796,6 +808,7 @@ async function planConsignmentConsumption(
       join document d on d.id = cl.receipt_document_id
       left join consignment_lot_consumption c on c.lot_id = cl.id
      where cl.company_id = ${companyId} and cl.item_id = ${itemId} and cl.location_id = ${locationId}
+       ${consignorId ? tx`and d.partner_id = ${consignorId}` : tx``}
      group by cl.id, cl.pricing_method, cl.pricing_value, d.partner_id, cl.qty_received,
               cl.received_date, cl.created_at
     having cl.qty_received - coalesce(sum(c.qty), 0) > 0.0001
@@ -819,7 +832,9 @@ async function planConsignmentConsumption(
 
   if (need > 0.0001) {
     throw new Error(
-      "Not enough consigned stock in any lot at this location to cover the quantity requested"
+      consignorId
+        ? "Not enough of this consignor's stock at this location to cover the quantity requested"
+        : "Not enough consigned stock in any lot at this location to cover the quantity requested"
     );
   }
 
@@ -1183,7 +1198,8 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
       // elsewhere" — here, the real figure does not exist yet at all. It is
       // computed at settlement, from the price this customer is actually
       // being charged, not from anything decided at delivery.
-      const plan = await planConsignmentConsumption(tx, companyId, line.itemId, locationId, line.qty);
+      const plan = await planConsignmentConsumption(
+        tx, companyId, line.itemId, locationId, line.qty, line.consignorId ?? null);
 
       await tx`
         insert into document_line
@@ -1759,7 +1775,10 @@ export async function postSaleWithDelivery(input: SalesInvoiceInput) {
         // actually moves the stock.
         allowNegativeStock: input.allowNegativeStock,
         lines: toDeliver.map((l) => ({
-          itemId: l.itemId, qty: l.qty, focReasonId: l.focReasonId, source: l.source,
+          itemId: l.itemId, qty: l.qty, focReasonId: l.focReasonId,
+          // The invoice's choice of pool travels to the delivery it creates,
+          // which is the document that actually moves the goods.
+          source: l.source, consignorId: l.consignorId,
         })),
       });
       deliveryId = delivery.id;

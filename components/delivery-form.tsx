@@ -4,6 +4,7 @@ import { useActionState, useEffect, useState } from "react";
 import type { ActionResult, PickerItem } from "@/lib/actions";
 import { ItemPicker } from "./item-picker";
 import { NegativeStockConfirm, type Shortfall } from "./negative-stock-confirm";
+import { StockSourceDialog, poolsFor, type OwnershipSplit } from "./stock-source";
 
 type Node = { id: string; code: string; segment: string; name: string; parent_id: string | null };
 type Uom = { id: string; code: string; name: string };
@@ -20,6 +21,9 @@ type OpenOrderLine = {
 type Line = {
   key: number; itemId: string; qty: string;
   focQty: string; focReasonId: string;
+  /** "OWNED" or a consignor's id. Which shelf these goods actually came off
+   *  — the warehouse cannot tell you, and the accounts differ entirely. */
+  source: string;
   /** Set when the line came from an order, so the delivery credits that line. */
   sourceLineId?: string | null;
 };
@@ -42,7 +46,7 @@ const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 4 
  */
 export function DeliveryForm({
   action, customers, items: initialItems, locations, categories, uoms,
-  stockByLocation, focReasons, openOrders, today,
+  stockByLocation, focReasons, openOrders, today, ownership = [],
 }: {
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   customers: Partner[];
@@ -54,6 +58,11 @@ export function DeliveryForm({
   focReasons: FocReason[];
   openOrders: OpenOrderLine[];
   today: string;
+  /** Consigned stock on hand, per item, warehouse and consignor. */
+  ownership?: {
+    item_id: string; location_id: string; consignor_id: string;
+    consignor_code: string; consignor_name: string; qty: string;
+  }[];
 }) {
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     action as never, null
@@ -64,7 +73,7 @@ export function DeliveryForm({
   const [locationId, setLocationId] = useState(locations[0]?.id ?? "");
   const [orderId, setOrderId] = useState("");
   const [lines, setLines] = useState<Line[]>([
-    { key: 1, itemId: "", qty: "", focQty: "", focReasonId: "" },
+    { key: 1, itemId: "", qty: "", focQty: "", focReasonId: "", source: "OWNED" },
   ]);
   const [negativeConfirmed, setNegativeConfirmed] = useState(false);
   const [askNegative, setAskNegative] = useState(false);
@@ -75,7 +84,7 @@ export function DeliveryForm({
   const addLine = () =>
     setLines((ls) => [...ls, {
       key: Math.max(0, ...ls.map((l) => l.key)) + 1,
-      itemId: "", qty: "", focQty: "", focReasonId: "",
+      itemId: "", qty: "", focQty: "", focReasonId: "", source: "OWNED",
     }]);
   const removeLine = (key: number) =>
     setLines((ls) => (ls.length === 1 ? ls : ls.filter((l) => l.key !== key)));
@@ -106,14 +115,42 @@ export function DeliveryForm({
     setLocationId(o.lines[0].location_id);
     setLines(o.lines.map((l, i) => ({
       key: i + 1, itemId: l.item_id, qty: String(Number(l.remaining_qty)),
-      focQty: "", focReasonId: "", sourceLineId: l.line_id,
+      focQty: "", focReasonId: "", source: "OWNED", sourceLineId: l.line_id,
     })));
   }
 
+  // What each item has on hand at the chosen warehouse, split by owner. The
+  // owned figure comes from the same stock map the shortage check uses, so
+  // the two can never disagree about how much is ours.
+  const splitFor = (itemId: string): OwnershipSplit => ({
+    owned: Number(
+      stockByLocation.find((s) => s.item_id === itemId && s.location_id === locationId)
+        ?.qty_on_hand ?? 0),
+    consigned: ownership
+      .filter((o) => o.item_id === itemId && o.location_id === locationId)
+      .map((o) => ({
+        consignorId: o.consignor_id, code: o.consignor_code,
+        name: o.consignor_name, qty: Number(o.qty),
+      })),
+  });
+
+  const [sourceFor, setSourceFor] = useState<number | null>(null);
+
   const issuing = (l: Line) => (Number(l.qty) || 0) + (Number(l.focQty) || 0);
+
+  // Only owned stock can be issued short. Consigned stock is somebody else's
+  // and the negative-stock confirmation does not apply to it: you cannot
+  // decide on their behalf that goods they own are on the shelf, so the
+  // engine refuses it outright and the form says so before it is tried.
   const shortages = lines.filter((l) => {
-    if (!l.itemId) return false;
+    if (!l.itemId || l.source !== "OWNED") return false;
     return byId(l.itemId)?.is_stocked && issuing(l) > onHandHere(l.itemId);
+  });
+  const overConsigned = lines.filter((l) => {
+    if (!l.itemId || l.source === "OWNED") return false;
+    const have = splitFor(l.itemId).consigned
+      .find((c) => c.consignorId === l.source)?.qty ?? 0;
+    return issuing(l) > have;
   });
   const shortfalls: Shortfall[] = shortages.map((l) => {
     const item = byId(l.itemId);
@@ -143,13 +180,19 @@ export function DeliveryForm({
     lines.flatMap((l) => {
       const out: unknown[] = [];
       if (l.itemId && Number(l.qty) > 0) {
-        out.push({ itemId: l.itemId, qty: Number(l.qty), sourceLineId: l.sourceLineId ?? null });
+        out.push({
+          itemId: l.itemId, qty: Number(l.qty), sourceLineId: l.sourceLineId ?? null,
+          source: l.source === "OWNED" ? "OWNED" : "CONSIGNMENT",
+          consignorId: l.source === "OWNED" ? null : l.source,
+        });
       }
       if (l.itemId && Number(l.focQty) > 0) {
         out.push({
           itemId: l.itemId, qty: Number(l.focQty),
           focReasonId: l.focReasonId || focReasons[0]?.id,
           sourceLineId: null,
+          source: l.source === "OWNED" ? "OWNED" : "CONSIGNMENT",
+          consignorId: l.source === "OWNED" ? null : l.source,
         });
       }
       return out;
@@ -225,6 +268,7 @@ export function DeliveryForm({
             <thead>
               <tr>
                 <th>Item</th>
+                <th>Stock source</th>
                 <th className="r">On hand</th>
                 <th className="r">Deliver</th>
                 {focReasons.length > 0 && <th className="r">Free</th>}
@@ -245,8 +289,39 @@ export function DeliveryForm({
                         onCreated={(it) => { setItems((xs) => [...xs, it]); }}
                       />
                     </td>
+                    {/* Which shelf. Only asked where there is a choice: an
+                        item nobody has consigned to you has one pool, and a
+                        picker offering one option is a question with one
+                        answer. */}
+                    <td style={{ minWidth: 190 }}>
+                      {(() => {
+                        if (!l.itemId || !item?.is_stocked) return <span style={{ color: "var(--muted)" }}>—</span>;
+                        const split = splitFor(l.itemId);
+                        if (split.consigned.length === 0) {
+                          return (
+                            <span className="sourcebtn" style={{ cursor: "default", border: 0 }}>
+                              <span className="pooldot owned" /> Company-owned
+                            </span>
+                          );
+                        }
+                        const pools = poolsFor(split);
+                        const chosen = pools.find((p) => p.key === l.source) ?? pools[0];
+                        return (
+                          <button type="button" className="sourcebtn"
+                                  onClick={() => setSourceFor(l.key)}>
+                            <span className={`pooldot ${l.source === "OWNED" ? "owned" : "consigned"}`} />
+                            <span>{chosen.label.replace("Consignment — ", "")}</span>
+                            <span className="avail">{chosen.qty} pcs</span>
+                          </button>
+                        );
+                      })()}
+                    </td>
                     <td className="r" style={{ color: short ? "var(--bad)" : undefined }}>
-                      {!item ? "—" : item.is_stocked ? fmt(onHandHere(item.id)) : "service"}
+                      {!item ? "—" : item.is_stocked
+                        ? fmt(l.source === "OWNED"
+                            ? onHandHere(item.id)
+                            : (splitFor(item.id).consigned.find((c) => c.consignorId === l.source)?.qty ?? 0))
+                        : "service"}
                     </td>
                     <td className="narrow">
                       <input type="number" min="0" step="any" value={l.qty} aria-label="Deliver quantity"
@@ -301,6 +376,21 @@ export function DeliveryForm({
         </div>
       )}
 
+      {sourceFor !== null && (() => {
+        const line = lines.find((x) => x.key === sourceFor);
+        const item = line ? byId(line.itemId) : null;
+        return (
+          <StockSourceDialog
+            open
+            itemLabel={item ? `${item.code} · ${item.name}` : "item"}
+            pools={poolsFor(line ? splitFor(line.itemId) : undefined)}
+            value={line?.source ?? "OWNED"}
+            onPick={(key) => setLine(sourceFor, { source: key })}
+            onClose={() => setSourceFor(null)}
+          />
+        );
+      })()}
+
       <NegativeStockConfirm
         open={askNegative} shortfalls={shortfalls}
         onCancel={() => setAskNegative(false)}
@@ -312,18 +402,28 @@ export function DeliveryForm({
         <textarea id="memo" name="memo" rows={2} placeholder="Optional — English or Myanmar" />
       </div>
 
+      {overConsigned.length > 0 && (
+        <div className="alert">
+          More consigned stock is being issued than the consignor has here.
+          Consigned goods cannot go negative — they are not yours to owe.
+        </div>
+      )}
+
       <div className="actions">
         <button
           type={shortages.length > 0 && !negativeConfirmed ? "button" : "submit"}
           onClick={shortages.length > 0 && !negativeConfirmed
             ? () => setAskNegative(true) : undefined}
-          disabled={pending || !partnerId || nothingToPost}>
+          disabled={pending || !partnerId || nothingToPost || overConsigned.length > 0}>
           {pending ? "Posting…" : "Post delivery"}
         </button>
         <span className="page-sub">
-          Stock leaves at its FIFO cost and the cost is recognised. No revenue
-          and no receivable &mdash; those belong to the invoice, whenever it
-          is raised.
+          {lines.some((l) => l.source !== "OWNED")
+            ? "Owned stock leaves at its FIFO cost. Consigned stock is not yours, "
+              + "so your inventory does not move — what you owe the consignor is "
+              + "recognised when the sale is invoiced."
+            : "Stock leaves at its FIFO cost and the cost is recognised. No revenue "
+              + "and no receivable — those belong to the invoice, whenever it is raised."}
         </span>
       </div>
     </form>

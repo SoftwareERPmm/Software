@@ -2177,3 +2177,68 @@ export async function getOpeningBatch(companyId: string) {
      order by d.doc_type, d.doc_no`;
   return { batch, documents };
 }
+
+// --------------------------------------------------- stock by ownership --
+
+/**
+ * What is physically on the shelf, split by who owns it.
+ *
+ * A hundred shirts in one place can be sixty of yours and forty of two
+ * consignors', and the difference is not visible in the warehouse — only
+ * here. Owned stock is an asset on the balance sheet; consigned stock is
+ * somebody else's goods you are holding, and selling the wrong one posts the
+ * wrong accounting. So the split has to be readable before the sale, not
+ * reconstructed from the ledger after it.
+ */
+export async function getStockByOwnership(
+  companyId: string, itemId: string, locationId: string,
+) {
+  const [owned] = await sql`
+    select coalesce(fn_qty_on_hand(${companyId}, ${itemId}, ${locationId}), 0) as qty`;
+
+  const consigned = await sql`
+    select d.partner_id as consignor_id, p.code as consignor_code, p.name as consignor_name,
+           sum(cl.qty_received - coalesce(c.used, 0)) as qty
+      from consignment_lot cl
+      join document d on d.id = cl.receipt_document_id
+      join business_partner p on p.id = d.partner_id
+      left join (
+        select lot_id, sum(qty) as used from consignment_lot_consumption group by lot_id
+      ) c on c.lot_id = cl.id
+     where cl.company_id = ${companyId} and cl.item_id = ${itemId}
+       and cl.location_id = ${locationId}
+     group by d.partner_id, p.code, p.name
+    having sum(cl.qty_received - coalesce(c.used, 0)) > 0.0001
+     order by p.code`;
+
+  return {
+    owned: Number(owned?.qty ?? 0),
+    consigned: consigned.map((r: any) => ({
+      consignorId: r.consignor_id as string,
+      code: r.consignor_code as string,
+      name: r.consignor_name as string,
+      qty: Number(r.qty),
+    })),
+  };
+}
+
+/** The same split for every item a location holds, for the picker to read. */
+export async function getOwnershipMap(companyId: string) {
+  const owned = await sql`
+    select item_id, location_id, qty_on_hand as qty
+      from v_stock_on_hand where company_id = ${companyId}`;
+  const consigned = await sql`
+    select cl.item_id, cl.location_id, d.partner_id as consignor_id,
+           p.code as consignor_code, p.name as consignor_name,
+           sum(cl.qty_received - coalesce(c.used, 0)) as qty
+      from consignment_lot cl
+      join document d on d.id = cl.receipt_document_id
+      join business_partner p on p.id = d.partner_id
+      left join (
+        select lot_id, sum(qty) as used from consignment_lot_consumption group by lot_id
+      ) c on c.lot_id = cl.id
+     where cl.company_id = ${companyId}
+     group by cl.item_id, cl.location_id, d.partner_id, p.code, p.name
+    having sum(cl.qty_received - coalesce(c.used, 0)) > 0.0001`;
+  return { owned, consigned };
+}

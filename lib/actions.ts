@@ -1057,6 +1057,11 @@ function parseLines(fd: FormData): InvoiceLine[] {
       discountPct: Number(l.discountPct) || 0,
       focReasonId: l.focReasonId || null,
       sourceLineId: l.sourceLineId || null,
+      // Which pool the goods came out of, and whose. A parser that drops
+      // these turns a deliberate choice on the form into owned stock leaving
+      // the building — silently, because the entry still balances.
+      source: l.source === "CONSIGNMENT" ? "CONSIGNMENT" as const : "OWNED" as const,
+      consignorId: l.consignorId || null,
     }))
     .filter((l) => l.itemId && l.qty > 0);
 
@@ -1340,6 +1345,10 @@ function parseFulfillmentLines(fd: FormData): FulfillmentLine[] {
       // reason names.
       focReasonId: l.focReasonId || null,
       sourceLineId: l.sourceLineId || null,
+      // Same again, and it matters most here: the delivery is the document
+      // that actually takes the goods off the shelf.
+      source: l.source === "CONSIGNMENT" ? "CONSIGNMENT" as const : "OWNED" as const,
+      consignorId: l.consignorId || null,
     }))
     .filter((l) => l.itemId && l.qty > 0);
 

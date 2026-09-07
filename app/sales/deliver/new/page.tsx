@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { getFormData, createDelivery } from "@/lib/actions";
-import { getOpenSalesOrders, getStockByLocation } from "@/lib/queries";
+import { getOpenSalesOrders, getStockByLocation, getOwnershipMap } from "@/lib/queries";
 import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { DeliveryForm } from "@/components/delivery-form";
@@ -8,11 +8,15 @@ import { DeliveryForm } from "@/components/delivery-form";
 export default async function NewDelivery() {
   const d = await getFormData();
   const [co] = await sql`select id from company order by created_at limit 1`;
-  const [categories, openOrders, stockByLocation, focReasons] = await Promise.all([
+  const [categories, openOrders, stockByLocation, focReasons, ownership] = await Promise.all([
     allCategories(co.id),
     getOpenSalesOrders(co.id),
     getStockByLocation(co.id),
     sql`select id, code, name from foc_reason where company_id = ${co.id} order by code`,
+    // Consigned stock on hand, so the line can offer whose goods it is
+    // issuing. Owned and consigned sit in the same warehouse and nothing
+    // about the shelf tells them apart.
+    getOwnershipMap(co.id),
   ]);
   const today = new Date().toISOString().slice(0, 10);
 
@@ -58,6 +62,7 @@ export default async function NewDelivery() {
         stockByLocation={stockByLocation as never}
         focReasons={focReasons as never}
         openOrders={openOrders as never}
+        ownership={ownership.consigned as never}
         today={today}
       />
     </>
