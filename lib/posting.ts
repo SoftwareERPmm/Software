@@ -3327,9 +3327,19 @@ export async function postAccountOpening(input: {
 export type ConsignmentReceiptLine = {
   itemId: string;
   qty: number;
-  /** Which agreement line this receipt draws its settlement rate from. A
-   *  receipt can only bring in items the agreement actually names. */
-  agreementLineId: string;
+  /** Which agreement line this receipt draws its settlement rate from. */
+  agreementLineId?: string | null;
+  /**
+   * The terms for an item this consignor has not sent before, agreed as the
+   * shipment arrives. An agreement that has to be complete before the first
+   * delivery can be booked describes a negotiation that finished, and these
+   * do not: a consignor turns up with something new and the rate for it is
+   * agreed then. Supplying these adds the item to the agreement as part of
+   * receiving it, in the same transaction, so the rate is on file before any
+   * of it can be sold.
+   */
+  pricingMethod?: "PERCENTAGE" | "FIXED" | null;
+  pricingValue?: number | null;
 };
 
 export type ConsignmentReceiptInput = {
@@ -3404,10 +3414,50 @@ async function _postConsignmentReceipt(tx: TransactionSql, input: ConsignmentRec
       throw new Error(`Line ${lineNo}: ${item.code} (${item.name}) is not stocked and cannot be received`);
     }
 
-    const [al] = await tx`
-      select id, item_id, pricing_method, pricing_value from consignment_agreement_line
-       where id = ${line.agreementLineId} and agreement_id = ${agreement.id} and is_active`;
-    if (!al) throw new Error(`Line ${lineNo}: that agreement line does not exist or is not active`);
+    type AgreementLine = {
+      id: string; item_id: string; pricing_method: string; pricing_value: number;
+    };
+    const findLine = async (where: ReturnType<typeof tx>) =>
+      (await where)[0] as AgreementLine | undefined;
+
+    let al: AgreementLine | undefined;
+
+    if (line.agreementLineId) {
+      al = await findLine(tx`
+        select id, item_id, pricing_method, pricing_value from consignment_agreement_line
+         where id = ${line.agreementLineId} and agreement_id = ${agreement.id} and is_active`);
+      if (!al) throw new Error(`Line ${lineNo}: that agreement line does not exist or is not active`);
+    } else {
+      // Not named on the receipt. Either the item is already on the agreement
+      // — in which case use that, rather than making a second line for the
+      // same item — or the terms arrived with the shipment and go on file now.
+      al = await findLine(tx`
+        select id, item_id, pricing_method, pricing_value from consignment_agreement_line
+         where agreement_id = ${agreement.id} and item_id = ${line.itemId} and is_active`);
+
+      if (!al) {
+        const method = line.pricingMethod;
+        const value = Number(line.pricingValue);
+        if (method !== "PERCENTAGE" && method !== "FIXED") {
+          throw new Error(
+            `Line ${lineNo}: ${item.code} is not on this consignor's agreement. `
+            + `Say how it settles — a percentage of the sale, or a fixed amount a unit.`
+          );
+        }
+        if (!Number.isFinite(value) || value <= 0) {
+          throw new Error(`Line ${lineNo}: enter what ${item.code} settles at`);
+        }
+        if (method === "PERCENTAGE" && value > 100) {
+          throw new Error(`Line ${lineNo}: a percentage cannot exceed 100`);
+        }
+        al = await findLine(tx`
+          insert into consignment_agreement_line
+            (company_id, agreement_id, item_id, pricing_method, pricing_value)
+          values (${companyId}, ${agreement.id}, ${line.itemId}, ${method}, ${value})
+          returning id, item_id, pricing_method, pricing_value`);
+      }
+    }
+    if (!al) throw new Error(`Line ${lineNo}: could not resolve the settlement terms`);
     if (al.item_id !== line.itemId) {
       throw new Error(`Line ${lineNo}: names an agreement line for a different item`);
     }

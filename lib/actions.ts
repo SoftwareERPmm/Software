@@ -2795,9 +2795,15 @@ function parseConsignmentReceiptLines(fd: FormData): ConsignmentReceiptLine[] {
     .map((l: any) => ({
       itemId: String(l.itemId ?? ""),
       qty: Number(l.qty),
-      agreementLineId: String(l.agreementLineId ?? ""),
+      // Blank for an item this consignor has not sent before, which arrives
+      // with its terms instead and is added to the agreement as it is
+      // received. The filter used to require one, so such a line vanished.
+      agreementLineId: l.agreementLineId ? String(l.agreementLineId) : null,
+      pricingMethod: l.pricingMethod === "FIXED" ? "FIXED" as const
+                   : l.pricingMethod === "PERCENTAGE" ? "PERCENTAGE" as const : null,
+      pricingValue: l.pricingValue != null ? Number(l.pricingValue) : null,
     }))
-    .filter((l) => l.itemId && l.qty > 0 && l.agreementLineId);
+    .filter((l) => l.itemId && l.qty > 0);
 }
 
 export async function createConsignmentReceipt(_prev: unknown, fd: FormData): Promise<ActionResult> {
