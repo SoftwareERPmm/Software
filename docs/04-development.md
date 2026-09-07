@@ -137,6 +137,20 @@ a second source of truth that drifts.
 **Corrections are reversals.** Posted entries and stock movements cannot be
 updated or deleted; the database blocks it. Post a reversing document.
 
+**A subledger owns its balance.** `account.subledger` names which one, and a
+Journal, Cash or Bank voucher cannot post to an account that has it — the
+guard is in the database, not in the account picker. Receivables and payables
+belong to the customer and supplier subledgers; inventory belongs to the
+stock ledger; GR/IR belongs to receipt-and-invoice matching. Move any of them
+by hand and the general ledger stops agreeing with the subledger, silently:
+debiting inventory in a journal voucher changes what the stock is worth
+without changing what the stock is, and `check.mjs` goes red with nothing to
+say who did it. Opening balances are the deliberate exception, since there is
+no operational document that could produce a starting figure. The flag is
+derived from the posting roles (`AR_CONTROL`, `AP_CONTROL`, `INVENTORY`,
+`GRIR_CLEARING`), never from account codes, in all three places that build a
+chart. `scripts/test-manual-journal.mjs` is the regression.
+
 **Money is `numeric`, never a float.** Quantities are stored in the item's
 base unit.
 

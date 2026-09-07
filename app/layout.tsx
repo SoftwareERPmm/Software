@@ -114,7 +114,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               "/finance/income-statement", "/finance/balance-sheet", "/finance/cash-flow",
             ]}>
               <NavSubGroup label="Transactions" match={["/finance/journal", "/finance/opening"]}>
-                <NavLink href="/finance/journal" sub>Journal Entries</NavLink>
+                <NavLink href="/finance/journal" sub>Journal Voucher</NavLink>
                 <NavLink href="/finance/opening" sub>Opening Balances</NavLink>
               </NavSubGroup>
               <NavSubGroup label="Ledgers" match={["/finance/general-ledger", "/ledger"]}>

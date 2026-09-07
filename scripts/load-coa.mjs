@@ -157,6 +157,25 @@ try {
       await tx`insert into account_determination (company_id, role, account_id)
                values (${co.id}, ${role}, ${id.get(code)})`;
     }
+    // Replacing the chart replaces the accounts, so the subledger ownership
+    // flags go with them. Derived from the roles just written above.
+    await tx`
+      update account a set subledger = 'CUSTOMER'
+        from account_determination d
+       where d.account_id = a.id and d.company_id = ${co.id} and d.role = 'AR_CONTROL'`;
+    await tx`
+      update account a set subledger = 'SUPPLIER'
+        from account_determination d
+       where d.account_id = a.id and d.company_id = ${co.id} and d.role = 'AP_CONTROL'`;
+    await tx`
+      update account a set subledger = 'INVENTORY'
+        from account_determination d
+       where d.account_id = a.id and d.company_id = ${co.id} and d.role = 'INVENTORY'`;
+    await tx`
+      update account a set subledger = 'PURCHASE_MATCHING'
+        from system_account s
+       where s.account_id = a.id and s.company_id = ${co.id} and s.role = 'GRIR_CLEARING'`;
+
     for (const f of focBefore) {
       const target = id.get(FOC_REMAP[f.acct] ?? f.acct);
       if (!target) throw new Error(`FOC reason ${f.code} used account ${f.acct}, which the new chart has no home for`);
