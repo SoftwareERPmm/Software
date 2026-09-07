@@ -3368,3 +3368,40 @@ export async function createMissingBrands(
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
+
+/**
+ * The four figures that frame an account's movements for a period: what it
+ * held before, what moved each way, what it holds now.
+ *
+ * Opening is asked as its own sum rather than read off the first row's
+ * running balance, because the running balance on that row already includes
+ * the row itself — using it would double-count the first movement of the
+ * period, which is the kind of error a reader would have to reconstruct the
+ * whole column to notice.
+ */
+export async function getAccountLedgerSummary(accountId: string, from?: string, to?: string) {
+  const co = await companyId();
+  const [row] = await sql`
+    select
+      coalesce(sum(case when ${from ? sql`je.entry_date < ${from}::date` : sql`false`}
+                        then jl.base_amount else 0 end), 0) as opening,
+      coalesce(sum(case when jl.base_amount > 0
+                         and ${from ? sql`je.entry_date >= ${from}::date` : sql`true`}
+                         and ${to ? sql`je.entry_date <= ${to}::date` : sql`true`}
+                        then jl.base_amount else 0 end), 0) as debits,
+      coalesce(sum(case when jl.base_amount < 0
+                         and ${from ? sql`je.entry_date >= ${from}::date` : sql`true`}
+                         and ${to ? sql`je.entry_date <= ${to}::date` : sql`true`}
+                        then -jl.base_amount else 0 end), 0) as credits,
+      coalesce(sum(case when ${to ? sql`je.entry_date <= ${to}::date` : sql`true`}
+                        then jl.base_amount else 0 end), 0) as closing
+      from journal_line jl
+      join journal_entry je on je.id = jl.journal_entry_id
+     where jl.company_id = ${co} and jl.account_id = ${accountId}`;
+  return {
+    opening: Number(row?.opening ?? 0),
+    debits: Number(row?.debits ?? 0),
+    credits: Number(row?.credits ?? 0),
+    closing: Number(row?.closing ?? 0),
+  };
+}
