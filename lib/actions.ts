@@ -14,7 +14,8 @@ import {
   postSalesOrder, postPurchaseOrder, postDelivery, postGoodsReceipt,
   postSupplierPayment, postCustomerReceipt,
   postCashVoucher, postBankVoucher, postJournalVoucher,
-  postCashTransfer, postAccountOpening, postStockAdjustment, postStockTransfer,
+  postCashTransfer, postAccountOpening, postOpeningBatch,
+  postStockAdjustment, postStockTransfer,
   importItems, importVouchers, voidDocument, reconcileNegativeStock,
   postSalesReturn, postPurchaseReturn, postConsignmentReceipt,
   type InvoiceLine, type OrderLine, type FulfillmentLine, type Allocation, type VoucherLine,
@@ -3371,3 +3372,51 @@ export async function createMissingBrands(
   }
 }
 
+
+/**
+ * The cutover, from the opening setup screen.
+ *
+ * The whole position arrives as one JSON payload rather than as flat form
+ * fields: it is four differently-shaped tables, and flattening them into
+ * `stock[0][qty]` names would only mean parsing the same structure back out
+ * again on this side.
+ */
+export async function createOpeningBatch(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  let id: string;
+  try {
+    const co = await companyId();
+    const raw = str(fd, "payload");
+    if (!raw) return { error: "Nothing to post" };
+
+    let parsed: {
+      cutoverDate?: string;
+      stock?: { itemId: string; locationId: string; qty: number; unitCost: number }[];
+      receivables?: { partnerId: string; reference: string; amount: number; dueDate: string | null }[];
+      payables?: { partnerId: string; reference: string; amount: number; dueDate: string | null }[];
+      accounts?: { accountId: string; amount: number }[];
+    };
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return { error: "The opening figures could not be read" };
+    }
+
+    if (!parsed.cutoverDate) return { error: "Choose the date you start using the system" };
+
+    const r = await postOpeningBatch({
+      companyId: co,
+      cutoverDate: parsed.cutoverDate,
+      memo: "Opening balances",
+      stock: parsed.stock ?? [],
+      receivables: parsed.receivables ?? [],
+      payables: parsed.payables ?? [],
+      accounts: parsed.accounts ?? [],
+    });
+    id = r.documents[0]?.id ?? "";
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  financeRevalidate();
+  revalidatePath("/", "layout");
+  redirectWithToast(id ? `/documents/${id}` : "/finance/opening", "Opening balances posted");
+}

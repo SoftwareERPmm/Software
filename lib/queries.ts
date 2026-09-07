@@ -2152,3 +2152,23 @@ export async function getAccountSummary(
     closing: Number(row?.closing ?? 0),
   };
 }
+
+// -------------------------------------------------------------- cutover --
+
+/** The posted cutover, if this company has had one. */
+export async function getOpeningBatch(companyId: string) {
+  const [batch] = await sql`
+    select id, to_char(cutover_date, 'YYYY-MM-DD') as cutover_date, memo, posted_at
+      from opening_batch
+     where company_id = ${companyId} and status = 'POSTED'
+     limit 1`;
+  if (!batch) return null;
+  const documents = await sql`
+    select d.id, d.doc_no, d.doc_type, d.gross_total, d.reference,
+           to_char(d.doc_date, 'YYYY-MM-DD') as doc_date, p.name as partner_name
+      from document d
+      left join business_partner p on p.id = d.partner_id
+     where d.opening_batch_id = ${batch.id}
+     order by d.doc_type, d.doc_no`;
+  return { batch, documents };
+}

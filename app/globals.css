@@ -1070,3 +1070,14 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
   display: flex; align-items: center; min-height: 1.95rem;
   padding: 0.25rem 0; color: var(--ink-soft);
 }
+
+/* A numbered step in the opening setup. The number is the point — it says
+   how far through you are without a progress bar that lies about it. */
+.stepno {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 50%; flex: none;
+  background: var(--brand); color: var(--brand-fg);
+  font-family: var(--mono); font-size: var(--t-2xs); font-weight: 700;
+  margin-right: 0.15rem;
+}
+.card-head h2 { display: inline-flex; align-items: center; gap: 0.4rem; }

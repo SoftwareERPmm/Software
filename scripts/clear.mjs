@@ -86,7 +86,11 @@ const sql = postgres(url, { ssl: local ? false : "require", prepare: !pooled, on
 // movements carry BEFORE DELETE triggers that refuse row deletion by design.
 // TRUNCATE is a table-level operation and bypasses them, which is right for a
 // deliberate wipe and still impossible to do by accident from the app.
-const TXN = ["payment_allocation", "stock_movement", "document_line", "document", "journal_line", "journal_entry"];
+// opening_batch belongs here, not in MASTER: clearing the documents without
+// it leaves a company that believes it has already opened its books, with
+// nothing to show for it and no way to open them again.
+const TXN = ["payment_allocation", "stock_movement", "document_line", "document",
+             "journal_line", "journal_entry", "opening_batch"];
 
 // Master data is DELETEd, not TRUNCATEd. TRUNCATE ... CASCADE is table-level:
 // truncating item_group would take every row of account_determination with it,

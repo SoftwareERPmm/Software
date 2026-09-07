@@ -3886,3 +3886,251 @@ export async function importVouchers(input: {
     };
   });
 }
+
+// ------------------------------------------------------------- cutover --
+
+export type OpeningStockLine = {
+  itemId: string;
+  locationId: string;
+  qty: number;
+  unitCost: number;
+};
+
+export type OpeningPartnerLine = {
+  partnerId: string;
+  /** The customer's or supplier's own invoice number, not one of ours. */
+  reference: string;
+  amount: number;
+  dueDate?: string | null;
+};
+
+export type OpeningBatchInput = {
+  companyId: string;
+  /** The day the business starts using this system. */
+  cutoverDate: string;
+  memo?: string | null;
+  stock?: OpeningStockLine[];
+  receivables?: OpeningPartnerLine[];
+  payables?: OpeningPartnerLine[];
+  /** Everything a subledger does not own: cash, bank, loans, capital. */
+  accounts?: { accountId: string; amount: number; locationId?: string | null }[];
+};
+
+/**
+ * The cutover, posted once.
+ *
+ * Everything here balances against Opening Balance Equity, which nets to nil
+ * when the whole position is in. Nothing touches revenue, cost of sales or
+ * GR/IR: none of it was earned, spent or received in this system, and a
+ * cutover that moves those accounts reports last year's trading as this
+ * year's.
+ *
+ *   stock        Dr Inventory     / Cr Opening Balance Equity, with the
+ *                quantity and a FIFO layer, so a later sale draws real cost
+ *   receivables  Dr Receivables   / Cr Opening Balance Equity, as an open
+ *                item carrying the customer's own reference and due date
+ *   payables     Cr Payables      / Dr Opening Balance Equity, likewise
+ *   accounts     whatever they are / balanced against the same equity account
+ *
+ * One transaction, one batch, and the database allows one posted batch per
+ * company — a second cutover silently doubling stock and debts is the kind
+ * of mistake found months later, so it is a constraint rather than a check
+ * somewhere in a form.
+ *
+ * Documents are dated the day before the cutover: the opening position is
+ * what was true when trading began, and day one's own transactions should
+ * not compete with it for the same date.
+ */
+export async function postOpeningBatch(input: OpeningBatchInput) {
+  const stock = (input.stock ?? []).filter((l) => l.itemId && l.qty > 0);
+  const receivables = (input.receivables ?? []).filter((l) => l.partnerId && l.amount !== 0);
+  const payables = (input.payables ?? []).filter((l) => l.partnerId && l.amount !== 0);
+  const accounts = (input.accounts ?? []).filter((l) => l.accountId && l.amount !== 0);
+
+  if (stock.length + receivables.length + payables.length + accounts.length === 0) {
+    throw new Error("An opening batch needs at least one balance");
+  }
+  // Quantity and cost together, through the same check every stock document
+  // uses: a negative opening quantity is a correction, not an opening.
+  assertLines(stock.map((l) => ({ qty: l.qty, unitCost: l.unitCost })));
+  receivables.forEach((l, i) => assertAmount(l.amount, `Customer line ${i + 1}: amount`));
+  payables.forEach((l, i) => assertAmount(l.amount, `Supplier line ${i + 1}: amount`));
+  accounts.forEach((l, i) => assertAmount(l.amount, `Account line ${i + 1}: amount`, { signed: true }));
+
+  // The day before trading starts in this system.
+  const asAt = new Date(input.cutoverDate);
+  if (Number.isNaN(asAt.getTime())) throw new Error("Cutover date is not a date");
+  asAt.setDate(asAt.getDate() - 1);
+  const docDate = asAt.toISOString().slice(0, 10);
+
+  return sql.begin(async (tx) => {
+    const { companyId } = input;
+
+    const fyRows = await tx`select fn_fiscal_year_for(${companyId}, ${docDate}::date) as fy`;
+    const fiscalYear = fyRows[0]?.fy ?? null;
+    if (!fiscalYear) {
+      throw new Error(
+        `No fiscal year covers ${docDate}. Opening balances are dated the day `
+        + `before the cutover, so that day has to fall in a fiscal year.`
+      );
+    }
+
+    const [equityRow] = await tx`
+      select fn_system_account(${companyId}, 'OPENING_BALANCE_EQUITY') as a`;
+    const equity = equityRow.a as string;
+    if (!equity) throw new Error("No Opening Balance Equity account is set");
+
+    // The unique index is the real guard; this turns its message into one
+    // that says what happened and what to do about it.
+    const existing = await tx`
+      select cutover_date from opening_batch
+       where company_id = ${companyId} and status = 'POSTED'`;
+    if (existing.length > 0) {
+      throw new Error(
+        `Opening balances were already posted for this company, as at `
+        + `${String(existing[0].cutover_date).slice(0, 10)}. A second set would `
+        + `double the stock and the debts. Void the first batch to replace it.`
+      );
+    }
+
+    const [batch] = await tx`
+      insert into opening_batch (company_id, cutover_date, status, memo, posted_at)
+      values (${companyId}, ${input.cutoverDate}::date, 'POSTED', ${input.memo ?? null}, now())
+      returning id`;
+
+    const documents: { id: string; docNo: string; kind: string }[] = [];
+
+    const newDoc = async (
+      docType: string, partnerId: string | null, locationId: string | null,
+      total: number, memo: string, reference: string | null, dueDate: string | null,
+    ) => {
+      const [{ no }] = await tx`
+        select fn_next_document_no(${companyId}, ${docType}, ${docDate}::date, null) as no`;
+      const [d] = await tx`
+        insert into document
+          (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
+           due_date, partner_id, location_id, currency, exchange_rate, status,
+           net_total, tax_total, gross_total, memo, reference, opening_batch_id, posted_at)
+        values
+          (${companyId}, ${docType}, ${no}, ${fiscalYear}, ${docDate}::date, ${docDate}::date,
+           ${dueDate}, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
+           ${total}, 0, ${total}, ${memo}, ${reference}, ${batch.id}, now())
+        returning id`;
+      return { id: d.id as string, docNo: no as string };
+    };
+
+    // ---- stock ------------------------------------------------------------
+    // One document per warehouse: a stock document belongs to the place its
+    // goods are, and the journal line carries that branch with it.
+    const byLocation = new Map<string, OpeningStockLine[]>();
+    for (const l of stock) {
+      const list = byLocation.get(l.locationId) ?? [];
+      list.push(l);
+      byLocation.set(l.locationId, list);
+    }
+
+    for (const [locationId, lines] of byLocation) {
+      const total = round4(lines.reduce((s, l) => s + round4(l.qty * l.unitCost), 0));
+      const doc = await newDoc("OPENING_BALANCE", null, locationId, total,
+        "Opening stock", null, null);
+      const journal: JournalLine[] = [];
+      let lineNo = 0;
+
+      for (const l of lines) {
+        lineNo += 1;
+        const value = round4(l.qty * l.unitCost);
+        const [item] = await tx`
+          select base_uom_id, is_stocked from item
+           where id = ${l.itemId} and company_id = ${companyId}`;
+        if (!item) throw new Error("Opening stock names an item that does not exist");
+        if (!item.is_stocked) {
+          throw new Error("Opening stock names an item that is not stocked");
+        }
+
+        await tx`
+          insert into document_line
+            (company_id, document_id, line_no, item_id, location_id,
+             entered_qty, entered_uom_id, base_qty, unit_price,
+             net_amount, tax_amount, gross_amount)
+          values
+            (${companyId}, ${doc.id}, ${lineNo}, ${l.itemId}, ${locationId},
+             ${l.qty}, ${item.base_uom_id}, ${l.qty}, ${l.unitCost},
+             ${value}, 0, ${value})`;
+
+        const [movement] = await tx`
+          insert into stock_movement
+            (company_id, item_id, location_id, movement_date, qty,
+             unit_cost, total_cost, document_id)
+          values
+            (${companyId}, ${l.itemId}, ${locationId}, ${docDate}::date,
+             ${l.qty}, ${l.unitCost}, ${value}, ${doc.id})
+          returning id`;
+
+        // A real layer at a real cost, so the first sale out of opening stock
+        // draws what the goods actually cost rather than a guess.
+        await createFifoLot(tx, companyId, l.itemId, locationId, docDate,
+                            l.unitCost, l.qty, movement.id);
+
+        const [inv] = await tx`
+          select fn_resolve_account_for_item(${companyId}, 'INVENTORY', ${l.itemId}) as a`;
+        journal.push({ accountId: inv.a, amount: value, locationId });
+      }
+
+      journal.push({ accountId: equity, amount: -total, locationId });
+      const entryId = await writeJournal(tx, companyId, docDate, "OPENING_BALANCE",
+        doc.id, `${doc.docNo} opening stock`, journal, locationId);
+      await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
+      documents.push({ ...doc, kind: "stock" });
+    }
+
+    // ---- what customers owe, and what is owed to suppliers ----------------
+    // Posted as invoices because that is what an open item is here: it ages,
+    // it settles against an ordinary receipt or payment, and every screen
+    // that reads receivables already understands it. What makes it an
+    // opening balance rather than a sale is the journal — equity, not
+    // revenue — and the batch id it carries.
+    const openItems = async (
+      lines: OpeningPartnerLine[], docType: "SALES_INVOICE" | "PURCHASE_INVOICE",
+      role: "AR_CONTROL" | "AP_CONTROL", sign: 1 | -1, label: string,
+    ) => {
+      for (const l of lines) {
+        const amount = round4(Math.abs(l.amount));
+        const doc = await newDoc(docType, l.partnerId, null, amount,
+          `${label} — ${l.reference}`, l.reference, l.dueDate ?? null);
+        const [ctrl] = await tx`
+          select fn_resolve_control_account(${companyId}, ${role}, ${l.partnerId}) as a`;
+        const entryId = await writeJournal(tx, companyId, docDate, docType, doc.id,
+          `${doc.docNo} ${label}`, [
+            { accountId: ctrl.a, amount: sign * amount, partnerId: l.partnerId },
+            { accountId: equity, amount: -sign * amount },
+          ]);
+        await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
+        documents.push({ ...doc, kind: label });
+      }
+    };
+
+    await openItems(receivables, "SALES_INVOICE", "AR_CONTROL", 1, "Opening receivable");
+    await openItems(payables, "PURCHASE_INVOICE", "AP_CONTROL", -1, "Opening payable");
+
+    // ---- everything else --------------------------------------------------
+    if (accounts.length > 0) {
+      const total = round4(accounts.reduce((s, l) => s + l.amount, 0));
+      const gross = round4(accounts.filter((l) => l.amount > 0).reduce((s, l) => s + l.amount, 0));
+      const doc = await newDoc("OPENING_BALANCE", null, null, gross,
+        "Opening balances", null, null);
+      const journal: JournalLine[] = accounts.map((l) => ({
+        accountId: l.accountId, amount: l.amount, locationId: l.locationId ?? null,
+      }));
+      // Whatever the listed balances do not account for is the remainder, and
+      // it belongs in equity where it can be looked at rather than spread
+      // silently across the accounts that were entered.
+      if (total !== 0) journal.push({ accountId: equity, amount: -total });
+      const entryId = await writeJournal(tx, companyId, docDate, "OPENING_BALANCE",
+        doc.id, `${doc.docNo} opening balances`, journal);
+      await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
+      documents.push({ ...doc, kind: "accounts" });
+    }
+
+    return { batchId: batch.id as string, docDate, documents };
+  });
+}
