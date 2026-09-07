@@ -1358,23 +1358,15 @@ async function settleConsignmentSales(
   saleLines: ReadonlyArray<{ itemId: string; unitPrice: number }>,
   locationId: string
 ): Promise<void> {
+  // Consumed, with no settlement standing against them — never settled, or
+  // settled by a document since voided. The view carries that rule so the
+  // screens and this agree on what is still owed.
   const consumed = await tx`
-    select c.id as consumption_id, c.lot_id, c.qty, l.item_id,
-           l.pricing_method, l.pricing_value, rd.partner_id as consignor_id
-      from consignment_lot_consumption c
-      join consignment_lot l on l.id = c.lot_id
-      join document rd on rd.id = l.receipt_document_id
-     where c.delivery_document_id = ${deliveryId}
-       -- Unsettled, or settled by a document that has since been voided. The
-       -- stamp is never cleared — consumption is append-only, and a void is
-       -- recorded rather than erased — so "settled" has to mean settled by
-       -- something that still stands. Without this a voided settlement left
-       -- the consignor's goods sold, their payable reversed, and no way for a
-       -- later settlement to find the sale again.
-       and (c.settlement_document_id is null
-            or exists (select 1 from document sd
-                        where sd.id = c.settlement_document_id
-                          and sd.status <> 'POSTED'))`;
+    select u.consumption_id, u.lot_id, u.qty, u.item_id, u.consignor_id,
+           l.pricing_method, l.pricing_value
+      from v_consignment_unsettled u
+      join consignment_lot l on l.id = u.lot_id
+     where u.delivery_document_id = ${deliveryId}`;
 
   if (consumed.length === 0) return;
 
@@ -1471,8 +1463,19 @@ async function settleConsignmentSales(
     await tx`update document set journal_entry_id = ${entryId} where id = ${settleDoc.id}`;
 
     for (const r of priced) {
-      await tx`update consignment_lot_consumption set settlement_document_id = ${settleDoc.id}
-                where id = ${r.consumption_id}`;
+      await tx`
+        insert into consignment_settlement_line
+          (company_id, consumption_id, settlement_document_id, qty, amount)
+        values (${companyId}, ${r.consumption_id}, ${settleDoc.id}, ${r.qty}, ${r.amount})`;
+
+      // The original column, only while it is still empty. 0030 lets it go
+      // from nothing to a first settlement and never change again, which is
+      // exactly right for what it records; a replacement is a new attempt in
+      // the table above, not an edit to this.
+      await tx`
+        update consignment_lot_consumption
+           set settlement_document_id = ${settleDoc.id}
+         where id = ${r.consumption_id} and settlement_document_id is null`;
     }
   }
 }
@@ -4212,5 +4215,78 @@ export async function postOpeningBatch(input: OpeningBatchInput) {
     }
 
     return { batchId: batch.id as string, docDate, documents };
+  });
+}
+
+/**
+ * Raise a replacement settlement for a sale whose settlement was voided.
+ *
+ * Settlement normally happens once, when the sale is invoiced. Voiding it
+ * left no way back: the goods were sold, the consignor's payable reversed,
+ * and the only thing that could have settled them ran during a posting that
+ * had already happened. So there has to be a way to raise it again, and it
+ * has to be an action someone takes deliberately rather than something that
+ * quietly re-runs.
+ *
+ * Idempotent by construction: it settles what has no settlement standing
+ * against it, so a second call after a successful one finds nothing and
+ * posts nothing. Prices from the invoice's own lines, which is what the
+ * customer was actually charged — the same figure the first settlement used.
+ */
+export async function resettleConsignmentSale(input: {
+  companyId: string;
+  /** The sales invoice whose delivery drew consigned stock. */
+  salesInvoiceId: string;
+  docDate?: string;
+}) {
+  return sql.begin(async (tx) => {
+    const [inv] = await tx`
+      select id, doc_no, doc_type, status, source_document_id, location_id,
+             to_char(doc_date, 'YYYY-MM-DD') as doc_date
+        from document
+       where id = ${input.salesInvoiceId} and company_id = ${input.companyId}`;
+    if (!inv) throw new Error("That sales invoice does not exist");
+    if (inv.doc_type !== "SALES_INVOICE") throw new Error("That document is not a sales invoice");
+    if (inv.status !== "POSTED") {
+      throw new Error("That invoice is not posted, so there is nothing to settle against it");
+    }
+    if (!inv.source_document_id) {
+      throw new Error("That invoice has no delivery behind it, so it moved no consigned stock");
+    }
+
+    const outstanding = await tx`
+      select 1 from v_consignment_unsettled
+       where delivery_document_id = ${inv.source_document_id} limit 1`;
+    if (outstanding.length === 0) {
+      throw new Error(
+        "Everything this sale took from consignment is already settled by a "
+        + "settlement that still stands."
+      );
+    }
+
+    const lines = await tx`
+      select item_id, unit_price from document_line
+       where document_id = ${inv.id} and item_id is not null`;
+
+    const before = await tx`
+      select id from document
+       where company_id = ${input.companyId} and doc_type = 'PURCHASE_INVOICE'`;
+
+    await settleConsignmentSales(
+      tx, input.companyId, input.docDate ?? String(inv.doc_date), inv.id, inv.doc_no,
+      inv.source_document_id,
+      (lines as unknown as { item_id: string; unit_price: string }[])
+        .map((l) => ({ itemId: l.item_id, unitPrice: Number(l.unit_price) })),
+      inv.location_id
+    );
+
+    const seen = new Set((before as unknown as { id: string }[]).map((r) => r.id));
+    const raised = await tx`
+      select id, doc_no, gross_total from document
+       where company_id = ${input.companyId} and doc_type = 'PURCHASE_INVOICE'
+         and status = 'POSTED'`;
+    return (raised as unknown as { id: string; doc_no: string; gross_total: string }[])
+      .filter((r) => !seen.has(r.id))
+      .map((r) => ({ id: r.id, docNo: r.doc_no, amount: Number(r.gross_total) }));
   });
 }

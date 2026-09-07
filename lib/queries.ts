@@ -2248,3 +2248,18 @@ export async function getOwnershipMap(companyId: string) {
     having sum(cl.qty_received - coalesce(c.used, 0)) > 0.0001`;
   return { owned, consigned };
 }
+
+/** Consigned goods on this delivery with no settlement standing against them. */
+export async function getUnsettledConsignment(companyId: string, deliveryId: string) {
+  const rows = await sql`
+    select u.consumption_id, u.qty, i.code as item_code, i.name as item_name,
+           p.name as consignor_name
+      from v_consignment_unsettled u
+      join item i on i.id = u.item_id
+      join business_partner p on p.id = u.consignor_id
+     where u.company_id = ${companyId} and u.delivery_document_id = ${deliveryId}`;
+  return rows as unknown as {
+    consumption_id: string; qty: string;
+    item_code: string; item_name: string; consignor_name: string;
+  }[];
+}

@@ -14,7 +14,7 @@ import {
   postSalesOrder, postPurchaseOrder, postDelivery, postGoodsReceipt,
   postSupplierPayment, postCustomerReceipt,
   postCashVoucher, postBankVoucher, postJournalVoucher,
-  postCashTransfer, postAccountOpening, postOpeningBatch,
+  postCashTransfer, postAccountOpening, postOpeningBatch, resettleConsignmentSale,
   postStockAdjustment, postStockTransfer,
   importItems, importVouchers, voidDocument, reconcileNegativeStock,
   postSalesReturn, postPurchaseReturn, postConsignmentReceipt,
@@ -3434,4 +3434,28 @@ export async function createOpeningBatch(_prev: unknown, fd: FormData): Promise<
   financeRevalidate();
   revalidatePath("/", "layout");
   redirectWithToast(id ? `/documents/${id}` : "/finance/opening", "Opening balances posted");
+}
+
+/**
+ * Raise a settlement again for a sale whose first one was voided.
+ *
+ * Deliberate rather than automatic. Voiding a settlement is a decision, and
+ * the replacement is another one — a posting that quietly re-ran on its own
+ * would make the void look like it had not worked.
+ */
+export async function replaceConsignmentSettlement(
+  _prev: unknown, fd: FormData,
+): Promise<ActionResult> {
+  const invoiceId = str(fd, "invoice_id");
+  try {
+    const co = await companyId();
+    if (!invoiceId) return { error: "No invoice given" };
+    const raised = await resettleConsignmentSale({ companyId: co, salesInvoiceId: invoiceId });
+    if (raised.length === 0) return { error: "Nothing was left to settle" };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  financeRevalidate();
+  revalidatePath(`/documents/${invoiceId}`);
+  redirectWithToast(`/documents/${invoiceId}`, "Replacement settlement posted");
 }

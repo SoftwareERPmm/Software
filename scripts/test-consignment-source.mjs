@@ -154,18 +154,16 @@ try {
     (await Q.getStockByOwnership(co.id, item.id, wh.id)).owned === 50,
     `${(await Q.getStockByOwnership(co.id, item.id, wh.id)).owned} owned`);
 
-  // ---- voiding a settlement gives the sale back --------------------------
+  // ---- voided, and settled again -----------------------------------------
   //
-  // The consumption stamp is never cleared: consumption is append-only and a
-  // void is recorded rather than erased. So "settled" has to mean settled by
-  // something that still stands, or a voided settlement leaves the
-  // consignor's goods sold, their payable reversed, and no way for a later
-  // settlement to find the sale again.
+  // Making the goods findable was half of it. The link lived in a column 0030
+  // lets go from empty to its first settlement and never change again, so a
+  // replacement selected the goods, priced them, posted its payable and then
+  // rolled the whole transaction back on the last statement. Every attempt is
+  // its own row now, and nothing is overwritten.
 
-  console.log("\n  voiding the settlement of a consigned sale\n");
+  console.log("\n  voiding a settlement, and raising a replacement\n");
 
-  // A delivery alone owes the consignor nothing — settlement happens when the
-  // sale is invoiced, at the price the customer is actually charged.
   await P.postSaleWithDelivery({
     companyId: co.id, partnerId: cust.id, locationId: wh.id,
     docDate: today, dueDate: null,
@@ -173,35 +171,63 @@ try {
               source: "CONSIGNMENT", consignorId: xyz.id }],
   });
 
-  const P2 = P;
-  const settleDoc = await one(sql`
+  const invoice = await one(sql`
+    select id, doc_no from document
+     where company_id = ${co.id} and doc_type = 'SALES_INVOICE' and status = 'POSTED'
+     order by created_at desc limit 1`);
+  const owedToConsignor = async () => n((await one(sql`
+    select coalesce(sum(outstanding), 0) as v from v_open_item
+     where company_id = ${co.id} and partner_id = ${xyz.id}`)).v);
+
+  const first = await one(sql`
     select id, doc_no, gross_total from document
      where company_id = ${co.id} and doc_type = 'PURCHASE_INVOICE' and status = 'POSTED'
      order by created_at desc limit 1`);
+  const owedFirst = await owedToConsignor();
+  check("the sale settles the consignor", owedFirst > 0, `${owedFirst.toLocaleString()}`);
 
-  check("invoicing a consigned sale raises a settlement", Boolean(settleDoc),
-    settleDoc ? `${settleDoc.doc_no} ${n(settleDoc.gross_total).toLocaleString()}` : "none");
+  await P.voidDocument({ documentId: first.id, reason: "raised in error" });
+  check("voiding it leaves nothing owed", (await owedToConsignor()) === 0,
+    String(await owedToConsignor()));
 
-  if (settleDoc) {
-    const owedToConsignor = async () => n((await one(sql`
-      select coalesce(sum(outstanding), 0) as v from v_open_item
-       where company_id = ${co.id} and partner_id = ${xyz.id}`)).v);
+  const replacements = await P.resettleConsignmentSale({
+    companyId: co.id, salesInvoiceId: invoice.id,
+  });
+  const owedAgain = await owedToConsignor();
+  check("a replacement settlement posts", replacements.length > 0,
+    replacements.map((r) => `${r.docNo} ${r.amount.toLocaleString()}`).join(", "));
+  check("  for the same amount as the first", owedAgain === owedFirst,
+    `${owedFirst.toLocaleString()} then ${owedAgain.toLocaleString()}`);
 
-    check("the consignor is owed for what sold", (await owedToConsignor()) > 0,
-      (await owedToConsignor()).toLocaleString());
+  // Asking twice must not pay the consignor twice.
+  let second = null;
+  try {
+    await P.resettleConsignmentSale({ companyId: co.id, salesInvoiceId: invoice.id });
+  } catch (e) { second = e.message; }
+  check("asking again settles nothing further", second !== null,
+    second ? second.slice(0, 56) : "POSTED AGAIN — the consignor would be paid twice");
+  check("  and the balance is unchanged", (await owedToConsignor()) === owedFirst,
+    (await owedToConsignor()).toLocaleString());
 
-    await P2.voidDocument({ documentId: settleDoc.id, reason: "raised in error" });
+  // Both attempts survive, and say which document each belonged to.
+  const attempts = await sql`
+    select sl.settlement_document_id, d.status, d.doc_no
+      from consignment_settlement_line sl
+      join document d on d.id = sl.settlement_document_id
+     order by sl.created_at`;
+  check("both settlements are still on the record",
+    attempts.length >= 2
+      && attempts.some((a) => a.status === "REVERSED")
+      && attempts.some((a) => a.status === "POSTED"),
+    attempts.map((a) => `${a.doc_no} ${a.status}`).join(", "));
 
-    check("voiding the settlement leaves nothing owed — not a negative",
-      (await owedToConsignor()) === 0, String(await owedToConsignor()));
-
-    const findable = await one(sql`
-      select count(*)::int as n from consignment_lot_consumption c
-       where c.settlement_document_id is not null
-         and exists (select 1 from document sd
-                      where sd.id = c.settlement_document_id and sd.status <> 'POSTED')`);
-    check("  and the sale can be settled again", findable.n > 0, `${findable.n} rows released`);
-  }
+  let rewritten = null;
+  try {
+    await sql`update consignment_settlement_line set qty = qty + 1
+               where id = (select id from consignment_settlement_line limit 1)`;
+  } catch (e) { rewritten = e.message; }
+  check("  and cannot be rewritten", rewritten !== null,
+    rewritten ? rewritten.slice(0, 52) : "UPDATED — it should not have");
 
   // ---- the books still hold ----------------------------------------------
 

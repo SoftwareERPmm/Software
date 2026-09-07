@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { planVoid } from "@/lib/void";
 import { RelatedDocumentsPanel } from "@/components/related-documents";
+import { ReplaceSettlement } from "@/components/replace-settlement";
 import { VoidDocument } from "@/components/void-document";
 import { voidDocumentAction } from "@/lib/actions";
 import Link from "next/link";
@@ -21,8 +22,11 @@ import {
   getStockByLocation,
   getOrderProgress,
   getRelatedDocuments,
+  getUnsettledConsignment,
 } from "@/lib/queries";
-import { createDelivery, createGoodsReceipt } from "@/lib/actions";
+import {
+  createDelivery, createGoodsReceipt, replaceConsignmentSettlement,
+} from "@/lib/actions";
 import { FulfillOrderForm } from "@/components/fulfill-order-form";
 import { ErpOrderForm, type OrderLine as ErpOrderLine } from "@/components/erp-order-form";
 import { ErpDocShell } from "@/components/erp-doc-shell";
@@ -174,6 +178,14 @@ export default async function DocumentPage({
   // A voided document must say so on its face. Finding out only by noticing
   // the status pill, on a document whose figures all still read normally, is
   // how someone acts on a number that has already been reversed.
+  // A consigned sale whose settlement was voided: the goods are sold, the
+  // consignor's payable is not standing, and nothing else in the product can
+  // put that right.
+  const unsettledConsignment =
+    doc.doc_type === "SALES_INVOICE" && doc.status === "POSTED" && doc.source_id
+      ? await getUnsettledConsignment(doc.company_id, doc.source_id)
+      : [];
+
   const voidInfo = doc.status === "REVERSED" ? (await sql`
     select r.id, r.doc_no, to_char(r.doc_date, 'YYYY-MM-DD') as doc_date,
            d.void_reason,
@@ -345,6 +357,14 @@ export default async function DocumentPage({
         </>
       }
     >
+
+      {unsettledConsignment.length > 0 && (
+        <ReplaceSettlement
+          action={replaceConsignmentSettlement}
+          invoiceId={doc.id}
+          unsettled={unsettledConsignment}
+        />
+      )}
 
       <RelatedDocumentsPanel related={related} />
 
