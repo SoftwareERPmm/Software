@@ -1744,8 +1744,14 @@ export async function getOrderProgress(orderId: string, docType: string) {
  */
 export async function getConsignmentAgreements(companyId: string) {
   return sql`
+    -- Quoted, so Postgres keeps the capitals. The keys inside the lines below
+    -- are built camelCase by json_build_object and the screens read them that
+    -- way; these three came back partner_name and friends, so every consignor
+    -- rendered blank — and worse, the receive form's dropdown carried an
+    -- undefined value, so choosing a consignor matched no agreement and the
+    -- items section with the quantity box never appeared at all.
     select ag.id, ag.memo, ag.created_at,
-           p.id as partner_id, p.code as partner_code, p.name as partner_name,
+           p.id as "partnerId", p.code as "partnerCode", p.name as "partnerName",
            coalesce(json_agg(json_build_object(
              'lineId', al.id,
              'itemId', i.id, 'itemCode', i.code, 'itemName', i.name,
