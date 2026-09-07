@@ -279,6 +279,22 @@ from (values
 ) as r(role, code)
 join account a on a.company_id = co and a.code = r.code;
 
+-- Which balances a subledger owns, so the demo enforces the same rule the
+-- product does: a journal voucher cannot revalue inventory or move AR.
+-- Derived from the roles above, never from account codes.
+update account a set subledger = 'CUSTOMER'
+  from account_determination d
+ where d.account_id = a.id and d.company_id = co and d.role = 'AR_CONTROL';
+update account a set subledger = 'SUPPLIER'
+  from account_determination d
+ where d.account_id = a.id and d.company_id = co and d.role = 'AP_CONTROL';
+update account a set subledger = 'INVENTORY'
+  from account_determination d
+ where d.account_id = a.id and d.company_id = co and d.role = 'INVENTORY';
+update account a set subledger = 'PURCHASE_MATCHING'
+  from system_account s
+ where s.account_id = a.id and s.company_id = co and s.role = 'GRIR_CLEARING';
+
 -- ------------------------------------------------------------- partners --
 
 insert into business_partner (company_id, code, name, name_my, is_customer, township, payment_terms_days, price_level_id)

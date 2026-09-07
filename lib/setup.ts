@@ -134,6 +134,27 @@ export async function scaffoldCompany(input: SetupInput) {
         values (${co.id}, ${role}, ${acctId(code)})`;
     }
 
+    // Which balances a subledger owns, derived from the roles just written
+    // rather than from account codes — the same rule migration 0045 applies
+    // to a database that already exists. Without this a freshly scaffolded
+    // company would accept a journal voucher straight into inventory.
+    await tx`
+      update account a set subledger = 'CUSTOMER'
+        from account_determination d
+       where d.account_id = a.id and d.company_id = ${co.id} and d.role = 'AR_CONTROL'`;
+    await tx`
+      update account a set subledger = 'SUPPLIER'
+        from account_determination d
+       where d.account_id = a.id and d.company_id = ${co.id} and d.role = 'AP_CONTROL'`;
+    await tx`
+      update account a set subledger = 'INVENTORY'
+        from account_determination d
+       where d.account_id = a.id and d.company_id = ${co.id} and d.role = 'INVENTORY'`;
+    await tx`
+      update account a set subledger = 'PURCHASE_MATCHING'
+        from system_account s
+       where s.account_id = a.id and s.company_id = ${co.id} and s.role = 'GRIR_CLEARING'`;
+
     for (const [code, name, acct] of focReasons) {
       await tx`
         insert into foc_reason (company_id, code, name, account_id)
