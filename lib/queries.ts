@@ -1894,3 +1894,81 @@ export async function getVoucherImportMasterData(companyId: string) {
   ]);
   return { accounts, locations, openPeriods };
 }
+
+// ------------------------------------------------------- journal entries --
+
+export type JournalEntryFilters = {
+  from?: string;
+  to?: string;
+  accountId?: string;
+  locationId?: string;
+  docType?: string;
+  docNo?: string;
+  q?: string;
+};
+
+/**
+ * Every posted entry, newest first, with its own debit and credit totals —
+ * the ledger read chronologically rather than one account at a time.
+ *
+ * The general ledger answers "what happened to this account". This answers
+ * "what has been posted", which is the question someone asks when they are
+ * looking for a document rather than reconciling a balance, and it was the
+ * one screen the app had no answer for.
+ *
+ * Filtering is done here rather than in the browser because the entry list
+ * grows with every document ever posted, unlike the master-data lists that
+ * DataTable filters client-side.
+ */
+export async function getJournalEntries(companyId: string, f: JournalEntryFilters = {}) {
+  const like = (v?: string) => (v && v.trim() ? `%${v.trim()}%` : null);
+  const docNo = like(f.docNo);
+  const q = like(f.q);
+
+  return sql`
+    select je.id, je.entry_no,
+           to_char(je.entry_date, 'YYYY-MM-DD') as entry_date,
+           je.memo, je.source_type,
+           d.id as document_id, d.doc_no, d.doc_type, d.status,
+           p.name as partner_name,
+           sum(case when jl.base_amount > 0 then  jl.base_amount else 0 end) as debit,
+           sum(case when jl.base_amount < 0 then -jl.base_amount else 0 end) as credit
+      from journal_entry je
+      join journal_line jl on jl.journal_entry_id = je.id
+      left join document d on d.id = je.source_id
+      left join business_partner p on p.id = d.partner_id
+     where je.company_id = ${companyId}
+       ${f.from ? sql`and je.entry_date >= ${f.from}::date` : sql``}
+       ${f.to ? sql`and je.entry_date <= ${f.to}::date` : sql``}
+       ${f.docType ? sql`and d.doc_type = ${f.docType}` : sql``}
+       ${docNo ? sql`and d.doc_no ilike ${docNo}` : sql``}
+       ${q ? sql`and (je.memo ilike ${q} or d.doc_no ilike ${q} or je.entry_no ilike ${q})` : sql``}
+       -- An account or a branch filter asks whether the entry touches one,
+       -- not whether every line does: an entry is the unit here, and showing
+       -- half of one would make it look unbalanced.
+       ${f.accountId ? sql`
+         and exists (select 1 from journal_line x
+                      where x.journal_entry_id = je.id and x.account_id = ${f.accountId})` : sql``}
+       ${f.locationId ? sql`
+         and exists (select 1 from journal_line x
+                      where x.journal_entry_id = je.id and x.location_id = ${f.locationId})` : sql``}
+     group by je.id, je.entry_no, je.entry_date, je.memo, je.source_type,
+              d.id, d.doc_no, d.doc_type, d.status, p.name
+     order by je.entry_date desc, je.entry_no desc
+     limit 500`;
+}
+
+/** The lines behind a set of entries, for the rows the list expands. */
+export async function getJournalEntryLines(companyId: string, entryIds: string[]) {
+  if (entryIds.length === 0) return [];
+  return sql`
+    select jl.journal_entry_id, jl.line_no, jl.base_amount, jl.memo,
+           a.code as account_code, a.name as account_name,
+           p.name as partner_name, l.code as location_code
+      from journal_line jl
+      join account a on a.id = jl.account_id
+      left join business_partner p on p.id = jl.partner_id
+      left join location l on l.id = jl.location_id
+     where jl.company_id = ${companyId} and jl.journal_entry_id = any(${entryIds})
+     order by jl.journal_entry_id, jl.line_no`;
+}

@@ -110,10 +110,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             </NavGroup>
 
             <NavGroup label="Accounting" icon={<BookOpen size={14} />} match={[
-              "/finance/journal", "/finance/opening", "/finance/general-ledger", "/ledger",
+              "/finance/entries", "/finance/journal", "/finance/opening", "/finance/general-ledger", "/ledger",
               "/finance/income-statement", "/finance/balance-sheet", "/finance/cash-flow",
             ]}>
-              <NavSubGroup label="Transactions" match={["/finance/journal", "/finance/opening"]}>
+              <NavSubGroup label="Transactions" match={["/finance/entries", "/finance/journal", "/finance/opening"]}>
+                <NavLink href="/finance/entries" sub>Journal Entries</NavLink>
                 <NavLink href="/finance/journal" sub>Journal Voucher</NavLink>
                 <NavLink href="/finance/opening" sub>Opening Balances</NavLink>
               </NavSubGroup>

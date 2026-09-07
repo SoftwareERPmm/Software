@@ -953,3 +953,43 @@ tbody tr.coa-section > td { padding-top: 10px; padding-bottom: 10px; }
 @media (max-width: 720px) {
   .form-commit { margin: 0 calc(-1 * var(--s3)) calc(-1 * var(--s5)); }
 }
+
+/* ------------------------------------------------------ journal entries -- */
+
+/* The expander is a control, not a button: at 40px rows a bordered box in the
+   first column would draw more attention than the figures in the last. */
+.expander {
+  border: none; background: transparent; padding: 0.1rem 0.35rem;
+  color: var(--muted); line-height: 1;
+}
+.expander:hover { background: var(--line-soft); color: var(--ink); }
+
+/* A line belongs to the entry above it. Indented ground rather than a border,
+   so a long entry reads as one block instead of a stack of separate rows. */
+/* A table row's UA `display: table-row` out-specifies the hidden attribute's
+   `display: none` in some browsers, so say it explicitly. */
+.entryline[hidden] { display: none; }
+.entryline > td { background: var(--line-soft); font-size: var(--t-sm); }
+.entryline:hover > td { background: var(--line-soft); }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* Print: the ledger is a document people hand to an accountant, so what
+   surrounds it on screen has no business on the page. */
+@media print {
+  .sidebar, .nav, .noprint, .doc-meta, .form-commit { display: none !important; }
+  .main { padding: 0; }
+  .card { border: none; }
+  .card-head { background: transparent; border-bottom: 1px solid #000; }
+  a { color: inherit !important; text-decoration: none; }
+  /* Everything, expanded: a ledger handed to an accountant is not something
+     they can click. */
+  .entryline[hidden] { display: table-row !important; }
+  .entryline > td { background: transparent; }
+  .expander { display: none; }
+  thead { display: table-header-group; }
+  tr { break-inside: avoid; }
+}
