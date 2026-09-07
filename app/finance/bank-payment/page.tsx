@@ -1,10 +1,12 @@
 import Link from "next/link";
 import { getFinanceData, peekVoucherNo, createBankVoucher } from "@/lib/actions";
+import { getCompany } from "@/lib/queries";
 import { VoucherForm } from "@/components/voucher-form";
 import { VoucherHelp } from "@/components/voucher-help";
 
 export default async function BankPayment() {
   const { accounts, accountTree, bankAccounts, branches } = await getFinanceData();
+  const company = await getCompany();
   const today = new Date().toISOString().slice(0, 10);
   const nextNo = await peekVoucherNo("BANK_VOUCHER", "OUT");
 
@@ -44,6 +46,7 @@ export default async function BankPayment() {
         moneyAccounts={bankAccounts as never}
         today={today}
         nextNo={nextNo}
+        companyName={company?.name ?? ""}
         presetDirection="out"
       />
     </>

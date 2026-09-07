@@ -521,6 +521,11 @@ export async function getOpenDeliveries(companyId: string) {
 export async function getDocument(id: string) {
   const [doc] = await sql`
     select d.*, p.name as partner_name, p.code as partner_code,
+           -- Where to send it. The printed document is the one place these
+           -- are read, so they travel with the document rather than needing
+           -- a second query from the print view.
+           p.address as partner_address, p.township as partner_township,
+           p.phone as partner_phone,
            l.code as location_code, l.name as location_name,
            src.doc_no as source_doc_no, src.id as source_id,
            je.entry_no,

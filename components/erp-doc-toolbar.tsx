@@ -71,9 +71,9 @@ export function ErpDocToolbar({ docId, docNo }: { docId: string; docNo: string }
         <Star size={15} strokeWidth={2} fill={starred ? "currentColor" : "none"} />
       </button>
 
-      <button type="button" onClick={() => window.print()} className="erp-tool" title="Print">
+      <a href={`/documents/${docId}/print`} className="erp-tool" title="Print">
         <Printer size={15} strokeWidth={2} />
-      </button>
+      </a>
 
       <button type="button" onClick={copyLink} className="erp-tool"
               title={copied ? "Link copied" : "Copy link"}>

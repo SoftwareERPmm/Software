@@ -1124,3 +1124,106 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 .helplist li { margin-bottom: 0.2rem; }
 .helplist.ok li::marker  { color: var(--ok); }
 .helplist.bad li::marker { color: var(--bad); }
+
+/* ------------------------------------------------------- printed sheet -- */
+
+/* A document as paper. Sized in millimetres because that is what it will be
+   printed on, and shown on a white page at the same proportions so what is
+   on screen is what comes out of the printer. */
+.sheetwrap { display: flex; justify-content: center; padding: var(--s4) 0 var(--s6); }
+.sheet {
+  width: 210mm; min-height: 297mm; padding: 16mm 15mm;
+  background: #fff; color: #111;
+  font-size: 10.5pt; line-height: 1.45;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.14), 0 8px 24px -12px rgb(0 0 0 / 0.3);
+}
+
+.sheet-head {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 12mm; padding-bottom: 5mm; border-bottom: 1.5px solid #111;
+}
+.sheet-co { font-size: 15pt; font-weight: 700; letter-spacing: -0.01em; }
+.sheet-co-my { font-size: 11pt; color: #333; }
+.sheet-title { text-align: right; }
+.sheet-title h1 {
+  margin: 0; font-size: 13pt; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+.sheet-no { font-family: var(--mono); font-size: 11pt; margin-top: 1mm; }
+.sheet-status {
+  display: inline-block; margin-top: 2mm; padding: 0.5mm 2mm;
+  border: 1px solid #111; font-size: 8pt; text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.sheet-meta { display: flex; flex-direction: row; gap: 12mm; padding: 5mm 0 6mm; }
+.sheet-meta dl { margin: 0; flex: 1; }
+.sheet-meta dt {
+  font-size: 8pt; text-transform: uppercase; letter-spacing: 0.07em;
+  color: #555; margin-bottom: 0.8mm;
+}
+.sheet-meta dd { margin: 0 0 3mm; }
+
+.sheet-table { width: 100%; border-collapse: collapse; margin-bottom: 5mm; }
+.sheet-table th {
+  text-align: left; font-size: 8pt; text-transform: uppercase;
+  letter-spacing: 0.07em; color: #333; font-weight: 600;
+  padding: 2mm 2mm 1.5mm; border-bottom: 1px solid #111;
+}
+.sheet-table td {
+  padding: 2mm; border-bottom: 1px solid #e2e2e2; vertical-align: top;
+}
+.sheet-table .c-no  { width: 8mm; color: #666; }
+.sheet-table .c-uom { width: 16mm; }
+.sheet-table .c-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sheet-code { color: #666; margin-right: 2mm; }
+
+.sheet-totals { margin-left: auto; border-collapse: collapse; min-width: 70mm; }
+.sheet-totals th {
+  text-align: left; font-weight: 400; color: #333; padding: 1.5mm 4mm 1.5mm 0;
+}
+.sheet-totals td { text-align: right; font-variant-numeric: tabular-nums; padding: 1.5mm 0; }
+.sheet-totals tr.strong th, .sheet-totals tr.strong td {
+  font-weight: 700; border-top: 1.5px solid #111; padding-top: 2mm;
+}
+.sheet-ccy { font-size: 8.5pt; color: #555; }
+
+.sheet-memo { display: block; margin-top: 8mm; max-width: 120mm; }
+.sheet-memo-label {
+  font-size: 8pt; text-transform: uppercase; letter-spacing: 0.07em;
+  color: #555; margin-bottom: 1mm;
+}
+
+/* Signature lines. A voucher that leaves the office is signed for, and a
+   printed one with nowhere to sign gets a biro line drawn across it anyway. */
+.sheet-sign {
+  display: flex; flex-direction: row; gap: 12mm; margin-top: 18mm;
+  page-break-inside: avoid; break-inside: avoid;
+}
+.sheet-sign > div { flex: 1; font-size: 9pt; color: #333; text-align: center; }
+.sheet-rule { border-top: 1px solid #111; margin-bottom: 1.5mm; }
+
+/* On paper the sheet is the page: no shadow, no margin, and nothing around
+   it. @page carries the margin so the sheet's own padding does not add to
+   the printer's. */
+@media print {
+  .sheetwrap { padding: 0; display: block; }
+  .sheet {
+    width: auto; min-height: 0; padding: 0; box-shadow: none;
+    font-size: 10pt;
+  }
+  @page { size: A4; margin: 14mm 13mm; }
+}
+
+/* The preview: the sheet on the dimmed page it will be printed from. */
+.previewback {
+  position: fixed; inset: 0; z-index: 40; overflow: auto;
+  background: rgb(0 0 0 / 0.45); padding: var(--s4);
+}
+.previewbody { max-width: 210mm; margin: 0 auto; }
+.previewbar {
+  background: var(--surface); border: 1px solid var(--line);
+  border-bottom: 0; border-radius: var(--r-sm) var(--r-sm) 0 0;
+  padding: var(--s2) var(--s3); align-items: center;
+}
+.previewbody .sheet { min-height: 0; }
