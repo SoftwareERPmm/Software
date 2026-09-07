@@ -2,7 +2,7 @@ import { getFinanceData, createAccountOpening } from "@/lib/actions";
 import { OpeningForm } from "@/components/opening-form";
 
 export default async function AccountOpening() {
-  const { accounts, accountTree } = await getFinanceData();
+  const { accounts, accountTree, branches } = await getFinanceData();
   const today = new Date().toISOString().slice(0, 10);
 
   return (
@@ -21,6 +21,7 @@ export default async function AccountOpening() {
         action={createAccountOpening}
         accounts={accounts as never}
         accountTree={accountTree as never}
+        branches={branches as never}
         today={today}
       />
     </>

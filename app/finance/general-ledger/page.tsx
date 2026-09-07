@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { ArrowRight, Scale } from "lucide-react";
-import { getFinanceData, getAccountLedger, getAccountLedgerSummary } from "@/lib/actions";
+import { getFinanceData } from "@/lib/actions";
 import {
   getCompany, getJournalEntries, getJournalEntryLines,
+  getAccountLedgerFiltered, getAccountSummary,
   getUnassignedBranchActivity, UNASSIGNED_BRANCH,
 } from "@/lib/queries";
 import { money } from "@/lib/db";
@@ -125,7 +126,9 @@ export default async function GeneralLedger({
               className={`erp-tab ${byAccount ? "here" : ""}`}>By account</Link>
       </div>
 
-      {byAccount ? <AccountView p={p} list={list} tree={tree} carry={carry} />
+      {byAccount ? <AccountView p={p} companyId={company.id} list={list}
+                                tree={tree} carry={carry}
+                                locations={locationList} unassignedLines={unassigned} />
                  : <EntriesView p={p} companyId={company.id} accounts={list}
                                 locations={locationList}
                                 unassignedLines={unassigned} />}
@@ -266,9 +269,12 @@ async function EntriesView({
 // ------------------------------------------------------------ one account --
 
 async function AccountView({
-  p, list, tree, carry,
+  p, companyId, list, tree, carry, locations, unassignedLines,
 }: {
   p: Record<string, string | undefined>;
+  companyId: string;
+  locations: { id: string; code: string; name: string }[];
+  unassignedLines: number;
   list: { id: string; code: string; name: string; parent_id: string | null; account_type: string }[];
   tree: { id: string; code: string; name: string; parent_id: string | null; is_postable?: boolean }[];
   carry: (over: Record<string, string | undefined>) => string;
@@ -276,27 +282,69 @@ async function AccountView({
   if (list.length === 0) return <div className="empty">No accounts are set up.</div>;
 
   const selected = list.find((a) => a.id === p.account) ?? list[0];
-  const rows = (await getAccountLedger(selected.id, p.from, p.to)) as any[];
-  const sum = await getAccountLedgerSummary(selected.id, p.from, p.to);
+  const f = { from: p.from, to: p.to, branchId: p.location };
+  const rows = (await getAccountLedgerFiltered(companyId, selected.id, f)) as any[];
+  const sum = await getAccountSummary(companyId, selected.id, f);
+  const branchName = p.location === UNASSIGNED_BRANCH
+    ? "no branch"
+    : locations.find((l) => l.id === p.location)?.name;
 
   return (
     <>
       <AccountPicker accounts={list} selectedId={selected.id} tree={tree}
                      basePath="/finance/general-ledger" />
 
-      {/* Said plainly rather than left to be discovered. The running balance
-          is a window over every movement on the account, so filtering the
-          rows underneath it would leave a balance that no longer matches the
-          column it sits beside. Better to state that this view is the whole
-          account than to show a figure that is quietly wrong. */}
+      {/* The period and branch, on the tab that uses them. They lived only in
+          the querystring here, which meant arriving from the other tab you
+          could see a filtered account with no control saying so. */}
+      <form method="get" className="card doc-meta" style={{ marginBottom: "1rem" }}>
+        <input type="hidden" name="view" value="account" />
+        <input type="hidden" name="account" value={selected.id} />
+        <div className="card-body">
+          <div className="row">
+            <div className="field">
+              <label htmlFor="a-from">From</label>
+              <input id="a-from" name="from" type="date" defaultValue={p.from ?? ""} />
+            </div>
+            <div className="field">
+              <label htmlFor="a-to">To</label>
+              <input id="a-to" name="to" type="date" defaultValue={p.to ?? ""} />
+            </div>
+            <div className="field">
+              <label htmlFor="a-location">Branch / warehouse</label>
+              <select id="a-location" name="location" defaultValue={p.location ?? ""}>
+                <option value="">All branches</option>
+                {locations.map((l) => (
+                  <option key={l.id} value={l.id}>{l.code} · {l.name}</option>
+                ))}
+                {unassignedLines > 0 && (
+                  <option value={UNASSIGNED_BRANCH}>— No branch ({unassignedLines} lines) —</option>
+                )}
+              </select>
+            </div>
+            <div className="field" style={{ justifyContent: "flex-end" }}>
+              <div className="actions">
+                <button type="submit" className="tiny">Apply</button>
+                {(p.from || p.to || p.location) && (
+                  <Link href={carry({ from: undefined, to: undefined, location: undefined })}
+                        className="btn ghost tiny">Clear</Link>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </form>
+
+      {/* Which slice of the account this is. A running balance that covers
+          one branch is a different figure from the account's own, and the
+          page should say which one is on screen. */}
       {p.location && (
-        <div className="alert" style={{ marginBottom: "1rem" }}>
-          The branch filter does not apply here — a running balance is only
-          meaningful over every movement on the account. Use{" "}
-          <Link href={carry({ view: undefined })} style={{ color: "var(--brand)" }}>
-            All entries
-          </Link>{" "}
-          to read this branch on its own.
+        <div className="hint" style={{ margin: "0 0 0.75rem" }}>
+          Showing {branchName ?? "one branch"} only — the running balance is
+          this branch&rsquo;s.{" "}
+          <Link href={carry({ location: undefined })} style={{ color: "var(--brand)" }}>
+            Show every branch
+          </Link>
         </div>
       )}
 

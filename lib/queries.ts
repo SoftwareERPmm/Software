@@ -1385,7 +1385,9 @@ export async function getBalanceSheet(companyId: string, asOf: string, branchId?
  * correctly, and excluding cash-to-cash contra lines drops internal
  * transfers, which are not a real inflow or outflow.
  */
-export async function getCashFlowStatement(companyId: string, from: string, to: string) {
+export async function getCashFlowStatement(
+  companyId: string, from: string, to: string, branchId?: string | null
+) {
   const [rows, beginning, ending] = await Promise.all([
     sql`
       select
@@ -1417,6 +1419,7 @@ export async function getCashFlowStatement(companyId: string, from: string, to: 
          and (a_cash.is_cash_account or a_cash.is_bank_account)
          and not (a2.is_cash_account or a2.is_bank_account)
          and je.entry_date between ${from}::date and ${to}::date
+         ${branchFilterOn(sql`jl_cash`, branchId)}
        group by category, section
        order by section, category`,
     sql`
@@ -1426,7 +1429,8 @@ export async function getCashFlowStatement(companyId: string, from: string, to: 
         join account a on a.id = jl.account_id
        where jl.company_id = ${companyId}
          and (a.is_cash_account or a.is_bank_account)
-         and je.entry_date < ${from}::date`,
+         and je.entry_date < ${from}::date
+         ${branchFilter(branchId)}`,
     sql`
       select coalesce(sum(jl.base_amount), 0) as balance
         from journal_line jl
@@ -1434,7 +1438,8 @@ export async function getCashFlowStatement(companyId: string, from: string, to: 
         join account a on a.id = jl.account_id
        where jl.company_id = ${companyId}
          and (a.is_cash_account or a.is_bank_account)
-         and je.entry_date <= ${to}::date`,
+         and je.entry_date <= ${to}::date
+         ${branchFilter(branchId)}`,
   ]);
 
   return {
@@ -2052,4 +2057,74 @@ export async function getTrialBalanceAsOf(companyId: string, f: TrialBalanceFilt
      having sum(case when jl.base_amount > 0 then jl.base_amount else 0 end) <> 0
          or sum(case when jl.base_amount < 0 then jl.base_amount else 0 end) <> 0
      order by a.code`;
+}
+
+/**
+ * One account's movements, optionally within one branch, with a running
+ * balance computed over exactly the rows returned.
+ *
+ * v_account_ledger cannot do this: its running balance is a window over every
+ * movement on the account, so filtering rows out from under it leaves a
+ * balance that disagrees with its own column. Computing the window after the
+ * filter gives the branch's own running balance, which is the figure someone
+ * asking for one branch is actually after.
+ */
+export async function getAccountLedgerFiltered(
+  companyId: string, accountId: string,
+  f: { from?: string; to?: string; branchId?: string | null } = {},
+) {
+  return sql`
+    select je.entry_no, je.entry_date, je.memo, je.source_type,
+           d.doc_no, d.doc_type, p.name as partner_name, l.code as location_code,
+           case when jl.base_amount > 0 then  jl.base_amount else 0 end as debit,
+           case when jl.base_amount < 0 then -jl.base_amount else 0 end as credit,
+           sum(jl.base_amount) over (
+             order by je.entry_date, je.entry_no, jl.line_no
+             rows between unbounded preceding and current row
+           ) as running_balance
+      from journal_line jl
+      join journal_entry je on je.id = jl.journal_entry_id
+      left join document d on d.id = je.source_id
+      left join business_partner p on p.id = jl.partner_id
+      left join location l on l.id = jl.location_id
+     where jl.company_id = ${companyId} and jl.account_id = ${accountId}
+       ${f.from ? sql`and je.entry_date >= ${f.from}::date` : sql``}
+       ${f.to ? sql`and je.entry_date <= ${f.to}::date` : sql``}
+       ${branchFilter(f.branchId)}
+     order by je.entry_date, je.entry_no, jl.line_no`;
+}
+
+/**
+ * The four figures that frame those movements. Opening is its own sum rather
+ * than the first row's running balance — that balance already includes its
+ * own row, so reading it would double-count the first movement of the period.
+ */
+export async function getAccountSummary(
+  companyId: string, accountId: string,
+  f: { from?: string; to?: string; branchId?: string | null } = {},
+) {
+  const [row] = await sql`
+    select
+      coalesce(sum(case when ${f.from ? sql`je.entry_date < ${f.from}::date` : sql`false`}
+                        then jl.base_amount else 0 end), 0) as opening,
+      coalesce(sum(case when jl.base_amount > 0
+                         and ${f.from ? sql`je.entry_date >= ${f.from}::date` : sql`true`}
+                         and ${f.to ? sql`je.entry_date <= ${f.to}::date` : sql`true`}
+                        then jl.base_amount else 0 end), 0) as debits,
+      coalesce(sum(case when jl.base_amount < 0
+                         and ${f.from ? sql`je.entry_date >= ${f.from}::date` : sql`true`}
+                         and ${f.to ? sql`je.entry_date <= ${f.to}::date` : sql`true`}
+                        then -jl.base_amount else 0 end), 0) as credits,
+      coalesce(sum(case when ${f.to ? sql`je.entry_date <= ${f.to}::date` : sql`true`}
+                        then jl.base_amount else 0 end), 0) as closing
+      from journal_line jl
+      join journal_entry je on je.id = jl.journal_entry_id
+     where jl.company_id = ${companyId} and jl.account_id = ${accountId}
+       ${branchFilter(f.branchId)}`;
+  return {
+    opening: Number(row?.opening ?? 0),
+    debits: Number(row?.debits ?? 0),
+    credits: Number(row?.credits ?? 0),
+    closing: Number(row?.closing ?? 0),
+  };
 }

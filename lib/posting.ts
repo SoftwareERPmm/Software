@@ -3266,6 +3266,12 @@ export async function postAccountOpening(input: {
   docDate: string;
   lines: { accountId: string; amount: number }[];
   memo?: string | null;
+  /**
+   * Which branch these opening figures belong to. Without it every opening
+   * balance is stamped with no branch at all, so a company that reports by
+   * branch starts every account from a figure that belongs to none of them.
+   */
+  locationId?: string | null;
 }) {
   const lines = input.lines.filter((l) => l.accountId && l.amount !== 0);
   if (lines.length === 0) throw new Error("Enter at least one opening balance");
@@ -3280,6 +3286,7 @@ export async function postAccountOpening(input: {
       companyId: input.companyId,
       docDate: input.docDate,
       memo: input.memo ?? "Opening balances",
+      locationId: input.locationId ?? null,
       lines: net === 0 ? lines : [...lines, { accountId: equity.a, amount: -net }],
     },
     "OPENING_BALANCE"
