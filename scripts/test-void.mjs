@@ -25,7 +25,7 @@ if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
 const { sql } = await import("../lib/db.ts");
 const { planVoid } = await import("../lib/void.ts");
 const { voidDocument, postCashVoucher, postGoodsReceipt, postPurchaseInvoice,
-        postSupplierPayment } = await import("../lib/posting.ts");
+        postPurchaseWithReceipt, postSupplierPayment } = await import("../lib/posting.ts");
 
 let failures = 0;
 const check = (label, ok, detail = "") => {
@@ -349,6 +349,50 @@ try {
        group by sm.item_id, sm.location_id
     ) x where abs(moved - on_hand) > 0.0001`;
   check("inventory reconciles to the stock ledger", recon[0].c === 0);
+
+  // ---- a void leaves nothing owed ----------------------------------------
+  //
+  // Voiding marks the original REVERSED and posts a reversing document of the
+  // opposite sign. Both open-item views filtered on status alone, so the
+  // original dropped out and its reversal stayed: what should have netted to
+  // nil netted to minus the invoice, and the supplier appeared to owe the
+  // company. Found on a consignment settlement, where the payables list then
+  // says the consignor owes 50,000 and paying from that is a real payment
+  // against an imaginary debt.
+
+  console.log("\n  a voided invoice");
+
+  const vSup = (await sql`
+    insert into business_partner (company_id, code, name, is_supplier, payment_terms_days)
+    values (${co.id}, ${"VOID-S" + Date.now().toString().slice(-5)}, 'Void test supplier', true, 30)
+    returning id`)[0];
+  const vItem = (await sql`
+    select id from item where company_id = ${co.id} and is_stocked limit 1`)[0];
+  const vLoc = (await sql`
+    select id from location where company_id = ${co.id} and is_stock_location limit 1`)[0];
+
+  const owedBy = async (partnerId) => Number((await sql`
+    select coalesce(sum(outstanding), 0) as v from v_open_item
+     where company_id = ${co.id} and partner_id = ${partnerId}`)[0].v);
+
+  const vPi = await postPurchaseWithReceipt({
+    companyId: co.id, partnerId: vSup.id, locationId: vLoc.id,
+    docDate: today, dueDate: today,
+    lines: [{ itemId: vItem.id, qty: 5, unitPrice: 1000 }],
+  });
+  check("the invoice is owed before it is voided", (await owedBy(vSup.id)) === 5000,
+    String(await owedBy(vSup.id)));
+
+  await voidDocument({ documentId: vPi.id, reason: "test" });
+  const owedAfter = await owedBy(vSup.id);
+  check("and nothing is owed after — not minus the invoice", owedAfter === 0,
+    String(owedAfter));
+
+  const statuses = await sql`
+    select count(*)::int as c from v_invoice_status
+     where company_id = ${co.id} and partner_id = ${vSup.id}`;
+  check("  and it is gone from the invoice list too", statuses[0].c === 0,
+    String(statuses[0].c));
 
   console.log(`\n  ${failures === 0 ? "all void tests pass" : failures + " FAILED"}\n`);
 } finally {

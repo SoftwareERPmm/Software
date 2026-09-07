@@ -1364,7 +1364,17 @@ async function settleConsignmentSales(
       from consignment_lot_consumption c
       join consignment_lot l on l.id = c.lot_id
       join document rd on rd.id = l.receipt_document_id
-     where c.delivery_document_id = ${deliveryId} and c.settlement_document_id is null`;
+     where c.delivery_document_id = ${deliveryId}
+       -- Unsettled, or settled by a document that has since been voided. The
+       -- stamp is never cleared — consumption is append-only, and a void is
+       -- recorded rather than erased — so "settled" has to mean settled by
+       -- something that still stands. Without this a voided settlement left
+       -- the consignor's goods sold, their payable reversed, and no way for a
+       -- later settlement to find the sale again.
+       and (c.settlement_document_id is null
+            or exists (select 1 from document sd
+                        where sd.id = c.settlement_document_id
+                          and sd.status <> 'POSTED'))`;
 
   if (consumed.length === 0) return;
 
@@ -3794,6 +3804,7 @@ export async function voidDocument(input: {
              reversed_by_document_id = ${reversal.id},
              void_reason = ${input.reason ?? null}
        where id = ${doc.id}`;
+
 
     await tx`
       insert into document_history (company_id, document_id, action, reason, related_id, detail)

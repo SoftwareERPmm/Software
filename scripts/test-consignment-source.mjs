@@ -154,6 +154,55 @@ try {
     (await Q.getStockByOwnership(co.id, item.id, wh.id)).owned === 50,
     `${(await Q.getStockByOwnership(co.id, item.id, wh.id)).owned} owned`);
 
+  // ---- voiding a settlement gives the sale back --------------------------
+  //
+  // The consumption stamp is never cleared: consumption is append-only and a
+  // void is recorded rather than erased. So "settled" has to mean settled by
+  // something that still stands, or a voided settlement leaves the
+  // consignor's goods sold, their payable reversed, and no way for a later
+  // settlement to find the sale again.
+
+  console.log("\n  voiding the settlement of a consigned sale\n");
+
+  // A delivery alone owes the consignor nothing — settlement happens when the
+  // sale is invoiced, at the price the customer is actually charged.
+  await P.postSaleWithDelivery({
+    companyId: co.id, partnerId: cust.id, locationId: wh.id,
+    docDate: today, dueDate: null,
+    lines: [{ itemId: item.id, qty: 4, unitPrice: 6000,
+              source: "CONSIGNMENT", consignorId: xyz.id }],
+  });
+
+  const P2 = P;
+  const settleDoc = await one(sql`
+    select id, doc_no, gross_total from document
+     where company_id = ${co.id} and doc_type = 'PURCHASE_INVOICE' and status = 'POSTED'
+     order by created_at desc limit 1`);
+
+  check("invoicing a consigned sale raises a settlement", Boolean(settleDoc),
+    settleDoc ? `${settleDoc.doc_no} ${n(settleDoc.gross_total).toLocaleString()}` : "none");
+
+  if (settleDoc) {
+    const owedToConsignor = async () => n((await one(sql`
+      select coalesce(sum(outstanding), 0) as v from v_open_item
+       where company_id = ${co.id} and partner_id = ${xyz.id}`)).v);
+
+    check("the consignor is owed for what sold", (await owedToConsignor()) > 0,
+      (await owedToConsignor()).toLocaleString());
+
+    await P2.voidDocument({ documentId: settleDoc.id, reason: "raised in error" });
+
+    check("voiding the settlement leaves nothing owed — not a negative",
+      (await owedToConsignor()) === 0, String(await owedToConsignor()));
+
+    const findable = await one(sql`
+      select count(*)::int as n from consignment_lot_consumption c
+       where c.settlement_document_id is not null
+         and exists (select 1 from document sd
+                      where sd.id = c.settlement_document_id and sd.status <> 'POSTED')`);
+    check("  and the sale can be settled again", findable.n > 0, `${findable.n} rows released`);
+  }
+
   // ---- the books still hold ----------------------------------------------
 
   const tb = await one(sql`select coalesce(sum(base_amount), 0) as v

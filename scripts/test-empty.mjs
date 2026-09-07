@@ -43,6 +43,12 @@ try {
   // Promotions reference categories, so they have to go first.
   await sql`delete from promotion`;
   await sql`delete from account_determination where item_group_id is not null`;
+  // Consignment agreements name items, and a volume band can be scoped to
+  // one. Either reference is enough to stop the item going — the same
+  // omission that once stopped clear.mjs wiping a database at all.
+  await sql`delete from consignment_agreement_line`;
+  await sql`delete from consignment_agreement`;
+  await sql`delete from volume_discount`;
   await sql`delete from item`;
   await sql`delete from item_group`;
   await sql`delete from business_partner`;
