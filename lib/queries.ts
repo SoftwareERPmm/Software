@@ -1999,3 +1999,45 @@ export async function getJournalEntry(companyId: string, entryId: string) {
 
   return { entry, lines };
 }
+
+// --------------------------------------------------------- trial balance --
+
+export type TrialBalanceFilters = {
+  asOf?: string;
+  locationId?: string;
+  accountType?: string;
+};
+
+/**
+ * Every account that has moved, with its closing balance on the side it
+ * naturally falls.
+ *
+ * Written against journal_line rather than v_trial_balance because that view
+ * groups by fiscal period and has no date bound — a trial balance is always
+ * "as at", and asking for one as at the 30th is the normal case, not a
+ * variant. The Type column is the section the chart files the account under,
+ * not the six-member account_type enum: a chart draws finer distinctions than
+ * the enum does, and "Current Assets" is what an accountant expects to read.
+ */
+export async function getTrialBalanceAsOf(companyId: string, f: TrialBalanceFilters = {}) {
+  return sql`
+    select a.id, a.code, a.name, a.account_type,
+           coalesce(sec.name, initcap(lower(a.account_type::text))) as section,
+           sum(case when jl.base_amount > 0 then  jl.base_amount else 0 end) as debit,
+           sum(case when jl.base_amount < 0 then -jl.base_amount else 0 end) as credit,
+           sum(jl.base_amount) as balance
+      from journal_line jl
+      join journal_entry je on je.id = jl.journal_entry_id
+      join account a on a.id = jl.account_id
+      left join account sec on sec.id = a.parent_id
+     where jl.company_id = ${companyId}
+       ${f.asOf ? sql`and je.entry_date <= ${f.asOf}::date` : sql``}
+       ${f.locationId ? sql`and jl.location_id = ${f.locationId}` : sql``}
+       ${f.accountType ? sql`and a.account_type = ${f.accountType}` : sql``}
+     group by a.id, a.code, a.name, a.account_type, sec.name
+     -- An account that moved and came back to nil is still part of the
+     -- period's story, so it stays: only accounts that never moved are out.
+     having sum(case when jl.base_amount > 0 then jl.base_amount else 0 end) <> 0
+         or sum(case when jl.base_amount < 0 then jl.base_amount else 0 end) <> 0
+     order by a.code`;
+}

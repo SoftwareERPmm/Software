@@ -1010,3 +1010,63 @@ tbody tr.coa-section > td { padding-top: 10px; padding-bottom: 10px; }
 button svg, .btn svg { flex: none; vertical-align: -0.12em; }
 button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 .actions .btn, .actions button { justify-content: center; }
+
+/* --------------------------------------------------------- trial balance -- */
+
+/* Debits, credits, difference. Three figures across, because the third is
+   only meaningful beside the two it comes from. */
+.tb-stats {
+  display: grid; gap: var(--s3); margin-bottom: var(--s3);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+.tb-stat .card-body { display: flex; align-items: flex-start; gap: var(--s3); }
+.tb-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: var(--r-md); flex: none;
+}
+.tb-icon.dr  { background: color-mix(in srgb, var(--dr) 12%, transparent);   color: var(--dr); }
+.tb-icon.cr  { background: color-mix(in srgb, var(--cr) 12%, transparent);   color: var(--cr); }
+.tb-icon.ok  { background: color-mix(in srgb, var(--ok) 14%, transparent);   color: var(--ok); }
+.tb-icon.bad { background: color-mix(in srgb, var(--bad) 14%, transparent);  color: var(--bad); }
+
+.tb-figure {
+  font-family: var(--mono); font-variant-numeric: tabular-nums;
+  font-size: 1.25rem; font-weight: 600; line-height: 1.3;
+}
+.tb-unit { font-size: var(--t-sm); font-weight: 400; color: var(--muted); }
+
+/* The summary sits beside the table on a wide screen and under it on a
+   narrow one — it is about a row of that table, so it should not push the
+   table into a column of its own on a laptop. */
+.tb-split { display: grid; gap: var(--s3); align-items: start; }
+@media (min-width: 1100px) {
+  .tb-split { grid-template-columns: minmax(0, 1fr) 300px; }
+}
+.tb-aside { position: sticky; top: var(--s3); }
+.tb-aside-head {
+  display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;
+  margin-bottom: 0.35rem;
+}
+.tb-selected > td { background: var(--brand-weak); }
+
+/* The verdict. A trial balance that balances is the expected outcome, so it
+   states itself quietly; one that does not is the only thing on the page
+   worth reading first. */
+.tb-verdict {
+  display: flex; gap: var(--s2); align-items: flex-start;
+  margin-top: var(--s3); padding: var(--s3);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+}
+.tb-verdict svg { flex: none; margin-top: 0.15rem; }
+.tb-verdict.ok  { border-color: color-mix(in srgb, var(--ok) 35%, transparent);
+                  background: color-mix(in srgb, var(--ok) 7%, transparent); color: var(--ok); }
+.tb-verdict.bad { border-color: color-mix(in srgb, var(--bad) 40%, transparent);
+                  background: color-mix(in srgb, var(--bad) 8%, transparent); color: var(--bad); }
+.tb-verdict .hint { color: var(--ink-soft); }
+
+/* A value that is fixed rather than chosen. Aligned with the inputs beside
+   it so the row does not look like a field failed to render. */
+.staticfield {
+  display: flex; align-items: center; min-height: 1.95rem;
+  padding: 0.25rem 0; color: var(--ink-soft);
+}

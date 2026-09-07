@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { ArrowRight, Scale } from "lucide-react";
 import { getFinanceData, getAccountLedger, getAccountLedgerSummary } from "@/lib/actions";
 import { getCompany, getJournalEntries, getJournalEntryLines } from "@/lib/queries";
 import { money } from "@/lib/db";
@@ -85,6 +86,12 @@ export default async function GeneralLedger({
     return `/finance/general-ledger${s ? `?${s}` : ""}`;
   };
 
+  const tbParams = new URLSearchParams();
+  if (p.to) tbParams.set("asOf", p.to);
+  if (p.location) tbParams.set("location", p.location);
+  tbParams.set("back", carry({}));
+  const tbHref = `/ledger?${tbParams.toString()}`;
+
   return (
     <>
       <div className="page-head">
@@ -94,6 +101,14 @@ export default async function GeneralLedger({
           Every posted entry, whatever document wrote it. Read it in date
           order to find something, or one account at a time to reconcile a
           balance.
+        </span>
+        <span className="actions">
+          {/* The period and branch travel with the link, and `back` brings
+              the reader to this same view rather than an unfiltered ledger. */}
+          <Link href={tbHref} className="btn ghost tiny">
+            <Scale size={13} aria-hidden="true" /> Trial balance
+            <ArrowRight size={13} aria-hidden="true" />
+          </Link>
         </span>
       </div>
 
