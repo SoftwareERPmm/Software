@@ -55,7 +55,19 @@ const PLURAL: Record<string, string> = {
   CUSTOMER_RECEIPT: "Customer receipts",
 };
 
-export default async function DocumentPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function DocumentPage({
+  params, searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ back?: string }>;
+}) {
+  // Where the reader came from, when it was not this document's own list.
+  // Only a path within the app is accepted: a `back` that could be pointed at
+  // another site is an open redirect wearing a breadcrumb.
+  const { back } = await searchParams;
+  const backHref = back && back.startsWith("/") && !back.startsWith("//") ? back : null;
+  const backLabel = backHref?.startsWith("/finance/general-ledger")
+    ? "General ledger" : backHref ? "Back" : null;
   const { id } = await params;
   const doc = await getDocument(id);
   if (!doc) notFound();
@@ -252,6 +264,8 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
 
     return (
       <ErpOrderForm
+        backHref={backHref}
+        backLabel={backLabel}
         config={{
           typeLabel: sales ? "Sales Order" : "Purchase Order",
           partyLabel: sales ? "Customer" : "Vendor",
@@ -300,6 +314,8 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
 
   return (
     <ErpDocShell
+      backHref={backHref}
+      backLabel={backLabel}
       docId={doc.id}
       docNo={doc.doc_no ?? "Draft"}
       typeLabel={label(doc.doc_type).replace(/\b\w/g, (c) => c.toUpperCase())}

@@ -1972,3 +1972,30 @@ export async function getJournalEntryLines(companyId: string, entryIds: string[]
      where jl.company_id = ${companyId} and jl.journal_entry_id = any(${entryIds})
      order by jl.journal_entry_id, jl.line_no`;
 }
+
+/** One entry, its lines, and the document that wrote it. */
+export async function getJournalEntry(companyId: string, entryId: string) {
+  const [entry] = await sql`
+    select je.id, je.entry_no, je.memo, je.source_type,
+           to_char(je.entry_date, 'YYYY-MM-DD') as entry_date,
+           d.id as document_id, d.doc_no, d.doc_type, d.status,
+           d.gross_total, p.name as partner_name, p.code as partner_code
+      from journal_entry je
+      left join document d on d.id = je.source_id
+      left join business_partner p on p.id = d.partner_id
+     where je.company_id = ${companyId} and je.id = ${entryId}`;
+  if (!entry) return null;
+
+  const lines = await sql`
+    select jl.line_no, jl.base_amount, jl.memo,
+           a.id as account_id, a.code as account_code, a.name as account_name,
+           p.name as partner_name, l.code as location_code
+      from journal_line jl
+      join account a on a.id = jl.account_id
+      left join business_partner p on p.id = jl.partner_id
+      left join location l on l.id = jl.location_id
+     where jl.company_id = ${companyId} and jl.journal_entry_id = ${entryId}
+     order by jl.line_no`;
+
+  return { entry, lines };
+}

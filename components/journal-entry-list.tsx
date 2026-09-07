@@ -2,6 +2,7 @@
 
 import { Fragment, useState } from "react";
 import Link from "next/link";
+import { ChevronRight, Download, Printer, Rows3 } from "lucide-react";
 import { money } from "@/lib/format";
 
 export type EntryLine = {
@@ -39,7 +40,15 @@ export type Entry = {
  * twenty page loads. The document behind it is still a link, for when the
  * answer is "open the invoice".
  */
-export function JournalEntryList({ entries }: { entries: Entry[] }) {
+export function JournalEntryList({ entries, backQuery = "" }:
+  { entries: Entry[]; backQuery?: string }) {
+  // Every link out of this list carries the ledger's own filters, so coming
+  // back lands on the same view instead of the top of an unfiltered one.
+  const href = (path: string) => (backQuery ? `${path}?${backQuery}` : path);
+  const docHref = (id: string) => {
+    const back = `/finance/general-ledger${backQuery ? `?${backQuery}` : ""}`;
+    return `/documents/${id}?back=${encodeURIComponent(back)}`;
+  };
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [all, setAll] = useState(false);
 
@@ -101,11 +110,16 @@ export function JournalEntryList({ entries }: { entries: Entry[] }) {
               {entries.length === 1 ? "y" : "ies"}
             </span>
             <button type="button" className="ghost tiny" onClick={expandAll}>
+              <Rows3 size={13} aria-hidden="true" />
               {all ? "Collapse all" : "Expand all"}
             </button>
-            <button type="button" className="ghost tiny" onClick={exportCsv}>Export</button>
+            <button type="button" className="ghost tiny" onClick={exportCsv}>
+              <Download size={13} aria-hidden="true" /> Export
+            </button>
             <button type="button" className="ghost tiny noprint"
-                    onClick={() => window.print()}>Print</button>
+                    onClick={() => window.print()}>
+              <Printer size={13} aria-hidden="true" /> Print
+            </button>
           </span>
         </div>
 
@@ -134,14 +148,20 @@ export function JournalEntryList({ entries }: { entries: Entry[] }) {
                                 aria-expanded={isOpen}
                                 aria-label={isOpen ? "Hide lines" : "Show lines"}
                                 onClick={() => toggle(e.id)}>
-                          <span className="navcaret" data-open={isOpen}>›</span>
+                          <ChevronRight size={14} className="caret" data-open={isOpen}
+                                        aria-hidden="true" />
                         </button>
                       </td>
                       <td className="m">{e.entryDate}</td>
-                      <td className="code">{e.entryNo}</td>
+                      <td className="code">
+                        <Link href={href(`/finance/general-ledger/${e.id}`)}
+                              style={{ color: "var(--brand)" }}>
+                          {e.entryNo}
+                        </Link>
+                      </td>
                       <td className="code">
                         {e.documentId
-                          ? <Link href={`/documents/${e.documentId}`} style={{ color: "var(--brand)" }}>
+                          ? <Link href={docHref(e.documentId)} style={{ color: "var(--brand)" }}>
                               {e.docNo ?? "—"}
                             </Link>
                           : "—"}

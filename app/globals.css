@@ -993,3 +993,20 @@ tbody tr.coa-section > td { padding-top: 10px; padding-bottom: 10px; }
   thead { display: table-header-group; }
   tr { break-inside: avoid; }
 }
+
+/* A way back that is not the browser's. Arriving at a document from the
+   ledger and being offered only its own list as the way out loses the
+   filters and the place in them. */
+.backlink { display: inline-flex; align-items: center; gap: 0.3rem; }
+.page-head .backlink { color: var(--brand); }
+.backlink svg { flex: none; }
+
+/* The row expander's chevron, rotated rather than swapped for a second icon. */
+.caret { transition: transform 150ms; }
+.caret[data-open="true"] { transform: rotate(90deg); }
+
+/* An icon inside a button or a pill is a label's companion, never its
+   replacement — it sits on the text baseline and takes the text's colour. */
+button svg, .btn svg { flex: none; vertical-align: -0.12em; }
+button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
+.actions .btn, .actions button { justify-content: center; }

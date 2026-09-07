@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { ArrowLeft } from "lucide-react";
 import { ErpDocToolbar, ErpCopyNumber } from "@/components/erp-doc-toolbar";
 
 /**
@@ -37,7 +38,7 @@ export type ChainStage = {
 
 export function ErpDocShell({
   docId, docNo, typeLabel, status, listHref, listLabel,
-  chain, actions, badges, children,
+  chain, actions, badges, children, backHref, backLabel,
 }: {
   docId: string;
   docNo: string;
@@ -45,6 +46,11 @@ export function ErpDocShell({
   status: string;
   listHref: string;
   listLabel: string;
+  /** Where the reader came from, when it was not the list. Arriving from the
+   *  general ledger and being offered only "Purchase invoices" as the way
+   *  back loses both the filters and the place in them. */
+  backHref?: string | null;
+  backLabel?: string | null;
   chain: ChainStage[];
   /** Workflow actions — left of the pipeline, where the reference puts them. */
   actions?: React.ReactNode;
@@ -57,6 +63,14 @@ export function ErpDocShell({
   return (
     <div data-density="odoo" className="erp-form">
       <div className="erp-crumb">
+        {backHref && (
+          <>
+            <Link href={backHref} className="erp-crumb-link backlink">
+              <ArrowLeft size={13} aria-hidden="true" /> {backLabel ?? "Back"}
+            </Link>
+            <span className="erp-crumb-sep">/</span>
+          </>
+        )}
         <Link href={listHref} className="erp-crumb-link">{listLabel}</Link>
         <span className="erp-crumb-sep">/</span>
         <span className="erp-crumb-here">{docNo}</span>

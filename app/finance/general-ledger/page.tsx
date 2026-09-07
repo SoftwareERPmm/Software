@@ -163,6 +163,12 @@ async function EntriesView({
 
   const filtered = Boolean(p.from || p.to || p.account || p.location || p.type || p.doc || p.q);
 
+  // The filters as a querystring, so a link out of the list can bring the
+  // reader back to this exact view.
+  const backParams = new URLSearchParams();
+  for (const [k, v] of Object.entries(p)) if (v) backParams.set(k, String(v));
+  const backQuery = backParams.toString();
+
   return (
     <>
       {/* GET, so a filtered view is a URL: it can be bookmarked, sent to
@@ -226,7 +232,7 @@ async function EntriesView({
         </div>
       </form>
 
-      <JournalEntryList entries={entries} />
+      <JournalEntryList entries={entries} backQuery={backQuery} />
     </>
   );
 }
