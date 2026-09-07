@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { getFinanceData, peekVoucherNo, createCashVoucher } from "@/lib/actions";
 import { VoucherForm } from "@/components/voucher-form";
+import { VoucherHelp } from "@/components/voucher-help";
 
 export default async function CashPayment() {
   const { accounts, accountTree, cashAccounts, branches } = await getFinanceData();
@@ -29,6 +30,9 @@ export default async function CashPayment() {
           <Link href="/payables/pay" style={{ color: "var(--brand)" }}>Pay supplier</Link> for that.{" "}
           <Link href="/finance/cash-detail" style={{ color: "var(--brand)" }}>View the cash book</Link>
         </span>
+      <span className="actions">
+        <VoucherHelp kind="cash" />
+      </span>
       </div>
 
       <VoucherForm

@@ -4,6 +4,7 @@ import { useActionState, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
 import { groupAccountsBySection } from "@/lib/format";
 import { ACCOUNT_TYPE_LABEL } from "./account-form";
+import { CheckCircle2, CircleAlert, Plus } from "lucide-react";
 
 type Account = {
   id: string; code: string; name: string; parent_id: string | null;
@@ -135,6 +136,7 @@ export function VoucherForm({
       <div className="card doc-meta">
         <div className="card-head">
           <span className="m" style={{ color: "var(--muted)" }}>No. {nextNo}</span>
+          <span className="pill draft">Unposted</span>
         </div>
         <div className="card-body">
           <div className="row">
@@ -153,9 +155,14 @@ export function VoucherForm({
                   ))}
                 </select>
               </div>
-            ) : (
-              branches.length === 1 && <input type="hidden" name="location_id" value={branches[0].id} />
-            )}
+            ) : branches.length === 1 ? (
+              <div className="field">
+                <label htmlFor="location_id">Branch</label>
+                <input type="hidden" name="location_id" value={branches[0].id} />
+                <div className="staticfield">{branches[0].code} · {branches[0].name}</div>
+                <span className="hint">The only branch, so every line goes here</span>
+              </div>
+            ) : null}
 
             <div className="field">
               <label htmlFor="reference">Reference</label>
@@ -235,13 +242,15 @@ export function VoucherForm({
         <div className="card">
           <div className="card-head">
             <h2>Lines</h2>
-            <button type="button" className="ghost tiny" onClick={addRow}>Add line</button>
+            <button type="button" className="ghost tiny" onClick={addRow}>
+              <Plus size={13} aria-hidden="true" /> Add line
+            </button>
           </div>
           <div className="tablewrap">
             <table className="linetable">
               <thead>
                 <tr>
-                  <th>Account</th><th>Description</th>
+                  <th>Account</th><th>Line description</th>
                   <th className="r">Debit</th><th className="r">Credit</th><th />
                 </tr>
               </thead>
@@ -270,10 +279,12 @@ export function VoucherForm({
                     </td>
                     <td className="narrow">
                       <input type="number" min="0" step="any" value={r.debit} aria-label="Debit"
+                        className="amt dr" placeholder="0"
                         onChange={(e) => setRow(r.key, { debit: e.target.value, credit: "" })} />
                     </td>
                     <td className="narrow">
                       <input type="number" min="0" step="any" value={r.credit} aria-label="Credit"
+                        className="amt cr" placeholder="0"
                         onChange={(e) => setRow(r.key, { credit: e.target.value, debit: "" })} />
                     </td>
                     <td className="tight">
@@ -285,9 +296,9 @@ export function VoucherForm({
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan={2}>{ready ? "Balanced" : diff === 0 ? "" : `Out by ${fmt(Math.abs(diff))}`}</td>
-                  <td className="r dr">{fmt(totalDr)}</td>
-                  <td className="r cr">{fmt(totalCr)}</td>
+                  <td colSpan={2} className="r">Total debit / credit</td>
+                  <td className="r"><span className="tot dr">{fmt(totalDr)}</span></td>
+                  <td className="r"><span className="tot cr">{fmt(totalCr)}</span></td>
                   <td />
                 </tr>
               </tfoot>
@@ -297,21 +308,28 @@ export function VoucherForm({
       )}
 
       <div className="field">
-        <label htmlFor="memo">Description</label>
+        <label htmlFor="memo">Journal narration</label>
         <textarea id="memo" name="memo" rows={2} placeholder="What this voucher is for — English or Myanmar" />
       </div>
 
       <div className="actions form-commit">
-        <button type="submit" disabled={pending || !ready}>
+        <span className={`balancestate ${ready ? "ok" : "wait"}`}>
+          {ready ? <CheckCircle2 size={17} aria-hidden="true" />
+                 : <CircleAlert size={17} aria-hidden="true" />}
+          <strong>
+            {ready ? "Balanced · ready to post"
+                   : simple ? "Fill in the account and amount"
+                            : "The two sides do not agree yet"}
+          </strong>
+          {!simple && (
+            <span className="page-sub">
+              Difference {fmt(Math.abs(diff))}
+            </span>
+          )}
+        </span>
+        <button type="submit" disabled={pending || !ready} style={{ marginLeft: "auto" }}>
           {pending ? "Posting…" : ready ? `Post ${fmt(totalDr)}` : "Post voucher"}
         </button>
-        <span className="page-sub">
-          {ready
-            ? "Ready to post."
-            : simple
-              ? "Fill in the account and amount to continue."
-              : "The two sides don't add up to the same total yet."}
-        </span>
       </div>
     </form>
   );

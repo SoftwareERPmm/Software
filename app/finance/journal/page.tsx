@@ -1,5 +1,6 @@
 import { getFinanceData, peekVoucherNo, createJournalVoucher } from "@/lib/actions";
 import { VoucherForm } from "@/components/voucher-form";
+import { VoucherHelp } from "@/components/voucher-help";
 
 export default async function JournalVoucher() {
   const { accounts, accountTree, cashAccounts, bankAccounts, branches } = await getFinanceData();
@@ -25,12 +26,11 @@ export default async function JournalVoucher() {
         <span className="eyebrow">Accounting</span>
         <h1>Journal voucher</h1>
         <span className="page-sub">
-          For accounting events no document produces &mdash; depreciation, accruals,
-          reclassification, year-end adjustments. Anything a sale, purchase, receipt
-          or payment causes belongs on its own document, which posts its own entry:
-          keying it here as well records it twice. Control accounts are not offered;
-          they belong to their subledger.
+          Record depreciation, accruals and other accounting adjustments.
         </span>
+      <span className="actions">
+        <VoucherHelp kind="journal" />
+      </span>
       </div>
 
       <VoucherForm

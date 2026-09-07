@@ -1081,3 +1081,46 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
   margin-right: 0.15rem;
 }
 .card-head h2 { display: inline-flex; align-items: center; gap: 0.4rem; }
+
+/* ---------------------------------------------------------- vouchers -- */
+
+/* Debit and credit carry the colours the ledger already reads them in, so
+   which side a figure is on is legible before the header is. Faint: these
+   are input fields on a dense grid, not status badges. */
+.linetable input.amt {
+  font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right;
+}
+.linetable input.amt.dr {
+  background: color-mix(in srgb, var(--dr) 7%, var(--surface));
+  border-color: color-mix(in srgb, var(--dr) 22%, var(--line));
+}
+.linetable input.amt.cr {
+  background: color-mix(in srgb, var(--cr) 7%, var(--surface));
+  border-color: color-mix(in srgb, var(--cr) 22%, var(--line));
+}
+.linetable input.amt:focus { background: var(--surface); }
+.linetable .tot {
+  display: inline-block; padding: 0.15rem 0.5rem; border-radius: var(--r-sm);
+  font-family: var(--mono); font-variant-numeric: tabular-nums; font-weight: 600;
+}
+.linetable .tot.dr { background: color-mix(in srgb, var(--dr) 10%, transparent); color: var(--dr); }
+.linetable .tot.cr { background: color-mix(in srgb, var(--cr) 10%, transparent); color: var(--cr); }
+
+/* Whether this can post at all, said in the bar that posts it. */
+.balancestate { display: inline-flex; align-items: center; gap: 0.5rem; }
+.balancestate svg { flex: none; }
+.balancestate.ok { color: var(--ok); }
+.balancestate.wait { color: var(--muted); }
+.balancestate .page-sub {
+  padding-left: 0.65rem; border-left: 1px solid var(--line);
+  color: var(--muted); font-size: var(--t-sm);
+}
+
+/* The help link sits where a question is asked — beside the title, not
+   buried in a paragraph under it. */
+.helplink { color: var(--brand); }
+.helppanel { max-width: 33rem; text-align: left; padding: 0; }
+.helplist { margin: 0; padding-left: 1.1rem; font-size: var(--t-md); line-height: 1.55; }
+.helplist li { margin-bottom: 0.2rem; }
+.helplist.ok li::marker  { color: var(--ok); }
+.helplist.bad li::marker { color: var(--bad); }
