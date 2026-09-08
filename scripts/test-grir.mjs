@@ -94,6 +94,8 @@ try {
   const acct = accountsFor(sql, co.id);
   const GRIR = await acct.role("GRIR_CLEARING");
   const PPV = await acct.role("PURCHASE_PRICE_VARIANCE");
+  // Inventory is resolved per item, so ask for this item's own account.
+  const INV = await acct.forItem("INVENTORY", item.id);
 
   const today = new Date().toISOString().slice(0, 10);
   const base = { companyId: co.id, partnerId: supp.id, locationId: loc.id, docDate: today };
@@ -172,19 +174,43 @@ try {
   check("the second half clears it exactly", (await balance(GRIR)) === 0);
   check("with no variance across the pair", (await balance(PPV)) === 0);
 
-  // ---- Goods dearer than billed ------------------------------------------
+  // ---- The receipt disagrees with the bill it is matched to --------------
+  //
+  // It does not get to. The bill is what these goods cost; a price typed on
+  // the receipt is an opinion about a cost that is already known. Valuing
+  // them at 1,100 against a bill of 1,000 used to credit 5,000 to variance —
+  // a profit booked on buying something — and carry the stock 5,000 above
+  // what was owed for it.
 
   await wipe();
-  console.log("\n  goods arrive dearer than the bill said\n");
+  console.log("\n  the receipt says 1,100, the bill says 1,000\n");
 
   const pi4 = await postPurchaseInvoice({ ...base, dueDate: null,
     lines: [{ itemId: item.id, qty: 100, unitPrice: 1000 }] });
-  await postGoodsReceipt({ ...base, sourceDocumentId: pi4.id,
+  const gr4 = await postGoodsReceipt({ ...base, sourceDocumentId: pi4.id,
     lines: [{ itemId: item.id, qty: 50, unitCost: 1100 }] });
 
   check("only the invoiced half is released", (await balance(GRIR)) === 50000);
-  check("stock capitalised above what is owed is a favourable variance",
-    (await balance(PPV)) === -5000, `${await balance(PPV)} credit on 50 × 100`);
+  check("the goods are valued at the bill, not the receipt",
+    (await balance(INV)) === 50000, `${await balance(INV)} in inventory`);
+  check("so nothing reaches variance", (await balance(PPV)) === 0,
+    `${await balance(PPV)}`);
+  check("  and the stock ledger agrees with the accounts",
+    n((await sql`select coalesce(sum(value_on_hand), 0) as v
+                   from v_stock_on_hand where item_id = ${item.id}`)[0].v) === 50000,
+    `${n((await sql`select coalesce(sum(value_on_hand), 0) as v
+                      from v_stock_on_hand where item_id = ${item.id}`)[0].v)} on the shelf`);
+
+  // Receiving more than was billed is a real event, and the excess is not a
+  // variance either: it is goods held and not yet invoiced.
+  await postGoodsReceipt({ ...base, sourceDocumentId: pi4.id,
+    lines: [{ itemId: item.id, qty: 80, unitCost: 1100 }] });
+
+  check("over-receiving leaves goods awaiting a bill, not a variance",
+    (await balance(GRIR)) === -30000, `${await balance(GRIR)}`);
+  check("  still no variance", (await balance(PPV)) === 0, `${await balance(PPV)}`);
+  check("  and all 130 units are carried at the billed price",
+    (await balance(INV)) === 130000, `${await balance(INV)}`);
 
   // ---- Invariants --------------------------------------------------------
 

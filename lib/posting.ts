@@ -1825,7 +1825,50 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
     select fn_next_document_no(${companyId}, 'GOODS_RECEIPT', ${docDate}::date) as no`;
   const docNo = noRows[0].no;
 
-  const netTotal = round4(input.lines.reduce((s, l) => s + l.qty * (l.unitCost ?? 0), 0));
+  /**
+   * Matched to a bill that has already arrived: the bill is what these goods
+   * cost, so the bill is what they are valued at.
+   *
+   * A receipt normally carries an estimate — the PO price, or whatever the
+   * warehouse was told — and the invoice settles it later, which is the
+   * difference Purchase Price Variance exists to hold. When the invoice came
+   * first there is nothing to estimate. Valuing the goods at a figure typed
+   * on the receipt instead put the gap in the P&L: received 200 at a typed
+   * 120 against a bill of 80 credited 8,000 to variance, which reads as a
+   * profit on buying something, and carried the stock 8,000 above what was
+   * actually owed for it.
+   *
+   * The invoice price is the starting point, not the whole of the cost —
+   * freight and duties belong in inventory too under IAS 2. Those are actual
+   * costs with documents behind them and are not this: they are added by
+   * landed-cost allocation, not by overtyping a receipt.
+   *
+   * Quantity stays the receiver's to state. Receiving more than was billed is
+   * a real event; the excess is valued at the same price and stays in GR/IR
+   * as goods not yet invoiced, which is what it is.
+   */
+  const billed = new Map<string, number>();
+  if (input.sourceDocumentId) {
+    const [maybe] = await tx`
+      select doc_type from document
+       where id = ${input.sourceDocumentId} and company_id = ${companyId}`;
+    if (maybe?.doc_type === "PURCHASE_INVOICE") {
+      // Quantity-weighted where an item is billed on more than one line, so
+      // one receipt line takes one cost and it is the cost of those goods.
+      const prices = await tx`
+        select dl.item_id, sum(dl.net_amount) as net, sum(dl.base_qty) as qty
+          from document_line dl
+         where dl.document_id = ${input.sourceDocumentId}
+         group by dl.item_id
+        having sum(dl.base_qty) > 0`;
+      for (const r of prices) billed.set(r.item_id, Number(r.net) / Number(r.qty));
+    }
+  }
+
+  const lines = input.lines.map((l) =>
+    billed.has(l.itemId) ? { ...l, unitCost: billed.get(l.itemId)! } : l);
+
+  const netTotal = round4(lines.reduce((s, l) => s + l.qty * (l.unitCost ?? 0), 0));
 
   const [doc] = await tx`
     insert into document
@@ -1842,7 +1885,7 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
   const journal: JournalLine[] = [];
   let lineNo = 0;
 
-  for (const line of input.lines) {
+  for (const line of lines) {
     lineNo++;
 
     const [item] = await tx`select id, code, name, is_stocked, base_uom_id from item where id = ${line.itemId}`;
@@ -1899,13 +1942,10 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
     }
   }
 
-  // Matched to an invoice that already arrived: the GR/IR line clears
-  // against what that invoice already posted, not this receipt's own value
-  // — the mirror image of how a purchase invoice matches an existing
-  // receipt. Any difference is the same Purchase Price Variance account
-  // either direction uses; the variance is a property of the pair, not of
-  // whichever document happens to post second.
-  let grirAmount = netTotal;
+  // GR/IR carries what arrived, priced as above. Matched or not, the credit
+  // is the value of the goods themselves, so a receipt can never release more
+  // of a bill than it actually brought in.
+  const grirAmount = netTotal;
   if (input.sourceDocumentId) {
     // Locked, not merely read: the matching below decides how much of this
     // invoice is still unreceived, and two receipts arriving at once must
@@ -1924,55 +1964,21 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
     });
     await assertSourceLines(tx, input.sourceDocumentId, input.lines);
     if (src?.doc_type === "PURCHASE_INVOICE") {
-      // Matched line by line against the invoice, not against its total.
-      // Taking the whole invoice meant half a shipment released all of it:
-      // 50 of 100 units arriving cleared the entire 100,000, booked the
-      // other 50,000 as price variance, and reported nothing still awaited.
-      // The second half then cleared it again, leaving GR/IR at -100,000 —
-      // a debit balance where a settled liability should be zero — and
-      // 100,000 of invented expense in the P&L.
-      const invoiceLines = await tx`
-        select dl.id, dl.item_id, dl.base_qty as qty, dl.net_amount as net
-          from document_line dl
-         where dl.document_id = ${input.sourceDocumentId}
-         order by dl.line_no`;
-
-      const priorReceipts = await tx`
-        select dl.item_id, dl.base_qty as qty, dl.source_line_id
-          from document_line dl
-          join document d on d.id = dl.document_id
-         where d.company_id = ${companyId}
-           and d.doc_type = 'GOODS_RECEIPT'
-           and d.status = 'POSTED'
-           and d.source_document_id = ${input.sourceDocumentId}
-           and d.id <> ${doc.id}
-         order by d.posting_date, d.doc_no, dl.line_no`;
-
-      const draw = grirMatcher(invoiceLines as unknown as MatchableLine[]);
-
-      // Earlier shipments against this same invoice first, so this one sees
-      // only what is still outstanding.
-      for (const prior of priorReceipts) {
-        draw(prior.item_id, Number(prior.qty), prior.source_line_id);
-      }
-
-      // A receipt line's sourceLineId names an order line when the receipt
-      // came from a purchase order, so it is only offered as a preference
-      // here — grirMatcher ignores an id that is not one of these lines and
-      // falls back to oldest first.
-      let matched = 0;
-      for (const line of input.lines) {
-        matched += draw(line.itemId, line.qty, line.sourceLineId).value;
-      }
-      grirAmount = round4(matched);
-
-      // Whatever this receipt is worth beyond what the invoice was holding
-      // for it: a price difference, or goods the invoice never covered.
-      const variance = round4(netTotal - grirAmount);
-      if (variance !== 0) {
-        const pv = await tx`select fn_system_account(${companyId}, 'PURCHASE_PRICE_VARIANCE') as a`;
-        journal.push({ accountId: pv[0].a, amount: -variance, locationId });
-      }
+      // Nothing to apportion any more. The lines were priced from this
+      // invoice above, so what the goods are worth and what the invoice was
+      // holding for them are the same number by construction, and GR/IR
+      // clears by exactly what arrived.
+      //
+      // This used to draw line by line from the invoice and book the
+      // remainder as variance, which was the only way to keep the two sides
+      // honest while the receipt was free to name its own price. Half a
+      // shipment releasing the whole invoice — the bug that matcher was
+      // written for — cannot happen when the credit is the receipt's own
+      // value: 50 of 100 units credit 50 units' worth, and the other 50
+      // stay in GR/IR because they have not arrived.
+      //
+      // Received beyond what was billed lands here too, as a credit balance
+      // on the invoice: goods held and not yet invoiced, awaiting a bill.
     }
   }
 

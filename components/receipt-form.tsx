@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useActionState, useEffect, useState } from "react";
 import type { ActionResult, PickerItem } from "@/lib/actions";
 import { ItemPicker } from "./item-picker";
@@ -366,9 +367,19 @@ export function ReceiptForm({
                         style={qtyMismatch ? { borderColor: "var(--warn)" } : undefined} />
                     </td>
                     <td className="narrow">
+                      {/* The bill is the cost of these goods, so it is not
+                          typed over here. Quantity stays the receiver's to
+                          state: what arrived is what arrived. */}
                       <input type="number" min="0" step="any" value={l.unitCost}
                         onChange={(e) => setLine(l.key, { unitCost: e.target.value })}
-                        aria-label="Unit cost" />
+                        aria-label="Unit cost"
+                        readOnly={!!billedLine}
+                        title={billedLine
+                          ? `Billed at ${fmt(billedLine.unitPrice)} on ${matchedPi?.doc_no}`
+                          : undefined}
+                        style={billedLine
+                          ? { background: "var(--surface-2, #f4f4f5)", cursor: "not-allowed" }
+                          : undefined} />
                     </td>
                     <td className="r">{fmt(amount(l))}</td>
                     <td className="tight">
@@ -387,6 +398,21 @@ export function ReceiptForm({
           <span className="big">{fmt(total)} MMK</span>
         </div>
       </div>
+
+      {matchedPi && (
+        <div className="hint" style={{ marginBottom: "0.75rem" }}>
+          Unit cost comes from {matchedPi.doc_no} and is not editable here — the
+          bill is what these goods cost, and a figure typed over it would land
+          in the profit and loss as a gain or loss on buying stock. If the bill
+          itself is wrong,{" "}
+          <Link href={`/documents/${matchedPi.id}`} style={{ color: "var(--brand)" }}>
+            correct {matchedPi.doc_no}
+          </Link>
+          {" "}and receive against the corrected one. Freight and duties belong
+          in the stock value too, but they are costs of their own with
+          documents behind them — not a number typed into this column.
+        </div>
+      )}
 
       {qtyMismatches.length > 0 && (
         <div className="alert" style={{ borderColor: "var(--warn)", color: "var(--warn)", background: "color-mix(in srgb, var(--warn) 8%, transparent)" }}>
