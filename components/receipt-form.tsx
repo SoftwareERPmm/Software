@@ -20,6 +20,13 @@ const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 0 
  * cost is entered; the supplier's bill is a separate document, whenever it
  * arrives.
  */
+/** Not an invoice id, so it cannot collide with one. */
+const NONE = "__none__";
+
+const shortDate = (v: unknown) =>
+  v ? new Date(String(v)).toLocaleDateString("en-GB",
+    { weekday: "short", day: "numeric", month: "short" }) : "";
+
 export function ReceiptForm({
   action,
   suppliers,
@@ -56,6 +63,11 @@ export function ReceiptForm({
   const [docDate, setDocDate] = useState(today);
   const [receivedTime, setReceivedTime] = useState("");
   const [matchedPiId, setMatchedPiId] = useState("");
+  // Chose "not matched" deliberately, as opposed to not having answered yet.
+  // Only distinguishable while more than one invoice is waiting; with one it
+  // is picked for you and this is how you say no to it.
+  const [unmatched, setUnmatched] = useState(false);
+  const [autoMatched, setAutoMatched] = useState(false);
 
   // Set client-side, after mount, so the server-rendered markup and the
   // first client render match — "now" would differ between the two.
@@ -67,10 +79,7 @@ export function ReceiptForm({
   const openInvoices = (purchaseInvoices ?? []).filter((d) => d.partner_id === partnerId);
   const matchedPi = openInvoices.find((d) => d.id === matchedPiId) ?? null;
 
-  function matchInvoice(id: string) {
-    setMatchedPiId(id);
-    const pi = openInvoices.find((d) => d.id === id);
-    if (!pi) return;
+  function fillFrom(pi: OpenDoc) {
     setLines(
       pi.lines.map((l, idx) => ({
         key: idx + 1,
@@ -79,6 +88,26 @@ export function ReceiptForm({
         unitCost: String(l.unitPrice),
       }))
     );
+  }
+
+  function matchInvoice(id: string, auto = false) {
+    setMatchedPiId(id);
+    setUnmatched(false);
+    setAutoMatched(auto);
+    const pi = openInvoices.find((d) => d.id === id);
+    if (pi) fillFrom(pi);
+  }
+
+  /**
+   * Stop matching — either the supplier changed, or these goods really are
+   * arriving without an invoice. Lines that came from an invoice go with it:
+   * leaving another supplier's items sitting in the table is how a receipt
+   * gets posted for goods nobody sent.
+   */
+  function clearMatch(hadMatch: boolean) {
+    setMatchedPiId("");
+    setAutoMatched(false);
+    if (hadMatch) setLines([{ key: 1, itemId: "", qty: "", unitCost: "" }]);
   }
 
   // Arrived from a specific invoice's own page — its supplier isn't chosen
@@ -101,6 +130,24 @@ export function ReceiptForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialInvoiceId]);
 
+  /**
+   * One invoice waiting on goods from this supplier is not a question.
+   *
+   * The form used to open on "Not matched", printed directly above a list
+   * containing the very invoice these goods were for, and wait to be told
+   * what it already knew. Two invoices is a real question and is still
+   * asked; one is answered.
+   */
+  useEffect(() => {
+    if (initialInvoiceId) return;
+    if (!partnerId) return;
+    if (matchedPiId && openInvoices.some((d) => d.id === matchedPiId)) return;
+    const hadMatch = matchedPiId !== "";
+    if (openInvoices.length === 1) matchInvoice(openInvoices[0].id, true);
+    else { clearMatch(hadMatch); setUnmatched(false); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [partnerId, purchaseInvoices]);
+
   function setLine(key: number, patch: Partial<Line>) {
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
   }
@@ -119,6 +166,14 @@ export function ReceiptForm({
 
   const amount = (l: Line) => (Number(l.qty) || 0) * (Number(l.unitCost) || 0);
   const total = lines.reduce((s, l) => s + amount(l), 0);
+
+  // A line with goods on it and nothing in the cost column. It posts — a
+  // supplier's free sample really does arrive at nothing — but it puts stock
+  // on the shelf that the balance sheet says is worth nothing, and the FIFO
+  // layer it creates will charge a later sale nothing for it. Worth saying
+  // out loud rather than discovering in a margin report.
+  const freeLines = lines.filter(
+    (l) => l.itemId && Number(l.qty) > 0 && !(Number(l.unitCost) > 0));
 
   const qtyMismatches = matchedPi
     ? lines.filter((l) => {
@@ -148,7 +203,13 @@ export function ReceiptForm({
             <div className="field">
               <label htmlFor="partner_id">Supplier</label>
               <select id="partner_id" name="partner_id" value={partnerId}
-                onChange={(e) => { setPartnerId(e.target.value); setMatchedPiId(""); }} required>
+                onChange={(e) => {
+                  // Their invoice, and the lines it filled in, belong to the
+                  // old supplier. Both go.
+                  clearMatch(matchedPiId !== "");
+                  setUnmatched(false);
+                  setPartnerId(e.target.value);
+                }} required>
                 <option value="">Choose…</option>
                 {suppliers.map((p) => (
                   <option key={p.id} value={p.id}>{p.code} · {p.name}</option>
@@ -193,27 +254,50 @@ export function ReceiptForm({
         <div className="card-body">
           <div className="field">
             <label htmlFor="source_document_id">Match existing supplier invoice</label>
-            <select id="source_document_id" name="source_document_id" value={matchedPiId}
-              onChange={(e) => matchInvoice(e.target.value)} disabled={!partnerId}>
-              {/* The empty option says which of three situations this is.
-                  It used to read "no invoice waiting for these goods"
-                  whenever nothing was selected — printed directly above a
-                  list of the invoices waiting for these goods. */}
-              <option value="">
-                {!partnerId ? "Choose a supplier first"
-                  : openInvoices.length === 0
-                    ? "No invoice is waiting for goods from this supplier"
-                    : "Not matched — these goods arrive without one"}
-              </option>
+            <input type="hidden" name="source_document_id" value={matchedPiId} />
+            <select id="source_document_id"
+              value={matchedPiId || (unmatched ? NONE : "")}
+              onChange={(e) => {
+                if (e.target.value === NONE) {
+                  clearMatch(matchedPiId !== "");
+                  setUnmatched(true);
+                } else if (e.target.value) {
+                  matchInvoice(e.target.value);
+                } else {
+                  clearMatch(matchedPiId !== "");
+                }
+              }}
+              disabled={!partnerId}>
+              {/* An unanswered option only where there is a question. With no
+                  supplier, or none of theirs waiting, it says which of those
+                  it is; with several waiting it asks. With one waiting there
+                  is nothing to ask, so the invoice itself is what shows, and
+                  arriving without one moves to the bottom where a deliberate
+                  answer belongs. */}
+              {!partnerId && <option value="">Choose a supplier first</option>}
+              {partnerId && openInvoices.length === 0 && (
+                <option value="">No invoice is waiting for goods from this supplier</option>
+              )}
+              {partnerId && openInvoices.length > 1 && !matchedPiId && !unmatched && (
+                <option value="">Which invoice are these goods for?</option>
+              )}
               {openInvoices.map((d) => (
                 <option key={d.id} value={d.id}>
-                  {d.doc_no} · {String(d.doc_date).slice(0, 10)} · {d.lines.length} line{d.lines.length === 1 ? "" : "s"}
+                  {d.doc_no} · {shortDate(d.doc_date)} · {d.lines.length} line{d.lines.length === 1 ? "" : "s"}
                 </option>
               ))}
+              {partnerId && openInvoices.length > 0 && (
+                <option value={NONE}>Not matched — these goods arrive without an invoice</option>
+              )}
             </select>
             <span className="hint">
               {matchedPi
-                ? "Lines are filled from that invoice — check what actually arrived before posting."
+                ? autoMatched
+                  ? `${matchedPi.doc_no} is the only invoice waiting on goods from this `
+                    + "supplier, so it is matched and its lines are filled in. Check what "
+                    + "actually arrived, or choose \u201cnot matched\u201d if these goods are "
+                    + "for something else."
+                  : "Lines are filled from that invoice — check what actually arrived before posting."
                 : openInvoices.length > 0
                   ? `${openInvoices.length} invoice${openInvoices.length === 1 ? " is" : "s are"} `
                     + "waiting on goods from this supplier — billed already, and sitting in "
@@ -232,7 +316,14 @@ export function ReceiptForm({
       <div className="card">
         <div className="card-head">
           <h2>Lines</h2>
-          <button type="button" className="ghost tiny" onClick={addLine}>Add line</button>
+          <span className="actions">
+            {matchedPi && (
+              <span className="page-sub">
+                filled from {matchedPi.doc_no}
+              </span>
+            )}
+            <button type="button" className="ghost tiny" onClick={addLine}>Add line</button>
+          </span>
         </div>
 
         <div className="tablewrap">
@@ -309,6 +400,22 @@ export function ReceiptForm({
         <label htmlFor="memo">Note</label>
         <textarea id="memo" name="memo" rows={2} placeholder="Optional — English or Myanmar" />
       </div>
+
+      {freeLines.length > 0 && (
+        <div className="alert" style={{ marginBottom: "0.75rem" }}>
+          <strong>
+            {freeLines.length === 1 ? "One line has" : `${freeLines.length} lines have`} a
+            quantity but no unit cost.
+          </strong>{" "}
+          {freeLines.map((l) => byId(l.itemId)?.code).filter(Boolean).join(", ")} would
+          arrive worth nothing, and a later sale would draw them at nothing.
+          {matchedPi
+            ? " The matched invoice carries the prices — reselect it to fill them in."
+            : openInvoices.length > 0
+              ? " If the supplier already billed for these, matching that invoice fills in what they cost."
+              : " Enter what they cost, or post it deliberately if they really were free."}
+        </div>
+      )}
 
       <div className="actions">
         <button type="submit" disabled={pending || total === 0}>
