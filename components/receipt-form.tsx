@@ -195,8 +195,15 @@ export function ReceiptForm({
             <label htmlFor="source_document_id">Match existing supplier invoice</label>
             <select id="source_document_id" name="source_document_id" value={matchedPiId}
               onChange={(e) => matchInvoice(e.target.value)} disabled={!partnerId}>
+              {/* The empty option says which of three situations this is.
+                  It used to read "no invoice waiting for these goods"
+                  whenever nothing was selected — printed directly above a
+                  list of the invoices waiting for these goods. */}
               <option value="">
-                {partnerId ? "Not matched — no invoice waiting for these goods" : "Choose a supplier first"}
+                {!partnerId ? "Choose a supplier first"
+                  : openInvoices.length === 0
+                    ? "No invoice is waiting for goods from this supplier"
+                    : "Not matched — these goods arrive without one"}
               </option>
               {openInvoices.map((d) => (
                 <option key={d.id} value={d.id}>
@@ -207,7 +214,16 @@ export function ReceiptForm({
             <span className="hint">
               {matchedPi
                 ? "Lines are filled from that invoice — check what actually arrived before posting."
-                : "The supplier already billed for this and it's just sitting in GR/IR clearing — pick which invoice these goods are for."}
+                : openInvoices.length > 0
+                  ? `${openInvoices.length} invoice${openInvoices.length === 1 ? " is" : "s are"} `
+                    + "waiting on goods from this supplier — billed already, and sitting in "
+                    + "GR/IR clearing. Pick the one these goods are for, or leave it unmatched "
+                    + "if they are for something else."
+                  : partnerId
+                    ? "Nothing this supplier has billed is still waiting on goods, so these "
+                      + "arrive on their own and the invoice can follow."
+                    : "If the supplier billed before the goods came, matching clears GR/IR "
+                      + "against that invoice instead of opening a new one."}
             </span>
           </div>
         </div>
