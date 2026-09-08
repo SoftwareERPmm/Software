@@ -1,7 +1,31 @@
 import Link from "next/link";
-import { getCompany, getOpenPurchaseOrders } from "@/lib/queries";
+import { PackageCheck, Clock, Boxes } from "lucide-react";
+import { money, shortDate } from "@/lib/db";
+import { getCompany, getOpenPurchaseOrders, getGoodsReceiptHistory } from "@/lib/queries";
 import { createGoodsReceipt } from "@/lib/actions";
 import { FulfillOrderForm } from "@/components/fulfill-order-form";
+import { DataTable, type DataRow } from "@/components/data-table";
+
+type Receipt = {
+  id: string; doc_no: string | null; doc_date: string; status: string;
+  gross_total: string; partner_id: string | null; partner_name: string | null;
+  location_code: string | null; source_id: string | null;
+  source_no: string | null; source_type: string | null;
+  line_count: number; grir_open: string;
+};
+
+const toTime = (v: unknown) => (v ? new Date(v as string).getTime() : 0);
+
+const COLUMNS = [
+  { key: "doc_no", label: "Receipt", sortable: true },
+  { key: "doc_date", label: "Received", sortable: true },
+  { key: "partner_name", label: "Supplier", sortable: true },
+  { key: "location_code", label: "Warehouse", sortable: true },
+  { key: "source_no", label: "Against", sortable: true },
+  { key: "line_count", label: "Lines", sortable: true, align: "r" as const },
+  { key: "gross_total", label: "Value", sortable: true, align: "r" as const },
+  { key: "billed", label: "Supplier invoice", sortable: true },
+];
 
 export default async function Receive({
   searchParams,
@@ -12,7 +36,10 @@ export default async function Receive({
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
-  const openLines = await getOpenPurchaseOrders(company.id);
+  const [openLines, history] = await Promise.all([
+    getOpenPurchaseOrders(company.id),
+    getGoodsReceiptHistory(company.id) as unknown as Promise<Receipt[]>,
+  ]);
 
   const orders = new Map<string, {
     orderId: string; orderNo: string; partnerId: string; partnerName: string; locationId: string;
@@ -32,6 +59,67 @@ export default async function Receive({
     });
   }
 
+  // Received and not yet billed: the clearing balance itself, so the figure on
+  // screen and the one in GR/IR Clearing cannot disagree.
+  const posted = history.filter((r) => r.status === "POSTED");
+  const awaiting = posted.filter((r) => Number(r.grir_open) !== 0);
+  const awaitingValue = awaiting.reduce((s, r) => s + Math.abs(Number(r.grir_open)), 0);
+  const receivedValue = posted.reduce((s, r) => s + Number(r.gross_total), 0);
+
+  const rows: DataRow[] = history.map((r) => {
+    const open = Number(r.grir_open) !== 0;
+    const voided = r.status !== "POSTED";
+    return {
+      key: r.id,
+      searchText: [r.doc_no, r.partner_name, r.source_no, r.location_code]
+        .filter(Boolean).join(" "),
+      sort: {
+        doc_no: r.doc_no ?? "",
+        doc_date: toTime(r.doc_date),
+        partner_name: r.partner_name ?? "",
+        location_code: r.location_code ?? "",
+        source_no: r.source_no ?? "",
+        line_count: r.line_count,
+        gross_total: Number(r.gross_total),
+        billed: voided ? 2 : open ? 1 : 0,
+      },
+      node: (
+        <tr className="link">
+          <td className="code">
+            <Link href={`/documents/${r.id}`} style={{ color: "var(--brand)" }}>
+              {r.doc_no ?? "draft"}
+            </Link>
+          </td>
+          <td className="code">{shortDate(r.doc_date)}</td>
+          <td className="wrap">{r.partner_name ?? "—"}</td>
+          <td className="code">{r.location_code ?? "—"}</td>
+          <td className="code">
+            {r.source_no ? (
+              <Link href={`/documents/${r.source_id}`} style={{ color: "inherit" }}>
+                {r.source_no}
+              </Link>
+            ) : (
+              <span style={{ color: "var(--muted)" }}>no order</span>
+            )}
+          </td>
+          <td className="r">{r.line_count}</td>
+          <td className="r">{money(r.gross_total)}</td>
+          <td>
+            {voided ? (
+              <span className="pill draft">Voided</span>
+            ) : open ? (
+              <Link href={`/purchases/new?goods_receipt_id=${r.id}`}>
+                <span className="pill warn">Awaiting · {money(Math.abs(Number(r.grir_open)))}</span>
+              </Link>
+            ) : (
+              <span className="pill ok">Billed</span>
+            )}
+          </td>
+        </tr>
+      ),
+    };
+  });
+
   return (
     <>
       <div className="page-head">
@@ -46,6 +134,32 @@ export default async function Receive({
 
       <div className="actions" style={{ marginBottom: "1.5rem" }}>
         <Link href="/purchases/receive/new" className="btn ghost">+ Receive goods (no PO)</Link>
+      </div>
+
+      <div className="kpis">
+        <div className="kpi">
+          <span className="kpi-label"><Boxes size={13} /> Waiting to arrive</span>
+          <span className="kpi-value">{orders.size}</span>
+          <span className="kpi-note">
+            open purchase order{orders.size === 1 ? "" : "s"} with something still to receive
+          </span>
+        </div>
+        <div className="kpi">
+          <span className="kpi-label"><PackageCheck size={13} /> Received</span>
+          <span className="kpi-value">{money(receivedValue)}</span>
+          <span className="kpi-note">
+            across {posted.length} posted receipt{posted.length === 1 ? "" : "s"}
+          </span>
+        </div>
+        <div className="kpi">
+          <span className="kpi-label"><Clock size={13} /> Awaiting supplier invoice</span>
+          <span className="kpi-value" style={{ color: awaiting.length > 0 ? "var(--warn)" : undefined }}>
+            {money(awaitingValue)}
+          </span>
+          <span className="kpi-note">
+            {awaiting.length} receipt{awaiting.length === 1 ? "" : "s"} sitting in GR/IR clearing
+          </span>
+        </div>
       </div>
 
       {orders.size === 0 ? (
@@ -92,6 +206,25 @@ export default async function Receive({
           </Link>
         </div>
       )}
+
+      <div className="card" style={{ marginTop: "1.5rem" }}>
+        <div className="card-head">
+          <h2>Received so far</h2>
+          <span className="page-sub">
+            Newest first. &ldquo;Awaiting&rdquo; is what the supplier has not
+            billed yet — the receipt&rsquo;s own balance in GR/IR clearing.
+          </span>
+        </div>
+        <div className="card-body">
+          <DataTable
+            rows={rows}
+            columns={COLUMNS}
+            searchPlaceholder="Search receipt no., supplier, order"
+            defaultSort={{ key: "doc_date", dir: "desc" }}
+            emptyLabel="Nothing has been received yet."
+          />
+        </div>
+      </div>
     </>
   );
 }

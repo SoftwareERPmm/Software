@@ -1038,6 +1038,39 @@ export async function getOpenPurchaseOrders(companyId: string) {
      order by o.doc_no, ol.line_no`;
 }
 
+/**
+ * Goods receipts already posted, newest first.
+ *
+ * A receiving screen that only lists what is still owed shows nothing at all
+ * on the ordinary day when every order has arrived — and nothing is also what
+ * it shows when something has gone wrong, so the two are indistinguishable.
+ * What has been received is the answer to both.
+ *
+ * Whether the supplier has billed for each one comes from the same GR/IR
+ * balance the ledger settles against, not from a flag: goods received and not
+ * yet invoiced are exactly a non-zero clearing balance anchored on the
+ * receipt. A receipt raised against an invoice that came first anchors on
+ * that invoice instead, and correctly reads as billed.
+ */
+export async function getGoodsReceiptHistory(companyId: string) {
+  return sql`
+    select d.id, d.doc_no, d.doc_date, d.status, d.gross_total,
+           d.partner_id, p.name as partner_name,
+           l.code as location_code,
+           src.id as source_id, src.doc_no as source_no, src.doc_type as source_type,
+           (select count(*)::int from document_line dl where dl.document_id = d.id) as line_count,
+           coalesce(g.balance, 0) as grir_open
+      from document d
+      left join business_partner p on p.id = d.partner_id
+      left join location l on l.id = d.location_id
+      left join document src on src.id = d.source_document_id
+      left join v_grir_balance g
+             on g.document_id = d.id and g.company_id = d.company_id
+     where d.company_id = ${companyId} and d.doc_type = 'GOODS_RECEIPT'
+     order by d.doc_date desc, d.doc_no desc
+     limit 300`;
+}
+
 /** Sales invoices marked "to deliver" that no delivery has fulfilled yet. */
 export async function getPendingDeliveries(companyId: string) {
   return sql`
