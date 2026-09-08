@@ -1,7 +1,10 @@
 import Link from "next/link";
 import { PackageCheck, Clock, Boxes } from "lucide-react";
 import { money, shortDate } from "@/lib/db";
-import { getCompany, getOpenPurchaseOrders, getGoodsReceiptHistory } from "@/lib/queries";
+import {
+  getCompany, getOpenPurchaseOrders, getGoodsReceiptHistory, getGrirPositions,
+  getOpenGoodsReceipts,
+} from "@/lib/queries";
 import { createGoodsReceipt } from "@/lib/actions";
 import { FulfillOrderForm } from "@/components/fulfill-order-form";
 import { DataTable, type DataRow } from "@/components/data-table";
@@ -36,10 +39,21 @@ export default async function Receive({
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
-  const [openLines, history] = await Promise.all([
+  const [openLines, history, grir, stillToBill] = await Promise.all([
     getOpenPurchaseOrders(company.id),
     getGoodsReceiptHistory(company.id) as unknown as Promise<Receipt[]>,
+    getGrirPositions(company.id),
+    getOpenGoodsReceipts(company.id) as unknown as Promise<
+      { id: string; lines: { qty: number; unitPrice: number }[] }[]>,
   ]);
+
+  // What each receipt is still owed a bill for, from the same reckoning the
+  // invoice form offers to bill. The clearing account's own balance cannot
+  // answer this per receipt: a receipt matched to an invoice clears through
+  // that invoice's anchor, so it reads as nil however much of what it brought
+  // in was never on the bill.
+  const unbilledBy = new Map(stillToBill.map((r) =>
+    [r.id, r.lines.reduce((s, l) => s + l.qty * l.unitPrice, 0)]));
 
   const orders = new Map<string, {
     orderId: string; orderNo: string; partnerId: string; partnerName: string; locationId: string;
@@ -62,12 +76,11 @@ export default async function Receive({
   // Received and not yet billed: the clearing balance itself, so the figure on
   // screen and the one in GR/IR Clearing cannot disagree.
   const posted = history.filter((r) => r.status === "POSTED");
-  const awaiting = posted.filter((r) => Number(r.grir_open) !== 0);
-  const awaitingValue = awaiting.reduce((s, r) => s + Math.abs(Number(r.grir_open)), 0);
   const receivedValue = posted.reduce((s, r) => s + Number(r.gross_total), 0);
 
   const rows: DataRow[] = history.map((r) => {
-    const open = Number(r.grir_open) !== 0;
+    const openValue = unbilledBy.get(r.id) ?? 0;
+    const open = openValue > 0;
     const voided = r.status !== "POSTED";
     return {
       key: r.id,
@@ -109,7 +122,7 @@ export default async function Receive({
               <span className="pill draft">Voided</span>
             ) : open ? (
               <Link href={`/purchases/new?goods_receipt_id=${r.id}`}>
-                <span className="pill warn">Awaiting · {money(Math.abs(Number(r.grir_open)))}</span>
+                <span className="pill warn">Awaiting · {money(openValue)}</span>
               </Link>
             ) : (
               <span className="pill ok">Billed</span>
@@ -153,14 +166,34 @@ export default async function Receive({
         </div>
         <div className="kpi">
           <span className="kpi-label"><Clock size={13} /> Awaiting supplier invoice</span>
-          <span className="kpi-value" style={{ color: awaiting.length > 0 ? "var(--warn)" : undefined }}>
-            {money(awaitingValue)}
+          <span className="kpi-value" style={{ color: grir.unbilled > 0 ? "var(--warn)" : undefined }}>
+            {money(grir.unbilled)}
           </span>
           <span className="kpi-note">
-            {awaiting.length} receipt{awaiting.length === 1 ? "" : "s"} sitting in GR/IR clearing
+            goods received that nobody has billed for yet
+          </span>
+        </div>
+        <div className="kpi">
+          <span className="kpi-label"><Clock size={13} /> Billed, not yet arrived</span>
+          <span className="kpi-value">{money(grir.awaited)}</span>
+          <span className="kpi-note">
+            invoices holding goods that have not come in
           </span>
         </div>
       </div>
+
+      {/* GR/IR nets, and a net balance hides which way each half points. A
+          bill for 70,000 with 7,000 received, plus 40 of goods nobody billed,
+          reads 62,960 — which looks like a wrong 63,000 until it is split. */}
+      {(grir.awaited !== 0 || grir.unbilled !== 0) && (
+        <p className="hint" style={{ margin: "-0.5rem 0 1.5rem" }}>
+          GR/IR clearing holds {money(grir.awaited)} of goods billed and not
+          yet arrived, against {money(grir.unbilled)} arrived and not yet
+          billed — a net {money(grir.awaited - grir.unbilled)}. Both are
+          counted from the documents themselves, so they add up to what the
+          account says.
+        </p>
+      )}
 
       {orders.size === 0 ? (
         <div className="empty">
@@ -212,7 +245,8 @@ export default async function Receive({
           <h2>Received so far</h2>
           <span className="page-sub">
             Newest first. &ldquo;Awaiting&rdquo; is what the supplier has not
-            billed yet — the receipt&rsquo;s own balance in GR/IR clearing.
+            billed yet — including anything a matched receipt brought in that
+            its invoice never covered.
           </span>
         </div>
         <div className="card-body">

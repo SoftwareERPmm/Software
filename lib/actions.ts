@@ -7,7 +7,7 @@ import { parseCsv, planImport, type MasterData } from "./import-items";
 import { xlsxToRows, type UploadFormat } from "./read-spreadsheet";
 import { planVoucherImport, voucherColumns, type VoucherMasterData, type VoucherKind }
   from "./import-vouchers";
-import { getImportMasterData, getVoucherImportMasterData } from "./queries";
+import { getImportMasterData, getVoucherImportMasterData, getPendingDeliveryLines } from "./queries";
 import { scaffoldCompany } from "./setup";
 import {
   postSalesInvoice, postPurchaseInvoice, postSaleWithDelivery, postPurchaseWithReceipt,
@@ -1484,19 +1484,20 @@ export async function deliverPendingInvoice(_prev: unknown, fd: FormData): Promi
     const invoiceId = str(fd, "invoice_id");
     if (!invoiceId) return { error: "Choose an invoice" };
 
-    const [invoice] = await sql`
-      select id, partner_id, location_id, doc_date
-        from document
-       where id = ${invoiceId} and company_id = ${co} and doc_type = 'SALES_INVOICE'`;
-    if (!invoice) return { error: "That invoice no longer exists" };
-
-    const lines = await sql`
-      select dl.item_id, dl.base_qty, dl.foc_reason_id
-        from document_line dl
-        join item i on i.id = dl.item_id
-       where dl.document_id = ${invoiceId} and i.is_stocked`;
-
-    if (lines.length === 0) return { error: "Nothing on this invoice needs delivering" };
+    // What is still to go, not what was invoiced. Shipping the invoiced
+    // quantity again after a partial delivery sends the whole order twice —
+    // and the second one posts, because a delivery is free to move stock the
+    // invoice has already been billed for.
+    const pending = await getPendingDeliveryLines(co);
+    const invoice = pending.find((d: any) => d.id === invoiceId) as any;
+    if (!invoice) {
+      const [exists] = await sql`
+        select id from document
+         where id = ${invoiceId} and company_id = ${co} and doc_type = 'SALES_INVOICE'`;
+      return { error: exists
+        ? "Everything on this invoice has been delivered"
+        : "That invoice no longer exists" };
+    }
 
     const result = await postDelivery({
       companyId: co,
@@ -1505,8 +1506,11 @@ export async function deliverPendingInvoice(_prev: unknown, fd: FormData): Promi
       docDate: new Date().toISOString().slice(0, 10),
       reference: `Against invoice`,
       sourceDocumentId: invoice.id,
-      lines: lines.map((l: any) => ({
-        itemId: l.item_id, qty: Number(l.base_qty), focReasonId: l.foc_reason_id,
+      // Each line says which invoice line it answers, so the next delivery
+      // reads what is left rather than inferring it.
+      lines: invoice.lines.map((l: any) => ({
+        itemId: l.itemId, qty: l.qty, focReasonId: l.focReasonId,
+        sourceLineId: l.lineId,
       })),
     });
 

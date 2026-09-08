@@ -9,8 +9,20 @@ type Item = PickerItem;
 type Node = { id: string; code: string; segment: string; name: string; parent_id: string | null };
 type Partner = { id: string; code: string; name: string };
 type Location = { id: string; code: string; name: string };
-type Line = { key: number; itemId: string; qty: string; unitCost: string };
-type MatchLine = { itemId: string; itemCode: string; itemName: string; qty: number; unitPrice: number };
+type Line = {
+  key: number; itemId: string; qty: string; unitCost: string;
+  /**
+   * The invoice line this one fulfils, when the receipt is matched to a bill.
+   * Recorded rather than re-derived: without it, which line a shipment came
+   * off is a guess made later from item and order, and a line the invoice
+   * never billed is indistinguishable from one it did.
+   */
+  sourceLineId?: string | null;
+};
+type MatchLine = {
+  lineId: string; itemId: string; itemCode: string; itemName: string;
+  qty: number; unitPrice: number;
+};
 type OpenDoc = { id: string; doc_no: string; doc_date: string; partner_id: string; lines: MatchLine[] };
 
 const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 0 });
@@ -59,7 +71,8 @@ export function ReceiptForm({
   const [items, setItems] = useState<Item[]>(initialItems);
   const addItem = (i: Item) => setItems((xs) => [...xs, i]);
 
-  const [lines, setLines] = useState<Line[]>([{ key: 1, itemId: "", qty: "", unitCost: "" }]);
+  const [lines, setLines] = useState<Line[]>([
+    { key: 1, itemId: "", qty: "", unitCost: "", sourceLineId: null }]);
   const [partnerId, setPartnerId] = useState("");
   const [docDate, setDocDate] = useState(today);
   const [receivedTime, setReceivedTime] = useState("");
@@ -87,6 +100,7 @@ export function ReceiptForm({
         itemId: l.itemId,
         qty: String(l.qty),
         unitCost: String(l.unitPrice),
+        sourceLineId: l.lineId,
       }))
     );
   }
@@ -108,7 +122,7 @@ export function ReceiptForm({
   function clearMatch(hadMatch: boolean) {
     setMatchedPiId("");
     setAutoMatched(false);
-    if (hadMatch) setLines([{ key: 1, itemId: "", qty: "", unitCost: "" }]);
+    if (hadMatch) setLines([{ key: 1, itemId: "", qty: "", unitCost: "", sourceLineId: null }]);
   }
 
   // Arrived from a specific invoice's own page — its supplier isn't chosen
@@ -120,14 +134,7 @@ export function ReceiptForm({
     if (!pi) return;
     setPartnerId(pi.partner_id);
     setMatchedPiId(pi.id);
-    setLines(
-      pi.lines.map((l, idx) => ({
-        key: idx + 1,
-        itemId: l.itemId,
-        qty: String(l.qty),
-        unitCost: String(l.unitPrice),
-      }))
-    );
+    fillFrom(pi);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialInvoiceId]);
 
@@ -155,12 +162,20 @@ export function ReceiptForm({
 
   function pickItem(key: number, itemId: string) {
     const item = byId(itemId);
-    const cost = item ? Number(item.next_cost) : 0;
-    setLine(key, { itemId, unitCost: cost > 0 ? String(cost) : "" });
+    // A line the bill covers takes the bill's price; anything else falls back
+    // to the item's last cost, and answers no invoice line.
+    const billedLine = matchedPi?.lines.find((pl) => pl.itemId === itemId);
+    const cost = billedLine ? billedLine.unitPrice : item ? Number(item.next_cost) : 0;
+    setLine(key, {
+      itemId,
+      unitCost: cost > 0 ? String(cost) : "",
+      sourceLineId: billedLine?.lineId ?? null,
+    });
   }
 
   const addLine = () =>
-    setLines((ls) => [...ls, { key: Math.max(0, ...ls.map((l) => l.key)) + 1, itemId: "", qty: "", unitCost: "" }]);
+    setLines((ls) => [...ls,
+      { key: Math.max(0, ...ls.map((l) => l.key)) + 1, itemId: "", qty: "", unitCost: "", sourceLineId: null }]);
 
   const removeLine = (key: number) =>
     setLines((ls) => (ls.length === 1 ? ls : ls.filter((l) => l.key !== key)));
@@ -176,6 +191,16 @@ export function ReceiptForm({
   const freeLines = lines.filter(
     (l) => l.itemId && Number(l.qty) > 0 && !(Number(l.unitCost) > 0));
 
+  // A matched receipt can carry a line the invoice never billed — someone
+  // adds an item that turned up in the same delivery. It posts, and it should:
+  // the goods arrived. But its value is not settling anything, and rolled into
+  // one total it reads as though it were. 7,040 received against a bill for
+  // 70,000 was 7,000 of the billed item and 40 of an item nobody had billed.
+  const unbilled = matchedPi
+    ? lines.filter((l) => l.itemId && !matchedPi.lines.some((pl) => pl.itemId === l.itemId))
+    : [];
+  const unbilledValue = unbilled.reduce((s, l) => s + amount(l), 0);
+
   const qtyMismatches = matchedPi
     ? lines.filter((l) => {
         const billedLine = matchedPi.lines.find((pl) => pl.itemId === l.itemId);
@@ -186,7 +211,10 @@ export function ReceiptForm({
   const payload = JSON.stringify(
     lines
       .filter((l) => l.itemId && Number(l.qty) > 0)
-      .map((l) => ({ itemId: l.itemId, qty: Number(l.qty), unitCost: Number(l.unitCost) || 0 }))
+      .map((l) => ({
+        itemId: l.itemId, qty: Number(l.qty), unitCost: Number(l.unitCost) || 0,
+        sourceLineId: l.sourceLineId ?? null,
+      }))
   );
 
   return (
@@ -340,7 +368,8 @@ export function ReceiptForm({
             <tbody>
               {lines.map((l) => {
                 const item = byId(l.itemId);
-                const billedLine = matchedPi?.lines.find((pl) => pl.itemId === l.itemId);
+                const billedLine = matchedPi?.lines.find(
+                  (pl) => pl.lineId === l.sourceLineId || pl.itemId === l.itemId);
                 const qtyMismatch = matchedPi && billedLine && Number(l.qty) !== billedLine.qty;
                 return (
                   <tr key={l.key}>
@@ -356,8 +385,10 @@ export function ReceiptForm({
                       />
                     </td>
                     {matchedPi && (
-                      <td className="r" style={{ color: qtyMismatch ? "var(--warn)" : undefined }}>
-                        {billedLine ? fmt(billedLine.qty) : "—"}
+                      <td className="r" style={{ color: qtyMismatch || (l.itemId && !billedLine) ? "var(--warn)" : undefined }}>
+                        {billedLine ? fmt(billedLine.qty)
+                          : l.itemId ? <span className="subline" style={{ color: "inherit" }}>not on this bill</span>
+                            : "—"}
                       </td>
                     )}
                     <td className="narrow">
@@ -394,7 +425,15 @@ export function ReceiptForm({
         </div>
 
         <div className="totalbar">
-          <span style={{ color: "var(--muted)" }}>Received value</span>
+          <span style={{ color: "var(--muted)" }}>
+            Received value
+            {matchedPi && unbilledValue > 0 && (
+              <span className="subline" style={{ display: "block" }}>
+                {fmt(total - unbilledValue)} against {matchedPi.doc_no} ·{" "}
+                {fmt(unbilledValue)} not on that bill, arriving unbilled
+              </span>
+            )}
+          </span>
           <span className="big">{fmt(total)} MMK</span>
         </div>
       </div>

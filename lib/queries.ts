@@ -397,11 +397,17 @@ export async function getOpenGoodsReceipts(companyId: string) {
     select d.id, d.doc_no, d.doc_date, d.partner_id,
            -- The purchase order this receipt came in against, so an invoice
            -- billing it can show which of our orders it belongs to.
-           src.doc_no as source_no
+           src.doc_no as source_no,
+           case when src.doc_type = 'PURCHASE_INVOICE' then src.id end as billed_by_id
       from document d
-      join v_grir_balance g on g.document_id = d.id and g.company_id = d.company_id
+      left join v_grir_balance g on g.document_id = d.id and g.company_id = d.company_id
       left join document src on src.id = d.source_document_id
      where d.company_id = ${companyId} and d.doc_type = 'GOODS_RECEIPT' and d.status = 'POSTED'
+       -- Either the receipt anchors its own clearing balance, or it was
+       -- matched to an invoice and cleared through that invoice's anchor.
+       -- Receipts from before GR/IR clearing existed have neither, and must
+       -- not be offered a match: there is nothing of theirs to clear.
+       and (g.document_id is not null or src.doc_type = 'PURCHASE_INVOICE')
      order by d.doc_date desc, d.doc_no desc
      limit 200`;
   if (docs.length === 0) return [];
@@ -427,6 +433,46 @@ export async function getOpenGoodsReceipts(companyId: string) {
        and d.source_document_id = any(${ids})
      order by d.posting_date, d.doc_no, dl.line_no`;
 
+  // The other direction: a receipt matched to a bill that came first is
+  // billed by that bill, for whatever it covers. What it covers is not
+  // necessarily everything on the receipt — a mixed receipt brings in items
+  // the invoice never mentioned, and those are still waiting to be billed.
+  const billedBy = [...new Set(docs.map((d: any) => d.billed_by_id).filter(Boolean))];
+  const billingLines = billedBy.length === 0 ? [] : await sql`
+    select dl.id, dl.document_id, dl.item_id, dl.base_qty as qty, dl.net_amount as net
+      from document_line dl
+     where dl.document_id = any(${billedBy})
+     order by dl.line_no`;
+
+  /**
+   * How much of its bill each of those receipts actually took.
+   *
+   * One invoice can be answered by several shipments, and they share it —
+   * 50 units then 80 against a bill for 100 is 100 billed and 30 held
+   * unbilled, not 130 billed twice over. So the invoice is drawn down once,
+   * shipments in the order they arrived, and each receipt is told only what
+   * was left for it.
+   */
+  const share = new Map<string, { itemId: string; qty: number }[]>();
+  for (const invId of billedBy) {
+    const drawInvoice = grirMatcher(
+      billingLines.filter((b: any) => b.document_id === invId) as unknown as MatchableLine[]
+    );
+    const against = docs
+      .filter((d: any) => d.billed_by_id === invId)
+      .slice()
+      .reverse(); // docs come newest first; a bill is taken oldest shipment first
+    for (const d of against) {
+      const taken: { itemId: string; qty: number }[] = [];
+      for (const l of lines.filter((x: any) => x.document_id === d.id)) {
+        const got = drawInvoice(l.item_id, Number(l.qty), l.source_line_id)
+          .taken.reduce((t: number, x: any) => t + x.qty, 0);
+        if (got > 0) taken.push({ itemId: l.item_id, qty: got });
+      }
+      share.set(d.id, taken);
+    }
+  }
+
   return docs
     .map((d: any) => {
       const own = lines.filter((l: any) => l.document_id === d.id);
@@ -435,6 +481,11 @@ export async function getOpenGoodsReceipts(companyId: string) {
 
       for (const inv of invoiced.filter((i: any) => i.receipt_id === d.id)) {
         for (const t of draw(inv.item_id, Number(inv.qty), inv.source_line_id).taken) {
+          billed.set(t.lineId, (billed.get(t.lineId) ?? 0) + t.qty);
+        }
+      }
+      for (const bl of share.get(d.id) ?? []) {
+        for (const t of draw(bl.itemId, bl.qty, null).taken) {
           billed.set(t.lineId, (billed.get(t.lineId) ?? 0) + t.qty);
         }
       }
@@ -460,22 +511,76 @@ export async function getOpenGoodsReceipts(companyId: string) {
 /**
  * Purchase invoices a goods receipt can match against — the mirror of
  * getOpenGoodsReceipts, for when the bill arrived before the goods did.
+ *
+ * With each line's remaining quantity, not its original one. Offering the
+ * whole invoice was wrong the moment any of it had arrived: a bill for 1,000
+ * units with 100 already received went on offering 1,000, and the receipt
+ * form fills its lines from what is offered — so the obvious next action was
+ * to receive the same 1,000 again. The other direction was given remaining
+ * quantities when the same mistake was found there; this is the same fix on
+ * the side that did not get it.
  */
 export async function getOpenPurchaseInvoices(companyId: string) {
-  return sql`
-    select d.id, d.doc_no, d.doc_date, d.partner_id,
-           coalesce(json_agg(json_build_object(
-             'itemId', dl.item_id, 'itemCode', i.code, 'itemName', i.name,
-             'qty', dl.base_qty, 'unitPrice', dl.unit_price
-           ) order by dl.line_no), '[]') as lines
+  const docs = await sql`
+    select d.id, d.doc_no, d.doc_date, d.partner_id
       from document d
       join v_grir_balance g on g.document_id = d.id and g.company_id = d.company_id
-      join document_line dl on dl.document_id = d.id
-      join item i on i.id = dl.item_id
      where d.company_id = ${companyId} and d.doc_type = 'PURCHASE_INVOICE' and d.status = 'POSTED'
-     group by d.id, d.doc_no, d.doc_date, d.partner_id
      order by d.doc_date desc, d.doc_no desc
      limit 200`;
+  if (docs.length === 0) return [];
+
+  const ids = docs.map((d: any) => d.id);
+
+  const lines = await sql`
+    select dl.id, dl.document_id, dl.item_id, dl.base_qty as qty, dl.net_amount as net,
+           dl.unit_price, i.code as item_code, i.name as item_name
+      from document_line dl
+      join item i on i.id = dl.item_id
+     where dl.document_id = any(${ids})
+     order by dl.line_no`;
+
+  // Everything already received against these invoices, oldest first, so the
+  // same matcher the ledger settles with decides which line each shipment
+  // came off — not an assumption that quantities line up in order.
+  const received = await sql`
+    select d.source_document_id as invoice_id, dl.item_id,
+           dl.base_qty as qty, dl.source_line_id
+      from document_line dl
+      join document d on d.id = dl.document_id
+     where d.company_id = ${companyId}
+       and d.doc_type = 'GOODS_RECEIPT'
+       and d.status = 'POSTED'
+       and d.source_document_id = any(${ids})
+     order by d.posting_date, d.doc_no, dl.line_no`;
+
+  return docs
+    .map((d: any) => {
+      const own = lines.filter((l: any) => l.document_id === d.id);
+      const draw = grirMatcher(own as unknown as MatchableLine[]);
+      const arrived = new Map<string, number>();
+
+      for (const r of received.filter((x: any) => x.invoice_id === d.id)) {
+        for (const t of draw(r.item_id, Number(r.qty), r.source_line_id).taken) {
+          arrived.set(t.lineId, (arrived.get(t.lineId) ?? 0) + t.qty);
+        }
+      }
+
+      const open = own
+        .map((l: any) => ({
+          lineId: l.id,
+          itemId: l.item_id,
+          itemCode: l.item_code,
+          itemName: l.item_name,
+          qty: Math.round((Number(l.qty) - (arrived.get(l.id) ?? 0)) * 10000) / 10000,
+          unitPrice: Number(l.unit_price),
+        }))
+        .filter((l) => l.qty > 0);
+
+      return { ...d, lines: open };
+    })
+    // Fully received, even if GR/IR still carries a difference against it.
+    .filter((d: any) => d.lines.length > 0);
 }
 
 /**
@@ -1071,21 +1176,123 @@ export async function getGoodsReceiptHistory(companyId: string) {
      limit 300`;
 }
 
-/** Sales invoices marked "to deliver" that no delivery has fulfilled yet. */
-export async function getPendingDeliveries(companyId: string) {
-  return sql`
-    select inv.id, inv.doc_no, inv.doc_date, p.name as partner_name,
-           count(il.id)::int as lines, sum(il.base_qty)::numeric as total_qty
+/**
+ * The two sides of GR/IR, separately.
+ *
+ * The account nets, and a net balance hides which way each part of it points.
+ * A bill for 70,000 with 7,000 of it received, plus 40 of goods nobody billed
+ * for, leaves 62,960 — a number that looks like an odd version of 63,000
+ * until it is split:
+ *
+ *     invoiced, not yet received    63,000
+ *     received, not yet invoiced        40
+ *     net                           62,960
+ *
+ * Both are derived from the documents, never stored. Awaited is what invoice
+ * lines still have quantity outstanding; unbilled is receipt lines answering
+ * no invoice line — the ones a mixed receipt brought in alongside.
+ */
+export async function getGrirPositions(companyId: string) {
+  // Read off the same two functions the forms offer from, so what a screen
+  // says is outstanding and what a form lets you receive or bill cannot
+  // disagree. Both are derived from documents; neither is stored.
+  const [invoices, receipts] = await Promise.all([
+    getOpenPurchaseInvoices(companyId) as unknown as Promise<
+      { lines: { qty: number; unitPrice: number }[] }[]>,
+    getOpenGoodsReceipts(companyId) as unknown as Promise<
+      { lines: { qty: number; unitPrice: number }[] }[]>,
+  ]);
+  const total = (ds: { lines: { qty: number; unitPrice: number }[] }[]) =>
+    ds.reduce((s, d) => s + d.lines.reduce((t, l) => t + l.qty * l.unitPrice, 0), 0);
+
+  return { awaited: total(invoices), unbilled: total(receipts) };
+}
+
+/**
+ * Sales invoices marked "to deliver" with goods still to go, line by line.
+ *
+ * "Still to go" used to mean no delivery existed at all. Two things followed
+ * from that. An invoice for 1,000 with 100 delivered vanished from the list
+ * with 900 undelivered — the customer is owed 900 units and the screen said
+ * there was nothing to do. And because the test never looked at the
+ * delivery's status, voiding that delivery did not bring the invoice back:
+ * the goods were on the shelf again, the invoice was still billed, and
+ * nothing anywhere said so.
+ *
+ * Remaining is derived through the same matcher the ledger settles with, so
+ * what this offers and what a delivery can actually fulfil are the same
+ * quantities. Voided deliveries are not deliveries.
+ */
+export async function getPendingDeliveryLines(companyId: string) {
+  const docs = await sql`
+    select inv.id, inv.doc_no, inv.doc_date, inv.partner_id, inv.location_id,
+           p.name as partner_name
       from document inv
-      join document_line il on il.document_id = inv.id
       join business_partner p on p.id = inv.partner_id
      where inv.company_id = ${companyId} and inv.doc_type = 'SALES_INVOICE'
        and inv.to_deliver and inv.status = 'POSTED'
-       and not exists (
-         select 1 from document dd where dd.source_document_id = inv.id and dd.doc_type = 'DELIVERY'
-       )
-     group by inv.id, inv.doc_no, inv.doc_date, p.name
      order by inv.doc_date`;
+  if (docs.length === 0) return [];
+
+  const ids = docs.map((d: any) => d.id);
+
+  // Only stocked lines: a service line on a to-deliver invoice has nothing
+  // to ship, and counting it would keep the invoice on the list forever.
+  const lines = await sql`
+    select dl.id, dl.document_id, dl.item_id, dl.base_qty as qty, dl.net_amount as net,
+           dl.unit_price, dl.foc_reason_id, i.code as item_code, i.name as item_name
+      from document_line dl
+      join item i on i.id = dl.item_id
+     where dl.document_id = any(${ids}) and i.is_stocked
+     order by dl.line_no`;
+
+  const delivered = await sql`
+    select d.source_document_id as invoice_id, dl.item_id,
+           dl.base_qty as qty, dl.source_line_id
+      from document_line dl
+      join document d on d.id = dl.document_id
+     where d.company_id = ${companyId}
+       and d.doc_type = 'DELIVERY'
+       and d.status = 'POSTED'
+       and d.source_document_id = any(${ids})
+     order by d.posting_date, d.doc_no, dl.line_no`;
+
+  return docs
+    .map((d: any) => {
+      const own = lines.filter((l: any) => l.document_id === d.id);
+      const draw = grirMatcher(own as unknown as MatchableLine[]);
+      const gone = new Map<string, number>();
+
+      for (const del of delivered.filter((x: any) => x.invoice_id === d.id)) {
+        for (const t of draw(del.item_id, Number(del.qty), del.source_line_id).taken) {
+          gone.set(t.lineId, (gone.get(t.lineId) ?? 0) + t.qty);
+        }
+      }
+
+      const open = own
+        .map((l: any) => ({
+          lineId: l.id,
+          itemId: l.item_id,
+          itemCode: l.item_code,
+          itemName: l.item_name,
+          focReasonId: l.foc_reason_id as string | null,
+          qty: Math.round((Number(l.qty) - (gone.get(l.id) ?? 0)) * 10000) / 10000,
+        }))
+        .filter((l) => l.qty > 0);
+
+      return { ...d, lines: open };
+    })
+    .filter((d: any) => d.lines.length > 0);
+}
+
+/** The same, counted, for the list that only shows how much is outstanding. */
+export async function getPendingDeliveries(companyId: string) {
+  const pending = await getPendingDeliveryLines(companyId);
+  return pending.map((d: any) => ({
+    id: d.id, doc_no: d.doc_no, doc_date: d.doc_date, partner_name: d.partner_name,
+    lines: d.lines.length,
+    total_qty: d.lines.reduce((s: number, l: any) => s + l.qty, 0),
+  }));
 }
 
 /**
