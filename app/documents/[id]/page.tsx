@@ -4,6 +4,7 @@ import { RelatedDocumentsPanel } from "@/components/related-documents";
 import { ReplaceSettlement } from "@/components/replace-settlement";
 import { VoidDocument } from "@/components/void-document";
 import { LinkToOrder } from "@/components/link-to-order";
+import { LinkFulfilment, OrderActions } from "@/components/link-fulfilment";
 import { TaskBanner } from "@/components/document-rail";
 import { DocumentFooter } from "@/components/document-footer";
 import { DocStats, type DocStat } from "@/components/doc-stats";
@@ -37,6 +38,7 @@ import {
   getOrderClosure,
   getDocumentPeople,
   getInvoiceProgress,
+  getLinkableFulfilments,
 } from "@/lib/queries";
 import {
   createDelivery, createGoodsReceipt, replaceConsignmentSettlement,
@@ -156,6 +158,12 @@ export default async function DocumentPage({
     ? await getOrderOutstanding(doc.company_id, doc.id)
     : { outstanding: 0, isClosed: false };
   const closure = isPostedOrder ? await getOrderClosure(doc.id) : null;
+
+  // Goods already recorded that could answer this order — offered here,
+  // where somebody is standing when they notice the order is short.
+  const linkableGoods = isPostedOrder
+    ? await getLinkableFulfilments(doc.company_id, doc.id)
+    : { orderLines: [], candidates: [] };
 
 
 
@@ -345,6 +353,35 @@ export default async function DocumentPage({
     );
   }
 
+  /**
+   * Fulfil the order, or say it already was. Under the figures rather than in
+   * the toolbar, because they answer the number sitting right above them —
+   * and passed with the stats so both render paths get them: the order form
+   * returns long before the generic document body is built.
+   */
+  const orderActions = isPostedOrder && orderState.outstanding > 0 && !orderState.isClosed ? (
+    <OrderActions
+      sales={doc.doc_type === "SALES_ORDER"}
+      href={doc.doc_type === "SALES_ORDER"
+        ? `/sales/deliver?order=${doc.id}`
+        : `/purchases/receive?order=${doc.id}`}
+    >
+      <LinkFulfilment
+        action={linkReceiptToOrder}
+        orderLines={linkableGoods.orderLines as never}
+        candidates={linkableGoods.candidates as never}
+        sales={doc.doc_type === "SALES_ORDER"}
+      />
+    </OrderActions>
+  ) : null;
+
+  const statsNode = (
+    <>
+      <DocStats stats={stats} />
+      {orderActions}
+    </>
+  );
+
   const footer = (
     <DocumentFooter
       activity={people.activity as never}
@@ -406,7 +443,7 @@ export default async function DocumentPage({
         lines={erpLines}
         netTotal={Number(doc.net_total)}
         banner={<TaskBanner tasks={tasks.filter((t: any) => !t.aspect)} />}
-        stats={<DocStats stats={stats} />}
+        stats={statsNode}
         footer={footer}
         chain={chain.map((step) => ({
           type: step,
@@ -473,7 +510,7 @@ export default async function DocumentPage({
           )}
         </>
       }
-      stats={<DocStats stats={stats} />}
+      stats={statsNode}
       footer={footer}
       badges={
         <>
