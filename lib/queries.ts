@@ -1146,24 +1146,50 @@ export async function getOrderList(
   const fulfilmentType = docType === "SALES_ORDER" ? "DELIVERY" : "GOODS_RECEIPT";
 
   return sql`
+    with ord as (
+      select o.id, ol.item_id, sum(ol.base_qty) as ordered
+        from document o
+        join document_line ol on ol.document_id = o.id
+       where o.company_id = ${companyId} and o.doc_type = ${docType}
+       group by o.id, ol.item_id
+    ),
+    -- Credited by the order line a fulfilment names, and failing that by the
+    -- order the document itself names. Counting only source_line_id missed
+    -- every receipt or delivery posted without line-level linkage, so an
+    -- order that had entirely arrived still read as Open here — while the
+    -- dashboard, which already had this fallback, counted it as done. One
+    -- rule, so a figure on the dashboard and the list it links to cannot
+    -- disagree about the same order.
+    got as (
+      select coalesce(ol.document_id, dd.source_document_id) as order_id,
+             dl.item_id, sum(dl.base_qty) as fulfilled
+        from document_line dl
+        join document dd on dd.id = dl.document_id
+        left join document_line ol on ol.id = dl.source_line_id
+       where dd.company_id = ${companyId}
+         and dd.doc_type = ${fulfilmentType} and dd.status = 'POSTED'
+         and coalesce(ol.document_id, dd.source_document_id) is not null
+       group by 1, dl.item_id
+    ),
+    -- Per item, then summed: capping each item at what was ordered stops an
+    -- over-delivery of one product hiding a shortfall in another.
+    per_order as (
+      select ord.id,
+             sum(ord.ordered) as ordered,
+             sum(least(coalesce(got.fulfilled, 0), ord.ordered)) as fulfilled
+        from ord
+        left join got on got.order_id = ord.id and got.item_id = ord.item_id
+       group by ord.id
+    )
     select o.id as document_id, o.doc_no, o.posting_date, o.due_date,
            o.partner_id, p.code as partner_code, p.name as partner_name,
            o.gross_total, o.status as doc_status,
-           coalesce(sum(ol.base_qty), 0)      as ordered_qty,
-           coalesce(sum(fl.line_fulfilled), 0) as fulfilled_qty
+           coalesce(x.ordered, 0)   as ordered_qty,
+           coalesce(x.fulfilled, 0) as fulfilled_qty
       from document o
       join business_partner p on p.id = o.partner_id
-      left join document_line ol on ol.document_id = o.id
-      left join (
-            select dl.source_line_id, sum(dl.base_qty) as line_fulfilled
-              from document_line dl
-              join document dd on dd.id = dl.document_id
-             where dd.company_id = ${companyId} and dd.doc_type = ${fulfilmentType} and dd.status = 'POSTED'
-             group by dl.source_line_id
-      ) fl on fl.source_line_id = ol.id
+      left join per_order x on x.id = o.id
      where o.company_id = ${companyId} and o.doc_type = ${docType}
-     group by o.id, o.doc_no, o.posting_date, o.due_date,
-              o.partner_id, p.code, p.name, o.gross_total, o.status
      order by o.posting_date desc, o.doc_no desc`;
 }
 

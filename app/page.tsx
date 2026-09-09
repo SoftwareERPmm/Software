@@ -60,17 +60,20 @@ export default async function Dashboard() {
       detail: money(actionItems.supplierBillsOverdue.total),
       href: "/payables?status=overdue",
     },
+    // These pointed at every order ever raised, which answers a different
+    // question than the one being asked. "Two are overdue" and then a list
+    // of two hundred is not a link to the two.
     {
       n: actionItems.salesOrders.overdue,
       label: `sales order${actionItems.salesOrders.overdue === 1 ? "" : "s"} overdue`,
       detail: "past its own Needed-by date",
-      href: "/documents?type=SALES_ORDER",
+      href: "/sales/orders?status=overdue",
     },
     {
       n: actionItems.purchaseOrders.overdue,
       label: `purchase order${actionItems.purchaseOrders.overdue === 1 ? "" : "s"} overdue`,
       detail: "past its own Needed-by date",
-      href: "/documents?type=PURCHASE_ORDER",
+      href: "/purchases/orders?status=overdue",
     },
   ].filter((a) => a.n > 0);
 
