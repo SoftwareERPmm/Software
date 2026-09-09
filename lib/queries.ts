@@ -49,40 +49,22 @@ export async function getKpis(companyId: string) {
 const GRIR_AGE_DAYS = 7;
 
 export async function getActionItems(companyId: string) {
-  const [so] = await sql`
-    with ord as (
-      select o.id, o.due_date, ol.item_id, sum(ol.base_qty) as ordered
-        from document o
-        join document_line ol on ol.document_id = o.id
-       where o.company_id = ${companyId} and o.doc_type = 'SALES_ORDER' and o.status = 'POSTED'
-       group by o.id, o.due_date, ol.item_id
-    ),
-    -- Each fulfilment line credited to an order: by the order line it names,
-    -- and failing that by the order the document itself names. Matching only
-    -- on source_line_id missed every receipt posted without line-level
-    -- linkage, so orders that were fully received still counted as awaiting
-    -- goods — the same fallback getOrderProgress documents, for the same
-    -- reason.
-    got as (
-      select coalesce(ol.document_id, dd.source_document_id) as order_id,
-             dl.item_id, sum(dl.base_qty) as fulfilled
-        from document_line dl
-        join document dd on dd.id = dl.document_id
-        left join document_line ol on ol.id = dl.source_line_id
-       where dd.company_id = ${companyId}
-         and dd.doc_type = 'DELIVERY' and dd.status = 'POSTED'
-         and coalesce(ol.document_id, dd.source_document_id) is not null
-       group by 1, dl.item_id
-    ),
-    -- Per item, then summed: capping each item at what was ordered stops an
-    -- over-delivery of one product hiding a shortfall in another.
-    per_order as (
-      select ord.id, ord.due_date,
-             sum(least(coalesce(got.fulfilled, 0), ord.ordered)) as done,
-             sum(greatest(ord.ordered - coalesce(got.fulfilled, 0), 0)) as remaining
-        from ord
-        left join got on got.order_id = ord.id and got.item_id = ord.item_id
-       group by ord.id, ord.due_date
+  /**
+   * What each order still expects, from v_order_outstanding — the one
+   * reckoning every screen now shares. It counts goods that name the order,
+   * goods linked to it afterwards, and nothing at all once the order is
+   * closed as no longer expected. This file used to carry its own copy of
+   * that sum, which is how the dashboard and the order lists came to
+   * disagree about the same order.
+   */
+  const orderStats = (docType: "SALES_ORDER" | "PURCHASE_ORDER") => sql`
+    with per_order as (
+      select order_id, due_date,
+             sum(fulfilled) as done,
+             sum(outstanding) as remaining
+        from v_order_outstanding
+       where company_id = ${companyId} and doc_type = ${docType}
+       group by order_id, due_date
     )
     select
       count(*)::int as open,
@@ -92,48 +74,9 @@ export async function getActionItems(companyId: string) {
       from per_order
      where remaining > 0.0001`;
 
-  const [po] = await sql`
-    with ord as (
-      select o.id, o.due_date, ol.item_id, sum(ol.base_qty) as ordered
-        from document o
-        join document_line ol on ol.document_id = o.id
-       where o.company_id = ${companyId} and o.doc_type = 'PURCHASE_ORDER' and o.status = 'POSTED'
-       group by o.id, o.due_date, ol.item_id
-    ),
-    -- Each fulfilment line credited to an order: by the order line it names,
-    -- and failing that by the order the document itself names. Matching only
-    -- on source_line_id missed every receipt posted without line-level
-    -- linkage, so orders that were fully received still counted as awaiting
-    -- goods — the same fallback getOrderProgress documents, for the same
-    -- reason.
-    got as (
-      select coalesce(ol.document_id, dd.source_document_id) as order_id,
-             dl.item_id, sum(dl.base_qty) as fulfilled
-        from document_line dl
-        join document dd on dd.id = dl.document_id
-        left join document_line ol on ol.id = dl.source_line_id
-       where dd.company_id = ${companyId}
-         and dd.doc_type = 'GOODS_RECEIPT' and dd.status = 'POSTED'
-         and coalesce(ol.document_id, dd.source_document_id) is not null
-       group by 1, dl.item_id
-    ),
-    -- Per item, then summed: capping each item at what was ordered stops an
-    -- over-delivery of one product hiding a shortfall in another.
-    per_order as (
-      select ord.id, ord.due_date,
-             sum(least(coalesce(got.fulfilled, 0), ord.ordered)) as done,
-             sum(greatest(ord.ordered - coalesce(got.fulfilled, 0), 0)) as remaining
-        from ord
-        left join got on got.order_id = ord.id and got.item_id = ord.item_id
-       group by ord.id, ord.due_date
-    )
-    select
-      count(*)::int as open,
-      count(*) filter (where done < 0.0001)::int as not_started,
-      count(*) filter (where done >= 0.0001)::int as partial,
-      count(*) filter (where due_date is not null and due_date < current_date)::int as overdue
-      from per_order
-     where remaining > 0.0001`;
+  const [so] = await orderStats("SALES_ORDER");
+  const [po] = await orderStats("PURCHASE_ORDER");
+
 
   // Counted the same way the delivery screen counts, or the dashboard says
   // nothing is waiting while that page lists an invoice with 900 units still
@@ -1143,52 +1086,27 @@ export async function getOrderList(
   companyId: string,
   docType: "SALES_ORDER" | "PURCHASE_ORDER"
 ) {
-  const fulfilmentType = docType === "SALES_ORDER" ? "DELIVERY" : "GOODS_RECEIPT";
-
+  // One reckoning, shared with the dashboard and the fulfilment forms: goods
+  // that name the order, goods linked to it afterwards, and nothing left
+  // outstanding once it is closed as no longer expected.
   return sql`
-    with ord as (
-      select o.id, ol.item_id, sum(ol.base_qty) as ordered
-        from document o
-        join document_line ol on ol.document_id = o.id
-       where o.company_id = ${companyId} and o.doc_type = ${docType}
-       group by o.id, ol.item_id
-    ),
-    -- Credited by the order line a fulfilment names, and failing that by the
-    -- order the document itself names. Counting only source_line_id missed
-    -- every receipt or delivery posted without line-level linkage, so an
-    -- order that had entirely arrived still read as Open here — while the
-    -- dashboard, which already had this fallback, counted it as done. One
-    -- rule, so a figure on the dashboard and the list it links to cannot
-    -- disagree about the same order.
-    got as (
-      select coalesce(ol.document_id, dd.source_document_id) as order_id,
-             dl.item_id, sum(dl.base_qty) as fulfilled
-        from document_line dl
-        join document dd on dd.id = dl.document_id
-        left join document_line ol on ol.id = dl.source_line_id
-       where dd.company_id = ${companyId}
-         and dd.doc_type = ${fulfilmentType} and dd.status = 'POSTED'
-         and coalesce(ol.document_id, dd.source_document_id) is not null
-       group by 1, dl.item_id
-    ),
-    -- Per item, then summed: capping each item at what was ordered stops an
-    -- over-delivery of one product hiding a shortfall in another.
-    per_order as (
-      select ord.id,
-             sum(ord.ordered) as ordered,
-             sum(least(coalesce(got.fulfilled, 0), ord.ordered)) as fulfilled
-        from ord
-        left join got on got.order_id = ord.id and got.item_id = ord.item_id
-       group by ord.id
-    )
     select o.id as document_id, o.doc_no, o.posting_date, o.due_date,
            o.partner_id, p.code as partner_code, p.name as partner_name,
            o.gross_total, o.status as doc_status,
            coalesce(x.ordered, 0)   as ordered_qty,
-           coalesce(x.fulfilled, 0) as fulfilled_qty
+           coalesce(x.fulfilled, 0) as fulfilled_qty,
+           coalesce(x.is_closed, false) as is_closed
       from document o
       join business_partner p on p.id = o.partner_id
-      left join per_order x on x.id = o.id
+      left join (
+            select order_id,
+                   sum(ordered) as ordered,
+                   sum(fulfilled) as fulfilled,
+                   bool_or(is_closed) as is_closed
+              from v_order_outstanding
+             where company_id = ${companyId} and doc_type = ${docType}
+             group by order_id
+      ) x on x.order_id = o.id
      where o.company_id = ${companyId} and o.doc_type = ${docType}
      order by o.posting_date desc, o.doc_no desc`;
 }
@@ -1201,7 +1119,7 @@ export async function getOpenSalesOrders(companyId: string) {
            u.code as uom_code,
            ol.base_qty as ordered_qty,
            coalesce(d.delivered_qty, 0) as delivered_qty,
-           ol.base_qty - coalesce(d.delivered_qty, 0) as remaining_qty
+           ol.base_qty - coalesce(d.delivered_qty, 0) - coalesce(fl.linked_qty, 0) as remaining_qty
       from document o
       join document_line ol on ol.document_id = o.id
       join item i on i.id = ol.item_id
@@ -1213,8 +1131,18 @@ export async function getOpenSalesOrders(companyId: string) {
          where dd.doc_type = 'DELIVERY' and dd.status = 'POSTED'
          group by dl.source_line_id
       ) d on d.source_line_id = ol.id
+      left join (
+            select order_line_id, sum(qty) as linked_qty
+              from fulfilment_link group by order_line_id
+      ) fl on fl.order_line_id = ol.id
      where o.company_id = ${companyId} and o.doc_type = 'SALES_ORDER' and o.status = 'POSTED'
-       and (ol.base_qty - coalesce(d.delivered_qty, 0)) > 0
+       -- Goods linked to this order line after the fact count as arrived,
+       -- and a closed order is expecting nothing at all.
+       and (ol.base_qty - coalesce(d.delivered_qty, 0) - coalesce(fl.linked_qty, 0)) > 0
+       and not exists (
+             select 1 from v_order_outstanding v
+              where v.order_id = o.id and v.is_closed
+       )
      order by o.doc_no, ol.line_no`;
 }
 
@@ -1227,7 +1155,7 @@ export async function getOpenPurchaseOrders(companyId: string) {
            ol.unit_price as expected_price,
            ol.base_qty as ordered_qty,
            coalesce(r.received_qty, 0) as received_qty,
-           ol.base_qty - coalesce(r.received_qty, 0) as remaining_qty
+           ol.base_qty - coalesce(r.received_qty, 0) - coalesce(fl.linked_qty, 0) as remaining_qty
       from document o
       join document_line ol on ol.document_id = o.id
       join item i on i.id = ol.item_id
@@ -1239,8 +1167,18 @@ export async function getOpenPurchaseOrders(companyId: string) {
          where dd.doc_type = 'GOODS_RECEIPT' and dd.status = 'POSTED'
          group by dl.source_line_id
       ) r on r.source_line_id = ol.id
+      left join (
+            select order_line_id, sum(qty) as linked_qty
+              from fulfilment_link group by order_line_id
+      ) fl on fl.order_line_id = ol.id
      where o.company_id = ${companyId} and o.doc_type = 'PURCHASE_ORDER' and o.status = 'POSTED'
-       and (ol.base_qty - coalesce(r.received_qty, 0)) > 0
+       -- Goods linked to this order line after the fact count as arrived,
+       -- and a closed order is expecting nothing at all.
+       and (ol.base_qty - coalesce(r.received_qty, 0) - coalesce(fl.linked_qty, 0)) > 0
+       and not exists (
+             select 1 from v_order_outstanding v
+              where v.order_id = o.id and v.is_closed
+       )
      order by o.doc_no, ol.line_no`;
 }
 
@@ -1310,6 +1248,78 @@ export async function getGrirPositions(companyId: string) {
     ds.reduce((s, d) => s + d.lines.reduce((t, l) => t + l.qty * l.unitPrice, 0), 0);
 
   return { awaited: total(invoices), unbilled: total(receipts) };
+}
+
+/**
+ * What this receipt or delivery could still be said to have fulfilled, and
+ * which order lines are waiting for it.
+ *
+ * Both halves in one place because they are one question: these goods, that
+ * order. A line offers only what it has not already allocated — the same
+ * units answering two orders would close both — and only orders from the same
+ * partner, for the same item, that still expect something.
+ */
+export async function getLinkableOrders(companyId: string, documentId: string) {
+  const [doc] = await sql`
+    select id, doc_type, partner_id, status from document
+     where id = ${documentId} and company_id = ${companyId}`;
+  if (!doc || doc.status !== "POSTED") return { lines: [], openLines: [] };
+  const orderType =
+    doc.doc_type === "GOODS_RECEIPT" ? "PURCHASE_ORDER"
+    : doc.doc_type === "DELIVERY" ? "SALES_ORDER"
+    : null;
+  if (!orderType) return { lines: [], openLines: [] };
+
+  const lines = await sql`
+    select dl.id as "lineId", dl.item_id as "itemId",
+           i.code as "itemCode", i.name as "itemName",
+           dl.base_qty::float as qty,
+           coalesce((select sum(fl.qty) from fulfilment_link fl
+                      where fl.fulfilment_line_id = dl.id), 0)::float as allocated
+      from document_line dl
+      join item i on i.id = dl.item_id
+     where dl.document_id = ${documentId}
+     order by dl.line_no`;
+
+  const openLines = await sql`
+    select o.id as "orderId", o.doc_no as "orderNo", ol.id as "orderLineId",
+           ol.item_id as "itemId",
+           (ol.base_qty
+            - coalesce((select sum(dl.base_qty) from document_line dl
+                          join document dd on dd.id = dl.document_id
+                         where dl.source_line_id = ol.id and dd.status = 'POSTED'), 0)
+            - coalesce((select sum(fl.qty) from fulfilment_link fl
+                         where fl.order_line_id = ol.id), 0))::float as outstanding,
+           to_char(o.due_date, 'YYYY-MM-DD') as "dueDate"
+      from document o
+      join document_line ol on ol.document_id = o.id
+     where o.company_id = ${companyId} and o.doc_type = ${orderType}
+       and o.status = 'POSTED' and o.partner_id = ${doc.partner_id}
+       and not exists (
+             select 1 from v_order_outstanding v
+              where v.order_id = o.id and v.is_closed
+       )
+     order by o.doc_no, ol.line_no`;
+
+  return { lines, openLines: (openLines as any[]).filter((o) => o.outstanding > 0.0001) };
+}
+
+/** Whether an order has been closed, and what it is still owed. */
+export async function getOrderOutstanding(companyId: string, documentId: string) {
+  const [r] = await sql`
+    select coalesce(sum(outstanding), 0)::float as outstanding,
+           bool_or(is_closed) as is_closed
+      from v_order_outstanding
+     where company_id = ${companyId} and order_id = ${documentId}`;
+  return { outstanding: Number(r?.outstanding ?? 0), isClosed: !!r?.is_closed };
+}
+
+/** Why an order was closed, and when — shown on the order itself. */
+export async function getOrderClosure(documentId: string) {
+  const [r] = await sql`
+    select reason, closed_by, closed_at, is_open from order_closure
+     where document_id = ${documentId} order by closed_at desc limit 1`;
+  return r ?? null;
 }
 
 /**

@@ -3,7 +3,9 @@ import { planVoid } from "@/lib/void";
 import { RelatedDocumentsPanel } from "@/components/related-documents";
 import { ReplaceSettlement } from "@/components/replace-settlement";
 import { VoidDocument } from "@/components/void-document";
-import { voidDocumentAction } from "@/lib/actions";
+import { LinkToOrder } from "@/components/link-to-order";
+import { CloseOrder } from "@/components/close-order";
+import { voidDocumentAction, linkReceiptToOrder, closeOrderAction } from "@/lib/actions";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { sql, money, qty, shortDate } from "@/lib/db";
@@ -23,6 +25,9 @@ import {
   getOrderProgress,
   getRelatedDocuments,
   getUnsettledConsignment,
+  getLinkableOrders,
+  getOrderOutstanding,
+  getOrderClosure,
 } from "@/lib/queries";
 import {
   createDelivery, createGoodsReceipt, replaceConsignmentSettlement,
@@ -127,6 +132,21 @@ export default async function DocumentPage({
   const goodsWord = isGr || isPi ? "received" : "delivered";
   const Goods = goodsWord.replace(/^\w/, (c) => c.toUpperCase());
   const grirOutstanding = (isGr || isPi) ? await isGrirOutstanding(doc.id) : false;
+
+  // Goods that arrived without saying which order they answered, and orders
+  // still waiting for them. Offered on the document that moved the goods,
+  // because that is where someone stands when they notice the order behind it
+  // still reads as never received.
+  const linkable = movesGoods
+    ? await getLinkableOrders(doc.company_id, doc.id)
+    : { lines: [], openLines: [] };
+
+  const isPostedOrder = ["PURCHASE_ORDER", "SALES_ORDER"].includes(doc.doc_type)
+    && doc.status === "POSTED";
+  const orderState = isPostedOrder
+    ? await getOrderOutstanding(doc.company_id, doc.id)
+    : { outstanding: 0, isClosed: false };
+  const closure = isPostedOrder ? await getOrderClosure(doc.id) : null;
 
   // Line-level settlement: how much of this receipt has been invoiced, or of
   // this invoice received, and by which documents. Replayed through the same
@@ -408,6 +428,36 @@ export default async function DocumentPage({
           blockers={voidPlan.blockers}
           effects={voidPlan.effects}
         />
+      )}
+
+      {movesGoods && (
+        <LinkToOrder
+          action={linkReceiptToOrder}
+          lines={linkable.lines as never}
+          openLines={linkable.openLines as never}
+        />
+      )}
+
+      {isPostedOrder && (
+        <>
+          {closure && !closure.is_open && (
+            <div className="alert" style={{
+              borderColor: "var(--warn)", color: "var(--warn)",
+              background: "color-mix(in srgb, var(--warn) 8%, transparent)",
+            }}>
+              <strong>The remainder of this order is not expected.</strong>{" "}
+              {closure.reason} — closed {shortDate(closure.closed_at)}. What was
+              received stays as it was; only the outstanding quantity is written
+              off.
+            </div>
+          )}
+          <CloseOrder
+            action={closeOrderAction}
+            documentId={doc.id}
+            isClosed={orderState.isClosed}
+            outstanding={orderState.outstanding}
+          />
+        </>
       )}
 
       {(needsInvoiceMatch || needsReceiptMatch) && (

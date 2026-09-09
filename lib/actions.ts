@@ -14,6 +14,7 @@ import {
   postSalesOrder, postPurchaseOrder, postDelivery, postGoodsReceipt,
   postSupplierPayment, postCustomerReceipt,
   postCashVoucher, postBankVoucher, postJournalVoucher,
+  linkFulfilmentToOrder, closeOrderRemaining, reopenOrder,
   postCashTransfer, postAccountOpening, postOpeningBatch, resettleConsignmentSale,
   postStockAdjustment, postStockTransfer,
   importItems, importVouchers, voidDocument, reconcileNegativeStock,
@@ -1743,6 +1744,71 @@ async function postVoucherFrom(
       : await postJournalVoucher(input);
 
   return { id: r.id, docNo: r.docNo };
+}
+
+/**
+ * Link goods that have already arrived to the order they answered.
+ *
+ * The repair for a receipt that named an invoice, or named nothing: the order
+ * behind it stays at zero received and goes overdue with the stock on the
+ * shelf. This changes what the order says it is owed, and nothing else — no
+ * stock moves, no journal is written, no invoice or payment is touched. The
+ * engine checks every allocation against what the order still expects and
+ * what the receipt has not already given away.
+ */
+export async function linkReceiptToOrder(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const raw = String(fd.get("allocations") ?? "[]");
+    let parsed: { fulfilmentLineId: string; orderLineId: string; qty: number }[];
+    try { parsed = JSON.parse(raw); } catch { return { error: "Could not read the allocation" }; }
+
+    const lines = (Array.isArray(parsed) ? parsed : [])
+      .map((l) => ({
+        fulfilmentLineId: String(l.fulfilmentLineId ?? ""),
+        orderLineId: String(l.orderLineId ?? ""),
+        qty: Number(l.qty),
+      }))
+      .filter((l) => l.fulfilmentLineId && l.orderLineId && l.qty > 0);
+    if (lines.length === 0) return { error: "Choose an order line and a quantity" };
+
+    await linkFulfilmentToOrder({
+      companyId: co,
+      lines,
+      reason: str(fd, "reason") || null,
+    });
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/documents", "layout");
+  revalidatePath("/purchases/orders");
+  revalidatePath("/sales/orders");
+  revalidatePath("/purchases/receive");
+  revalidatePath("/");
+  return { ok: true } as ActionResult;
+}
+
+/** The remainder is not coming — a different statement from "it arrived". */
+export async function closeOrderAction(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const documentId = str(fd, "document_id");
+    const reason = str(fd, "reason");
+    if (!documentId) return { error: "No order named" };
+    if (!reason.trim()) return { error: "Say why the rest is not expected" };
+    if (fd.get("reopen") !== null) {
+      await reopenOrder({ companyId: co, documentId, reason });
+    } else {
+      await closeOrderRemaining({ companyId: co, documentId, reason });
+    }
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/documents", "layout");
+  revalidatePath("/purchases/orders");
+  revalidatePath("/sales/orders");
+  revalidatePath("/");
+  return { ok: true } as ActionResult;
 }
 
 function financeRevalidate() {
