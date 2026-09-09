@@ -85,7 +85,7 @@ export function LinkToOrder({
 
   return (
     <>
-      <div className="actions" style={{ marginTop: "-0.5rem" }}>
+      <div className="docactions">
         <button type="button" className="btn ghost" onClick={() => setOpen(true)}>
           <Link2 size={14} aria-hidden="true" /> Link to a purchase order
         </button>

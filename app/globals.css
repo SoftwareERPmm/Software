@@ -1387,18 +1387,24 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 
 /* Somebody is late on this document. Above everything, because whose move it
    is outranks what the document contains. */
+/* Somebody is late. Said in the page's own colours, with the alarm spent on
+   a rule and an icon rather than on a field of orange with orange writing on
+   it — which is harder to read and, worn permanently, stops meaning anything.
+   The words stay full-contrast because they are the part that matters. */
 .taskbanner {
-  display: flex; gap: 0.5rem; align-items: flex-start; font-size: var(--t-sm);
-  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
-  background: color-mix(in srgb, var(--warn) 9%, transparent);
-  color: var(--warn);
+  display: flex; gap: 0.55rem; align-items: flex-start; font-size: var(--t-sm);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--warn);
+  background: var(--surface);
+  color: var(--ink);
   border-radius: var(--r-md);
-  padding: 0.5rem 0.75rem;
+  padding: 0.55rem 0.75rem;
   margin-bottom: var(--s2);
 }
-.taskbanner > svg { flex: none; margin-top: 0.1rem; }
+.taskbanner > svg { flex: none; margin-top: 0.1rem; color: var(--warn); }
 .taskbanner div { display: flex; flex-direction: column; gap: 0.1rem; }
-.taskbanner .page-sub { color: inherit; opacity: 0.85; }
+.taskbanner strong { color: var(--ink); }
+.taskbanner .page-sub { color: var(--muted); }
 
 /* The figures a document is about. */
 .docstats {
@@ -1436,13 +1442,15 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 .docstat-unit { font-size: var(--t-sm); font-weight: 500; color: var(--muted); }
 .docstat-note { grid-area: note; color: var(--muted); font-size: var(--t-xs); }
 
-.docstat.warn .docstat-icon {
-  background: color-mix(in srgb, var(--warn) 12%, transparent); color: var(--warn);
-}
+/* One figure on the row is the one to act on. It gets the colour — on its
+   icon and its number, and a rule down the edge — and the other tiles stay
+   plain, which is what makes the marked one legible as marked. */
+.docstat { border-left: 2px solid var(--line); }
+.docstat.warn { border-left-color: var(--warn); }
+.docstat.warn .docstat-icon { background: transparent; color: var(--warn); }
 .docstat.warn .docstat-value { color: var(--warn); }
-.docstat.ok .docstat-icon {
-  background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok);
-}
+.docstat.ok { border-left-color: var(--ok); }
+.docstat.ok .docstat-icon { background: transparent; color: var(--ok); }
 
 /* The two halves of an invoice: goods still expected, money still owed. Side
    by side because they are equal and independent — neither is a sub-heading
@@ -1459,13 +1467,16 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
   background: var(--surface);
   padding: 0.7rem 0.8rem 0.8rem;
 }
-/* Toned only while somebody is late. An outstanding balance that is not yet
-   due is ordinary business and should look it. */
-.half.late {
-  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
-  background: color-mix(in srgb, var(--warn) 6%, transparent);
-}
-.half.done { opacity: 0.85; }
+/* Late is said with an edge, not a wash.
+   A tinted panel with tinted text on it is the house style of every dashboard
+   template ever shipped, and it does two bad things at once: it lowers the
+   contrast of the words, and it spends the alarm colour on an area rather
+   than on the fact. So the card stays on the page's own surface, takes a
+   2px rule down its leading edge, and lets the colour fall where it means
+   something — the icon, the figure, the pill. */
+.half { border-left: 2px solid var(--line); }
+.half.late { border-left-color: var(--warn); }
+.half.done { border-left-color: var(--ok); }
 
 .half-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; }
 .half-head h2 { margin: 0; font-size: var(--t-base); font-weight: 600; }
@@ -1475,15 +1486,15 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
   width: 1.6rem; height: 1.6rem; border-radius: var(--r-sm);
   background: var(--line-soft); color: var(--muted); flex: none;
 }
-.half.late .half-icon {
-  background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn);
-}
+.half.late .half-icon { background: transparent; color: var(--warn); }
+.half.done .half-icon { background: transparent; color: var(--ok); }
 .half-amount {
   margin: 0 0 0.55rem;
   font-family: var(--mono); font-size: var(--t-lg); font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 .half.late .half-amount { color: var(--warn); }
+.half.done .half-amount { color: var(--muted); }
 .half-actions { margin-top: 0.85rem; flex-wrap: wrap; }
 
 /* Under the document, not beside it: what it is joined to, and what happened.
@@ -1563,3 +1574,18 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
   font-size: var(--t-sm);
 }
 .voidlock-why ul { margin: 0.3rem 0 0; padding-left: 1.1rem; color: var(--muted); }
+
+/* The row of things a document lets you do.
+   These used to be four separate rows, each pulling itself up half a line
+   into the one above with a negative margin — so "Cannot be voided", "Link to
+   a purchase order" and "Create purchase invoice" sat on top of each other.
+   One row, one gap, wrapping when it must. */
+.docactions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+}
+.docactions .page-sub { margin-left: 0.15rem; }
+.voidlock { flex-direction: column; align-items: flex-start; }

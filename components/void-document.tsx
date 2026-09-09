@@ -43,7 +43,7 @@ export function VoidDocument({
 
   if (!canVoid) {
     return (
-      <div className="voidlock">
+      <div className="docactions voidlock">
         <button type="button" className="btn ghost tiny" onClick={() => setOpen(!open)}
                 aria-expanded={open}>
           <Lock size={13} aria-hidden="true" /> Cannot be voided
@@ -71,7 +71,7 @@ export function VoidDocument({
 
   if (!open) {
     return (
-      <div className="actions">
+      <div className="docactions">
         <button type="button" className="warn" onClick={() => setOpen(true)}>Void this document</button>
       </div>
     );

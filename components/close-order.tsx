@@ -35,7 +35,7 @@ export function CloseOrder({
 
   if (!open) {
     return (
-      <div className="actions" style={{ marginTop: "-0.5rem" }}>
+      <div className="docactions">
         <button type="button" className="btn ghost" onClick={() => setOpen(true)}>
           {isClosed
             ? <><RotateCcw size={14} aria-hidden="true" /> Expect the rest again</>

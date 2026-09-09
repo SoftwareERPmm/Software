@@ -563,7 +563,7 @@ export default async function DocumentPage({
       )}
 
       {(needsInvoiceMatch || needsReceiptMatch) && (
-        <div className="actions" style={{ marginTop: "-0.5rem" }}>
+        <div className="docactions">
           <Link
             href={
               needsInvoiceMatch
@@ -646,7 +646,7 @@ export default async function DocumentPage({
       )}
 
       {needsSalesInvoice && (
-        <div className="actions" style={{ marginTop: "-0.5rem" }}>
+        <div className="docactions">
           <Link href={`/sales/new?delivery_id=${doc.id}`} className="btn">
             Create sales invoice — {money(doc.gross_total)}
           </Link>
