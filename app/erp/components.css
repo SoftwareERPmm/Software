@@ -166,9 +166,14 @@
 
 /* The sheet: a page floating on the app background, which is what separates
    a document from a screen. */
+/* The sheet is the same width as the bars above it. It used to cap at
+   1100px and centre itself while the breadcrumb and the action bar ran the
+   full width of the page, so a document sat as a narrow box under two wide
+   ones — three boxes, three different edges. The lines table wants the width
+   anyway. */
 .erp-sheet-page {
   background: var(--erp-surface); border: 1px solid var(--erp-border);
-  border-radius: var(--erp-radius); margin: var(--s3) auto; max-width: 1100px;
+  border-radius: var(--erp-radius); margin: var(--s3) 0;
   padding: var(--s4) var(--s4) 0;
 }
 .erp-doc-title { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
