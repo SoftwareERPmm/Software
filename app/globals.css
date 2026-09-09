@@ -1508,10 +1508,34 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
    other rather than fighting for 9rem each — and size to their content, or
    flex-grow stretches two short lists down the height of the history beside
    them and leaves a card of empty space. */
-/* Source and downstream sit side by side, and size to their content: a
-   flex-basis read as a height once left two three-line lists 300px tall. */
-.reldoc-body { display: flex; gap: 2rem; flex-wrap: wrap; align-items: flex-start; }
-.reldoc-section { min-width: 0; flex: 1 1 260px; }
+/* Source and downstream, side by side where there is room. Grid rather than
+   flexed tables: a table sizes to its content and grows past its box, which
+   is how a long document reference came to be painted over the column beside
+   it. A track can only be as wide as its share. */
+.reldoc-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--s3) 2rem;
+  align-items: start;
+}
+.reldoc-section { min-width: 0; }
+.reldoc-heading {
+  font-family: var(--mono); font-size: var(--t-2xs);
+  letter-spacing: var(--track-caps); text-transform: uppercase;
+  color: var(--muted); margin-bottom: 0.4rem;
+}
+/* Label, then value — and the value column is allowed to shrink, which is
+   what makes the text wrap rather than overflow. */
+.reldoc-list {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.3rem 0.75rem;
+  margin: 0;
+  align-items: baseline;
+}
+.reldoc-list dt { color: var(--muted); font-size: var(--t-sm); }
+.reldoc-list dd { margin: 0; min-width: 0; font-size: var(--t-sm); overflow-wrap: anywhere; }
+.reldoc-doc { margin-bottom: 0.15rem; }
 .docfooter .timeline li { grid-template-columns: 1.1rem 1fr auto; align-items: start; }
 
 /* A dialog carrying a table of choices, not a yes/no question. The width has
