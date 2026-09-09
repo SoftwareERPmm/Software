@@ -128,10 +128,10 @@ export default async function GeneralLedger({
 
       {byAccount ? <AccountView p={p} companyId={company.id} list={list}
                                 tree={tree} carry={carry}
-                                locations={locationList} unassignedLines={unassigned} />
+                                locations={locationList} unassignedLines={unassigned.lines} />
                  : <EntriesView p={p} companyId={company.id} accounts={list}
                                 locations={locationList}
-                                unassignedLines={unassigned} />}
+                                unassignedLines={unassigned.lines} />}
     </>
   );
 }

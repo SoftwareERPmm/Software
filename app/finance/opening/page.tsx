@@ -111,6 +111,7 @@ export default async function OpeningSetupPage() {
         action={createOpeningBatch}
         items={form.items as never}
         locations={form.locations as never}
+        branches={finance.branches as never}
         customers={form.customers as never}
         suppliers={form.suppliers as never}
         accounts={finance.accounts as never}

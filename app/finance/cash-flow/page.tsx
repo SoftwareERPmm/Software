@@ -89,13 +89,22 @@ export default async function CashFlow({
             {branches.map((b) => (
               <option key={b.id} value={b.id}>{b.code} · {b.name}</option>
             ))}
-            {unassignedLines > 0 && (
-              <option value={UNASSIGNED_BRANCH}>— No branch ({unassignedLines} lines) —</option>
+            {unassignedLines.lines > 0 && (
+              <option value={UNASSIGNED_BRANCH}>— No branch ({unassignedLines.lines} lines) —</option>
             )}
           </select>
         </div>
         <div className="actions"><button type="submit">Update</button></div>
       </form>
+
+      {unassignedLines.lines > 0 && branchId === null && (
+        <p className="hint" style={{ margin: "0 0 1rem" }}>
+          {money(unassignedLines.debits)} of activity carries no branch — opening
+          balances, and anything posted without one. It is in the company
+          total and in none of the branches, so the branches will not add up
+          to it. Choose &ldquo;No branch&rdquo; above to see exactly what.
+        </p>
+      )}
 
       <section>
         <div className="card">

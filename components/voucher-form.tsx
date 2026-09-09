@@ -164,12 +164,17 @@ export function VoucherForm({
             {branches.length > 1 ? (
               <div className="field">
                 <label htmlFor="location_id">Branch</label>
-                <select id="location_id" name="location_id" defaultValue="">
-                  <option value="">None</option>
+                {/* "None" was an option, and taking it put the voucher in
+                    the company total and in no branch, so the branches
+                    stopped adding up to the company with nothing on any
+                    screen saying why. Money moves somewhere. */}
+                <select id="location_id" name="location_id" defaultValue="" required>
+                  <option value="" disabled>Choose a branch</option>
                   {branches.map((l) => (
                     <option key={l.id} value={l.id}>{l.code} · {l.name}</option>
                   ))}
                 </select>
+                <span className="hint">Which branch this happened at</span>
               </div>
             ) : branches.length === 1 ? (
               <div className="field">

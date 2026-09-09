@@ -12,7 +12,17 @@ type Account = Named & { account_type: string; is_control: boolean; subledger?: 
 
 type StockRow = { key: number; itemId: string; locationId: string; qty: string; unitCost: string };
 type PartnerRow = { key: number; partnerId: string; reference: string; amount: string; dueDate: string };
-type AccountRow = { key: number; accountId: string; debit: string; credit: string };
+type AccountRow = {
+  key: number; accountId: string; debit: string; credit: string;
+  /**
+   * Which branch this opening balance belongs to. Opening balances carried no
+   * branch at all, which is how a company's opening cash ended up in the
+   * company total and in none of its branches — the branch reports then added
+   * up to less than the company with nothing saying why. The till is at a
+   * branch on the day you start, the same as it is every day after.
+   */
+  locationId: string;
+};
 
 const n = (v: string) => {
   const x = Number(String(v).replace(/,/g, ""));
@@ -33,11 +43,14 @@ const n = (v: string) => {
  * owned, and the whole point of a batch is that there is exactly one.
  */
 export function OpeningSetup({
-  action, items, locations, customers, suppliers, accounts, today,
+  action, items, locations, branches, customers, suppliers, accounts, today,
 }: {
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   items: Item[];
+  /** Stock locations — where the goods are. */
   locations: Named[];
+  /** Branches — where the money is. */
+  branches: Named[];
   customers: Named[];
   suppliers: Named[];
   accounts: Account[];
@@ -58,7 +71,7 @@ export function OpeningSetup({
     { key: 1, partnerId: "", reference: "", amount: "", dueDate: "" },
   ]);
   const [others, setOthers] = useState<AccountRow[]>([
-    { key: 1, accountId: "", debit: "", credit: "" },
+    { key: 1, accountId: "", debit: "", credit: "", locationId: branches[0]?.id ?? "" },
   ]);
 
   // Only what a subledger does not own. Stock, receivables and payables have
@@ -102,6 +115,7 @@ export function OpeningSetup({
     })),
     accounts: others.filter((r) => r.accountId && (n(r.debit) || n(r.credit))).map((r) => ({
       accountId: r.accountId, amount: n(r.debit) - n(r.credit),
+      locationId: r.locationId || null,
     })),
   };
 
@@ -281,7 +295,9 @@ export function OpeningSetup({
             <table>
               <thead>
                 <tr>
-                  <th>Account</th><th className="r">Debit</th><th className="r">Credit</th><th />
+                  <th>Account</th>
+                  {branches.length > 1 && <th>Branch</th>}
+                  <th className="r">Debit</th><th className="r">Credit</th><th />
                 </tr>
               </thead>
               <tbody>
@@ -296,6 +312,16 @@ export function OpeningSetup({
                         ))}
                       </select>
                     </td>
+                    {branches.length > 1 && (
+                      <td>
+                        <select value={r.locationId} onChange={(e) => setOthers((rs) =>
+                          rs.map((x) => x.key === r.key ? { ...x, locationId: e.target.value } : x))}>
+                          {branches.map((b) => (
+                            <option key={b.id} value={b.id}>{b.code} · {b.name}</option>
+                          ))}
+                        </select>
+                      </td>
+                    )}
                     <td><input type="number" step="any" value={r.debit} onChange={(e) => setOthers((rs) =>
                       rs.map((x) => x.key === r.key ? { ...x, debit: e.target.value, credit: "" } : x))} /></td>
                     <td><input type="number" step="any" value={r.credit} onChange={(e) => setOthers((rs) =>
@@ -311,11 +337,12 @@ export function OpeningSetup({
                 <tr>
                   <td>
                     <button type="button" className="ghost tiny" onClick={() =>
-                      add(setOthers, (k) => ({ key: k, accountId: "", debit: "", credit: "" }))}>
+                      add(setOthers, (k) => ({ key: k, accountId: "", debit: "", credit: "",
+                                               locationId: branches[0]?.id ?? "" }))}>
                       Add account
                     </button>
                   </td>
-                  <td className="r" colSpan={2}>{money(othersNet)}</td><td />
+                  <td className="r" colSpan={branches.length > 1 ? 3 : 2}>{money(othersNet)}</td><td />
                 </tr>
               </tfoot>
             </table>
