@@ -50,12 +50,7 @@ export function DocumentFooter({
             <p className="hint">
               {postedBy.name
                 ? <>Posted by {postedBy.name}{postedAt ? ` · ${shortDate(postedAt)}` : ""}.</>
-                : <>
-                    Posted{postedAt ? ` on ${shortDate(postedAt)}` : ""}, by nobody this
-                    system can name — there are no user accounts yet, and a
-                    document credited to a guess is worse than one credited to
-                    no one.
-                  </>}
+                : <>Posted{postedAt ? ` ${shortDate(postedAt)}` : ""}.</>}
             </p>
           ) : (
             <ol className="timeline">

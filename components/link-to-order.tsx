@@ -57,7 +57,27 @@ export function LinkToOrder({
     action as never, null,
   );
   const [open, setOpen] = useState(false);
-  const [picks, setPicks] = useState<Record<string, { orderLineId: string; qty: string }>>({});
+
+  /**
+   * A line with exactly one order it could answer is not a question. The
+   * dialog opened on "Not against an order" — the one choice that does
+   * nothing — above a list containing the single order these goods were for,
+   * and waited to be told what it already knew.
+   */
+  const [picks, setPicks] = useState<Record<string, { orderLineId: string; qty: string }>>(() => {
+    const seed: Record<string, { orderLineId: string; qty: string }> = {};
+    for (const l of lines) {
+      const spare = l.qty - l.allocated;
+      if (spare <= 0.0001) continue;
+      const only = openLines.filter((o) => o.itemId === l.itemId);
+      if (only.length !== 1) continue;
+      seed[l.lineId] = {
+        orderLineId: only[0].orderLineId,
+        qty: String(Math.min(spare, only[0].outstanding)),
+      };
+    }
+    return seed;
+  });
 
   // Only lines with something left to give, and only orders that still want
   // that item. An empty panel is better than a panel of impossible choices.
@@ -174,10 +194,7 @@ export function LinkToOrder({
           <label htmlFor="link_reason">Why</label>
           <input id="link_reason" name="reason" type="text"
                  placeholder="e.g. received against the supplier's invoice" />
-          <span className="hint">
-            Kept with the link, alongside the date. Who did it waits on the
-            user accounts this app does not have yet.
-          </span>
+          <span className="hint">Kept with the link, alongside the date.</span>
         </div>
       </div>
 
