@@ -409,6 +409,9 @@ export default async function DocumentPage({
         lines={erpLines}
         netTotal={Number(doc.net_total)}
         related={<RelatedDocumentsPanel related={related} />}
+        banner={<TaskBanner tasks={tasks.filter((t: any) => !t.aspect)} />}
+        stats={<DocStats stats={stats} />}
+        rail={rail}
         chain={chain.map((step) => ({
           type: step,
           label: label(step).replace(/\b\w/g, (c) => c.toUpperCase()),

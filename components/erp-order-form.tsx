@@ -45,6 +45,7 @@ export type OrderFormConfig = {
 export function ErpOrderForm({
   config, docId, docNo, status, partnerName, partnerCode, docDate, dueDate,
   locationName, reference, memo, lines, netTotal, chain, actions, related,
+  banner, stats, rail,
   backHref, backLabel,
 }: {
   config: OrderFormConfig;
@@ -69,6 +70,12 @@ export function ErpOrderForm({
    * "what came of this order" is the one the page exists to answer.
    */
   related?: React.ReactNode;
+  /** The same three the rest of the documents carry: whose move it is, the
+   *  figures it is about, and the office around it. An order is not a lesser
+   *  document for having no ledger entry. */
+  banner?: React.ReactNode;
+  stats?: React.ReactNode;
+  rail?: React.ReactNode;
   /** Passed straight through to the shell — see ErpDocShell. */
   backHref?: string | null;
   backLabel?: string | null;
@@ -92,6 +99,9 @@ export function ErpOrderForm({
       backLabel={backLabel}
       chain={chain}
       actions={actions}
+      banner={banner}
+      stats={stats}
+      rail={rail}
       badges={
         totalOrdered > 0 ? (
           <span className={`pill ${complete ? "ok" : "warn"}`}>
