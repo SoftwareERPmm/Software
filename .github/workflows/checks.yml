@@ -8,11 +8,15 @@
 # without needing any database at all.
 name: checks
 
+# dev is where the work happens and main deploys straight to the live site,
+# so checks that skip dev only ever fail after the thing they were meant to
+# catch is already in front of the person using the app. staging was retired
+# on 2026-09-02 and is no longer on the path to anywhere.
 on:
   push:
-    branches: [main, staging, "feature/**"]
+    branches: [main, dev, "feature/**"]
   pull_request:
-    branches: [main, staging]
+    branches: [main, dev]
 
 jobs:
   check:
