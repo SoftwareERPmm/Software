@@ -43,20 +43,15 @@ try {
      where company_id = ${co.id} and is_stock_location and is_active order by code limit 1`;
   console.log(`\n  ${co.name}\n`);
 
-  // ---- the people the screens attribute everything to ---------------------
-
-  const person = async (name, initials) => {
-    const [u] = await sql`
-      insert into app_user (company_id, name, initials)
-      values (${co.id}, ${name}, ${initials})
-      on conflict (company_id, name) do update set initials = excluded.initials
-      returning id, name, initials`;
-    return u;
-  };
-  const hla = await person("Hla", "HL");
-  const aung = await person("Aung", "AU");
-  const suSu = await person("Su Su", "SS");
-  console.log(`  people: ${[hla, aung, suSu].map((p) => `${p.initials} ${p.name}`).join(" · ")}`);
+  // ---- nobody, yet ---------------------------------------------------------
+  //
+  // The screens attribute work to a person, and there are no people: this app
+  // has no accounts, and inventing three so the demo looks populated would put
+  // names against documents nobody signed. So the work is seeded unattributed
+  // and the pages show a dash. When roles arrive, these rows will be visibly
+  // unclaimed rather than quietly credited to the wrong person.
+  const hla = { id: null }, aung = { id: null }, suSu = { id: null };
+  console.log("  people: none — attribution waits for the roles that own it");
 
   // ---- the supplier and the product ---------------------------------------
 
@@ -161,6 +156,45 @@ try {
   await attribute(gr2.id, aung.id, aung.id);
   await attribute(pay2.id, aung.id, aung.id);
 
+  // ---- the same shape on the sales side ------------------------------------
+  //
+  // A customer order part delivered, an invoice part collected: the mirror of
+  // the purchase story above, so the sales screens have the same situation to
+  // show rather than an empty page that makes a layout look finished.
+
+  const [customer] = await sql`
+    insert into business_partner (company_id, code, name, is_customer, is_supplier, payment_terms_days)
+    values (${co.id}, 'CUS-001', 'Branch Test Customer', true, false, 7)
+    on conflict (company_id, code) do update set name = excluded.name
+    returning id, code, name`;
+
+  const so = await P.postSalesOrder({
+    companyId: co.id, partnerId: customer.id, locationId: loc.id,
+    docDate: day(2), dueDate: day(6),
+    lines: [{ itemId: item.id, qty: 50, unitPrice: 1800 }],
+  });
+  const [soLine] = await sql`select id from document_line where document_id = ${so.id}`;
+
+  const si = await P.postSalesInvoice({
+    companyId: co.id, partnerId: customer.id, locationId: loc.id,
+    docDate: day(4), dueDate: day(9),
+    lines: [{ itemId: item.id, qty: 50, unitPrice: 1800 }],
+  });
+
+  // Twenty of the fifty go out, against the order.
+  await P.postDelivery({
+    companyId: co.id, partnerId: customer.id, locationId: loc.id,
+    docDate: day(6), sourceDocumentId: so.id,
+    lines: [{ itemId: item.id, qty: 20, sourceLineId: soLine.id }],
+  });
+
+  // And half the money comes in.
+  await P.postCustomerReceipt({
+    companyId: co.id, partnerId: customer.id, docDate: day(7),
+    cashAccountId: bank.id,
+    allocations: [{ invoiceId: si.id, amount: 45000 }],
+  });
+
   // ---- what somebody still owes -------------------------------------------
 
   const task = async (docId, name, who, due, aspect = null) => {
@@ -184,6 +218,11 @@ try {
   // reason an invoice shows them as two halves rather than one status.
   await task(pi1.id, "Chase delivery", aung.id, day(5), "GOODS");
   await task(pi1.id, "Settle balance", suSu.id, day(8), "PAYMENT");
+
+  // The same two on the customer invoice: goods still to ship, money still to
+  // collect, each with its own deadline.
+  await task(si.id, "Ship the balance", null, day(6), "GOODS");
+  await task(si.id, "Chase payment", null, day(9), "PAYMENT");
 
   // ---- what has happened so far -------------------------------------------
 

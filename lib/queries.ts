@@ -1388,6 +1388,11 @@ export async function getPaymentSchedules(companyId: string, partnerId: string |
  * so what this calls outstanding is what the clearing account still holds.
  * Money comes from the allocations against it. Neither is re-derived here
  * with a rule of its own.
+ *
+ * The sales side is the same document read the other way round: goods still
+ * to go out rather than come in, money still to collect rather than pay. One
+ * function, because they are one shape — and a customer invoice that is paid
+ * in full with nothing delivered is exactly as wrong as the purchase case.
  */
 export async function getInvoiceProgress(companyId: string, documentId: string) {
   const [doc] = await sql`
@@ -1414,17 +1419,10 @@ export async function getInvoiceProgress(companyId: string, documentId: string) 
    * where they were not. An invented date would make a supplier look late on
    * a promise nobody recorded them making.
    */
-  const [expected] = await sql`
-    select o.doc_no, o.due_date
-      from document o
-      join fulfilment_link fl on true
-      join document_line ol on ol.id = fl.order_line_id and ol.document_id = o.id
-     where o.company_id = ${companyId} and o.doc_type = 'PURCHASE_ORDER'
-       and o.partner_id = ${doc.partner_id} and o.status = 'POSTED'
-     order by o.due_date nulls last limit 1`;
-  const [anyOrder] = expected ? [expected] : await sql`
+  const orderType = doc.doc_type === "SALES_INVOICE" ? "SALES_ORDER" : "PURCHASE_ORDER";
+  const [anyOrder] = await sql`
     select o.doc_no, o.due_date from document o
-     where o.company_id = ${companyId} and o.doc_type = 'PURCHASE_ORDER'
+     where o.company_id = ${companyId} and o.doc_type = ${orderType}
        and o.partner_id = ${doc.partner_id} and o.status = 'POSTED'
        and exists (select 1 from v_order_outstanding v
                     where v.order_id = o.id and v.outstanding > 0)

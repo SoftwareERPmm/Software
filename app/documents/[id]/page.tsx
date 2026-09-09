@@ -285,7 +285,12 @@ export default async function DocumentPage({
 
   // A purchase invoice has two things outstanding that move independently.
   // Shown as two, because one combined status hides whichever is the problem.
-  const progress = doc.doc_type === "PURCHASE_INVOICE" && doc.status === "POSTED"
+  // Both invoice types: a customer invoice paid in full with nothing shipped
+  // is exactly as wrong as a supplier one, and hides the same way behind a
+  // single status.
+  const isSalesInvoice = doc.doc_type === "SALES_INVOICE";
+  const progress = (doc.doc_type === "PURCHASE_INVOICE" || isSalesInvoice)
+    && doc.status === "POSTED"
     ? await getInvoiceProgress(doc.company_id, doc.id)
     : null;
   const tasks = people.tasks as never as Parameters<typeof TaskBanner>[0]["tasks"];
@@ -454,11 +459,16 @@ export default async function DocumentPage({
           <TaskBanner tasks={tasks.filter((t: any) => !t.aspect)} />
           {progress && (
             <InvoiceProgress
+              sales={isSalesInvoice}
               goods={progress.goods as never}
               payment={progress.payment as never}
               unit={progress.unit}
-              receiveHref={`/purchases/receive/new?match_invoice_id=${doc.id}`}
-              payHref={`/payables/pay?invoice=${doc.id}`}
+              receiveHref={isSalesInvoice
+                ? `/sales/deliver?invoice=${doc.id}`
+                : `/purchases/receive/new?match_invoice_id=${doc.id}`}
+              payHref={isSalesInvoice
+                ? `/receivables/receive?partner=${doc.partner_id}&invoice=${doc.id}`
+                : `/payables/pay?invoice=${doc.id}`}
             />
           )}
         </>

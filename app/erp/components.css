@@ -176,9 +176,16 @@
   border-radius: var(--erp-radius); margin: var(--s3) 0;
   padding: var(--s4) var(--s4) 0;
 }
-.erp-doc-title { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+/* The title row, and room under it before the document starts talking. */
+.erp-doc-title {
+  display: flex; align-items: center; gap: 0.55rem; flex-wrap: wrap;
+  margin-bottom: var(--s3);
+}
+/* The number identifies the document; it is not the headline of a page. At
+   24px in mono it was the loudest thing on screen, competing with the figures
+   that actually change. */
 .erp-doc-title h1 {
-  margin: 0; font-size: var(--t-3xl); font-weight: 700;
+  margin: 0; font-size: var(--t-xl); font-weight: 700;
   letter-spacing: var(--track-tighter); font-family: var(--erp-font-mono);
 }
 .erp-doc-type {

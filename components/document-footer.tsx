@@ -51,8 +51,10 @@ export function DocumentFooter({
               {postedBy.name
                 ? <>Posted by {postedBy.name}{postedAt ? ` · ${shortDate(postedAt)}` : ""}.</>
                 : <>
-                    Nothing recorded. Documents posted before this system knew
-                    about people carry no name rather than the wrong one.
+                    Posted{postedAt ? ` on ${shortDate(postedAt)}` : ""}, by nobody this
+                    system can name — there are no user accounts yet, and a
+                    document credited to a guess is worse than one credited to
+                    no one.
                   </>}
             </p>
           ) : (

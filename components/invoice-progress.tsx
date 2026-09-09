@@ -26,7 +26,7 @@ type Half = {
 };
 
 export function InvoiceProgress({
-  goods, payment, unit, receiveHref, payHref, linkReceiptHref,
+  goods, payment, unit, receiveHref, payHref, linkReceiptHref, sales = false,
 }: {
   goods: Half & {
     expectedDate: string | null; expectedFrom: string | null;
@@ -38,6 +38,8 @@ export function InvoiceProgress({
   payHref: string;
   /** Where a receipt that already exists can be attached, when that is possible. */
   linkReceiptHref?: string | null;
+  /** The same two halves read the other way: goods going out, money coming in. */
+  sales?: boolean;
 }) {
   const settled = goods.outstanding <= 0 && payment.outstanding <= 0;
   if (settled) return null;
@@ -50,24 +52,24 @@ export function InvoiceProgress({
         state={goods}
         amount={goods.outstanding > 0
           ? `${qty(String(goods.outstanding))}${unit ? ` ${unit}` : ""} outstanding`
-          : "All received"}
+          : sales ? "All delivered" : "All received"}
         rows={[
           {
-            label: "Received against this bill",
+            label: sales ? "Delivered against this invoice" : "Received against this bill",
             value: goods.unmatched
-              ? "none — no receipt names it"
+              ? `none — no ${sales ? "delivery" : "receipt"} names it`
               : `${qty(String(goods.arrived ?? 0))} of ${qty(String(goods.billed ?? 0))}`,
           },
           goods.expectedDate
-            ? { label: "Expected delivery", value: shortDate(goods.expectedDate),
-                strong: goods.overdue }
-            : { label: "Expected delivery",
+            ? { label: sales ? "Promised by" : "Expected delivery",
+                value: shortDate(goods.expectedDate), strong: goods.overdue }
+            : { label: sales ? "Promised by" : "Expected delivery",
                 value: goods.expectedFrom ? `not set on ${goods.expectedFrom}` : "not ordered" },
         ]}
         actions={goods.outstanding > 0 ? (
           <>
             <Link href={receiveHref} className="btn">
-              <Package size={14} aria-hidden="true" /> Receive goods
+              <Package size={14} aria-hidden="true" /> {sales ? "Deliver goods" : "Receive goods"}
             </Link>
             {linkReceiptHref && (
               <Link href={linkReceiptHref} className="btn ghost">
@@ -84,7 +86,7 @@ export function InvoiceProgress({
         state={payment}
         amount={payment.outstanding > 0
           ? `${money(payment.outstanding)} outstanding`
-          : "Paid in full"}
+          : sales ? "Collected in full" : "Paid in full"}
         rows={[
           payment.dueDate
             ? { label: "Due date", value: shortDate(payment.dueDate), strong: payment.overdue }
@@ -92,7 +94,7 @@ export function InvoiceProgress({
         ]}
         actions={payment.outstanding > 0 ? (
           <Link href={payHref} className="btn">
-            <Wallet size={14} aria-hidden="true" /> Record payment
+            <Wallet size={14} aria-hidden="true" /> {sales ? "Record receipt" : "Record payment"}
           </Link>
         ) : null}
       />
@@ -135,11 +137,15 @@ function Half({
             </dd>
           </div>
         ))}
-        {state.responsible && (
+        {state.task && (
           <div>
-            <dt>{state.task ?? "Responsible"}</dt>
+            <dt>{state.task}</dt>
+            {/* A dash, not a name. Nobody owns this yet because nobody can:
+                there are no accounts to own it with. */}
             <dd className="railwho">
-              <Avatar initials={state.initials ?? null} /> {state.responsible}
+              {state.responsible
+                ? <><Avatar initials={state.initials ?? null} /> {state.responsible}</>
+                : <span style={{ color: "var(--ghost)" }}>—</span>}
             </dd>
           </div>
         )}

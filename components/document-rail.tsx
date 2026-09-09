@@ -94,7 +94,7 @@ export function DocumentRail({
                   <dt>Responsible</dt>
                   <dd className="railwho">
                     <Avatar initials={t.initials} />
-                    {t.responsible ?? "Unassigned"}
+                    {t.responsible ?? "—"}
                   </dd>
                 </div>
                 <div>
@@ -174,7 +174,7 @@ export function TaskBanner({ tasks }: { tasks: DocTask[] }) {
             </strong>
             <span className="page-sub">
               Deadline was {t.due_date ? shortDate(t.due_date) : "—"}
-              {t.responsible ? ` · ${t.responsible}` : ""}
+              {t.responsible ? ` · ${t.responsible}` : " · unassigned"}
             </span>
           </div>
         </div>
