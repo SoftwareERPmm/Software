@@ -4,6 +4,11 @@ import { RelatedDocumentsPanel } from "@/components/related-documents";
 import { ReplaceSettlement } from "@/components/replace-settlement";
 import { VoidDocument } from "@/components/void-document";
 import { LinkToOrder } from "@/components/link-to-order";
+import { DocumentRail, TaskBanner } from "@/components/document-rail";
+import { DocStats, type DocStat } from "@/components/doc-stats";
+import {
+  PackageCheck, FileText, Clock, Wallet, CircleDollarSign, Boxes, Truck,
+} from "lucide-react";
 import { CloseOrder } from "@/components/close-order";
 import { voidDocumentAction, linkReceiptToOrder, closeOrderAction } from "@/lib/actions";
 import Link from "next/link";
@@ -28,6 +33,7 @@ import {
   getLinkableOrders,
   getOrderOutstanding,
   getOrderClosure,
+  getDocumentPeople,
 } from "@/lib/queries";
 import {
   createDelivery, createGoodsReceipt, replaceConsignmentSettlement,
@@ -148,6 +154,8 @@ export default async function DocumentPage({
     : { outstanding: 0, isClosed: false };
   const closure = isPostedOrder ? await getOrderClosure(doc.id) : null;
 
+
+
   // Line-level settlement: how much of this receipt has been invoiced, or of
   // this invoice received, and by which documents. Replayed through the same
   // matcher the posting engine uses, so the page cannot claim a line is
@@ -267,6 +275,81 @@ export default async function DocumentPage({
 
   const outstanding = isInvoice ? await getDocumentOutstanding(doc.id) : 0;
 
+  // Who raised it, who posted it, what is still owed on it, and what has
+  // happened since. Every document has this; only the figures beside it
+  // differ by type.
+  const people = await getDocumentPeople(doc.id);
+  const tasks = people.tasks as never as Parameters<typeof TaskBanner>[0]["tasks"];
+
+  /**
+   * The two or three numbers this kind of document is about, in the order
+   * they read as a sentence: what arrived, what was billed, what is still
+   * owed. Only the outstanding one is toned, because a tile with a colour is
+   * making a claim and most of these are just facts.
+   */
+  const stats: DocStat[] = [];
+  // The unit these quantities are in, taken from the lines rather than
+  // assumed: "40" means nothing and "40 BOX" means something.
+  const unitWord = (lines[0] as any)?.uom_code ?? undefined;
+  if (movesGoods && match) {
+    const total = match.lines.reduce((t, l) => t + Number(l.qty), 0);
+    const done = match.lines.reduce((t, l) => t + Number(l.settled), 0);
+    const left = Math.max(total - done, 0);
+    stats.push(
+      { icon: PackageCheck, label: `Goods ${goodsWord}`, value: qty(String(total)),
+        unit: unitWord, note: `on ${shortDate(doc.doc_date)}` },
+      { icon: FileText, label: movesGoods && isDel ? "Billed to customer" : "Billed to supplier",
+        value: qty(String(done)), unit: unitWord,
+        note: done === 0 ? "Not yet invoiced" : "Invoiced" },
+      { icon: Clock, label: "Unbilled quantity", value: qty(String(left)), unit: unitWord,
+        note: left > 0 ? "Awaiting supplier invoice" : "Nothing outstanding",
+        tone: left > 0 ? "warn" : "ok" },
+    );
+  } else if (isInvoice) {
+    stats.push(
+      { icon: CircleDollarSign, label: "Invoice total", value: money(doc.gross_total) },
+      { icon: Wallet, label: "Paid", value: money(Number(doc.gross_total) - outstanding),
+        tone: outstanding === 0 ? "ok" : undefined },
+      { icon: Clock, label: "Outstanding", value: money(outstanding),
+        note: outstanding > 0 && doc.due_date ? `due ${shortDate(doc.due_date)}` : undefined,
+        tone: outstanding > 0 ? "warn" : "ok" },
+    );
+  } else if (isPostedOrder) {
+    const [totals] = await sql`
+      select coalesce(sum(ordered), 0)::float as ordered,
+             coalesce(sum(fulfilled), 0)::float as fulfilled
+        from v_order_outstanding where order_id = ${doc.id}`;
+    const ordered = Number(totals?.ordered ?? 0);
+    const fulfilled = Number(totals?.fulfilled ?? 0);
+    stats.push(
+      { icon: Boxes, label: "Ordered", value: qty(String(ordered)), unit: unitWord },
+      { icon: Truck, label: doc.doc_type === "SALES_ORDER" ? "Delivered" : "Received",
+        value: qty(String(fulfilled)), unit: unitWord },
+      { icon: Clock, label: "Remaining", value: qty(String(orderState.outstanding)), unit: unitWord,
+        note: orderState.isClosed ? "Closed — not expected" : undefined,
+        tone: orderState.outstanding > 0 ? "warn" : "ok" },
+    );
+  }
+
+  const rail = (
+    <DocumentRail
+      details={[
+        { label: "Number", value: doc.doc_no ?? "Draft" },
+        { label: doc.doc_type.startsWith("PURCHASE") || doc.doc_type === "GOODS_RECEIPT"
+            ? "Supplier" : "Partner",
+          value: doc.partner_name ?? "—" },
+        { label: "Date", value: shortDate(doc.doc_date) },
+        ...(doc.due_date ? [{ label: "Due", value: shortDate(doc.due_date) }] : []),
+        { label: "Status", value: <span className={`pill ${doc.status.toLowerCase()}`}>{doc.status}</span> },
+      ]}
+      tasks={tasks}
+      activity={people.activity as never}
+      createdBy={{ name: people.doc?.created_by ?? null, initials: people.doc?.created_initials ?? null }}
+      postedBy={{ name: people.doc?.posted_by ?? null, initials: people.doc?.posted_initials ?? null }}
+      postedAt={people.doc?.posted_at ? String(people.doc.posted_at) : null}
+    />
+  );
+
   // Orders render on the ERP form. Only the two order types for now: the
   // shell is adopted screen by screen rather than switched on globally, so
   // anything not yet moved keeps working exactly as it did.
@@ -361,6 +444,9 @@ export default async function DocumentPage({
         href: stageDoc[step] ? null : nextStageHref(step),
         optional: OPTIONAL_STAGE.has(step),
       }))}
+      banner={<TaskBanner tasks={tasks} />}
+      stats={<DocStats stats={stats} />}
+      rail={rail}
       badges={
         <>
           {isInvoice && outstanding > 0 && (

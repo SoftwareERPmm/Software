@@ -1323,6 +1323,59 @@ export async function getOrderClosure(documentId: string) {
 }
 
 /**
+ * The people side of a document: who raised it, who posted it, what is still
+ * owed on it and by whom, and what has happened to it since.
+ *
+ * One query rather than four, because every document screen shows all of it
+ * together in the same rail, and four round trips for one panel is three too
+ * many.
+ */
+export async function getDocumentPeople(documentId: string) {
+  const [doc] = await sql`
+    select d.id,
+           cu.name as created_by, cu.initials as created_initials,
+           pu.name as posted_by,  pu.initials as posted_initials,
+           d.posted_at, d.created_at
+      from document d
+      left join app_user cu on cu.id = d.created_by_id
+      left join app_user pu on pu.id = d.posted_by_id
+     where d.id = ${documentId}`;
+
+  const tasks = await sql`
+    select t.id, t.task, t.due_date, t.done_at,
+           u.name as responsible, u.initials,
+           (t.done_at is null and t.due_date is not null and t.due_date < current_date)
+             as overdue,
+           (current_date - t.due_date) as days_late
+      from document_task t
+      left join app_user u on u.id = t.responsible_id
+     where t.document_id = ${documentId}
+     order by t.due_date nulls last, t.created_at`;
+
+  const activity = await sql`
+    select a.kind, a.note, a.happened_at, u.name as actor, u.initials
+      from document_activity a
+      left join app_user u on u.id = a.actor_id
+     where a.document_id = ${documentId}
+     order by a.happened_at desc, a.created_at desc
+     limit 20`;
+
+  return { doc: doc ?? null, tasks, activity };
+}
+
+/** Payments somebody planned against this supplier, which are not payments. */
+export async function getPaymentSchedules(companyId: string, partnerId: string | null) {
+  if (!partnerId) return [];
+  return sql`
+    select s.schedule_no, s.planned_date, s.amount, s.executed, s.overdue,
+           d.doc_no as executed_by
+      from v_payment_schedule_status s
+      left join document d on d.id = s.executed_by_document_id
+     where s.company_id = ${companyId} and s.partner_id = ${partnerId}
+     order by s.planned_date`;
+}
+
+/**
  * Sales invoices marked "to deliver" with goods still to go, line by line.
  *
  * "Still to go" used to mean no delivery existed at all. Two things followed

@@ -43,21 +43,24 @@ export function RelatedDocumentsPanel({
 
   const section = (heading: string, groups: RelatedDocuments["source"]) =>
     groups.length === 0 ? null : (
-      <div style={{ minWidth: 0, flex: "1 1 260px" }}>
+      <div style={{ minWidth: 0, flex: "1 1 300px" }}>
         <div className="page-sub" style={{
           textTransform: "uppercase", letterSpacing: "0.06em",
           fontSize: "var(--t-xs)", marginBottom: "0.35rem",
         }}>
           {heading}
         </div>
-        <table style={{ width: "100%" }}>
+        {/* Fixed layout and wrapping values: in a column this narrow a long
+            document reference used to run out of its cell and paint over the
+            section beside it. */}
+        <table style={{ width: "100%", tableLayout: "fixed" }}>
           <tbody>
             {groups.map((g) => (
               <tr key={g.label} style={{ verticalAlign: "top" }}>
                 <td style={{ color: "var(--muted)", whiteSpace: "nowrap", paddingRight: "0.75rem" }}>
                   {g.label}
                 </td>
-                <td>
+                <td style={{ overflowWrap: "anywhere" }}>
                   {g.docs.length === 0 ? (
                     <span style={{ color: "var(--ghost)" }}>None</span>
                   ) : (

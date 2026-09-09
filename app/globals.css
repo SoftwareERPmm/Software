@@ -1330,3 +1330,116 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
   .is-filtering .inner > *:not(form):not(.page-head):not(.erp-tabs),
   .inner > * { transition: none; }
 }
+
+/* ---------------------------------------------------------------- document
+   A document page is two columns: what the document says, and the office
+   around it — who owes something on it and what has happened. The rail
+   collapses under the document on a narrow screen, because the document is
+   the point and the rail is context. */
+
+.doclayout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 21rem;
+  gap: var(--s4);
+  align-items: start;
+}
+.docrail { display: flex; flex-direction: column; gap: var(--s3); }
+.docrail .card-body { padding-top: var(--s2); }
+
+@media (max-width: 1100px) {
+  .doclayout { grid-template-columns: minmax(0, 1fr); }
+}
+
+.raildl { display: flex; flex-direction: column; gap: 0.55rem; margin: 0; }
+.raildl > div { display: flex; justify-content: space-between; gap: var(--s2); align-items: baseline; }
+.raildl dt { color: var(--muted); font-size: var(--t-sm); }
+.raildl dd { margin: 0; text-align: right; font-size: var(--t-base); }
+.railwho { display: inline-flex; align-items: center; gap: 0.4rem; }
+
+/* Initials in a circle. Grey and iconic where nobody was recorded, so an
+   unattributed document looks unattributed rather than blank. */
+.avatar {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.55rem; height: 1.55rem; border-radius: 999px;
+  background: color-mix(in srgb, var(--brand) 12%, transparent);
+  color: var(--brand);
+  font-size: var(--t-2xs); font-weight: 700; letter-spacing: 0.02em;
+  flex: none;
+}
+.avatar-none { background: var(--line-soft); color: var(--muted); }
+
+/* What has happened, newest first, with the line that joins the events. */
+.timeline { list-style: none; margin: 0; padding: 0; position: relative; }
+.timeline li {
+  display: grid; grid-template-columns: 1.1rem 1fr; gap: 0.55rem;
+  padding: 0 0 0.8rem;
+  position: relative;
+}
+.timeline li:not(:last-child)::before {
+  content: ""; position: absolute; left: 0.5rem; top: 1.1rem; bottom: 0;
+  width: 1px; background: var(--line);
+}
+.timeline li > svg { color: var(--muted); margin-top: 0.15rem; }
+.timeline li.now > svg { color: var(--brand); }
+.timeline li div { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+.timeline strong { font-weight: 600; font-size: var(--t-base); }
+.timeline .page-sub { font-size: var(--t-sm); }
+
+/* Somebody is late on this document. Above everything, because whose move it
+   is outranks what the document contains. */
+.taskbanner {
+  display: flex; gap: 0.6rem; align-items: flex-start;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 9%, transparent);
+  color: var(--warn);
+  border-radius: var(--r-md);
+  padding: 0.7rem 0.9rem;
+  margin-bottom: var(--s3);
+}
+.taskbanner > svg { flex: none; margin-top: 0.1rem; }
+.taskbanner div { display: flex; flex-direction: column; gap: 0.1rem; }
+.taskbanner .page-sub { color: inherit; opacity: 0.85; }
+
+/* The figures a document is about. */
+.docstats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--s3);
+  margin-bottom: var(--s3);
+}
+.docstat {
+  display: grid;
+  grid-template-columns: 2.1rem 1fr;
+  grid-template-areas: "icon label" "icon value" "icon note";
+  gap: 0 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  padding: 0.75rem 0.9rem;
+}
+.docstat-icon {
+  grid-area: icon; align-self: start;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 2.1rem; height: 2.1rem; border-radius: var(--r-sm);
+  background: var(--line-soft); color: var(--muted);
+}
+.docstat-label {
+  grid-area: label;
+  font-family: var(--mono); font-size: var(--t-2xs);
+  letter-spacing: var(--track-caps); text-transform: uppercase; color: var(--muted);
+}
+.docstat-value {
+  grid-area: value;
+  font-family: var(--mono); font-size: var(--t-xl); font-weight: 600;
+  font-variant-numeric: tabular-nums; line-height: 1.2;
+}
+.docstat-unit { font-size: var(--t-md); font-weight: 500; color: var(--muted); }
+.docstat-note { grid-area: note; color: var(--muted); font-size: var(--t-sm); }
+
+.docstat.warn .docstat-icon {
+  background: color-mix(in srgb, var(--warn) 12%, transparent); color: var(--warn);
+}
+.docstat.warn .docstat-value { color: var(--warn); }
+.docstat.ok .docstat-icon {
+  background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok);
+}

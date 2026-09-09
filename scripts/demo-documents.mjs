@@ -170,8 +170,9 @@ try {
       on conflict (document_id, task) do update
         set responsible_id = excluded.responsible_id, due_date = excluded.due_date`;
   };
-  // Chasing the bill for goods that arrived and nobody has invoiced.
-  await task(gr2.id, "Invoice follow-up", suSu.id, day(8));
+  // Chasing the bill for goods that arrived and nobody has invoiced. That is
+  // the first receipt: it came in against the order, so no invoice names it.
+  await task(gr1.id, "Invoice follow-up", suSu.id, day(8));
   // The order is still short, and somebody owns getting the rest in.
   await task(po.id, "Chase outstanding delivery", aung.id, day(5));
   // Money out with nothing to attach it to.
