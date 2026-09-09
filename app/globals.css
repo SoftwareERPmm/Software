@@ -1268,3 +1268,65 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 .sourcebtn:hover { border-color: var(--brand-strong, var(--brand)); }
 .sourcebtn .pooldot { margin-top: 0; }
 .sourcebtn .avail { margin-left: auto; color: var(--muted); font-size: var(--t-2xs); }
+
+/* Filters apply themselves once the client is running, so the button that
+   applied them has nothing left to do. Hidden by a class on the document, so
+   it stays hidden across soft navigations; absent without JavaScript, where
+   the button is the only way to filter at all. */
+.js-autoapply [data-apply] { display: none; }
+
+/* A report re-reading itself, said the way chrome says things: a hairline
+   along the bottom edge of the filters, moving while the answer is on its
+   way. No badge, no pill, no second colour — the filters are not an
+   announcement, and a coloured box in a row of form controls reads as one.
+   The word itself stays for screen readers, which cannot see a line move. */
+.inner > form { position: relative; }
+
+.is-filtering .inner > form::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background:
+    linear-gradient(90deg,
+      transparent 0%,
+      var(--brand) 35%,
+      var(--brand) 65%,
+      transparent 100%);
+  background-size: 45% 100%;
+  background-repeat: no-repeat;
+  animation: autoapply-sweep 1.1s ease-in-out infinite;
+}
+
+@keyframes autoapply-sweep {
+  0%   { background-position: -45% 0; }
+  100% { background-position: 145% 0; }
+}
+
+/* Without motion the same fact has to be stated some other way, so the line
+   simply sits there, full width and steady, for as long as it is true. */
+@media (prefers-reduced-motion: reduce) {
+  .is-filtering .inner > form::after {
+    background: var(--brand);
+    background-size: auto;
+    animation: none;
+    opacity: 0.5;
+  }
+}
+
+/* A report re-reading itself. The filters stay sharp — they are what you are
+   touching — and everything they describe goes quiet until it is true again.
+   Not hidden and not replaced by a spinner: the shape of the report stays
+   put, so nothing jumps when the new figures arrive. */
+.is-filtering .inner > *:not(form):not(.page-head):not(.erp-tabs) {
+  opacity: 0.4;
+  transition: opacity 0.12s ease-out;
+}
+.inner > * { transition: opacity 0.18s ease-in; }
+
+@media (prefers-reduced-motion: reduce) {
+  .is-filtering .inner > *:not(form):not(.page-head):not(.erp-tabs),
+  .inner > * { transition: none; }
+}

@@ -1,4 +1,5 @@
 import { money } from "@/lib/db";
+import { AutoApply } from "@/components/auto-apply";
 import { getCompany, getIncomeStatement, getBranches, getUnassignedBranchActivity, UNASSIGNED_BRANCH } from "@/lib/queries";
 
 function defaultFrom() {
@@ -71,7 +72,8 @@ export default async function IncomeStatement({
           Revenue less cost of goods sold less expense, read straight from the
           ledger for the period below. Choose a branch to see that branch
           alone, or leave it on all branches for the consolidated company
-          figures — the branches always add up to the company total.
+          figures — the branches add up to the company total, less whatever
+          carries no branch at all.
         </span>
       </div>
 
@@ -96,7 +98,10 @@ export default async function IncomeStatement({
           <label htmlFor="to">To</label>
           <input id="to" name="to" type="date" defaultValue={range.to} />
         </div>
-        <div className="actions"><button type="submit">Update</button></div>
+        <div className="actions">
+          <AutoApply />
+          <button type="submit" data-apply>Update</button>
+        </div>
       </form>
 
       {unassignedLines.lines > 0 && branchId === null && (

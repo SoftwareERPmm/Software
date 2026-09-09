@@ -1,4 +1,5 @@
 import { money } from "@/lib/db";
+import { AutoApply } from "@/components/auto-apply";
 import { getCompany, getBalanceSheet, getBranches, getUnassignedBranchActivity, UNASSIGNED_BRANCH } from "@/lib/queries";
 
 function today() {
@@ -90,7 +91,10 @@ export default async function BalanceSheet({
           <label htmlFor="asOf">As of</label>
           <input id="asOf" name="asOf" type="date" defaultValue={asOf} />
         </div>
-        <div className="actions"><button type="submit">Update</button></div>
+        <div className="actions">
+          <AutoApply />
+          <button type="submit" data-apply>Update</button>
+        </div>
       </form>
 
       {unassignedLines.lines > 0 && branchId === null && (
