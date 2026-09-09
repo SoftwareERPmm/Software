@@ -1712,12 +1712,28 @@ async function postVoucherFrom(
     return { error: "A voucher needs at least two lines that balance" };
   }
 
+  // A voucher with no branch is real activity that belongs to none of them,
+  // and it is what makes a branch report fail to add up to the company. The
+  // form asks; this is what stops it arriving without one anyway. Companies
+  // with a single branch have it filled in for them, so nobody is asked a
+  // question with one answer.
+  let locationId = str(fd, "location_id") || null;
+  if (!locationId) {
+    const branches = await sql`
+      select id from location
+       where company_id = ${co} and parent_id is null and is_active
+       order by code`;
+    if (branches.length === 0) return { error: "Set up a branch before posting a voucher" };
+    if (branches.length > 1) return { error: "Choose the branch this voucher happened at" };
+    locationId = branches[0].id as string;
+  }
+
   const input = {
     companyId: co,
     docDate: str(fd, "doc_date"),
     memo: str(fd, "memo") || null,
     reference: str(fd, "reference") || null,
-    locationId: str(fd, "location_id") || null,
+    locationId,
     lines,
   };
 
@@ -3412,7 +3428,7 @@ export async function createOpeningBatch(_prev: unknown, fd: FormData): Promise<
       stock?: { itemId: string; locationId: string; qty: number; unitCost: number }[];
       receivables?: { partnerId: string; reference: string; amount: number; dueDate: string | null }[];
       payables?: { partnerId: string; reference: string; amount: number; dueDate: string | null }[];
-      accounts?: { accountId: string; amount: number }[];
+      accounts?: { accountId: string; amount: number; locationId?: string | null }[];
     };
     try {
       parsed = JSON.parse(raw);

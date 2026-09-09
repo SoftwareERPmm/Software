@@ -119,14 +119,17 @@ export default async function TrialBalance({
               <span className="hint">Blank means everything posted</span>
             </div>
             <div className="field">
-              <label htmlFor="location">Branch / warehouse</label>
+              {/* Branches only — the list is branches, and calling it
+                  "warehouse" invited someone to look for one and conclude the
+                  filter was broken when no warehouse was there. */}
+              <label htmlFor="location">Branch</label>
               <select id="location" name="location" defaultValue={p.location ?? ""}>
                 <option value="">All branches</option>
                 {locations.map((l) => (
                   <option key={l.id} value={l.id}>{l.code} · {l.name}</option>
                 ))}
-                {unassigned > 0 && (
-                  <option value={UNASSIGNED_BRANCH}>— No branch ({unassigned} lines) —</option>
+                {unassigned.lines > 0 && (
+                  <option value={UNASSIGNED_BRANCH}>— No branch ({unassigned.lines} lines) —</option>
                 )}
               </select>
             </div>
@@ -154,6 +157,15 @@ export default async function TrialBalance({
           </div>
         </div>
       </form>
+
+      {unassigned.lines > 0 && !p.location && (
+        <p className="hint" style={{ margin: "0 0 1rem" }}>
+          {money(unassigned.debits)} of activity carries no branch — opening
+          balances, and anything posted without one. It is in these totals and
+          in none of the branches, so the branches will not add up to what is
+          shown here. Choose &ldquo;No branch&rdquo; above to see exactly what.
+        </p>
+      )}
 
       {/* Debits, credits, and the figure that decides whether this report is
           worth reading at all. */}

@@ -1536,13 +1536,23 @@ function branchFilterOn(alias: ReturnType<typeof sql>, branchId?: string | null)
              and coalesce(w.parent_id, w.id) = ${branchId})`;
 }
 
-/** How much activity carries no branch at all, so a report can say so. */
+/**
+ * How much activity carries no branch at all, so a report can say so.
+ *
+ * This is the difference between the company total and the branches added
+ * together, and a report that shows the first two without the third is asking
+ * to be disbelieved: MAIN plus MDY comes to less than the company, and the
+ * screen offers no account of where the rest went. Opening balances carry no
+ * branch at all, and a voucher could be posted without one, so the remainder
+ * is real rather than theoretical.
+ */
 export async function getUnassignedBranchActivity(companyId: string) {
   const [r] = await sql`
-    select count(*)::int as lines
+    select count(*)::int as lines,
+           coalesce(sum(case when jl.base_amount > 0 then jl.base_amount else 0 end), 0) as debits
       from journal_line jl
      where jl.company_id = ${companyId} and jl.location_id is null`;
-  return Number(r?.lines ?? 0);
+  return { lines: Number(r?.lines ?? 0), debits: Number(r?.debits ?? 0) };
 }
 
 export async function getIncomeStatement(
