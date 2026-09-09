@@ -49,6 +49,7 @@ export function ReceiptForm({
   categories,
   uoms,
   purchaseInvoices,
+  openOrders,
   initialInvoiceId,
 }: {
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
@@ -60,6 +61,16 @@ export function ReceiptForm({
   uoms: { id: string; code: string; name: string }[];
   /** Open (unmatched) purchase invoices this receipt can match against — the bill arrived first. */
   purchaseInvoices?: OpenDoc[];
+  /**
+   * Open purchase orders per supplier id: goods this supplier already owes.
+   * A receipt raised here names no order, so the order stays at nothing
+   * received however much arrives — and then reads as overdue with the goods
+   * on the shelf. The form cannot fix that afterwards; it can only ask now.
+   */
+  openOrders?: Record<string, {
+    orderId: string; orderNo: string;
+    lines: { itemId: string; itemCode: string; qty: number }[];
+  }[]>;
   /** Arrived via "Create goods receipt" on a specific invoice's own page — match it immediately. */
   initialInvoiceId?: string;
 }) {
@@ -91,6 +102,7 @@ export function ReceiptForm({
 
   const byId = (id: string) => items.find((i) => i.id === id);
   const openInvoices = (purchaseInvoices ?? []).filter((d) => d.partner_id === partnerId);
+  const waitingOrders = partnerId ? (openOrders?.[partnerId] ?? []) : [];
   const matchedPi = openInvoices.find((d) => d.id === matchedPiId) ?? null;
 
   function fillFrom(pi: OpenDoc) {
@@ -275,6 +287,30 @@ export function ReceiptForm({
           </div>
         </div>
       </div>
+
+      {waitingOrders.length > 0 && (
+        <div className="alert" style={{
+          marginBottom: "1rem",
+          borderColor: "var(--warn)", color: "var(--warn)",
+          background: "color-mix(in srgb, var(--warn) 8%, transparent)",
+        }}>
+          <strong>
+            This supplier has {waitingOrders.length === 1 ? "an open purchase order" :
+              `${waitingOrders.length} open purchase orders`} for goods that have not arrived.
+          </strong>{" "}
+          Receiving here records the stock but answers no order, so it stays
+          outstanding — and overdue once its Needed-by date passes — with the
+          goods already on your shelf.
+          <div className="actions" style={{ marginTop: "0.6rem", flexWrap: "wrap" }}>
+            {waitingOrders.map((o) => (
+              <Link key={o.orderId} href={`/purchases/receive?order=${o.orderId}`}
+                    className="btn ghost tiny">
+                Receive against {o.orderNo} ({o.lines.map((l) => `${l.itemCode} ${fmt(l.qty)}`).join(", ")})
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="card">
         <div className="card-head">

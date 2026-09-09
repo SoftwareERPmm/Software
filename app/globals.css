@@ -1330,3 +1330,263 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
   .is-filtering .inner > *:not(form):not(.page-head):not(.erp-tabs),
   .inner > * { transition: none; }
 }
+
+/* ---------------------------------------------------------------- document
+   A document page is two columns: what the document says, and the office
+   around it — who owes something on it and what has happened. The rail
+   collapses under the document on a narrow screen, because the document is
+   the point and the rail is context. */
+
+.doclayout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 19rem;
+  gap: var(--s3);
+  align-items: start;
+}
+.docrail { display: flex; flex-direction: column; gap: var(--s2); }
+.docrail .card-body { padding-top: var(--s2); }
+
+@media (max-width: 1100px) {
+  .doclayout { grid-template-columns: minmax(0, 1fr); }
+}
+
+.raildl { display: flex; flex-direction: column; gap: 0.55rem; margin: 0; }
+.raildl > div { display: flex; justify-content: space-between; gap: var(--s2); align-items: baseline; }
+.raildl dt { color: var(--muted); font-size: var(--t-xs); }
+.raildl dd { margin: 0; text-align: right; font-size: var(--t-sm); }
+.railwho { display: inline-flex; align-items: center; gap: 0.4rem; }
+
+/* Initials in a circle. Grey and iconic where nobody was recorded, so an
+   unattributed document looks unattributed rather than blank. */
+.avatar {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.35rem; height: 1.35rem; border-radius: 999px;
+  background: color-mix(in srgb, var(--brand) 12%, transparent);
+  color: var(--brand);
+  font-size: var(--t-2xs); font-weight: 700; letter-spacing: 0.02em;
+  flex: none;
+}
+.avatar-none { background: var(--line-soft); color: var(--muted); }
+
+/* What has happened, newest first, with the line that joins the events. */
+.timeline { list-style: none; margin: 0; padding: 0; position: relative; }
+.timeline li {
+  display: grid; grid-template-columns: 1.1rem 1fr; gap: 0.55rem;
+  padding: 0 0 0.8rem;
+  position: relative;
+}
+.timeline li:not(:last-child)::before {
+  content: ""; position: absolute; left: 0.5rem; top: 1.1rem; bottom: 0;
+  width: 1px; background: var(--line);
+}
+.timeline li > svg { color: var(--muted); margin-top: 0.15rem; }
+.timeline li.now > svg { color: var(--brand); }
+.timeline li div { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+.timeline strong { font-weight: 600; font-size: var(--t-sm); }
+.timeline .page-sub { font-size: var(--t-xs); }
+
+/* Somebody is late on this document. Above everything, because whose move it
+   is outranks what the document contains. */
+/* Somebody is late. Said in the page's own colours, with the alarm spent on
+   a rule and an icon rather than on a field of orange with orange writing on
+   it — which is harder to read and, worn permanently, stops meaning anything.
+   The words stay full-contrast because they are the part that matters. */
+.taskbanner {
+  display: flex; gap: 0.55rem; align-items: flex-start; font-size: var(--t-sm);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--warn);
+  background: var(--surface);
+  color: var(--ink);
+  border-radius: var(--r-md);
+  padding: 0.7rem 0.9rem;
+  margin-bottom: var(--s3);
+  line-height: 1.45;
+}
+.taskbanner > svg { flex: none; margin-top: 0.2rem; color: var(--warn); }
+.taskbanner div { display: flex; flex-direction: column; gap: 0.15rem; }
+.taskbanner strong { color: var(--ink); }
+.taskbanner .page-sub { color: var(--muted); }
+
+/* The figures a document is about. */
+.docstats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(165px, 1fr));
+  gap: var(--s2);
+  margin-bottom: var(--s3);
+}
+.docstat {
+  display: grid;
+  grid-template-columns: 1.75rem 1fr;
+  grid-template-areas: "icon label" "icon value" "icon note";
+  gap: 0 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  padding: 0.55rem 0.7rem;
+}
+.docstat-icon {
+  grid-area: icon; align-self: start;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.75rem; height: 1.75rem; border-radius: var(--r-sm);
+  background: var(--line-soft); color: var(--muted);
+}
+.docstat-label {
+  grid-area: label;
+  font-family: var(--mono); font-size: var(--t-2xs);
+  letter-spacing: var(--track-caps); text-transform: uppercase; color: var(--muted);
+}
+.docstat-value {
+  grid-area: value;
+  font-family: var(--mono); font-size: var(--t-lg); font-weight: 600;
+  font-variant-numeric: tabular-nums; line-height: 1.25;
+}
+.docstat-unit { font-size: var(--t-sm); font-weight: 500; color: var(--muted); }
+.docstat-note { grid-area: note; color: var(--muted); font-size: var(--t-xs); }
+
+/* One figure on the row is the one to act on. It gets the colour — on its
+   icon and its number, and a rule down the edge — and the other tiles stay
+   plain, which is what makes the marked one legible as marked. */
+.docstat { border-left: 2px solid var(--line); }
+.docstat.warn { border-left-color: var(--warn); }
+.docstat.warn .docstat-icon { background: transparent; color: var(--warn); }
+.docstat.warn .docstat-value { color: var(--warn); }
+.docstat.ok { border-left-color: var(--ok); }
+.docstat.ok .docstat-icon { background: transparent; color: var(--ok); }
+
+/* The two halves of an invoice: goods still expected, money still owed. Side
+   by side because they are equal and independent — neither is a sub-heading
+   of the other — and stacked when there is not room to say so. */
+.halves {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--s3);
+  margin-bottom: var(--s3);
+}
+.half {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  padding: 0.7rem 0.8rem 0.8rem;
+}
+/* Late is said with an edge, not a wash.
+   A tinted panel with tinted text on it is the house style of every dashboard
+   template ever shipped, and it does two bad things at once: it lowers the
+   contrast of the words, and it spends the alarm colour on an area rather
+   than on the fact. So the card stays on the page's own surface, takes a
+   2px rule down its leading edge, and lets the colour fall where it means
+   something — the icon, the figure, the pill. */
+.half { border-left: 2px solid var(--line); }
+.half.late { border-left-color: var(--warn); }
+.half.done { border-left-color: var(--ok); }
+
+.half-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; }
+.half-head h2 { margin: 0; font-size: var(--t-base); font-weight: 600; }
+.half-head .pill { margin-left: auto; display: inline-flex; align-items: center; gap: 0.25rem; }
+.half-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.6rem; height: 1.6rem; border-radius: var(--r-sm);
+  background: var(--line-soft); color: var(--muted); flex: none;
+}
+.half.late .half-icon { background: transparent; color: var(--warn); }
+.half.done .half-icon { background: transparent; color: var(--ok); }
+.half-amount {
+  margin: 0 0 0.55rem;
+  font-family: var(--mono); font-size: var(--t-lg); font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.half.late .half-amount { color: var(--warn); }
+.half.done .half-amount { color: var(--muted); }
+.half-actions { margin-top: 0.85rem; flex-wrap: wrap; }
+
+/* Under the document, not beside it: what it is joined to, and what happened.
+   The links are the wider half — they are a table of documents somebody
+   follows — and the history the narrower, since it is a short column of
+   sentences read top to bottom. */
+.docfooter {
+  display: grid;
+  grid-template-columns: 3fr 1fr;
+  gap: var(--s3);
+  margin-top: var(--s3);
+  align-items: start;
+}
+.docfooter-links > .card { margin-bottom: 0; }
+.docfooter-history { height: fit-content; }
+/* Stacked where there is no room to be side by side, history first: it is
+   the one somebody scrolled down for. */
+@media (max-width: 900px) {
+  .docfooter { grid-template-columns: minmax(0, 1fr); }
+}
+/* In the narrow column the two sections of the links panel go one above the
+   other rather than fighting for 9rem each — and size to their content, or
+   flex-grow stretches two short lists down the height of the history beside
+   them and leaves a card of empty space. */
+/* Source and downstream, side by side where there is room. Grid rather than
+   flexed tables: a table sizes to its content and grows past its box, which
+   is how a long document reference came to be painted over the column beside
+   it. A track can only be as wide as its share. */
+.reldoc-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--s3) 2rem;
+  align-items: start;
+}
+.reldoc-section { min-width: 0; }
+.reldoc-heading {
+  font-family: var(--mono); font-size: var(--t-2xs);
+  letter-spacing: var(--track-caps); text-transform: uppercase;
+  color: var(--muted); margin-bottom: 0.4rem;
+}
+/* Label, then value — and the value column is allowed to shrink, which is
+   what makes the text wrap rather than overflow. */
+.reldoc-list {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.3rem 0.75rem;
+  margin: 0;
+  align-items: baseline;
+}
+.reldoc-list dt { color: var(--muted); font-size: var(--t-sm); }
+.reldoc-list dd { margin: 0; min-width: 0; font-size: var(--t-sm); overflow-wrap: anywhere; }
+.reldoc-doc { margin-bottom: 0.15rem; }
+.docfooter .timeline li { grid-template-columns: 1.1rem 1fr auto; align-items: start; }
+
+/* A dialog carrying a table of choices, not a yes/no question. The width has
+   to be set on the dialog itself: .confirm caps at 26rem, and a panel asking
+   for more inside it is simply clipped — which cut the heading, the order
+   dropdown and the hint clean off their right-hand edge. */
+.confirm-wide { max-width: min(56rem, 92vw); }
+.linkpanel { max-height: 86vh; overflow: auto; }
+.linkpanel .linetable { width: 100%; }
+.linkpanel .card-head { padding-bottom: 0.5rem; }
+.linkpanel .actions { padding: 0.75rem 1rem 1rem; }
+
+/* Why a document cannot be voided — on request, not shouted.
+   As a permanent red panel this explained a prohibition to somebody who had
+   not asked to void anything, on every settled invoice in the system, and
+   taught them to read past the one colour that should stop them. */
+.voidlock { margin-top: 0.5rem; }
+.voidlock-why {
+  margin-top: 0.4rem;
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--muted);
+  border-radius: var(--r-sm);
+  background: var(--line-soft);
+  padding: 0.5rem 0.7rem;
+  font-size: var(--t-sm);
+}
+.voidlock-why ul { margin: 0.3rem 0 0; padding-left: 1.1rem; color: var(--muted); }
+
+/* The row of things a document lets you do.
+   These used to be four separate rows, each pulling itself up half a line
+   into the one above with a negative margin — so "Cannot be voided", "Link to
+   a purchase order" and "Create purchase invoice" sat on top of each other.
+   One row, one gap, wrapping when it must. */
+.docactions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+}
+.docactions .page-sub { margin-left: 0.15rem; }
+.voidlock { flex-direction: column; align-items: flex-start; }

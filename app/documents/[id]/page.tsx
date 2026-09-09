@@ -3,7 +3,16 @@ import { planVoid } from "@/lib/void";
 import { RelatedDocumentsPanel } from "@/components/related-documents";
 import { ReplaceSettlement } from "@/components/replace-settlement";
 import { VoidDocument } from "@/components/void-document";
-import { voidDocumentAction } from "@/lib/actions";
+import { LinkToOrder } from "@/components/link-to-order";
+import { TaskBanner } from "@/components/document-rail";
+import { DocumentFooter } from "@/components/document-footer";
+import { DocStats, type DocStat } from "@/components/doc-stats";
+import { InvoiceProgress } from "@/components/invoice-progress";
+import {
+  PackageCheck, FileText, Clock, Wallet, CircleDollarSign, Boxes, Truck,
+} from "lucide-react";
+import { CloseOrder } from "@/components/close-order";
+import { voidDocumentAction, linkReceiptToOrder, closeOrderAction } from "@/lib/actions";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { sql, money, qty, shortDate } from "@/lib/db";
@@ -23,6 +32,11 @@ import {
   getOrderProgress,
   getRelatedDocuments,
   getUnsettledConsignment,
+  getLinkableOrders,
+  getOrderOutstanding,
+  getOrderClosure,
+  getDocumentPeople,
+  getInvoiceProgress,
 } from "@/lib/queries";
 import {
   createDelivery, createGoodsReceipt, replaceConsignmentSettlement,
@@ -127,6 +141,23 @@ export default async function DocumentPage({
   const goodsWord = isGr || isPi ? "received" : "delivered";
   const Goods = goodsWord.replace(/^\w/, (c) => c.toUpperCase());
   const grirOutstanding = (isGr || isPi) ? await isGrirOutstanding(doc.id) : false;
+
+  // Goods that arrived without saying which order they answered, and orders
+  // still waiting for them. Offered on the document that moved the goods,
+  // because that is where someone stands when they notice the order behind it
+  // still reads as never received.
+  const linkable = movesGoods
+    ? await getLinkableOrders(doc.company_id, doc.id)
+    : { lines: [], openLines: [] };
+
+  const isPostedOrder = ["PURCHASE_ORDER", "SALES_ORDER"].includes(doc.doc_type)
+    && doc.status === "POSTED";
+  const orderState = isPostedOrder
+    ? await getOrderOutstanding(doc.company_id, doc.id)
+    : { outstanding: 0, isClosed: false };
+  const closure = isPostedOrder ? await getOrderClosure(doc.id) : null;
+
+
 
   // Line-level settlement: how much of this receipt has been invoiced, or of
   // this invoice received, and by which documents. Replayed through the same
@@ -247,6 +278,83 @@ export default async function DocumentPage({
 
   const outstanding = isInvoice ? await getDocumentOutstanding(doc.id) : 0;
 
+  // Who raised it, who posted it, what is still owed on it, and what has
+  // happened since. Every document has this; only the figures beside it
+  // differ by type.
+  const people = await getDocumentPeople(doc.id);
+
+  // A purchase invoice has two things outstanding that move independently.
+  // Shown as two, because one combined status hides whichever is the problem.
+  // Both invoice types: a customer invoice paid in full with nothing shipped
+  // is exactly as wrong as a supplier one, and hides the same way behind a
+  // single status.
+  const isSalesInvoice = doc.doc_type === "SALES_INVOICE";
+  const progress = (doc.doc_type === "PURCHASE_INVOICE" || isSalesInvoice)
+    && doc.status === "POSTED"
+    ? await getInvoiceProgress(doc.company_id, doc.id)
+    : null;
+  const tasks = people.tasks as never as Parameters<typeof TaskBanner>[0]["tasks"];
+
+  /**
+   * The two or three numbers this kind of document is about, in the order
+   * they read as a sentence: what arrived, what was billed, what is still
+   * owed. Only the outstanding one is toned, because a tile with a colour is
+   * making a claim and most of these are just facts.
+   */
+  const stats: DocStat[] = [];
+  // The unit these quantities are in, taken from the lines rather than
+  // assumed: "40" means nothing and "40 BOX" means something.
+  const unitWord = (lines[0] as any)?.uom_code ?? undefined;
+  if (movesGoods && match) {
+    const total = match.lines.reduce((t, l) => t + Number(l.qty), 0);
+    const done = match.lines.reduce((t, l) => t + Number(l.settled), 0);
+    const left = Math.max(total - done, 0);
+    stats.push(
+      { icon: PackageCheck, label: `Goods ${goodsWord}`, value: qty(String(total)),
+        unit: unitWord, note: `on ${shortDate(doc.doc_date)}` },
+      { icon: FileText, label: movesGoods && isDel ? "Billed to customer" : "Billed to supplier",
+        value: qty(String(done)), unit: unitWord,
+        note: done === 0 ? "Not yet invoiced" : "Invoiced" },
+      { icon: Clock, label: "Unbilled quantity", value: qty(String(left)), unit: unitWord,
+        note: left > 0 ? "Awaiting supplier invoice" : "Nothing outstanding",
+        tone: left > 0 ? "warn" : "ok" },
+    );
+  } else if (isInvoice && !progress) {
+    stats.push(
+      { icon: CircleDollarSign, label: "Invoice total", value: money(doc.gross_total) },
+      { icon: Wallet, label: "Paid", value: money(Number(doc.gross_total) - outstanding),
+        tone: outstanding === 0 ? "ok" : undefined },
+      { icon: Clock, label: "Outstanding", value: money(outstanding),
+        note: outstanding > 0 && doc.due_date ? `due ${shortDate(doc.due_date)}` : undefined,
+        tone: outstanding > 0 ? "warn" : "ok" },
+    );
+  } else if (isPostedOrder) {
+    const [totals] = await sql`
+      select coalesce(sum(ordered), 0)::float as ordered,
+             coalesce(sum(fulfilled), 0)::float as fulfilled
+        from v_order_outstanding where order_id = ${doc.id}`;
+    const ordered = Number(totals?.ordered ?? 0);
+    const fulfilled = Number(totals?.fulfilled ?? 0);
+    stats.push(
+      { icon: Boxes, label: "Ordered", value: qty(String(ordered)), unit: unitWord },
+      { icon: Truck, label: doc.doc_type === "SALES_ORDER" ? "Delivered" : "Received",
+        value: qty(String(fulfilled)), unit: unitWord },
+      { icon: Clock, label: "Remaining", value: qty(String(orderState.outstanding)), unit: unitWord,
+        note: orderState.isClosed ? "Closed — not expected" : undefined,
+        tone: orderState.outstanding > 0 ? "warn" : "ok" },
+    );
+  }
+
+  const footer = (
+    <DocumentFooter
+      activity={people.activity as never}
+      related={<RelatedDocumentsPanel related={related} />}
+      createdBy={{ name: people.doc?.created_by ?? null, initials: people.doc?.created_initials ?? null }}
+      postedBy={{ name: people.doc?.posted_by ?? null, initials: people.doc?.posted_initials ?? null }}
+      postedAt={people.doc?.posted_at ? String(people.doc.posted_at) : null}
+    />
+  );
+
   // Orders render on the ERP form. Only the two order types for now: the
   // shell is adopted screen by screen rather than switched on globally, so
   // anything not yet moved keeps working exactly as it did.
@@ -297,7 +405,9 @@ export default async function DocumentPage({
         memo={doc.memo ?? null}
         lines={erpLines}
         netTotal={Number(doc.net_total)}
-        related={<RelatedDocumentsPanel related={related} />}
+        banner={<TaskBanner tasks={tasks.filter((t: any) => !t.aspect)} />}
+        stats={<DocStats stats={stats} />}
+        footer={footer}
         chain={chain.map((step) => ({
           type: step,
           label: label(step).replace(/\b\w/g, (c) => c.toUpperCase()),
@@ -341,6 +451,30 @@ export default async function DocumentPage({
         href: stageDoc[step] ? null : nextStageHref(step),
         optional: OPTIONAL_STAGE.has(step),
       }))}
+      banner={
+        <>
+          {/* Tasks about one half of an invoice are shown in that half, with
+              the figure they are about. Banner them as well and the same
+              sentence appears twice, six inches apart. */}
+          <TaskBanner tasks={tasks.filter((t: any) => !t.aspect)} />
+          {progress && (
+            <InvoiceProgress
+              sales={isSalesInvoice}
+              goods={progress.goods as never}
+              payment={progress.payment as never}
+              unit={progress.unit}
+              receiveHref={isSalesInvoice
+                ? `/sales/deliver?invoice=${doc.id}`
+                : `/purchases/receive/new?match_invoice_id=${doc.id}`}
+              payHref={isSalesInvoice
+                ? `/receivables/receive?partner=${doc.partner_id}&invoice=${doc.id}`
+                : `/payables/pay?invoice=${doc.id}`}
+            />
+          )}
+        </>
+      }
+      stats={<DocStats stats={stats} />}
+      footer={footer}
       badges={
         <>
           {isInvoice && outstanding > 0 && (
@@ -365,8 +499,6 @@ export default async function DocumentPage({
           unsettled={unsettledConsignment}
         />
       )}
-
-      <RelatedDocumentsPanel related={related} />
 
       {voidInfo && (
         <div className="alert" style={{ marginTop: "0.75rem" }}>
@@ -410,8 +542,38 @@ export default async function DocumentPage({
         />
       )}
 
+      {movesGoods && (
+        <LinkToOrder
+          action={linkReceiptToOrder}
+          lines={linkable.lines as never}
+          openLines={linkable.openLines as never}
+        />
+      )}
+
+      {isPostedOrder && (
+        <>
+          {closure && !closure.is_open && (
+            <div className="alert" style={{
+              borderColor: "var(--warn)", color: "var(--warn)",
+              background: "color-mix(in srgb, var(--warn) 8%, transparent)",
+            }}>
+              <strong>The remainder of this order is not expected.</strong>{" "}
+              {closure.reason} — closed {shortDate(closure.closed_at)}. What was
+              received stays as it was; only the outstanding quantity is written
+              off.
+            </div>
+          )}
+          <CloseOrder
+            action={closeOrderAction}
+            documentId={doc.id}
+            isClosed={orderState.isClosed}
+            outstanding={orderState.outstanding}
+          />
+        </>
+      )}
+
       {(needsInvoiceMatch || needsReceiptMatch) && (
-        <div className="actions" style={{ marginTop: "-0.5rem" }}>
+        <div className="docactions">
           <Link
             href={
               needsInvoiceMatch
@@ -494,7 +656,7 @@ export default async function DocumentPage({
       )}
 
       {needsSalesInvoice && (
-        <div className="actions" style={{ marginTop: "-0.5rem" }}>
+        <div className="docactions">
           <Link href={`/sales/new?delivery_id=${doc.id}`} className="btn">
             Create sales invoice — {money(doc.gross_total)}
           </Link>
@@ -521,8 +683,12 @@ export default async function DocumentPage({
           owed — the three figures anyone opening an invoice is looking for,
           side by side rather than inferred from a pill and a journal.
           Paid is derived here for display; only the total and the
-          outstanding balance are ever read from the ledger. */}
-      {isInvoice && (
+          outstanding balance are ever read from the ledger.
+
+          Not shown where the two halves are: they carry the same three
+          figures and the same action, and saying it twice on one screen is
+          what made this page feel cluttered rather than thorough. */}
+      {isInvoice && !progress && (
         <div className="erp-settle">
           <div className="erp-settle-figs">
             <div className="erp-settle-fig">

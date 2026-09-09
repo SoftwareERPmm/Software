@@ -39,6 +39,7 @@ export type ChainStage = {
 export function ErpDocShell({
   docId, docNo, typeLabel, status, listHref, listLabel,
   chain, actions, badges, children, backHref, backLabel,
+  banner, stats, footer,
 }: {
   docId: string;
   docNo: string;
@@ -56,6 +57,17 @@ export function ErpDocShell({
   actions?: React.ReactNode;
   /** Extra pills beside the number: outstanding, delivered, matched. */
   badges?: React.ReactNode;
+  /** Whose move it is, when somebody is late. Above the document itself. */
+  banner?: React.ReactNode;
+  /** The two or three figures the document is really about. */
+  stats?: React.ReactNode;
+  /**
+   * What happened and what it is linked to, both of which belong under the
+   * document rather than beside it. Beside it they took a fifth of the width
+   * from the lines — the one part of the page somebody actually reads across
+   * — to hold a history nobody consults until something is wrong.
+   */
+  footer?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const currentIndex = chain.findIndex((s) => s.doc?.doc_no === docNo);
@@ -124,7 +136,10 @@ export function ErpDocShell({
           <span className={`pill ${status.toLowerCase()}`}>{status}</span>
           {badges}
         </div>
+        {banner}
+        {stats}
         {children}
+        {footer}
       </div>
     </div>
   );

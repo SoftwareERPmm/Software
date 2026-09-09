@@ -101,6 +101,16 @@ export type FulfillmentLine = {
   unitCost?: number;
   sourceLineId?: string | null;
 
+  /**
+   * The order line these goods also fulfil, when the document itself names
+   * something else. A receipt matched to the invoice that billed for it can
+   * only name one source, and it names the invoice — so without this the
+   * purchase order behind them stays at nothing received and goes overdue
+   * with the goods on the shelf. Validated on the way in like any other
+   * allocation: same partner, same item, and only what is still outstanding.
+   */
+  orderLineId?: string | null;
+
   /** Which stock pool a delivery line draws from. See InvoiceLine.source —
    *  same rule, same reason: never blend owned and consigned FIFO. */
   source?: "OWNED" | "CONSIGNMENT";
@@ -2039,6 +2049,11 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
     }
   }
 
+  // Goods that answer an order the document does not name — the invoice-first
+  // case, where source_document_id is already spoken for. Recorded here, with
+  // the same checks a link made afterwards goes through.
+  await linkNamedOrderLines(tx, companyId, doc.id as string, lines);
+
   const grir = await tx`select fn_system_account(${companyId}, 'GRIR_CLEARING') as a`;
   journal.push({ accountId: grir[0].a, amount: -grirAmount, partnerId });
 
@@ -2048,6 +2063,227 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
   await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
 
   return { id: doc.id as string, docNo: docNo as string };
+}
+
+/**
+ * Order lines a fulfilment names on the way in.
+ *
+ * The document's own lines have just been written, so each input line is
+ * matched back to the row it created — by item and quantity, in order, which
+ * is how they were inserted. Everything else is the same validation a manual
+ * link goes through, because a link made at posting time is no more
+ * trustworthy than one made afterwards.
+ */
+async function linkNamedOrderLines(
+  tx: TransactionSql,
+  companyId: string,
+  documentId: string,
+  lines: ReadonlyArray<{ itemId: string; qty: number; orderLineId?: string | null }>
+): Promise<void> {
+  const named = lines
+    .map((l, i) => ({ ...l, i }))
+    .filter((l) => l.orderLineId);
+  if (named.length === 0) return;
+
+  const rows = await tx`
+    select id, line_no, item_id, base_qty from document_line
+     where document_id = ${documentId} order by line_no`;
+
+  const allocations = named.map((l) => {
+    const row = rows[l.i];
+    if (!row || row.item_id !== l.itemId) {
+      throw new Error(`Line ${l.i + 1}: could not tell which line fulfils that order`);
+    }
+    return { fulfilmentLineId: row.id as string, orderLineId: l.orderLineId as string, qty: l.qty };
+  });
+
+  await linkFulfilmentIn(tx, { companyId, lines: allocations, source: "POSTING" });
+}
+
+/**
+ * These goods answered that order.
+ *
+ * The relationship a receipt cannot always carry on its own. A receipt raised
+ * with no order chosen, or matched to the invoice that billed for it, leaves
+ * the order at nothing received — the goods are on the shelf and the order
+ * turns overdue behind them. Nothing can be inferred afterwards from the item
+ * alone: two orders for the same product, and a guess closes the wrong one.
+ * So someone says which, and this records that they said it.
+ *
+ * Every allocation is checked, not trusted:
+ *
+ *   - both documents belong to this company and the same partner
+ *   - the fulfilment is POSTED, and is a receipt against a purchase order or
+ *     a delivery against a sales order — never the two crossed
+ *   - the lines are for the same item
+ *   - the order line has that much still outstanding
+ *   - the receipt line has that much not already allocated elsewhere
+ *
+ * The last two are why this locks the order first: two people linking the
+ * same receipt to the same order at once would otherwise both read "10 still
+ * outstanding" and both allocate it.
+ */
+export async function linkFulfilmentToOrder(input: {
+  companyId: string;
+  /** Allocations: which receipt/delivery line answers which order line, and how much. */
+  lines: { fulfilmentLineId: string; orderLineId: string; qty: number }[];
+  reason?: string | null;
+  linkedBy?: string | null;
+  source?: "POSTING" | "MANUAL";
+}) {
+  if (input.lines.length === 0) throw new Error("Nothing to link");
+  return sql.begin(async (tx) => linkFulfilmentIn(tx, input));
+}
+
+async function linkFulfilmentIn(
+  tx: TransactionSql,
+  input: {
+    companyId: string;
+    lines: { fulfilmentLineId: string; orderLineId: string; qty: number }[];
+    reason?: string | null;
+    linkedBy?: string | null;
+    source?: "POSTING" | "MANUAL";
+  }
+) {
+  const { companyId } = input;
+  const written: { fulfilmentLineId: string; orderLineId: string; qty: number }[] = [];
+
+  for (const [i, l] of input.lines.entries()) {
+    if (!(l.qty > 0)) throw new Error(`Line ${i + 1}: quantity must be more than nothing`);
+
+    // Locked before it is read, so two people cannot allocate the same
+    // outstanding quantity at the same moment.
+    const [order] = await tx`
+      select ol.id, ol.item_id, ol.base_qty as ordered,
+             o.id as document_id, o.doc_no, o.doc_type, o.partner_id, o.status
+        from document_line ol
+        join document o on o.id = ol.document_id
+       where ol.id = ${l.orderLineId} and o.company_id = ${companyId}
+       for update of o`;
+    if (!order) throw new Error(`Line ${i + 1}: that order line does not exist`);
+    if (order.status !== "POSTED") {
+      throw new Error(`Line ${i + 1}: ${order.doc_no} is ${order.status} and cannot be fulfilled`);
+    }
+
+    const [got] = await tx`
+      select dl.id, dl.item_id, dl.base_qty as qty,
+             d.doc_no, d.doc_type, d.partner_id, d.status
+        from document_line dl
+        join document d on d.id = dl.document_id
+       where dl.id = ${l.fulfilmentLineId} and d.company_id = ${companyId}`;
+    if (!got) throw new Error(`Line ${i + 1}: that receipt line does not exist`);
+    if (got.status !== "POSTED") {
+      throw new Error(`Line ${i + 1}: ${got.doc_no} is ${got.status} and cannot fulfil anything`);
+    }
+
+    const pairs: Record<string, string> = {
+      PURCHASE_ORDER: "GOODS_RECEIPT",
+      SALES_ORDER: "DELIVERY",
+    };
+    if (pairs[order.doc_type as string] !== got.doc_type) {
+      throw new Error(
+        `Line ${i + 1}: ${got.doc_no} is a ${readable(got.doc_type)} and cannot fulfil ` +
+        `${order.doc_no}, which is a ${readable(order.doc_type)}`
+      );
+    }
+    if (order.partner_id !== got.partner_id) {
+      throw new Error(`Line ${i + 1}: ${got.doc_no} and ${order.doc_no} are for different partners`);
+    }
+    if (order.item_id !== got.item_id) {
+      throw new Error(`Line ${i + 1}: those two lines are for different items`);
+    }
+
+    // What the order still expects, counting what already answers it either
+    // way — the same reckoning every screen uses.
+    const [outstanding] = await tx`
+      select coalesce(sum(v.outstanding), 0) as v
+        from v_order_outstanding v
+       where v.order_id = ${order.document_id} and v.item_id = ${order.item_id}`;
+    if (Number(outstanding.v) + 0.0001 < l.qty) {
+      throw new Error(
+        `Line ${i + 1}: ${order.doc_no} has ${Number(outstanding.v)} of that item still ` +
+        `outstanding, not ${l.qty}`
+      );
+    }
+
+    // And what this receipt line has left to give. Allocating the same units
+    // to two orders is how one shipment closes two.
+    const [used] = await tx`
+      select coalesce(sum(qty), 0) as v from fulfilment_link
+       where fulfilment_line_id = ${l.fulfilmentLineId}`;
+    const spare = round4(Number(got.qty) - Number(used.v));
+    if (spare + 0.0001 < l.qty) {
+      throw new Error(
+        `Line ${i + 1}: ${got.doc_no} has ${spare} of that item not already allocated ` +
+        `to an order, not ${l.qty}`
+      );
+    }
+
+    await tx`
+      insert into fulfilment_link
+        (company_id, fulfilment_line_id, order_line_id, qty, reason, linked_by, source)
+      values
+        (${companyId}, ${l.fulfilmentLineId}, ${l.orderLineId}, ${l.qty},
+         ${input.reason ?? null}, ${input.linkedBy ?? null}, ${input.source ?? "MANUAL"})`;
+
+    written.push({ fulfilmentLineId: l.fulfilmentLineId, orderLineId: l.orderLineId, qty: l.qty });
+  }
+
+  return { linked: written };
+}
+
+/**
+ * The rest is not coming.
+ *
+ * A different statement from linking, and kept separate on purpose. Linking
+ * says the goods arrived and answer this order; closing says whatever is left
+ * will never arrive. Closing an order whose goods did arrive would silence
+ * the overdue warning and leave the received quantity wrong — a report that
+ * looks tidy and is false.
+ */
+export async function closeOrderRemaining(input: {
+  companyId: string;
+  documentId: string;
+  reason: string;
+  closedBy?: string | null;
+}) {
+  if (!input.reason?.trim()) throw new Error("Say why the rest is not expected");
+  return sql.begin(async (tx) => {
+    const [order] = await tx`
+      select id, doc_no, doc_type, status from document
+       where id = ${input.documentId} and company_id = ${input.companyId}
+       for update`;
+    if (!order) throw new Error("That order does not exist");
+    if (!["PURCHASE_ORDER", "SALES_ORDER"].includes(order.doc_type as string)) {
+      throw new Error(`${order.doc_no} is not an order`);
+    }
+    if (order.status !== "POSTED") {
+      throw new Error(`${order.doc_no} is ${order.status}`);
+    }
+    await tx`
+      insert into order_closure (company_id, document_id, reason, closed_by, is_open)
+      values (${input.companyId}, ${input.documentId}, ${input.reason.trim()},
+              ${input.closedBy ?? null}, false)`;
+    return { docNo: order.doc_no as string };
+  });
+}
+
+/** Undo a closure: the goods are expected after all. */
+export async function reopenOrder(input: {
+  companyId: string; documentId: string; reason: string; closedBy?: string | null;
+}) {
+  if (!input.reason?.trim()) throw new Error("Say why it is expected again");
+  return sql.begin(async (tx) => {
+    const [order] = await tx`
+      select id, doc_no from document
+       where id = ${input.documentId} and company_id = ${input.companyId} for update`;
+    if (!order) throw new Error("That order does not exist");
+    await tx`
+      insert into order_closure (company_id, document_id, reason, closed_by, is_open)
+      values (${input.companyId}, ${input.documentId}, ${input.reason.trim()},
+              ${input.closedBy ?? null}, true)`;
+    return { docNo: order.doc_no as string };
+  });
 }
 
 export async function postGoodsReceipt(input: FulfillmentInput) {

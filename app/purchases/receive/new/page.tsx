@@ -1,5 +1,5 @@
 import { getFormData, createGoodsReceipt } from "@/lib/actions";
-import { getOpenPurchaseInvoices } from "@/lib/queries";
+import { getOpenPurchaseInvoices, getOpenPurchaseOrders } from "@/lib/queries";
 import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { ReceiptForm } from "@/components/receipt-form";
@@ -14,6 +14,27 @@ export default async function NewGoodsReceipt({
   const [co] = await sql`select id from company order by created_at limit 1`;
   const categories = await allCategories(co.id);
   const purchaseInvoices = await getOpenPurchaseInvoices(co.id);
+
+  // Open order lines, per supplier, so the form can say "these goods look
+  // like they answer PO20260902002" before someone records them as arriving
+  // from nowhere. A receipt that names no order leaves that order at zero
+  // received for good: nothing in the record connects the two, and guessing
+  // by item afterwards would close the wrong order as readily as the right
+  // one. So it is asked here, while the answer is still known.
+  const openOrders = await getOpenPurchaseOrders(co.id) as unknown as Array<{
+    order_id: string; order_no: string; partner_id: string;
+    item_id: string; item_code: string; remaining_qty: string;
+  }>;
+  const ordersBySupplier = new Map<string, {
+    orderId: string; orderNo: string; lines: { itemId: string; itemCode: string; qty: number }[];
+  }[]>();
+  for (const r of openOrders) {
+    const list = ordersBySupplier.get(r.partner_id) ?? [];
+    let order = list.find((o) => o.orderId === r.order_id);
+    if (!order) { order = { orderId: r.order_id, orderNo: r.order_no, lines: [] }; list.push(order); }
+    order.lines.push({ itemId: r.item_id, itemCode: r.item_code, qty: Number(r.remaining_qty) });
+    ordersBySupplier.set(r.partner_id, list);
+  }
   const today = new Date().toISOString().slice(0, 10);
 
   if (d.suppliers.length === 0 || categories.length === 0 || d.locations.length === 0) {
@@ -53,6 +74,7 @@ export default async function NewGoodsReceipt({
         uoms={d.uoms as never}
         today={today}
         purchaseInvoices={purchaseInvoices as never}
+        openOrders={Object.fromEntries(ordersBySupplier)}
         initialInvoiceId={match_invoice_id}
       />
     </>
