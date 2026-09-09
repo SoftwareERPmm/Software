@@ -256,9 +256,17 @@ export function InvoiceForm({
                   ))}
                 </select>
                 <span className="hint">
+                  {/* Same rule as the receipt side: say which of the three
+                      situations this is, rather than one line that is only
+                      true in some of them. */}
                   {matchedGr
                     ? "Lines filled from it — check against the actual bill"
-                    : "For goods already in the warehouse, awaiting their bill"}
+                    : openReceipts.length > 0
+                      ? `${openReceipts.length} receipt${openReceipts.length === 1 ? "" : "s"} `
+                        + "from this supplier are waiting on a bill"
+                      : partnerId
+                        ? "Nothing from this supplier is waiting on a bill"
+                        : "For goods already in the warehouse, awaiting their bill"}
                 </span>
               </div>
             )}

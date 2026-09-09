@@ -1,8 +1,11 @@
 import { getFinanceData, peekVoucherNo, createJournalVoucher } from "@/lib/actions";
+import { getCompany } from "@/lib/queries";
 import { VoucherForm } from "@/components/voucher-form";
+import { VoucherHelp } from "@/components/voucher-help";
 
 export default async function JournalVoucher() {
   const { accounts, accountTree, cashAccounts, bankAccounts, branches } = await getFinanceData();
+  const company = await getCompany();
   const today = new Date().toISOString().slice(0, 10);
   const nextNo = await peekVoucherNo("JOURNAL_VOUCHER");
   const money = cashAccounts;
@@ -25,12 +28,11 @@ export default async function JournalVoucher() {
         <span className="eyebrow">Accounting</span>
         <h1>Journal voucher</h1>
         <span className="page-sub">
-          For accounting events no document produces &mdash; depreciation, accruals,
-          reclassification, year-end adjustments. Anything a sale, purchase, receipt
-          or payment causes belongs on its own document, which posts its own entry:
-          keying it here as well records it twice. Control accounts are not offered;
-          they belong to their subledger.
+          Record depreciation, accruals and other accounting adjustments.
         </span>
+      <span className="actions">
+        <VoucherHelp kind="journal" />
+      </span>
       </div>
 
       <VoucherForm
@@ -42,6 +44,7 @@ export default async function JournalVoucher() {
         moneyAccounts={money as never}
         today={today}
         nextNo={nextNo}
+        companyName={company?.name ?? ""}
       />
     </>
   );

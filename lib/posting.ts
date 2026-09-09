@@ -38,6 +38,8 @@ export type InvoiceLine = {
    *  another — defaults to OWNED, and CONSIGNMENT never falls back to
    *  owned stock if there is not enough consigned to cover it. */
   source?: "OWNED" | "CONSIGNMENT";
+  /** Whose consigned goods. Only read when source is CONSIGNMENT. */
+  consignorId?: string | null;
 };
 
 export type InvoiceInput = {
@@ -102,6 +104,9 @@ export type FulfillmentLine = {
   /** Which stock pool a delivery line draws from. See InvoiceLine.source —
    *  same rule, same reason: never blend owned and consigned FIFO. */
   source?: "OWNED" | "CONSIGNMENT";
+  /** Whose consigned goods, when more than one consignor holds this item
+   *  here. Ignored unless the source is CONSIGNMENT. */
+  consignorId?: string | null;
 };
 export type FulfillmentInput = {
   companyId: string;
@@ -325,6 +330,60 @@ async function assertSourceLines(
     }
     if (item !== line.itemId) {
       throw new Error(`Line ${i + 1} refers to a line for a different item`);
+    }
+  });
+}
+
+/**
+ * A delivery against an invoice cannot ship more of it than is left.
+ *
+ * The invoice row is locked by requireSource before this runs, which is the
+ * point: the remaining quantity is read here, inside the transaction, rather
+ * than on the screen that offered it. Two people pressing "deliver now" at
+ * the same moment both saw 900 outstanding; the second used to post its 900
+ * on top of the first, and 1,800 units left the building against a bill for
+ * 1,000. The lock made them take turns without making the second look again.
+ *
+ * Items the invoice never billed are not capped — a delivery may carry
+ * something extra, the same way a receipt may — but they are not invisible
+ * either: they show up as still needing an invoice.
+ */
+async function assertNotOverDelivered(
+  tx: TransactionSql,
+  invoiceId: string,
+  lines: ReadonlyArray<{ itemId: string; qty: number; sourceLineId?: string | null }>
+): Promise<void> {
+  const invLines = await tx`
+    select dl.id, dl.item_id, dl.base_qty as qty, dl.net_amount as net,
+           i.code as item_code, d.doc_no
+      from document_line dl
+      join item i on i.id = dl.item_id
+      join document d on d.id = dl.document_id
+     where dl.document_id = ${invoiceId}
+     order by dl.line_no`;
+  if (invLines.length === 0) return;
+
+  const prior = await tx`
+    select dl.item_id, dl.base_qty as qty, dl.source_line_id
+      from document_line dl
+      join document d on d.id = dl.document_id
+     where d.doc_type = 'DELIVERY' and d.status = 'POSTED'
+       and d.source_document_id = ${invoiceId}
+     order by d.posting_date, d.doc_no, dl.line_no`;
+
+  const draw = grirMatcher(invLines as unknown as MatchableLine[]);
+  for (const p of prior) draw(p.item_id, Number(p.qty), p.source_line_id);
+
+  lines.forEach((line, i) => {
+    const billed = invLines.find((l: any) => l.item_id === line.itemId);
+    if (!billed) return;
+    const taken = draw(line.itemId, line.qty, line.sourceLineId)
+      .taken.reduce((t: number, x: any) => t + x.qty, 0);
+    if (taken + 0.0001 < line.qty) {
+      throw new Error(
+        `Line ${i + 1}: ${billed.doc_no} has ${taken} of ${billed.item_code} left ` +
+        `to deliver, not ${line.qty}. Someone may have delivered against it already.`
+      );
     }
   });
 }
@@ -778,16 +837,23 @@ type ConsignmentDraw = {
 type ConsignmentPlan = { draws: ConsignmentDraw[] };
 
 async function planConsignmentConsumption(
-  tx: TransactionSql, companyId: string, itemId: string, locationId: string, qty: number
+  tx: TransactionSql, companyId: string, itemId: string, locationId: string, qty: number,
+  // Whose goods. Left out, the draw runs FIFO across every consignor at this
+  // location, which is right when there is only one and a coin toss when
+  // there are two — and the consignor whose shirt left is the one who gets
+  // paid for it, so it is not a detail the system should decide by date.
+  consignorId?: string | null,
 ): Promise<ConsignmentPlan> {
   // Same lock-then-aggregate shape as planFifoConsumption, for the same
   // reason: Postgres refuses FOR UPDATE on a query that groups, so the lock
   // is taken on its own first and held for the rest of the transaction.
   await tx`
     select cl.id from consignment_lot cl
+      join document d on d.id = cl.receipt_document_id
      where cl.company_id = ${companyId} and cl.item_id = ${itemId} and cl.location_id = ${locationId}
+       ${consignorId ? tx`and d.partner_id = ${consignorId}` : tx``}
      order by cl.received_date, cl.created_at
-       for update`;
+       for update of cl`;
 
   const lots = await tx`
     select cl.id, cl.pricing_method, cl.pricing_value, d.partner_id as consignor_id,
@@ -796,6 +862,7 @@ async function planConsignmentConsumption(
       join document d on d.id = cl.receipt_document_id
       left join consignment_lot_consumption c on c.lot_id = cl.id
      where cl.company_id = ${companyId} and cl.item_id = ${itemId} and cl.location_id = ${locationId}
+       ${consignorId ? tx`and d.partner_id = ${consignorId}` : tx``}
      group by cl.id, cl.pricing_method, cl.pricing_value, d.partner_id, cl.qty_received,
               cl.received_date, cl.created_at
     having cl.qty_received - coalesce(sum(c.qty), 0) > 0.0001
@@ -819,7 +886,9 @@ async function planConsignmentConsumption(
 
   if (need > 0.0001) {
     throw new Error(
-      "Not enough consigned stock in any lot at this location to cover the quantity requested"
+      consignorId
+        ? "Not enough of this consignor's stock at this location to cover the quantity requested"
+        : "Not enough consigned stock in any lot at this location to cover the quantity requested"
     );
   }
 
@@ -1133,7 +1202,7 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
   // invoice that billed for them — never a purchase document, and never
   // another customer's.
   if (input.sourceDocumentId) {
-    await requireSource(tx, {
+    const src = await requireSource(tx, {
       id: input.sourceDocumentId,
       companyId,
       partnerId,
@@ -1141,6 +1210,9 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
       role: "document this delivery fulfils",
     });
     await assertSourceLines(tx, input.sourceDocumentId, input.lines);
+    if (src?.doc_type === "SALES_INVOICE") {
+      await assertNotOverDelivered(tx, input.sourceDocumentId, input.lines);
+    }
   }
 
   const [doc] = await tx`
@@ -1183,7 +1255,8 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
       // elsewhere" — here, the real figure does not exist yet at all. It is
       // computed at settlement, from the price this customer is actually
       // being charged, not from anything decided at delivery.
-      const plan = await planConsignmentConsumption(tx, companyId, line.itemId, locationId, line.qty);
+      const plan = await planConsignmentConsumption(
+        tx, companyId, line.itemId, locationId, line.qty, line.consignorId ?? null);
 
       await tx`
         insert into document_line
@@ -1342,13 +1415,15 @@ async function settleConsignmentSales(
   saleLines: ReadonlyArray<{ itemId: string; unitPrice: number }>,
   locationId: string
 ): Promise<void> {
+  // Consumed, with no settlement standing against them — never settled, or
+  // settled by a document since voided. The view carries that rule so the
+  // screens and this agree on what is still owed.
   const consumed = await tx`
-    select c.id as consumption_id, c.lot_id, c.qty, l.item_id,
-           l.pricing_method, l.pricing_value, rd.partner_id as consignor_id
-      from consignment_lot_consumption c
-      join consignment_lot l on l.id = c.lot_id
-      join document rd on rd.id = l.receipt_document_id
-     where c.delivery_document_id = ${deliveryId} and c.settlement_document_id is null`;
+    select u.consumption_id, u.lot_id, u.qty, u.item_id, u.consignor_id,
+           l.pricing_method, l.pricing_value
+      from v_consignment_unsettled u
+      join consignment_lot l on l.id = u.lot_id
+     where u.delivery_document_id = ${deliveryId}`;
 
   if (consumed.length === 0) return;
 
@@ -1445,8 +1520,19 @@ async function settleConsignmentSales(
     await tx`update document set journal_entry_id = ${entryId} where id = ${settleDoc.id}`;
 
     for (const r of priced) {
-      await tx`update consignment_lot_consumption set settlement_document_id = ${settleDoc.id}
-                where id = ${r.consumption_id}`;
+      await tx`
+        insert into consignment_settlement_line
+          (company_id, consumption_id, settlement_document_id, qty, amount)
+        values (${companyId}, ${r.consumption_id}, ${settleDoc.id}, ${r.qty}, ${r.amount})`;
+
+      // The original column, only while it is still empty. 0030 lets it go
+      // from nothing to a first settlement and never change again, which is
+      // exactly right for what it records; a replacement is a new attempt in
+      // the table above, not an edit to this.
+      await tx`
+        update consignment_lot_consumption
+           set settlement_document_id = ${settleDoc.id}
+         where id = ${r.consumption_id} and settlement_document_id is null`;
     }
   }
 }
@@ -1759,7 +1845,10 @@ export async function postSaleWithDelivery(input: SalesInvoiceInput) {
         // actually moves the stock.
         allowNegativeStock: input.allowNegativeStock,
         lines: toDeliver.map((l) => ({
-          itemId: l.itemId, qty: l.qty, focReasonId: l.focReasonId, source: l.source,
+          itemId: l.itemId, qty: l.qty, focReasonId: l.focReasonId,
+          // The invoice's choice of pool travels to the delivery it creates,
+          // which is the document that actually moves the goods.
+          source: l.source, consignorId: l.consignorId,
         })),
       });
       deliveryId = delivery.id;
@@ -1793,7 +1882,50 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
     select fn_next_document_no(${companyId}, 'GOODS_RECEIPT', ${docDate}::date) as no`;
   const docNo = noRows[0].no;
 
-  const netTotal = round4(input.lines.reduce((s, l) => s + l.qty * (l.unitCost ?? 0), 0));
+  /**
+   * Matched to a bill that has already arrived: the bill is what these goods
+   * cost, so the bill is what they are valued at.
+   *
+   * A receipt normally carries an estimate — the PO price, or whatever the
+   * warehouse was told — and the invoice settles it later, which is the
+   * difference Purchase Price Variance exists to hold. When the invoice came
+   * first there is nothing to estimate. Valuing the goods at a figure typed
+   * on the receipt instead put the gap in the P&L: received 200 at a typed
+   * 120 against a bill of 80 credited 8,000 to variance, which reads as a
+   * profit on buying something, and carried the stock 8,000 above what was
+   * actually owed for it.
+   *
+   * The invoice price is the starting point, not the whole of the cost —
+   * freight and duties belong in inventory too under IAS 2. Those are actual
+   * costs with documents behind them and are not this: they are added by
+   * landed-cost allocation, not by overtyping a receipt.
+   *
+   * Quantity stays the receiver's to state. Receiving more than was billed is
+   * a real event; the excess is valued at the same price and stays in GR/IR
+   * as goods not yet invoiced, which is what it is.
+   */
+  const billed = new Map<string, number>();
+  if (input.sourceDocumentId) {
+    const [maybe] = await tx`
+      select doc_type from document
+       where id = ${input.sourceDocumentId} and company_id = ${companyId}`;
+    if (maybe?.doc_type === "PURCHASE_INVOICE") {
+      // Quantity-weighted where an item is billed on more than one line, so
+      // one receipt line takes one cost and it is the cost of those goods.
+      const prices = await tx`
+        select dl.item_id, sum(dl.net_amount) as net, sum(dl.base_qty) as qty
+          from document_line dl
+         where dl.document_id = ${input.sourceDocumentId}
+         group by dl.item_id
+        having sum(dl.base_qty) > 0`;
+      for (const r of prices) billed.set(r.item_id, Number(r.net) / Number(r.qty));
+    }
+  }
+
+  const lines = input.lines.map((l) =>
+    billed.has(l.itemId) ? { ...l, unitCost: billed.get(l.itemId)! } : l);
+
+  const netTotal = round4(lines.reduce((s, l) => s + l.qty * (l.unitCost ?? 0), 0));
 
   const [doc] = await tx`
     insert into document
@@ -1810,7 +1942,7 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
   const journal: JournalLine[] = [];
   let lineNo = 0;
 
-  for (const line of input.lines) {
+  for (const line of lines) {
     lineNo++;
 
     const [item] = await tx`select id, code, name, is_stocked, base_uom_id from item where id = ${line.itemId}`;
@@ -1867,13 +1999,10 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
     }
   }
 
-  // Matched to an invoice that already arrived: the GR/IR line clears
-  // against what that invoice already posted, not this receipt's own value
-  // — the mirror image of how a purchase invoice matches an existing
-  // receipt. Any difference is the same Purchase Price Variance account
-  // either direction uses; the variance is a property of the pair, not of
-  // whichever document happens to post second.
-  let grirAmount = netTotal;
+  // GR/IR carries what arrived, priced as above. Matched or not, the credit
+  // is the value of the goods themselves, so a receipt can never release more
+  // of a bill than it actually brought in.
+  const grirAmount = netTotal;
   if (input.sourceDocumentId) {
     // Locked, not merely read: the matching below decides how much of this
     // invoice is still unreceived, and two receipts arriving at once must
@@ -1892,55 +2021,21 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
     });
     await assertSourceLines(tx, input.sourceDocumentId, input.lines);
     if (src?.doc_type === "PURCHASE_INVOICE") {
-      // Matched line by line against the invoice, not against its total.
-      // Taking the whole invoice meant half a shipment released all of it:
-      // 50 of 100 units arriving cleared the entire 100,000, booked the
-      // other 50,000 as price variance, and reported nothing still awaited.
-      // The second half then cleared it again, leaving GR/IR at -100,000 —
-      // a debit balance where a settled liability should be zero — and
-      // 100,000 of invented expense in the P&L.
-      const invoiceLines = await tx`
-        select dl.id, dl.item_id, dl.base_qty as qty, dl.net_amount as net
-          from document_line dl
-         where dl.document_id = ${input.sourceDocumentId}
-         order by dl.line_no`;
-
-      const priorReceipts = await tx`
-        select dl.item_id, dl.base_qty as qty, dl.source_line_id
-          from document_line dl
-          join document d on d.id = dl.document_id
-         where d.company_id = ${companyId}
-           and d.doc_type = 'GOODS_RECEIPT'
-           and d.status = 'POSTED'
-           and d.source_document_id = ${input.sourceDocumentId}
-           and d.id <> ${doc.id}
-         order by d.posting_date, d.doc_no, dl.line_no`;
-
-      const draw = grirMatcher(invoiceLines as unknown as MatchableLine[]);
-
-      // Earlier shipments against this same invoice first, so this one sees
-      // only what is still outstanding.
-      for (const prior of priorReceipts) {
-        draw(prior.item_id, Number(prior.qty), prior.source_line_id);
-      }
-
-      // A receipt line's sourceLineId names an order line when the receipt
-      // came from a purchase order, so it is only offered as a preference
-      // here — grirMatcher ignores an id that is not one of these lines and
-      // falls back to oldest first.
-      let matched = 0;
-      for (const line of input.lines) {
-        matched += draw(line.itemId, line.qty, line.sourceLineId).value;
-      }
-      grirAmount = round4(matched);
-
-      // Whatever this receipt is worth beyond what the invoice was holding
-      // for it: a price difference, or goods the invoice never covered.
-      const variance = round4(netTotal - grirAmount);
-      if (variance !== 0) {
-        const pv = await tx`select fn_system_account(${companyId}, 'PURCHASE_PRICE_VARIANCE') as a`;
-        journal.push({ accountId: pv[0].a, amount: -variance, locationId });
-      }
+      // Nothing to apportion any more. The lines were priced from this
+      // invoice above, so what the goods are worth and what the invoice was
+      // holding for them are the same number by construction, and GR/IR
+      // clears by exactly what arrived.
+      //
+      // This used to draw line by line from the invoice and book the
+      // remainder as variance, which was the only way to keep the two sides
+      // honest while the receipt was free to name its own price. Half a
+      // shipment releasing the whole invoice — the bug that matcher was
+      // written for — cannot happen when the credit is the receipt's own
+      // value: 50 of 100 units credit 50 units' worth, and the other 50
+      // stay in GR/IR because they have not arrived.
+      //
+      // Received beyond what was billed lands here too, as a credit balance
+      // on the invoice: goods held and not yet invoiced, awaiting a bill.
     }
   }
 
@@ -3266,6 +3361,12 @@ export async function postAccountOpening(input: {
   docDate: string;
   lines: { accountId: string; amount: number }[];
   memo?: string | null;
+  /**
+   * Which branch these opening figures belong to. Without it every opening
+   * balance is stamped with no branch at all, so a company that reports by
+   * branch starts every account from a figure that belongs to none of them.
+   */
+  locationId?: string | null;
 }) {
   const lines = input.lines.filter((l) => l.accountId && l.amount !== 0);
   if (lines.length === 0) throw new Error("Enter at least one opening balance");
@@ -3280,6 +3381,7 @@ export async function postAccountOpening(input: {
       companyId: input.companyId,
       docDate: input.docDate,
       memo: input.memo ?? "Opening balances",
+      locationId: input.locationId ?? null,
       lines: net === 0 ? lines : [...lines, { accountId: equity.a, amount: -net }],
     },
     "OPENING_BALANCE"
@@ -3301,9 +3403,19 @@ export async function postAccountOpening(input: {
 export type ConsignmentReceiptLine = {
   itemId: string;
   qty: number;
-  /** Which agreement line this receipt draws its settlement rate from. A
-   *  receipt can only bring in items the agreement actually names. */
-  agreementLineId: string;
+  /** Which agreement line this receipt draws its settlement rate from. */
+  agreementLineId?: string | null;
+  /**
+   * The terms for an item this consignor has not sent before, agreed as the
+   * shipment arrives. An agreement that has to be complete before the first
+   * delivery can be booked describes a negotiation that finished, and these
+   * do not: a consignor turns up with something new and the rate for it is
+   * agreed then. Supplying these adds the item to the agreement as part of
+   * receiving it, in the same transaction, so the rate is on file before any
+   * of it can be sold.
+   */
+  pricingMethod?: "PERCENTAGE" | "FIXED" | null;
+  pricingValue?: number | null;
 };
 
 export type ConsignmentReceiptInput = {
@@ -3378,10 +3490,50 @@ async function _postConsignmentReceipt(tx: TransactionSql, input: ConsignmentRec
       throw new Error(`Line ${lineNo}: ${item.code} (${item.name}) is not stocked and cannot be received`);
     }
 
-    const [al] = await tx`
-      select id, item_id, pricing_method, pricing_value from consignment_agreement_line
-       where id = ${line.agreementLineId} and agreement_id = ${agreement.id} and is_active`;
-    if (!al) throw new Error(`Line ${lineNo}: that agreement line does not exist or is not active`);
+    type AgreementLine = {
+      id: string; item_id: string; pricing_method: string; pricing_value: number;
+    };
+    const findLine = async (where: ReturnType<typeof tx>) =>
+      (await where)[0] as AgreementLine | undefined;
+
+    let al: AgreementLine | undefined;
+
+    if (line.agreementLineId) {
+      al = await findLine(tx`
+        select id, item_id, pricing_method, pricing_value from consignment_agreement_line
+         where id = ${line.agreementLineId} and agreement_id = ${agreement.id} and is_active`);
+      if (!al) throw new Error(`Line ${lineNo}: that agreement line does not exist or is not active`);
+    } else {
+      // Not named on the receipt. Either the item is already on the agreement
+      // — in which case use that, rather than making a second line for the
+      // same item — or the terms arrived with the shipment and go on file now.
+      al = await findLine(tx`
+        select id, item_id, pricing_method, pricing_value from consignment_agreement_line
+         where agreement_id = ${agreement.id} and item_id = ${line.itemId} and is_active`);
+
+      if (!al) {
+        const method = line.pricingMethod;
+        const value = Number(line.pricingValue);
+        if (method !== "PERCENTAGE" && method !== "FIXED") {
+          throw new Error(
+            `Line ${lineNo}: ${item.code} is not on this consignor's agreement. `
+            + `Say how it settles — a percentage of the sale, or a fixed amount a unit.`
+          );
+        }
+        if (!Number.isFinite(value) || value <= 0) {
+          throw new Error(`Line ${lineNo}: enter what ${item.code} settles at`);
+        }
+        if (method === "PERCENTAGE" && value > 100) {
+          throw new Error(`Line ${lineNo}: a percentage cannot exceed 100`);
+        }
+        al = await findLine(tx`
+          insert into consignment_agreement_line
+            (company_id, agreement_id, item_id, pricing_method, pricing_value)
+          values (${companyId}, ${agreement.id}, ${line.itemId}, ${method}, ${value})
+          returning id, item_id, pricing_method, pricing_value`);
+      }
+    }
+    if (!al) throw new Error(`Line ${lineNo}: could not resolve the settlement terms`);
     if (al.item_id !== line.itemId) {
       throw new Error(`Line ${lineNo}: names an agreement line for a different item`);
     }
@@ -3719,6 +3871,7 @@ export async function voidDocument(input: {
              void_reason = ${input.reason ?? null}
        where id = ${doc.id}`;
 
+
     await tx`
       insert into document_history (company_id, document_id, action, reason, related_id, detail)
       values (${doc.company_id}, ${doc.id}, 'VOID', ${input.reason ?? null}, ${reversal.id},
@@ -3877,5 +4030,326 @@ export async function importVouchers(input: {
       total: round4(rows.reduce((s, r) => s + r.amount, 0)),
       documents: posted,
     };
+  });
+}
+
+// ------------------------------------------------------------- cutover --
+
+export type OpeningStockLine = {
+  itemId: string;
+  locationId: string;
+  qty: number;
+  unitCost: number;
+};
+
+export type OpeningPartnerLine = {
+  partnerId: string;
+  /** The customer's or supplier's own invoice number, not one of ours. */
+  reference: string;
+  amount: number;
+  dueDate?: string | null;
+};
+
+export type OpeningBatchInput = {
+  companyId: string;
+  /** The day the business starts using this system. */
+  cutoverDate: string;
+  memo?: string | null;
+  stock?: OpeningStockLine[];
+  receivables?: OpeningPartnerLine[];
+  payables?: OpeningPartnerLine[];
+  /** Everything a subledger does not own: cash, bank, loans, capital. */
+  accounts?: { accountId: string; amount: number; locationId?: string | null }[];
+};
+
+/**
+ * The cutover, posted once.
+ *
+ * Everything here balances against Opening Balance Equity, which nets to nil
+ * when the whole position is in. Nothing touches revenue, cost of sales or
+ * GR/IR: none of it was earned, spent or received in this system, and a
+ * cutover that moves those accounts reports last year's trading as this
+ * year's.
+ *
+ *   stock        Dr Inventory     / Cr Opening Balance Equity, with the
+ *                quantity and a FIFO layer, so a later sale draws real cost
+ *   receivables  Dr Receivables   / Cr Opening Balance Equity, as an open
+ *                item carrying the customer's own reference and due date
+ *   payables     Cr Payables      / Dr Opening Balance Equity, likewise
+ *   accounts     whatever they are / balanced against the same equity account
+ *
+ * One transaction, one batch, and the database allows one posted batch per
+ * company — a second cutover silently doubling stock and debts is the kind
+ * of mistake found months later, so it is a constraint rather than a check
+ * somewhere in a form.
+ *
+ * Documents are dated the day before the cutover: the opening position is
+ * what was true when trading began, and day one's own transactions should
+ * not compete with it for the same date.
+ */
+export async function postOpeningBatch(input: OpeningBatchInput) {
+  const stock = (input.stock ?? []).filter((l) => l.itemId && l.qty > 0);
+  const receivables = (input.receivables ?? []).filter((l) => l.partnerId && l.amount !== 0);
+  const payables = (input.payables ?? []).filter((l) => l.partnerId && l.amount !== 0);
+  const accounts = (input.accounts ?? []).filter((l) => l.accountId && l.amount !== 0);
+
+  if (stock.length + receivables.length + payables.length + accounts.length === 0) {
+    throw new Error("An opening batch needs at least one balance");
+  }
+  // Quantity and cost together, through the same check every stock document
+  // uses: a negative opening quantity is a correction, not an opening.
+  assertLines(stock.map((l) => ({ qty: l.qty, unitCost: l.unitCost })));
+  receivables.forEach((l, i) => assertAmount(l.amount, `Customer line ${i + 1}: amount`));
+  payables.forEach((l, i) => assertAmount(l.amount, `Supplier line ${i + 1}: amount`));
+  accounts.forEach((l, i) => assertAmount(l.amount, `Account line ${i + 1}: amount`, { signed: true }));
+
+  // The day before trading starts in this system.
+  const asAt = new Date(input.cutoverDate);
+  if (Number.isNaN(asAt.getTime())) throw new Error("Cutover date is not a date");
+  asAt.setDate(asAt.getDate() - 1);
+  const docDate = asAt.toISOString().slice(0, 10);
+
+  return sql.begin(async (tx) => {
+    const { companyId } = input;
+
+    const fyRows = await tx`select fn_fiscal_year_for(${companyId}, ${docDate}::date) as fy`;
+    const fiscalYear = fyRows[0]?.fy ?? null;
+    if (!fiscalYear) {
+      throw new Error(
+        `No fiscal year covers ${docDate}. Opening balances are dated the day `
+        + `before the cutover, so that day has to fall in a fiscal year.`
+      );
+    }
+
+    const [equityRow] = await tx`
+      select fn_system_account(${companyId}, 'OPENING_BALANCE_EQUITY') as a`;
+    const equity = equityRow.a as string;
+    if (!equity) throw new Error("No Opening Balance Equity account is set");
+
+    // The unique index is the real guard; this turns its message into one
+    // that says what happened and what to do about it.
+    const existing = await tx`
+      select cutover_date from opening_batch
+       where company_id = ${companyId} and status = 'POSTED'`;
+    if (existing.length > 0) {
+      throw new Error(
+        `Opening balances were already posted for this company, as at `
+        + `${String(existing[0].cutover_date).slice(0, 10)}. A second set would `
+        + `double the stock and the debts. Void the first batch to replace it.`
+      );
+    }
+
+    const [batch] = await tx`
+      insert into opening_batch (company_id, cutover_date, status, memo, posted_at)
+      values (${companyId}, ${input.cutoverDate}::date, 'POSTED', ${input.memo ?? null}, now())
+      returning id`;
+
+    const documents: { id: string; docNo: string; kind: string }[] = [];
+
+    const newDoc = async (
+      docType: string, partnerId: string | null, locationId: string | null,
+      total: number, memo: string, reference: string | null, dueDate: string | null,
+    ) => {
+      const [{ no }] = await tx`
+        select fn_next_document_no(${companyId}, ${docType}, ${docDate}::date, null) as no`;
+      const [d] = await tx`
+        insert into document
+          (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
+           due_date, partner_id, location_id, currency, exchange_rate, status,
+           net_total, tax_total, gross_total, memo, reference, opening_batch_id, posted_at)
+        values
+          (${companyId}, ${docType}, ${no}, ${fiscalYear}, ${docDate}::date, ${docDate}::date,
+           ${dueDate}, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
+           ${total}, 0, ${total}, ${memo}, ${reference}, ${batch.id}, now())
+        returning id`;
+      return { id: d.id as string, docNo: no as string };
+    };
+
+    // ---- stock ------------------------------------------------------------
+    // One document per warehouse: a stock document belongs to the place its
+    // goods are, and the journal line carries that branch with it.
+    const byLocation = new Map<string, OpeningStockLine[]>();
+    for (const l of stock) {
+      const list = byLocation.get(l.locationId) ?? [];
+      list.push(l);
+      byLocation.set(l.locationId, list);
+    }
+
+    for (const [locationId, lines] of byLocation) {
+      const total = round4(lines.reduce((s, l) => s + round4(l.qty * l.unitCost), 0));
+      const doc = await newDoc("OPENING_BALANCE", null, locationId, total,
+        "Opening stock", null, null);
+      const journal: JournalLine[] = [];
+      let lineNo = 0;
+
+      for (const l of lines) {
+        lineNo += 1;
+        const value = round4(l.qty * l.unitCost);
+        const [item] = await tx`
+          select base_uom_id, is_stocked from item
+           where id = ${l.itemId} and company_id = ${companyId}`;
+        if (!item) throw new Error("Opening stock names an item that does not exist");
+        if (!item.is_stocked) {
+          throw new Error("Opening stock names an item that is not stocked");
+        }
+
+        await tx`
+          insert into document_line
+            (company_id, document_id, line_no, item_id, location_id,
+             entered_qty, entered_uom_id, base_qty, unit_price,
+             net_amount, tax_amount, gross_amount)
+          values
+            (${companyId}, ${doc.id}, ${lineNo}, ${l.itemId}, ${locationId},
+             ${l.qty}, ${item.base_uom_id}, ${l.qty}, ${l.unitCost},
+             ${value}, 0, ${value})`;
+
+        const [movement] = await tx`
+          insert into stock_movement
+            (company_id, item_id, location_id, movement_date, qty,
+             unit_cost, total_cost, document_id)
+          values
+            (${companyId}, ${l.itemId}, ${locationId}, ${docDate}::date,
+             ${l.qty}, ${l.unitCost}, ${value}, ${doc.id})
+          returning id`;
+
+        // A real layer at a real cost, so the first sale out of opening stock
+        // draws what the goods actually cost rather than a guess.
+        await createFifoLot(tx, companyId, l.itemId, locationId, docDate,
+                            l.unitCost, l.qty, movement.id);
+
+        const [inv] = await tx`
+          select fn_resolve_account_for_item(${companyId}, 'INVENTORY', ${l.itemId}) as a`;
+        journal.push({ accountId: inv.a, amount: value, locationId });
+      }
+
+      journal.push({ accountId: equity, amount: -total, locationId });
+      const entryId = await writeJournal(tx, companyId, docDate, "OPENING_BALANCE",
+        doc.id, `${doc.docNo} opening stock`, journal, locationId);
+      await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
+      documents.push({ ...doc, kind: "stock" });
+    }
+
+    // ---- what customers owe, and what is owed to suppliers ----------------
+    // Posted as invoices because that is what an open item is here: it ages,
+    // it settles against an ordinary receipt or payment, and every screen
+    // that reads receivables already understands it. What makes it an
+    // opening balance rather than a sale is the journal — equity, not
+    // revenue — and the batch id it carries.
+    const openItems = async (
+      lines: OpeningPartnerLine[], docType: "SALES_INVOICE" | "PURCHASE_INVOICE",
+      role: "AR_CONTROL" | "AP_CONTROL", sign: 1 | -1, label: string,
+    ) => {
+      for (const l of lines) {
+        const amount = round4(Math.abs(l.amount));
+        const doc = await newDoc(docType, l.partnerId, null, amount,
+          `${label} — ${l.reference}`, l.reference, l.dueDate ?? null);
+        const [ctrl] = await tx`
+          select fn_resolve_control_account(${companyId}, ${role}, ${l.partnerId}) as a`;
+        const entryId = await writeJournal(tx, companyId, docDate, docType, doc.id,
+          `${doc.docNo} ${label}`, [
+            { accountId: ctrl.a, amount: sign * amount, partnerId: l.partnerId },
+            { accountId: equity, amount: -sign * amount },
+          ]);
+        await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
+        documents.push({ ...doc, kind: label });
+      }
+    };
+
+    await openItems(receivables, "SALES_INVOICE", "AR_CONTROL", 1, "Opening receivable");
+    await openItems(payables, "PURCHASE_INVOICE", "AP_CONTROL", -1, "Opening payable");
+
+    // ---- everything else --------------------------------------------------
+    if (accounts.length > 0) {
+      const total = round4(accounts.reduce((s, l) => s + l.amount, 0));
+      const gross = round4(accounts.filter((l) => l.amount > 0).reduce((s, l) => s + l.amount, 0));
+      const doc = await newDoc("OPENING_BALANCE", null, null, gross,
+        "Opening balances", null, null);
+      const journal: JournalLine[] = accounts.map((l) => ({
+        accountId: l.accountId, amount: l.amount, locationId: l.locationId ?? null,
+      }));
+      // Whatever the listed balances do not account for is the remainder, and
+      // it belongs in equity where it can be looked at rather than spread
+      // silently across the accounts that were entered.
+      if (total !== 0) journal.push({ accountId: equity, amount: -total });
+      const entryId = await writeJournal(tx, companyId, docDate, "OPENING_BALANCE",
+        doc.id, `${doc.docNo} opening balances`, journal);
+      await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
+      documents.push({ ...doc, kind: "accounts" });
+    }
+
+    return { batchId: batch.id as string, docDate, documents };
+  });
+}
+
+/**
+ * Raise a replacement settlement for a sale whose settlement was voided.
+ *
+ * Settlement normally happens once, when the sale is invoiced. Voiding it
+ * left no way back: the goods were sold, the consignor's payable reversed,
+ * and the only thing that could have settled them ran during a posting that
+ * had already happened. So there has to be a way to raise it again, and it
+ * has to be an action someone takes deliberately rather than something that
+ * quietly re-runs.
+ *
+ * Idempotent by construction: it settles what has no settlement standing
+ * against it, so a second call after a successful one finds nothing and
+ * posts nothing. Prices from the invoice's own lines, which is what the
+ * customer was actually charged — the same figure the first settlement used.
+ */
+export async function resettleConsignmentSale(input: {
+  companyId: string;
+  /** The sales invoice whose delivery drew consigned stock. */
+  salesInvoiceId: string;
+  docDate?: string;
+}) {
+  return sql.begin(async (tx) => {
+    const [inv] = await tx`
+      select id, doc_no, doc_type, status, source_document_id, location_id,
+             to_char(doc_date, 'YYYY-MM-DD') as doc_date
+        from document
+       where id = ${input.salesInvoiceId} and company_id = ${input.companyId}`;
+    if (!inv) throw new Error("That sales invoice does not exist");
+    if (inv.doc_type !== "SALES_INVOICE") throw new Error("That document is not a sales invoice");
+    if (inv.status !== "POSTED") {
+      throw new Error("That invoice is not posted, so there is nothing to settle against it");
+    }
+    if (!inv.source_document_id) {
+      throw new Error("That invoice has no delivery behind it, so it moved no consigned stock");
+    }
+
+    const outstanding = await tx`
+      select 1 from v_consignment_unsettled
+       where delivery_document_id = ${inv.source_document_id} limit 1`;
+    if (outstanding.length === 0) {
+      throw new Error(
+        "Everything this sale took from consignment is already settled by a "
+        + "settlement that still stands."
+      );
+    }
+
+    const lines = await tx`
+      select item_id, unit_price from document_line
+       where document_id = ${inv.id} and item_id is not null`;
+
+    const before = await tx`
+      select id from document
+       where company_id = ${input.companyId} and doc_type = 'PURCHASE_INVOICE'`;
+
+    await settleConsignmentSales(
+      tx, input.companyId, input.docDate ?? String(inv.doc_date), inv.id, inv.doc_no,
+      inv.source_document_id,
+      (lines as unknown as { item_id: string; unit_price: string }[])
+        .map((l) => ({ itemId: l.item_id, unitPrice: Number(l.unit_price) })),
+      inv.location_id
+    );
+
+    const seen = new Set((before as unknown as { id: string }[]).map((r) => r.id));
+    const raised = await tx`
+      select id, doc_no, gross_total from document
+       where company_id = ${input.companyId} and doc_type = 'PURCHASE_INVOICE'
+         and status = 'POSTED'`;
+    return (raised as unknown as { id: string; doc_no: string; gross_total: string }[])
+      .filter((r) => !seen.has(r.id))
+      .map((r) => ({ id: r.id, docNo: r.doc_no, amount: Number(r.gross_total) }));
   });
 }

@@ -1,9 +1,12 @@
 import Link from "next/link";
 import { getFinanceData, peekVoucherNo, createBankVoucher } from "@/lib/actions";
+import { getCompany } from "@/lib/queries";
 import { VoucherForm } from "@/components/voucher-form";
+import { VoucherHelp } from "@/components/voucher-help";
 
 export default async function BankReceipt() {
   const { accounts, accountTree, bankAccounts, branches } = await getFinanceData();
+  const company = await getCompany();
   const today = new Date().toISOString().slice(0, 10);
   const nextNo = await peekVoucherNo("BANK_VOUCHER", "IN");
 
@@ -30,6 +33,9 @@ export default async function BankReceipt() {
           <Link href="/finance/bank-detail" style={{ color: "var(--brand)" }}>View the bank book</Link>
         </span>
         <Link href="/finance/bank-receipt/import" className="btn ghost">Import from Excel</Link>
+      <span className="actions">
+        <VoucherHelp kind="bank" />
+      </span>
       </div>
 
       <VoucherForm
@@ -41,6 +47,7 @@ export default async function BankReceipt() {
         moneyAccounts={bankAccounts as never}
         today={today}
         nextNo={nextNo}
+        companyName={company?.name ?? ""}
         presetDirection="in"
       />
     </>

@@ -568,6 +568,17 @@ try {
   check("four invoices racing one receipt relieve GR/IR once, not four times",
     relievedTogether === 100000, `${relievedTogether} of 100000`);
 
+  // The other direction is no longer a race at all, and the reason is worth
+  // stating. A receipt matched to an invoice used to read how much of that
+  // invoice was still unreceived and settle some of it — a read followed by
+  // a write, which is what made it racy, and which put whatever it could not
+  // draw into price variance. It now credits GR/IR with the value of the
+  // goods it brought in, full stop, so there is nothing shared to contend
+  // over: four receipts each claiming 100 units create 400 units of stock and
+  // 400,000 of liability, the invoice clears 100,000 of it, and the 300 units
+  // nobody has billed for stay in GR/IR where they belong. The old rule
+  // agreed on the release and then booked those 300 units — real stock, on
+  // the shelf — as 300,000 of invented expense.
   const racePi = await postPurchaseInvoice({ ...buy, dueDate: null,
     lines: [{ itemId: item.id, qty: 100, unitPrice: 1000 }] });
   await Promise.allSettled(Array.from({ length: 4 }, () =>
@@ -580,8 +591,20 @@ try {
       join document d on d.id = je.source_id
      where a.code = ${GRIR} and d.doc_type = 'GOODS_RECEIPT'
        and d.source_document_id = ${racePi.id}`)[0].v);
-  check("and four receipts racing one invoice release it once",
-    releasedTogether === -100000, `${releasedTogether} of -100000`);
+  const stockAdded = n((await sql`
+    select coalesce(sum(dl.base_qty), 0) as v from document_line dl
+      join document d on d.id = dl.document_id
+     where d.doc_type = 'GOODS_RECEIPT' and d.source_document_id = ${racePi.id}`)[0].v);
+  check("four receipts racing one invoice hold exactly the goods they brought in",
+    releasedTogether === -(stockAdded * 1000),
+    `${releasedTogether} for ${stockAdded} units`);
+  check("  so nothing they could not draw is invented as expense",
+    n((await sql`select coalesce(sum(jl.amount), 0) as v from journal_line jl
+        join account a on a.id = jl.account_id
+        join journal_entry je on je.id = jl.journal_entry_id
+        join document d on d.id = je.source_id
+       where a.code = ${PPV} and d.doc_type = 'GOODS_RECEIPT'
+         and d.source_document_id = ${racePi.id}`)[0].v) === 0);
 
   const numbers = await Promise.allSettled(
     Array.from({ length: 4 }, () =>

@@ -135,14 +135,11 @@ export async function getActionItems(companyId: string) {
       from per_order
      where remaining > 0.0001`;
 
-  const [pd] = await sql`
-    select count(*)::int as n
-      from document inv
-     where inv.company_id = ${companyId} and inv.doc_type = 'SALES_INVOICE'
-       and inv.to_deliver and inv.status = 'POSTED'
-       and not exists (
-         select 1 from document dd where dd.source_document_id = inv.id and dd.doc_type = 'DELIVERY'
-       )`;
+  // Counted the same way the delivery screen counts, or the dashboard says
+  // nothing is waiting while that page lists an invoice with 900 units still
+  // to ship. "Any delivery exists" was never the question; "anything left to
+  // deliver" is.
+  const pd = { n: (await getPendingDeliveryLines(companyId)).length };
 
   // Same both-directions check as getOpenDeliveries — a delivery already
   // linked to an invoice either way (composed atomically, or fulfilling a
@@ -383,6 +380,59 @@ export async function isGrirOutstanding(documentId: string): Promise<boolean> {
 }
 
 /**
+ * How much of its source each answering document actually took.
+ *
+ * One invoice can be answered by several shipments and they share it: 50 then
+ * 80 against a bill for 100 is 100 answered and 30 left over, not 130 twice.
+ * So the source is drawn down once, in the order the answers were posted, and
+ * each answer is told only what was still there for it.
+ *
+ * Every answer is replayed, not only the ones a caller happens to be showing.
+ * A list capped at the newest 200 documents would otherwise credit a later
+ * shipment with quantity an earlier one had already taken.
+ */
+async function sharedSourceLines(
+  companyId: string,
+  answeringType: "GOODS_RECEIPT" | "DELIVERY",
+  sourceIds: readonly (string | null)[]
+): Promise<Map<string, { itemId: string; qty: number }[]>> {
+  const out = new Map<string, { itemId: string; qty: number }[]>();
+  const ids = [...new Set(sourceIds.filter(Boolean) as string[])];
+  if (ids.length === 0) return out;
+
+  const srcLines = await sql`
+    select dl.id, dl.document_id, dl.item_id, dl.base_qty as qty, dl.net_amount as net
+      from document_line dl
+     where dl.document_id = any(${ids})
+     order by dl.line_no`;
+
+  const answers = await sql`
+    select d.id, d.source_document_id as src_id, dl.item_id,
+           dl.base_qty as qty, dl.source_line_id
+      from document_line dl
+      join document d on d.id = dl.document_id
+     where d.company_id = ${companyId}
+       and d.doc_type = ${answeringType} and d.status = 'POSTED'
+       and d.source_document_id = any(${ids})
+     order by d.posting_date, d.doc_no, dl.line_no`;
+
+  for (const srcId of ids) {
+    const draw = grirMatcher(
+      srcLines.filter((l: any) => l.document_id === srcId) as unknown as MatchableLine[]);
+    for (const a of answers.filter((x: any) => x.src_id === srcId)) {
+      const got = draw(a.item_id, Number(a.qty), a.source_line_id)
+        .taken.reduce((t: number, x: any) => t + x.qty, 0);
+      if (got > 0) {
+        const list = out.get(a.id) ?? [];
+        list.push({ itemId: a.item_id, qty: got });
+        out.set(a.id, list);
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Goods receipts that still have something to bill, with each line's
  * remaining quantity rather than its original one.
  *
@@ -392,18 +442,24 @@ export async function isGrirOutstanding(documentId: string): Promise<boolean> {
  * matcher the ledger settles with, so what the form offers and what GR/IR
  * still holds are the same figure.
  */
-export async function getOpenGoodsReceipts(companyId: string) {
+export async function getOpenGoodsReceipts(companyId: string, limit: number | null = 200) {
   const docs = await sql`
     select d.id, d.doc_no, d.doc_date, d.partner_id,
            -- The purchase order this receipt came in against, so an invoice
            -- billing it can show which of our orders it belongs to.
-           src.doc_no as source_no
+           src.doc_no as source_no,
+           case when src.doc_type = 'PURCHASE_INVOICE' then src.id end as billed_by_id
       from document d
-      join v_grir_balance g on g.document_id = d.id and g.company_id = d.company_id
+      left join v_grir_balance g on g.document_id = d.id and g.company_id = d.company_id
       left join document src on src.id = d.source_document_id
      where d.company_id = ${companyId} and d.doc_type = 'GOODS_RECEIPT' and d.status = 'POSTED'
+       -- Either the receipt anchors its own clearing balance, or it was
+       -- matched to an invoice and cleared through that invoice's anchor.
+       -- Receipts from before GR/IR clearing existed have neither, and must
+       -- not be offered a match: there is nothing of theirs to clear.
+       and (g.document_id is not null or src.doc_type = 'PURCHASE_INVOICE')
      order by d.doc_date desc, d.doc_no desc
-     limit 200`;
+     ${limit === null ? sql`` : sql`limit ${limit}`}`;
   if (docs.length === 0) return [];
 
   const ids = docs.map((d: any) => d.id);
@@ -427,6 +483,13 @@ export async function getOpenGoodsReceipts(companyId: string) {
        and d.source_document_id = any(${ids})
      order by d.posting_date, d.doc_no, dl.line_no`;
 
+  // The other direction: a receipt matched to a bill that came first is
+  // billed by that bill, for whatever it covers. What it covers is not
+  // necessarily everything on the receipt — a mixed receipt brings in items
+  // the invoice never mentioned, and those are still waiting to be billed.
+  const share = await sharedSourceLines(
+    companyId, "GOODS_RECEIPT", docs.map((d: any) => d.billed_by_id));
+
   return docs
     .map((d: any) => {
       const own = lines.filter((l: any) => l.document_id === d.id);
@@ -435,6 +498,11 @@ export async function getOpenGoodsReceipts(companyId: string) {
 
       for (const inv of invoiced.filter((i: any) => i.receipt_id === d.id)) {
         for (const t of draw(inv.item_id, Number(inv.qty), inv.source_line_id).taken) {
+          billed.set(t.lineId, (billed.get(t.lineId) ?? 0) + t.qty);
+        }
+      }
+      for (const bl of share.get(d.id) ?? []) {
+        for (const t of draw(bl.itemId, bl.qty, null).taken) {
           billed.set(t.lineId, (billed.get(t.lineId) ?? 0) + t.qty);
         }
       }
@@ -460,22 +528,76 @@ export async function getOpenGoodsReceipts(companyId: string) {
 /**
  * Purchase invoices a goods receipt can match against — the mirror of
  * getOpenGoodsReceipts, for when the bill arrived before the goods did.
+ *
+ * With each line's remaining quantity, not its original one. Offering the
+ * whole invoice was wrong the moment any of it had arrived: a bill for 1,000
+ * units with 100 already received went on offering 1,000, and the receipt
+ * form fills its lines from what is offered — so the obvious next action was
+ * to receive the same 1,000 again. The other direction was given remaining
+ * quantities when the same mistake was found there; this is the same fix on
+ * the side that did not get it.
  */
-export async function getOpenPurchaseInvoices(companyId: string) {
-  return sql`
-    select d.id, d.doc_no, d.doc_date, d.partner_id,
-           coalesce(json_agg(json_build_object(
-             'itemId', dl.item_id, 'itemCode', i.code, 'itemName', i.name,
-             'qty', dl.base_qty, 'unitPrice', dl.unit_price
-           ) order by dl.line_no), '[]') as lines
+export async function getOpenPurchaseInvoices(companyId: string, limit: number | null = 200) {
+  const docs = await sql`
+    select d.id, d.doc_no, d.doc_date, d.partner_id
       from document d
       join v_grir_balance g on g.document_id = d.id and g.company_id = d.company_id
-      join document_line dl on dl.document_id = d.id
-      join item i on i.id = dl.item_id
      where d.company_id = ${companyId} and d.doc_type = 'PURCHASE_INVOICE' and d.status = 'POSTED'
-     group by d.id, d.doc_no, d.doc_date, d.partner_id
      order by d.doc_date desc, d.doc_no desc
-     limit 200`;
+     ${limit === null ? sql`` : sql`limit ${limit}`}`;
+  if (docs.length === 0) return [];
+
+  const ids = docs.map((d: any) => d.id);
+
+  const lines = await sql`
+    select dl.id, dl.document_id, dl.item_id, dl.base_qty as qty, dl.net_amount as net,
+           dl.unit_price, i.code as item_code, i.name as item_name
+      from document_line dl
+      join item i on i.id = dl.item_id
+     where dl.document_id = any(${ids})
+     order by dl.line_no`;
+
+  // Everything already received against these invoices, oldest first, so the
+  // same matcher the ledger settles with decides which line each shipment
+  // came off — not an assumption that quantities line up in order.
+  const received = await sql`
+    select d.source_document_id as invoice_id, dl.item_id,
+           dl.base_qty as qty, dl.source_line_id
+      from document_line dl
+      join document d on d.id = dl.document_id
+     where d.company_id = ${companyId}
+       and d.doc_type = 'GOODS_RECEIPT'
+       and d.status = 'POSTED'
+       and d.source_document_id = any(${ids})
+     order by d.posting_date, d.doc_no, dl.line_no`;
+
+  return docs
+    .map((d: any) => {
+      const own = lines.filter((l: any) => l.document_id === d.id);
+      const draw = grirMatcher(own as unknown as MatchableLine[]);
+      const arrived = new Map<string, number>();
+
+      for (const r of received.filter((x: any) => x.invoice_id === d.id)) {
+        for (const t of draw(r.item_id, Number(r.qty), r.source_line_id).taken) {
+          arrived.set(t.lineId, (arrived.get(t.lineId) ?? 0) + t.qty);
+        }
+      }
+
+      const open = own
+        .map((l: any) => ({
+          lineId: l.id,
+          itemId: l.item_id,
+          itemCode: l.item_code,
+          itemName: l.item_name,
+          qty: Math.round((Number(l.qty) - (arrived.get(l.id) ?? 0)) * 10000) / 10000,
+          unitPrice: Number(l.unit_price),
+        }))
+        .filter((l) => l.qty > 0);
+
+      return { ...d, lines: open };
+    })
+    // Fully received, even if GR/IR still carries a difference against it.
+    .filter((d: any) => d.lines.length > 0);
 }
 
 /**
@@ -492,35 +614,98 @@ export async function getOpenPurchaseInvoices(companyId: string) {
  * source_document_id point at the invoice instead — checking only one
  * direction would wrongly offer to re-invoice an already-billed delivery.
  */
-export async function getOpenDeliveries(companyId: string) {
-  return sql`
-    select d.id, d.doc_no, d.doc_date, d.partner_id, d.location_id,
-           -- The order this delivery was raised from, so an invoice made from
-           -- it can show which of our orders it belongs to rather than making
-           -- someone go and look it up.
-           src.doc_no as source_no,
-           coalesce(json_agg(json_build_object(
-             'itemId', dl.item_id, 'itemCode', i.code, 'itemName', i.name,
-             'qty', dl.base_qty
-           ) order by dl.line_no), '[]') as lines
-      from document d
-      join document_line dl on dl.document_id = d.id
+export async function getOpenDeliveries(companyId: string, limit: number | null = 200) {
+  const docs = limit === null
+    ? await sql`
+      select d.id, d.doc_no, d.doc_date, d.partner_id, d.location_id,
+             src.doc_no as source_no,
+             case when src.doc_type = 'SALES_INVOICE' then src.id end as billed_by_id
+        from document d
+        left join document src on src.id = d.source_document_id
+       where d.company_id = ${companyId} and d.doc_type = 'DELIVERY' and d.status = 'POSTED'
+       order by d.doc_date desc, d.doc_no desc`
+    : await sql`
+      select d.id, d.doc_no, d.doc_date, d.partner_id, d.location_id,
+             -- The order this delivery was raised from, so an invoice made
+             -- from it can show which of our orders it belongs to rather
+             -- than making someone go and look it up.
+             src.doc_no as source_no,
+             case when src.doc_type = 'SALES_INVOICE' then src.id end as billed_by_id
+        from document d
+        left join document src on src.id = d.source_document_id
+       where d.company_id = ${companyId} and d.doc_type = 'DELIVERY' and d.status = 'POSTED'
+       order by d.doc_date desc, d.doc_no desc
+       limit ${limit}`;
+  if (docs.length === 0) return [];
+
+  const ids = docs.map((d: any) => d.id);
+
+  const lines = await sql`
+    select dl.id, dl.document_id, dl.item_id, dl.base_qty as qty, dl.net_amount as net,
+           i.code as item_code, i.name as item_name
+      from document_line dl
       join item i on i.id = dl.item_id
-      left join document src on src.id = d.source_document_id
-     where d.company_id = ${companyId} and d.doc_type = 'DELIVERY' and d.status = 'POSTED'
-       and not exists (
-         select 1 from document si
-          where si.doc_type = 'SALES_INVOICE' and si.status = 'POSTED'
-            and (si.source_document_id = d.id or d.source_document_id = si.id)
-       )
-     group by d.id, d.doc_no, d.doc_date, d.partner_id, d.location_id, src.doc_no
-     order by d.doc_date desc, d.doc_no desc
-     limit 200`;
+     where dl.document_id = any(${ids})
+     order by dl.line_no`;
+
+  // Invoices raised from a delivery, and invoices a delivery was raised for:
+  // both directions bill it, and checking only one would offer to invoice
+  // goods already billed.
+  const billed = await sql`
+    select d.source_document_id as delivery_id, dl.item_id,
+           dl.base_qty as qty, dl.source_line_id
+      from document_line dl
+      join document d on d.id = dl.document_id
+     where d.company_id = ${companyId}
+       and d.doc_type = 'SALES_INVOICE' and d.status = 'POSTED'
+       and d.source_document_id = any(${ids})
+     order by d.posting_date, d.doc_no, dl.line_no`;
+
+  const share = await sharedSourceLines(
+    companyId, "DELIVERY", docs.map((d: any) => d.billed_by_id));
+
+  return docs
+    .map((d: any) => {
+      const own = lines.filter((l: any) => l.document_id === d.id);
+      const draw = grirMatcher(own as unknown as MatchableLine[]);
+      const gone = new Map<string, number>();
+
+      for (const b of billed.filter((x: any) => x.delivery_id === d.id)) {
+        for (const t of draw(b.item_id, Number(b.qty), b.source_line_id).taken) {
+          gone.set(t.lineId, (gone.get(t.lineId) ?? 0) + t.qty);
+        }
+      }
+      for (const b of share.get(d.id) ?? []) {
+        for (const t of draw(b.itemId, b.qty, null).taken) {
+          gone.set(t.lineId, (gone.get(t.lineId) ?? 0) + t.qty);
+        }
+      }
+
+      const open = own
+        .map((l: any) => ({
+          lineId: l.id,
+          itemId: l.item_id,
+          itemCode: l.item_code,
+          itemName: l.item_name,
+          qty: Math.round((Number(l.qty) - (gone.get(l.id) ?? 0)) * 10000) / 10000,
+        }))
+        .filter((l) => l.qty > 0);
+
+      return { ...d, lines: open };
+    })
+    // Fully billed — including a delivery raised to fulfil an invoice that
+    // covered everything on it.
+    .filter((d: any) => d.lines.length > 0);
 }
 
 export async function getDocument(id: string) {
   const [doc] = await sql`
     select d.*, p.name as partner_name, p.code as partner_code,
+           -- Where to send it. The printed document is the one place these
+           -- are read, so they travel with the document rather than needing
+           -- a second query from the print view.
+           p.address as partner_address, p.township as partner_township,
+           p.phone as partner_phone,
            l.code as location_code, l.name as location_name,
            src.doc_no as source_doc_no, src.id as source_id,
            je.entry_no,
@@ -1033,21 +1218,159 @@ export async function getOpenPurchaseOrders(companyId: string) {
      order by o.doc_no, ol.line_no`;
 }
 
-/** Sales invoices marked "to deliver" that no delivery has fulfilled yet. */
-export async function getPendingDeliveries(companyId: string) {
+/**
+ * Goods receipts already posted, newest first.
+ *
+ * A receiving screen that only lists what is still owed shows nothing at all
+ * on the ordinary day when every order has arrived — and nothing is also what
+ * it shows when something has gone wrong, so the two are indistinguishable.
+ * What has been received is the answer to both.
+ *
+ * Whether the supplier has billed for each one comes from the same GR/IR
+ * balance the ledger settles against, not from a flag: goods received and not
+ * yet invoiced are exactly a non-zero clearing balance anchored on the
+ * receipt. A receipt raised against an invoice that came first anchors on
+ * that invoice instead, and correctly reads as billed.
+ */
+export async function getGoodsReceiptHistory(companyId: string) {
   return sql`
-    select inv.id, inv.doc_no, inv.doc_date, p.name as partner_name,
-           count(il.id)::int as lines, sum(il.base_qty)::numeric as total_qty
+    select d.id, d.doc_no, d.doc_date, d.status, d.gross_total,
+           d.partner_id, p.name as partner_name,
+           l.code as location_code,
+           src.id as source_id, src.doc_no as source_no, src.doc_type as source_type,
+           (select count(*)::int from document_line dl where dl.document_id = d.id) as line_count,
+           coalesce(g.balance, 0) as grir_open
+      from document d
+      left join business_partner p on p.id = d.partner_id
+      left join location l on l.id = d.location_id
+      left join document src on src.id = d.source_document_id
+      left join v_grir_balance g
+             on g.document_id = d.id and g.company_id = d.company_id
+     where d.company_id = ${companyId} and d.doc_type = 'GOODS_RECEIPT'
+     order by d.doc_date desc, d.doc_no desc
+     limit 300`;
+}
+
+/**
+ * The two sides of GR/IR, separately.
+ *
+ * The account nets, and a net balance hides which way each part of it points.
+ * A bill for 70,000 with 7,000 of it received, plus 40 of goods nobody billed
+ * for, leaves 62,960 — a number that looks like an odd version of 63,000
+ * until it is split:
+ *
+ *     invoiced, not yet received    63,000
+ *     received, not yet invoiced        40
+ *     net                           62,960
+ *
+ * Both are derived from the documents, never stored. Awaited is what invoice
+ * lines still have quantity outstanding; unbilled is receipt lines answering
+ * no invoice line — the ones a mixed receipt brought in alongside.
+ */
+export async function getGrirPositions(companyId: string) {
+  // Read off the same two functions the forms offer from, so what a screen
+  // says is outstanding and what a form lets you receive or bill cannot
+  // disagree. Both are derived from documents; neither is stored.
+  // Every open document, not the newest page of them. A form can show the
+  // most recent 200 and still be useful; a total that quietly stops at 200
+  // is a total that stops reconciling to the account it claims to explain.
+  const [invoices, receipts] = await Promise.all([
+    getOpenPurchaseInvoices(companyId, null) as unknown as Promise<
+      { lines: { qty: number; unitPrice: number }[] }[]>,
+    getOpenGoodsReceipts(companyId, null) as unknown as Promise<
+      { lines: { qty: number; unitPrice: number }[] }[]>,
+  ]);
+  const total = (ds: { lines: { qty: number; unitPrice: number }[] }[]) =>
+    ds.reduce((s, d) => s + d.lines.reduce((t, l) => t + l.qty * l.unitPrice, 0), 0);
+
+  return { awaited: total(invoices), unbilled: total(receipts) };
+}
+
+/**
+ * Sales invoices marked "to deliver" with goods still to go, line by line.
+ *
+ * "Still to go" used to mean no delivery existed at all. Two things followed
+ * from that. An invoice for 1,000 with 100 delivered vanished from the list
+ * with 900 undelivered — the customer is owed 900 units and the screen said
+ * there was nothing to do. And because the test never looked at the
+ * delivery's status, voiding that delivery did not bring the invoice back:
+ * the goods were on the shelf again, the invoice was still billed, and
+ * nothing anywhere said so.
+ *
+ * Remaining is derived through the same matcher the ledger settles with, so
+ * what this offers and what a delivery can actually fulfil are the same
+ * quantities. Voided deliveries are not deliveries.
+ */
+export async function getPendingDeliveryLines(companyId: string) {
+  const docs = await sql`
+    select inv.id, inv.doc_no, inv.doc_date, inv.partner_id, inv.location_id,
+           p.name as partner_name
       from document inv
-      join document_line il on il.document_id = inv.id
       join business_partner p on p.id = inv.partner_id
      where inv.company_id = ${companyId} and inv.doc_type = 'SALES_INVOICE'
        and inv.to_deliver and inv.status = 'POSTED'
-       and not exists (
-         select 1 from document dd where dd.source_document_id = inv.id and dd.doc_type = 'DELIVERY'
-       )
-     group by inv.id, inv.doc_no, inv.doc_date, p.name
      order by inv.doc_date`;
+  if (docs.length === 0) return [];
+
+  const ids = docs.map((d: any) => d.id);
+
+  // Only stocked lines: a service line on a to-deliver invoice has nothing
+  // to ship, and counting it would keep the invoice on the list forever.
+  const lines = await sql`
+    select dl.id, dl.document_id, dl.item_id, dl.base_qty as qty, dl.net_amount as net,
+           dl.unit_price, dl.foc_reason_id, i.code as item_code, i.name as item_name
+      from document_line dl
+      join item i on i.id = dl.item_id
+     where dl.document_id = any(${ids}) and i.is_stocked
+     order by dl.line_no`;
+
+  const delivered = await sql`
+    select d.source_document_id as invoice_id, dl.item_id,
+           dl.base_qty as qty, dl.source_line_id
+      from document_line dl
+      join document d on d.id = dl.document_id
+     where d.company_id = ${companyId}
+       and d.doc_type = 'DELIVERY'
+       and d.status = 'POSTED'
+       and d.source_document_id = any(${ids})
+     order by d.posting_date, d.doc_no, dl.line_no`;
+
+  return docs
+    .map((d: any) => {
+      const own = lines.filter((l: any) => l.document_id === d.id);
+      const draw = grirMatcher(own as unknown as MatchableLine[]);
+      const gone = new Map<string, number>();
+
+      for (const del of delivered.filter((x: any) => x.invoice_id === d.id)) {
+        for (const t of draw(del.item_id, Number(del.qty), del.source_line_id).taken) {
+          gone.set(t.lineId, (gone.get(t.lineId) ?? 0) + t.qty);
+        }
+      }
+
+      const open = own
+        .map((l: any) => ({
+          lineId: l.id,
+          itemId: l.item_id,
+          itemCode: l.item_code,
+          itemName: l.item_name,
+          focReasonId: l.foc_reason_id as string | null,
+          qty: Math.round((Number(l.qty) - (gone.get(l.id) ?? 0)) * 10000) / 10000,
+        }))
+        .filter((l) => l.qty > 0);
+
+      return { ...d, lines: open };
+    })
+    .filter((d: any) => d.lines.length > 0);
+}
+
+/** The same, counted, for the list that only shows how much is outstanding. */
+export async function getPendingDeliveries(companyId: string) {
+  const pending = await getPendingDeliveryLines(companyId);
+  return pending.map((d: any) => ({
+    id: d.id, doc_no: d.doc_no, doc_date: d.doc_date, partner_name: d.partner_name,
+    lines: d.lines.length,
+    total_qty: d.lines.reduce((s: number, l: any) => s + l.qty, 0),
+  }));
 }
 
 /**
@@ -1085,16 +1408,34 @@ export async function getReservedQty(companyId: string) {
        group by ol.item_id, ol.location_id
       having sum(ol.base_qty - coalesce(d.delivered_qty, 0)) > 0
     ),
-    invoice_pending as (
-      select il.item_id, il.location_id, sum(il.base_qty) as qty
+    -- Committed to a customer and not yet shipped. Per invoice and item,
+    -- because "no delivery at all" both over-reserved (the whole invoice
+    -- stayed reserved while nothing had shipped, which is right) and then
+    -- under-reserved to nothing the moment one unit went out — releasing 900
+    -- units that are still owed to that customer.
+    invoice_billed as (
+      select inv.id as inv_id, il.item_id, il.location_id, sum(il.base_qty) as qty
         from document inv
         join document_line il on il.document_id = inv.id
        where inv.company_id = ${companyId} and inv.doc_type = 'SALES_INVOICE'
          and inv.to_deliver and inv.status = 'POSTED'
-         and not exists (
-           select 1 from document dd where dd.source_document_id = inv.id and dd.doc_type = 'DELIVERY'
-         )
-       group by il.item_id, il.location_id
+       group by inv.id, il.item_id, il.location_id
+    ),
+    invoice_shipped as (
+      select d.source_document_id as inv_id, dl.item_id, sum(dl.base_qty) as qty
+        from document d
+        join document_line dl on dl.document_id = d.id
+       where d.company_id = ${companyId} and d.doc_type = 'DELIVERY'
+         and d.status = 'POSTED' and d.source_document_id is not null
+       group by d.source_document_id, dl.item_id
+    ),
+    invoice_pending as (
+      select b.item_id, b.location_id,
+             sum(greatest(b.qty - coalesce(s.qty, 0), 0)) as qty
+        from invoice_billed b
+        left join invoice_shipped s
+               on s.inv_id = b.inv_id and s.item_id = b.item_id
+       group by b.item_id, b.location_id
     )
     select item_id, location_id, sum(qty) as reserved_qty
       from (select * from so_remaining union all select * from invoice_pending) x
@@ -1171,16 +1512,27 @@ export async function getBranches(companyId: string) {
 export const UNASSIGNED_BRANCH = "none";
 
 function branchFilter(branchId?: string | null) {
+  return branchFilterOn(sql`jl`, branchId);
+}
+
+/**
+ * The same rule against whichever alias the caller is using. A branch is a
+ * top-level location and its warehouses are its children, so a line stamped
+ * with a warehouse belongs to the branch above it — comparing the line's
+ * location straight to a branch id matches nothing and reads as "this branch
+ * has no activity", which is worse than an error.
+ */
+function branchFilterOn(alias: ReturnType<typeof sql>, branchId?: string | null) {
   if (!branchId) return sql``;
   // Entries posted before the branch dimension was stamped carry no location
   // and belong to no branch. They still count in the consolidated company
   // figures, so without a way to see them the branches would silently fail to
   // add up to the company total and there would be nothing on screen saying
   // why. This makes that remainder selectable instead of invisible.
-  if (branchId === UNASSIGNED_BRANCH) return sql`and jl.location_id is null`;
+  if (branchId === UNASSIGNED_BRANCH) return sql`and ${alias}.location_id is null`;
   return sql`and exists (
           select 1 from location w
-           where w.id = jl.location_id
+           where w.id = ${alias}.location_id
              and coalesce(w.parent_id, w.id) = ${branchId})`;
 }
 
@@ -1374,38 +1726,65 @@ export async function getBalanceSheet(companyId: string, asOf: string, branchId?
  * correctly, and excluding cash-to-cash contra lines drops internal
  * transfers, which are not a real inflow or outflow.
  */
-export async function getCashFlowStatement(companyId: string, from: string, to: string) {
+export async function getCashFlowStatement(
+  companyId: string, from: string, to: string, branchId?: string | null
+) {
   const [rows, beginning, ending] = await Promise.all([
+    // Each cash movement counted once. Joining every cash line to every
+    // contra line and summing the contra repeated the entry once per cash
+    // line: Dr Cash 60,000 + Dr Bank 40,000 / Cr Capital 100,000 reported
+    // 200,000 of financing inflow against 100,000 of actual cash.
+    //
+    // So the amount is the cash line's own movement — which is the cash that
+    // truly moved — apportioned across the entry's contra lines in
+    // proportion to them. One cash line against one contra keeps its whole
+    // value; a payment split across an expense and an asset splits in the
+    // same ratio. The parts always add back to the cash line.
     sql`
+      with cash_line as (
+        select jl.id, jl.journal_entry_id, jl.base_amount, jl.location_id
+          from journal_line jl
+          join account a on a.id = jl.account_id
+         where jl.company_id = ${companyId}
+           and (a.is_cash_account or a.is_bank_account)
+      ),
+      contra as (
+        select jl.journal_entry_id, jl.base_amount, a.account_type
+          from journal_line jl
+          join account a on a.id = jl.account_id
+         where jl.company_id = ${companyId}
+           and not (a.is_cash_account or a.is_bank_account)
+      ),
+      contra_total as (
+        select journal_entry_id, sum(base_amount) as total
+          from contra group by journal_entry_id
+      )
       select
         case
           when je.source_type in ('CUSTOMER_RECEIPT', 'SALES_INVOICE') then 'Received from customers'
           when je.source_type = 'SUPPLIER_PAYMENT' then 'Paid to suppliers'
-          when a2.account_type = 'REVENUE' then 'Received from customers'
-          when a2.account_type = 'COGS' then 'Paid to suppliers'
-          when a2.account_type = 'EXPENSE' then 'Operating expenses paid'
-          when a2.account_type = 'EQUITY' then 'Owner contributions / drawings'
-          when a2.account_type = 'LIABILITY' then 'Loans and other liabilities'
-          when a2.account_type = 'ASSET' then 'Purchase / sale of fixed assets'
+          when k.account_type = 'REVENUE' then 'Received from customers'
+          when k.account_type = 'COGS' then 'Paid to suppliers'
+          when k.account_type = 'EXPENSE' then 'Operating expenses paid'
+          when k.account_type = 'EQUITY' then 'Owner contributions / drawings'
+          when k.account_type = 'LIABILITY' then 'Loans and other liabilities'
+          when k.account_type = 'ASSET' then 'Purchase / sale of fixed assets'
           else 'Other'
         end as category,
         case
           when je.source_type in ('CUSTOMER_RECEIPT', 'SALES_INVOICE', 'SUPPLIER_PAYMENT')
-            or a2.account_type in ('REVENUE', 'COGS', 'EXPENSE') then 'operating'
-          when a2.account_type = 'ASSET' then 'investing'
-          when a2.account_type in ('EQUITY', 'LIABILITY') then 'financing'
+            or k.account_type in ('REVENUE', 'COGS', 'EXPENSE') then 'operating'
+          when k.account_type = 'ASSET' then 'investing'
+          when k.account_type in ('EQUITY', 'LIABILITY') then 'financing'
           else 'operating'
         end as section,
-        -sum(jl2.base_amount) as amount
-        from journal_line jl_cash
-        join journal_entry je on je.id = jl_cash.journal_entry_id
-        join account a_cash on a_cash.id = jl_cash.account_id
-        join journal_line jl2 on jl2.journal_entry_id = je.id and jl2.id <> jl_cash.id
-        join account a2 on a2.id = jl2.account_id
-       where jl_cash.company_id = ${companyId}
-         and (a_cash.is_cash_account or a_cash.is_bank_account)
-         and not (a2.is_cash_account or a2.is_bank_account)
-         and je.entry_date between ${from}::date and ${to}::date
+        sum(c.base_amount * k.base_amount / nullif(ct.total, 0)) as amount
+        from cash_line c
+        join journal_entry je on je.id = c.journal_entry_id
+        join contra k on k.journal_entry_id = c.journal_entry_id
+        join contra_total ct on ct.journal_entry_id = c.journal_entry_id
+       where je.entry_date between ${from}::date and ${to}::date
+         ${branchFilterOn(sql`c`, branchId)}
        group by category, section
        order by section, category`,
     sql`
@@ -1415,7 +1794,8 @@ export async function getCashFlowStatement(companyId: string, from: string, to: 
         join account a on a.id = jl.account_id
        where jl.company_id = ${companyId}
          and (a.is_cash_account or a.is_bank_account)
-         and je.entry_date < ${from}::date`,
+         and je.entry_date < ${from}::date
+         ${branchFilter(branchId)}`,
     sql`
       select coalesce(sum(jl.base_amount), 0) as balance
         from journal_line jl
@@ -1423,7 +1803,8 @@ export async function getCashFlowStatement(companyId: string, from: string, to: 
         join account a on a.id = jl.account_id
        where jl.company_id = ${companyId}
          and (a.is_cash_account or a.is_bank_account)
-         and je.entry_date <= ${to}::date`,
+         and je.entry_date <= ${to}::date
+         ${branchFilter(branchId)}`,
   ]);
 
   return {
@@ -1699,8 +2080,14 @@ export async function getOrderProgress(orderId: string, docType: string) {
  */
 export async function getConsignmentAgreements(companyId: string) {
   return sql`
+    -- Quoted, so Postgres keeps the capitals. The keys inside the lines below
+    -- are built camelCase by json_build_object and the screens read them that
+    -- way; these three came back partner_name and friends, so every consignor
+    -- rendered blank — and worse, the receive form's dropdown carried an
+    -- undefined value, so choosing a consignor matched no agreement and the
+    -- items section with the quantity box never appeared at all.
     select ag.id, ag.memo, ag.created_at,
-           p.id as partner_id, p.code as partner_code, p.name as partner_name,
+           p.id as "partnerId", p.code as "partnerCode", p.name as "partnerName",
            coalesce(json_agg(json_build_object(
              'lineId', al.id,
              'itemId', i.id, 'itemCode', i.code, 'itemName', i.name,
@@ -1893,4 +2280,322 @@ export async function getVoucherImportMasterData(companyId: string) {
           from fiscal_period where company_id = ${companyId} and status = 'OPEN'`,
   ]);
   return { accounts, locations, openPeriods };
+}
+
+// ------------------------------------------------------- journal entries --
+
+export type JournalEntryFilters = {
+  from?: string;
+  to?: string;
+  accountId?: string;
+  locationId?: string;
+  docType?: string;
+  docNo?: string;
+  q?: string;
+};
+
+/**
+ * Every posted entry, newest first, with its own debit and credit totals —
+ * the ledger read chronologically rather than one account at a time.
+ *
+ * The general ledger answers "what happened to this account". This answers
+ * "what has been posted", which is the question someone asks when they are
+ * looking for a document rather than reconciling a balance, and it was the
+ * one screen the app had no answer for.
+ *
+ * Filtering is done here rather than in the browser because the entry list
+ * grows with every document ever posted, unlike the master-data lists that
+ * DataTable filters client-side.
+ */
+export async function getJournalEntries(companyId: string, f: JournalEntryFilters = {}) {
+  const like = (v?: string) => (v && v.trim() ? `%${v.trim()}%` : null);
+  const docNo = like(f.docNo);
+  const q = like(f.q);
+
+  return sql`
+    select je.id, je.entry_no,
+           to_char(je.entry_date, 'YYYY-MM-DD') as entry_date,
+           je.memo, je.source_type,
+           d.id as document_id, d.doc_no, d.doc_type, d.status,
+           p.name as partner_name,
+           sum(case when jl.base_amount > 0 then  jl.base_amount else 0 end) as debit,
+           sum(case when jl.base_amount < 0 then -jl.base_amount else 0 end) as credit
+      from journal_entry je
+      join journal_line jl on jl.journal_entry_id = je.id
+      left join document d on d.id = je.source_id
+      left join business_partner p on p.id = d.partner_id
+     where je.company_id = ${companyId}
+       ${f.from ? sql`and je.entry_date >= ${f.from}::date` : sql``}
+       ${f.to ? sql`and je.entry_date <= ${f.to}::date` : sql``}
+       ${f.docType ? sql`and d.doc_type = ${f.docType}` : sql``}
+       ${docNo ? sql`and d.doc_no ilike ${docNo}` : sql``}
+       ${q ? sql`and (je.memo ilike ${q} or d.doc_no ilike ${q} or je.entry_no ilike ${q})` : sql``}
+       -- An account or a branch filter asks whether the entry touches one,
+       -- not whether every line does: an entry is the unit here, and showing
+       -- half of one would make it look unbalanced.
+       ${f.accountId ? sql`
+         and exists (select 1 from journal_line x
+                      where x.journal_entry_id = je.id and x.account_id = ${f.accountId})` : sql``}
+       ${f.locationId ? sql`
+         and exists (select 1 from journal_line x
+                      where x.journal_entry_id = je.id
+                        ${branchFilterOn(sql`x`, f.locationId)})` : sql``}
+     group by je.id, je.entry_no, je.entry_date, je.memo, je.source_type,
+              d.id, d.doc_no, d.doc_type, d.status, p.name
+     order by je.entry_date desc, je.entry_no desc
+     limit 500`;
+}
+
+/** The lines behind a set of entries, for the rows the list expands. */
+export async function getJournalEntryLines(companyId: string, entryIds: string[]) {
+  if (entryIds.length === 0) return [];
+  return sql`
+    select jl.journal_entry_id, jl.line_no, jl.base_amount, jl.memo,
+           a.code as account_code, a.name as account_name,
+           p.name as partner_name, l.code as location_code
+      from journal_line jl
+      join account a on a.id = jl.account_id
+      left join business_partner p on p.id = jl.partner_id
+      left join location l on l.id = jl.location_id
+     where jl.company_id = ${companyId} and jl.journal_entry_id = any(${entryIds})
+     order by jl.journal_entry_id, jl.line_no`;
+}
+
+/** One entry, its lines, and the document that wrote it. */
+export async function getJournalEntry(companyId: string, entryId: string) {
+  const [entry] = await sql`
+    select je.id, je.entry_no, je.memo, je.source_type,
+           to_char(je.entry_date, 'YYYY-MM-DD') as entry_date,
+           d.id as document_id, d.doc_no, d.doc_type, d.status,
+           d.gross_total, p.name as partner_name, p.code as partner_code
+      from journal_entry je
+      left join document d on d.id = je.source_id
+      left join business_partner p on p.id = d.partner_id
+     where je.company_id = ${companyId} and je.id = ${entryId}`;
+  if (!entry) return null;
+
+  const lines = await sql`
+    select jl.line_no, jl.base_amount, jl.memo,
+           a.id as account_id, a.code as account_code, a.name as account_name,
+           p.name as partner_name, l.code as location_code
+      from journal_line jl
+      join account a on a.id = jl.account_id
+      left join business_partner p on p.id = jl.partner_id
+      left join location l on l.id = jl.location_id
+     where jl.company_id = ${companyId} and jl.journal_entry_id = ${entryId}
+     order by jl.line_no`;
+
+  return { entry, lines };
+}
+
+// --------------------------------------------------------- trial balance --
+
+export type TrialBalanceFilters = {
+  asOf?: string;
+  locationId?: string;
+  accountType?: string;
+};
+
+/**
+ * Every account that has moved, with its closing balance on the side it
+ * naturally falls.
+ *
+ * Written against journal_line rather than v_trial_balance because that view
+ * groups by fiscal period and has no date bound — a trial balance is always
+ * "as at", and asking for one as at the 30th is the normal case, not a
+ * variant. The Type column is the section the chart files the account under,
+ * not the six-member account_type enum: a chart draws finer distinctions than
+ * the enum does, and "Current Assets" is what an accountant expects to read.
+ */
+export async function getTrialBalanceAsOf(companyId: string, f: TrialBalanceFilters = {}) {
+  return sql`
+    select a.id, a.code, a.name, a.account_type,
+           coalesce(sec.name, initcap(lower(a.account_type::text))) as section,
+           sum(case when jl.base_amount > 0 then  jl.base_amount else 0 end) as debit,
+           sum(case when jl.base_amount < 0 then -jl.base_amount else 0 end) as credit,
+           sum(jl.base_amount) as balance
+      from journal_line jl
+      join journal_entry je on je.id = jl.journal_entry_id
+      join account a on a.id = jl.account_id
+      left join account sec on sec.id = a.parent_id
+     where jl.company_id = ${companyId}
+       ${f.asOf ? sql`and je.entry_date <= ${f.asOf}::date` : sql``}
+       ${branchFilter(f.locationId)}
+       ${f.accountType ? sql`and a.account_type = ${f.accountType}` : sql``}
+     group by a.id, a.code, a.name, a.account_type, sec.name
+     -- An account that moved and came back to nil is still part of the
+     -- period's story, so it stays: only accounts that never moved are out.
+     having sum(case when jl.base_amount > 0 then jl.base_amount else 0 end) <> 0
+         or sum(case when jl.base_amount < 0 then jl.base_amount else 0 end) <> 0
+     order by a.code`;
+}
+
+/**
+ * One account's movements, optionally within one branch, with a running
+ * balance computed over exactly the rows returned.
+ *
+ * v_account_ledger cannot do this: its running balance is a window over every
+ * movement on the account, so filtering rows out from under it leaves a
+ * balance that disagrees with its own column. Computing the window after the
+ * filter gives the branch's own running balance, which is the figure someone
+ * asking for one branch is actually after.
+ */
+export async function getAccountLedgerFiltered(
+  companyId: string, accountId: string,
+  f: { from?: string; to?: string; branchId?: string | null } = {},
+) {
+  return sql`
+    select je.entry_no, je.entry_date, je.memo, je.source_type,
+           d.doc_no, d.doc_type, p.name as partner_name, l.code as location_code,
+           case when jl.base_amount > 0 then  jl.base_amount else 0 end as debit,
+           case when jl.base_amount < 0 then -jl.base_amount else 0 end as credit,
+           sum(jl.base_amount) over (
+             order by je.entry_date, je.entry_no, jl.line_no
+             rows between unbounded preceding and current row
+           ) as running_balance
+      from journal_line jl
+      join journal_entry je on je.id = jl.journal_entry_id
+      left join document d on d.id = je.source_id
+      left join business_partner p on p.id = jl.partner_id
+      left join location l on l.id = jl.location_id
+     where jl.company_id = ${companyId} and jl.account_id = ${accountId}
+       ${f.from ? sql`and je.entry_date >= ${f.from}::date` : sql``}
+       ${f.to ? sql`and je.entry_date <= ${f.to}::date` : sql``}
+       ${branchFilter(f.branchId)}
+     order by je.entry_date, je.entry_no, jl.line_no`;
+}
+
+/**
+ * The four figures that frame those movements. Opening is its own sum rather
+ * than the first row's running balance — that balance already includes its
+ * own row, so reading it would double-count the first movement of the period.
+ */
+export async function getAccountSummary(
+  companyId: string, accountId: string,
+  f: { from?: string; to?: string; branchId?: string | null } = {},
+) {
+  const [row] = await sql`
+    select
+      coalesce(sum(case when ${f.from ? sql`je.entry_date < ${f.from}::date` : sql`false`}
+                        then jl.base_amount else 0 end), 0) as opening,
+      coalesce(sum(case when jl.base_amount > 0
+                         and ${f.from ? sql`je.entry_date >= ${f.from}::date` : sql`true`}
+                         and ${f.to ? sql`je.entry_date <= ${f.to}::date` : sql`true`}
+                        then jl.base_amount else 0 end), 0) as debits,
+      coalesce(sum(case when jl.base_amount < 0
+                         and ${f.from ? sql`je.entry_date >= ${f.from}::date` : sql`true`}
+                         and ${f.to ? sql`je.entry_date <= ${f.to}::date` : sql`true`}
+                        then -jl.base_amount else 0 end), 0) as credits,
+      coalesce(sum(case when ${f.to ? sql`je.entry_date <= ${f.to}::date` : sql`true`}
+                        then jl.base_amount else 0 end), 0) as closing
+      from journal_line jl
+      join journal_entry je on je.id = jl.journal_entry_id
+     where jl.company_id = ${companyId} and jl.account_id = ${accountId}
+       ${branchFilter(f.branchId)}`;
+  return {
+    opening: Number(row?.opening ?? 0),
+    debits: Number(row?.debits ?? 0),
+    credits: Number(row?.credits ?? 0),
+    closing: Number(row?.closing ?? 0),
+  };
+}
+
+// -------------------------------------------------------------- cutover --
+
+/** The posted cutover, if this company has had one. */
+export async function getOpeningBatch(companyId: string) {
+  const [batch] = await sql`
+    select id, to_char(cutover_date, 'YYYY-MM-DD') as cutover_date, memo, posted_at
+      from opening_batch
+     where company_id = ${companyId} and status = 'POSTED'
+     limit 1`;
+  if (!batch) return null;
+  const documents = await sql`
+    select d.id, d.doc_no, d.doc_type, d.gross_total, d.reference,
+           to_char(d.doc_date, 'YYYY-MM-DD') as doc_date, p.name as partner_name
+      from document d
+      left join business_partner p on p.id = d.partner_id
+     where d.opening_batch_id = ${batch.id}
+     order by d.doc_type, d.doc_no`;
+  return { batch, documents };
+}
+
+// --------------------------------------------------- stock by ownership --
+
+/**
+ * What is physically on the shelf, split by who owns it.
+ *
+ * A hundred shirts in one place can be sixty of yours and forty of two
+ * consignors', and the difference is not visible in the warehouse — only
+ * here. Owned stock is an asset on the balance sheet; consigned stock is
+ * somebody else's goods you are holding, and selling the wrong one posts the
+ * wrong accounting. So the split has to be readable before the sale, not
+ * reconstructed from the ledger after it.
+ */
+export async function getStockByOwnership(
+  companyId: string, itemId: string, locationId: string,
+) {
+  const [owned] = await sql`
+    select coalesce(fn_qty_on_hand(${companyId}, ${itemId}, ${locationId}), 0) as qty`;
+
+  const consigned = await sql`
+    select d.partner_id as consignor_id, p.code as consignor_code, p.name as consignor_name,
+           sum(cl.qty_received - coalesce(c.used, 0)) as qty
+      from consignment_lot cl
+      join document d on d.id = cl.receipt_document_id
+      join business_partner p on p.id = d.partner_id
+      left join (
+        select lot_id, sum(qty) as used from consignment_lot_consumption group by lot_id
+      ) c on c.lot_id = cl.id
+     where cl.company_id = ${companyId} and cl.item_id = ${itemId}
+       and cl.location_id = ${locationId}
+     group by d.partner_id, p.code, p.name
+    having sum(cl.qty_received - coalesce(c.used, 0)) > 0.0001
+     order by p.code`;
+
+  return {
+    owned: Number(owned?.qty ?? 0),
+    consigned: consigned.map((r: any) => ({
+      consignorId: r.consignor_id as string,
+      code: r.consignor_code as string,
+      name: r.consignor_name as string,
+      qty: Number(r.qty),
+    })),
+  };
+}
+
+/** The same split for every item a location holds, for the picker to read. */
+export async function getOwnershipMap(companyId: string) {
+  const owned = await sql`
+    select item_id, location_id, qty_on_hand as qty
+      from v_stock_on_hand where company_id = ${companyId}`;
+  const consigned = await sql`
+    select cl.item_id, cl.location_id, d.partner_id as consignor_id,
+           p.code as consignor_code, p.name as consignor_name,
+           sum(cl.qty_received - coalesce(c.used, 0)) as qty
+      from consignment_lot cl
+      join document d on d.id = cl.receipt_document_id
+      join business_partner p on p.id = d.partner_id
+      left join (
+        select lot_id, sum(qty) as used from consignment_lot_consumption group by lot_id
+      ) c on c.lot_id = cl.id
+     where cl.company_id = ${companyId}
+     group by cl.item_id, cl.location_id, d.partner_id, p.code, p.name
+    having sum(cl.qty_received - coalesce(c.used, 0)) > 0.0001`;
+  return { owned, consigned };
+}
+
+/** Consigned goods on this delivery with no settlement standing against them. */
+export async function getUnsettledConsignment(companyId: string, deliveryId: string) {
+  const rows = await sql`
+    select u.consumption_id, u.qty, i.code as item_code, i.name as item_name,
+           p.name as consignor_name
+      from v_consignment_unsettled u
+      join item i on i.id = u.item_id
+      join business_partner p on p.id = u.consignor_id
+     where u.company_id = ${companyId} and u.delivery_document_id = ${deliveryId}`;
+  return rows as unknown as {
+    consumption_id: string; qty: string;
+    item_code: string; item_name: string; consignor_name: string;
+  }[];
 }

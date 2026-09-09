@@ -1,5 +1,8 @@
 import { money } from "@/lib/db";
-import { getCompany, getCashFlowStatement } from "@/lib/queries";
+import {
+  getCompany, getCashFlowStatement, getBranches,
+  getUnassignedBranchActivity, UNASSIGNED_BRANCH,
+} from "@/lib/queries";
 
 function defaultFrom() {
   return `${new Date().getFullYear()}-01-01`;
@@ -17,21 +20,43 @@ const SECTIONS: Array<{ key: string; label: string }> = [
 export default async function CashFlow({
   searchParams,
 }: {
-  searchParams: Promise<{ from?: string; to?: string }>;
+  searchParams: Promise<{ from?: string; to?: string; branch?: string }>;
 }) {
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
-  const { from, to } = await searchParams;
+  const { from, to, branch } = await searchParams;
   const range = { from: from || defaultFrom(), to: to || today() };
 
-  const { rows, beginningCash, endingCash } = await getCashFlowStatement(company.id, range.from, range.to);
+  const branches = (await getBranches(company.id)) as unknown as
+    Array<{ id: string; code: string; name: string }>;
+  const unassignedLines = await getUnassignedBranchActivity(company.id);
+  // A branch id that no longer exists falls back to the consolidated view
+  // rather than showing an empty report with no explanation.
+  const branchId =
+    branch === UNASSIGNED_BRANCH ? UNASSIGNED_BRANCH
+    : branch && branches.some((b) => b.id === branch) ? branch
+    : null;
+
+  const { rows, beginningCash, endingCash } =
+    await getCashFlowStatement(company.id, range.from, range.to, branchId);
   const typed = rows as unknown as Array<{ category: string; section: string; amount: string }>;
 
+  // Beginning plus what the statement explains should be what the ledger
+  // holds. A branch view legitimately differs: a transfer between branches
+  // moves that branch's cash but has no contra line to classify, so it is
+  // shown as a difference rather than quietly folded into a category.
   const netChange = SECTIONS.reduce(
     (s, sec) => s + typed.filter((r) => r.section === sec.key).reduce((s2, r) => s2 + Number(r.amount), 0),
     0
   );
+
+  // Beginning plus what the statement explains should be what the ledger
+  // holds. A branch view legitimately differs: a transfer between branches
+  // moves that branch's cash but has no contra line to classify, so it shows
+  // as a difference rather than being quietly folded into a category.
+  const difference = Number(endingCash) - (Number(beginningCash) + netChange);
+  const unreconciled = Math.abs(difference) > 0.01;
 
   return (
     <>
@@ -53,6 +78,21 @@ export default async function CashFlow({
         <div className="field">
           <label htmlFor="to">To</label>
           <input id="to" name="to" type="date" defaultValue={range.to} />
+        </div>
+        {/* Which branch's cash moved. The cash side of the entry decides it:
+            money leaving the Yangon till is Yangon's outflow whatever it was
+            spent on, and the other leg may carry a different branch or none. */}
+        <div className="field">
+          <label htmlFor="branch">Branch</label>
+          <select id="branch" name="branch" defaultValue={branchId ?? ""}>
+            <option value="">All branches</option>
+            {branches.map((b) => (
+              <option key={b.id} value={b.id}>{b.code} · {b.name}</option>
+            ))}
+            {unassignedLines > 0 && (
+              <option value={UNASSIGNED_BRANCH}>— No branch ({unassignedLines} lines) —</option>
+            )}
+          </select>
         </div>
         <div className="actions"><button type="submit">Update</button></div>
       </form>
@@ -89,6 +129,19 @@ export default async function CashFlow({
                 <tr><td>Net change in cash</td><td className="r" style={{ fontWeight: 700 }}>{money(netChange)}</td></tr>
                 <tr><td>Cash at beginning of period</td><td className="r">{money(beginningCash)}</td></tr>
                 <tr><td>Cash at end of period</td><td className="r" style={{ fontWeight: 700 }}>{money(endingCash)}</td></tr>
+                {/* The statement's own proof. Ending cash is read straight
+                    from the ledger while the movements above are classified
+                    from it, so the two are arrived at independently and
+                    printing both without comparing them hides exactly the
+                    errors this report can make. */}
+                <tr>
+                  <td style={{ color: unreconciled ? "var(--bad)" : "var(--muted)" }}>
+                    {unreconciled ? "Unexplained difference" : "Reconciles"}
+                  </td>
+                  <td className="r" style={{ color: unreconciled ? "var(--bad)" : "var(--muted)" }}>
+                    {money(difference)}
+                  </td>
+                </tr>
               </tfoot>
             </table>
           </div>

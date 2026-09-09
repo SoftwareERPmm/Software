@@ -45,6 +45,7 @@ export type OrderFormConfig = {
 export function ErpOrderForm({
   config, docId, docNo, status, partnerName, partnerCode, docDate, dueDate,
   locationName, reference, memo, lines, netTotal, chain, actions, related,
+  backHref, backLabel,
 }: {
   config: OrderFormConfig;
   docId: string;
@@ -68,6 +69,9 @@ export function ErpOrderForm({
    * "what came of this order" is the one the page exists to answer.
    */
   related?: React.ReactNode;
+  /** Passed straight through to the shell — see ErpDocShell. */
+  backHref?: string | null;
+  backLabel?: string | null;
 }) {
   const totalOrdered = lines.reduce((s, l) => s + l.ordered, 0);
   const totalFulfilled = lines.reduce((s, l) => s + l.fulfilled, 0);
@@ -84,6 +88,8 @@ export function ErpOrderForm({
       status={status}
       listHref={config.listHref}
       listLabel={config.listLabel}
+      backHref={backHref}
+      backLabel={backLabel}
       chain={chain}
       actions={actions}
       badges={

@@ -65,6 +65,12 @@ export function SettlementForm({
   const owed = open.reduce((s, i) => s + Number(i.outstanding), 0);
   const applied = open.reduce((s, i) => s + (Number(amounts[i.document_id]) || 0), 0);
 
+  // Every invoice this receipt will touch. The one arrived from is filled in
+  // before anyone has looked at the screen, so a receipt meant for a
+  // different invoice quietly carries it along — the total on the button was
+  // right and nobody read it, because nothing said a second invoice was in.
+  const settling = open.filter((i) => (Number(amounts[i.document_id]) || 0) > 0);
+
   const overApplied = open.filter(
     (i) => (Number(amounts[i.document_id]) || 0) > Number(i.outstanding)
   );
@@ -182,7 +188,14 @@ export function SettlementForm({
                   const late = i.days_overdue !== null && i.days_overdue > 0;
                   return (
                     <tr key={i.document_id}>
-                      <td className="code">{i.doc_no}</td>
+                      <td className="code">
+                        {i.doc_no}
+                        {i.document_id === initialInvoiceId && (
+                          <div className="hint" style={{ fontSize: "var(--t-2xs)" }}>
+                            filled in for you
+                          </div>
+                        )}
+                      </td>
                       <td className="code">{day(i.posting_date)}</td>
                       <td className="code">{day(i.due_date)}</td>
                       <td>
@@ -233,11 +246,31 @@ export function SettlementForm({
         <textarea id="memo" name="memo" rows={2} placeholder="Optional — English or Myanmar" />
       </div>
 
+      {/* What is about to be settled, named. One invoice needs no list; two or
+          more is exactly the case where an amount nobody typed rides along
+          on the total. */}
+      {settling.length > 1 && (
+        <div className="alert" style={{ marginBottom: "0.75rem" }}>
+          <strong>
+            This one {isPay ? "payment" : "receipt"} settles {settling.length} invoices.
+          </strong>
+          <ul style={{ margin: "0.35rem 0 0 1.1rem" }}>
+            {settling.map((i) => (
+              <li key={i.document_id}>
+                {i.doc_no} — {fmt(Number(amounts[i.document_id]) || 0)}
+                {i.document_id === initialInvoiceId && " (filled in for you)"}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className="actions">
         <button type="submit" disabled={pending || applied <= 0 || overApplied.length > 0}>
           {pending ? "Posting…"
             : applied > 0
               ? `Post ${isPay ? "payment" : "receipt"} of ${fmt(applied)}`
+                + (settling.length > 1 ? ` across ${settling.length} invoices` : "")
               : `Post ${isPay ? "payment" : "receipt"}`}
         </button>
         <span className="page-sub">

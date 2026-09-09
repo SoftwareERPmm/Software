@@ -32,7 +32,8 @@ const local = url.includes("localhost") || url.includes("127.0.0.1");
 const sql = postgres(url, { ssl: local ? false : "require",
   prepare: !url.includes("-pooler."), onnotice: () => {}, max: 1 });
 
-const { postJournalVoucher, postCashVoucher } = await import("../lib/posting.ts");
+const { postJournalVoucher, postCashVoucher, postAccountOpening } =
+  await import("../lib/posting.ts");
 
 let bad = 0;
 const check = (label, ok, detail = "") => {
@@ -115,6 +116,21 @@ try {
     cashMsg !== null && cashMsg.includes("inventory subledger"),
     cashMsg ? cashMsg.slice(0, 72) : "POSTED — it should not have");
 
+  // An opening balance is a manual journal wearing a document type, and it
+  // was exempted from the rule until 0046. Dr Inventory / Cr Opening Balance
+  // Equity balanced perfectly, posted, and moved no stock — general ledger
+  // inventory 1,077,000 against a stock ledger of 77,000.
+  let openMsg = null;
+  try {
+    await postAccountOpening({
+      companyId: co.id, docDate: today, memo: "guard test",
+      lines: [{ accountId: inv.id, amount: 1000000 }],
+    });
+  } catch (e) { openMsg = e.message; }
+  check("an opening balance cannot open inventory either",
+    openMsg !== null && openMsg.includes("inventory subledger"),
+    openMsg ? openMsg.slice(0, 72) : "POSTED — it should not have");
+
   // ---- what a manual voucher is for --------------------------------------
 
   console.log("\n  and everything a document does not produce still posts\n");
@@ -129,6 +145,14 @@ try {
       check(label, true, v.docNo);
     } catch (e) { check(label, false, e.message.slice(0, 72)); }
   };
+
+  try {
+    const ob = await postAccountOpening({
+      companyId: co.id, docDate: today, memo: "guard test",
+      lines: [{ accountId: cash.id, amount: 5000 }],
+    });
+    check("an opening balance for cash still posts", true, ob.docNo);
+  } catch (e) { check("an opening balance for cash still posts", false, e.message.slice(0, 72)); }
 
   await posts("depreciation: expense against equity", expenses[0], equity);
   await posts("an accrual between two expense accounts", expenses[0], expenses[1]);

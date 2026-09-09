@@ -3,6 +3,7 @@
 import { useActionState, useEffect, useMemo, useState } from "react";
 import type { ActionResult, PickerItem } from "@/lib/actions";
 import { NegativeStockConfirm, type Shortfall } from "./negative-stock-confirm";
+import { StockSourceDialog, poolsFor, type OwnershipSplit } from "./stock-source";
 import { priceLines, type VolumeBand } from "@/lib/discount";
 import { ItemPicker } from "./item-picker";
 
@@ -46,6 +47,9 @@ type Line = {
   /** Why they are free — promotion, sample, office use, damaged. Blank
    *  defaults to the promotional reason. */
   focReasonId: string;
+  /** "OWNED" or a consignor's id. Only reaches the ledger when the goods
+   *  actually leave — on a Take Now invoice, which creates the delivery. */
+  source: string;
 };
 
 const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 0 });
@@ -63,6 +67,7 @@ export function SalesVoucher({
   volumeDiscounts,
   focReasons, openInvoices, nextInvoiceNo, today, categories, uoms,
   itemPrices, priceLevels, stockByLocation, deliveries, initialDeliveryId,
+  ownership = [],
 }: {
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   customers: Customer[];
@@ -87,6 +92,13 @@ export function SalesVoucher({
   deliveries?: OpenDelivery[];
   /** Arrived via "Create sales invoice" on a specific delivery's own page — match it immediately. */
   initialDeliveryId?: string;
+  /** Consigned stock on hand, per item, warehouse and consignor. Owned and
+   *  consigned goods share a shelf and nothing about the shelf says which
+   *  is which, so the line has to be told. */
+  ownership?: {
+    item_id: string; location_id: string; consignor_id: string;
+    consignor_code: string; consignor_name: string; qty: string;
+  }[];
 }) {
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     action as never, null
@@ -97,7 +109,7 @@ export function SalesVoucher({
   const addItem = (i: Item) => setItems((xs) => [...xs, i]);
 
   const [lines, setLines] = useState<Line[]>([
-    { key: 1, itemId: "", qty: "", unitPrice: "", discountPct: "", focQty: "", focReasonId: "" },
+    { key: 1, itemId: "", qty: "", unitPrice: "", discountPct: "", focQty: "", focReasonId: "", source: "OWNED" },
   ]);
   const [customerId, setCustomerId] = useState("");
   const [locationId, setLocationId] = useState(locations[0]?.id ?? "");
@@ -114,6 +126,7 @@ export function SalesVoucher({
   const [cashIn, setCashIn] = useState("");
   const [showRemark, setShowRemark] = useState(false);
   const [toDeliver, setToDeliver] = useState(false);
+  const [sourceFor, setSourceFor] = useState<number | null>(null);
   const [fee, setFee] = useState("");
   const [tab, setTab] = useState<"invoices" | "promotions">("invoices");
 
@@ -205,7 +218,7 @@ export function SalesVoucher({
       d.lines.map((l, idx) => {
         const p = priceFor(l.itemId);
         return { key: idx + 1, itemId: l.itemId, qty: String(l.qty), unitPrice: p > 0 ? String(p) : "",
-                 discountPct: "", focQty: "", focReasonId: "" };
+                 discountPct: "", focQty: "", focReasonId: "", source: "OWNED" };
       })
     );
   }
@@ -229,7 +242,7 @@ export function SalesVoucher({
     setLines((ls) => [
       ...ls,
       { key: Math.max(0, ...ls.map((l) => l.key)) + 1, itemId: "", qty: "", unitPrice: "",
-        discountPct: "", focQty: "", focReasonId: "" },
+        discountPct: "", focQty: "", focReasonId: "", source: "OWNED" },
     ]);
 
   const removeLine = (key: number) =>
@@ -326,6 +339,17 @@ export function SalesVoucher({
   //
   // Free units go on as separate zero-price lines carrying the promotion
   // reason, so their cost lands in promotion expense instead of COGS.
+  const splitFor = (itemId: string): OwnershipSplit => ({
+    owned: onHandHere(itemId),
+    consigned: (ownership ?? [])
+      .filter((o) => o.item_id === itemId && o.location_id === locationId)
+      .map((o) => ({
+        consignorId: o.consignor_id, code: o.consignor_code,
+        name: o.consignor_name, qty: Number(o.qty),
+      })),
+  });
+  const anyConsigned = (ownership ?? []).some((o) => o.location_id === locationId);
+
   const payload = JSON.stringify(
     lines
       .filter((l) => l.itemId && Number(l.qty) > 0)
@@ -334,10 +358,20 @@ export function SalesVoucher({
         // The list price and the discount typed against it, rather than one
         // netted figure — the engine applies the bands and records which part
         // of the reduction came from where.
+        // Whose goods. Only meaningful when this invoice takes the stock now
+        // — a deliver-later invoice moves nothing, and the delivery raised
+        // against it later is where the pool is chosen.
+        const pool = toDeliver
+          ? {}
+          : {
+              source: l.source === "OWNED" ? "OWNED" : "CONSIGNMENT",
+              consignorId: l.source === "OWNED" ? null : l.source,
+            };
         const paid = {
           itemId: l.itemId, qty,
           unitPrice: Number(l.unitPrice) || 0,
           discountPct: Number(l.discountPct) || 0,
+          ...pool,
         };
         // Kept as two lines when both apply, because they are two different
         // events with two different reasons — a promotion the customer
@@ -347,11 +381,13 @@ export function SalesVoucher({
         const given = givenFree(l);
         const out: unknown[] = [paid];
         if (earned > 0 && promoReason) {
-          out.push({ itemId: l.itemId, qty: earned, unitPrice: 0, focReasonId: promoReason.id });
+          out.push({ itemId: l.itemId, qty: earned, unitPrice: 0,
+                     focReasonId: promoReason.id, ...pool });
         }
         if (given > 0) {
           const reason = l.focReasonId || promoReason?.id;
-          if (reason) out.push({ itemId: l.itemId, qty: given, unitPrice: 0, focReasonId: reason });
+          if (reason) out.push({ itemId: l.itemId, qty: given, unitPrice: 0,
+                                 focReasonId: reason, ...pool });
         }
         return out;
       })
@@ -528,6 +564,7 @@ export function SalesVoucher({
             <thead>
               <tr>
                 <th>Item</th>
+                {!toDeliver && !matchedDeliveryId && anyConsigned && <th>Stock source</th>}
                 <th className="r">On hand</th>
                 <th className="r">Qty</th>
                 <th className="r">Price</th>
@@ -552,6 +589,7 @@ export function SalesVoucher({
                         <span className="m">{item.code}</span>{" "}
                         <span className="pill warn">{promo!.code}</span>
                       </td>
+                      {!toDeliver && !matchedDeliveryId && anyConsigned && <td />}
                       <td className="r" style={{ color: "var(--muted)" }}>free</td>
                       <td className="r">{fmt(free)}</td>
                       <td className="r" style={{ color: "var(--muted)" }}>0</td>
@@ -575,6 +613,32 @@ export function SalesVoucher({
                         onCreated={addItem}
                       />
                     </td>
+                    {!toDeliver && !matchedDeliveryId && anyConsigned && (
+                      <td style={{ minWidth: 170 }}>
+                        {(() => {
+                          if (!l.itemId || !item?.is_stocked)
+                            return <span style={{ color: "var(--muted)" }}>—</span>;
+                          const split = splitFor(l.itemId);
+                          if (split.consigned.length === 0) {
+                            return (
+                              <span className="sourcebtn" style={{ cursor: "default", border: 0 }}>
+                                <span className="pooldot owned" /> Company-owned
+                              </span>
+                            );
+                          }
+                          const pools = poolsFor(split);
+                          const chosen = pools.find((p) => p.key === l.source) ?? pools[0];
+                          return (
+                            <button type="button" className="sourcebtn"
+                                    onClick={() => setSourceFor(l.key)}>
+                              <span className={`pooldot ${l.source === "OWNED" ? "owned" : "consigned"}`} />
+                              <span>{chosen.label.replace("Consignment — ", "")}</span>
+                              <span className="avail">{chosen.qty}</span>
+                            </button>
+                          );
+                        })()}
+                      </td>
+                    )}
                     <td className="r" style={{ color: short ? "var(--bad)" : undefined }}>
                       {!item ? "—" : item.is_stocked ? (
                         <>
@@ -838,6 +902,21 @@ export function SalesVoucher({
       {negativeConfirmed && (
         <input type="hidden" name="allow_negative_stock" value="true" />
       )}
+
+      {sourceFor !== null && (() => {
+        const line = lines.find((x) => x.key === sourceFor);
+        const item = line ? byId(line.itemId) : null;
+        return (
+          <StockSourceDialog
+            open
+            itemLabel={item ? `${item.code} · ${item.name}` : "item"}
+            pools={poolsFor(line ? splitFor(line.itemId) : undefined)}
+            value={line?.source ?? "OWNED"}
+            onPick={(key) => setLine(sourceFor, { source: key })}
+            onClose={() => setSourceFor(null)}
+          />
+        );
+      })()}
 
       <NegativeStockConfirm
         open={askNegative}

@@ -20,6 +20,32 @@ price, where does the difference go?
 
 **Recommendation.** Variance account for v1.
 
+**Partly resolved, 2026-09-08 — the invoice-first case has no variance.**
+The question above is about a receipt that *estimated* a cost and a bill that
+later disagreed. When the bill arrived first there is no estimate: the goods
+are valued at the invoice price, GR/IR clears by exactly what arrived, and
+nothing reaches Purchase Price Variance. The receipt form fills the cost from
+the matched invoice and will not let it be typed over; `_postGoodsReceipt`
+re-prices the lines from the invoice regardless of what a caller passes.
+
+What this fixed: receiving 200 units at a typed 120 against a bill of 80 used
+to credit 8,000 to variance — a profit recognised on buying stock — and carry
+the goods 8,000 above what was owed for them. The same mechanism the other way
+expensed the difference and carried stock below what was owed. Receiving more
+than was billed is no longer a variance either: the excess stays in GR/IR as
+goods held and not yet invoiced, which is what it is.
+
+The invoice price is the *starting* point, not the whole cost — IAS 2 puts
+freight, duties and other costs of bringing stock to its location and
+condition into inventory too. Those have documents behind them and belong in
+landed-cost allocation, which is **not built**; overtyping a receipt was never
+a substitute for it.
+
+Still open, and still needing an auditor: the receipt-first case above, where
+the bill genuinely disagrees with an estimate already posted. That is where
+`PURCHASE_PRICE_VARIANCE` still receives entries, and where the choice between
+variance account and inventory revaluation is unresolved.
+
 **Needs.** Accountant sign-off. This is the single most important question to
 put to a Myanmar auditor, because changing it later means re-posting history.
 

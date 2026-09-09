@@ -137,6 +137,16 @@ a second source of truth that drifts.
 **Corrections are reversals.** Posted entries and stock movements cannot be
 updated or deleted; the database blocks it. Post a reversing document.
 
+**A business does not start at nil.** The cutover — stock on the shelf,
+customers who owe, suppliers owed, cash in the till — goes in through
+Accounting → Opening Balances, which posts one `opening_batch`. Everything in
+it balances against Opening Balance Equity and nothing touches revenue, cost
+of sales or GR/IR: none of it was earned or bought in this system. Stock
+arrives with quantity and a FIFO layer, debts as open items carrying the
+partner's own reference and due date, so both settle and age normally. One
+posted batch per company, enforced by a unique index, because a second set of
+opening balances silently doubles the stock and the debts.
+
 **A subledger owns its balance.** `account.subledger` names which one, and a
 Journal, Cash or Bank voucher cannot post to an account that has it — the
 guard is in the database, not in the account picker. Receivables and payables

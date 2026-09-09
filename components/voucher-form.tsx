@@ -4,6 +4,8 @@ import { useActionState, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
 import { groupAccountsBySection } from "@/lib/format";
 import { ACCOUNT_TYPE_LABEL } from "./account-form";
+import { CheckCircle2, CircleAlert, Eye, Plus, X } from "lucide-react";
+import { PrintableDocument } from "@/components/printable-document";
 
 type Account = {
   id: string; code: string; name: string; parent_id: string | null;
@@ -47,6 +49,7 @@ export function VoucherForm({
   today,
   nextNo,
   presetDirection,
+  companyName,
 }: {
   kind: "cash" | "bank" | "journal";
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
@@ -56,6 +59,8 @@ export function VoucherForm({
   moneyAccounts: Account[];
   today: string;
   nextNo: string;
+  /** For the preview, which is the document rather than a picture of it. */
+  companyName: string;
   /** Locks the direction and hides the toggle — a receipt is always in, a payment always out. */
   presetDirection?: "in" | "out";
 }) {
@@ -73,6 +78,12 @@ export function VoucherForm({
   const [amount, setAmount] = useState("");
 
   // Journal mode: free rows.
+  const [preview, setPreview] = useState(false);
+  // Controlled so the preview can show what is actually in them. They were
+  // uncontrolled, which is fine for a form that only ever posts.
+  const [docDate, setDocDate] = useState(today);
+  const [reference, setReference] = useState("");
+  const [narration, setNarration] = useState("");
   const [rows, setRows] = useState<Row[]>([
     { key: 1, accountId: "", debit: "", credit: "", memo: "" },
     { key: 2, accountId: "", debit: "", credit: "", memo: "" },
@@ -123,6 +134,11 @@ export function VoucherForm({
   const totalDr = lines.filter((l) => l.amount > 0).reduce((s, l) => s + l.amount, 0);
   const totalCr = lines.filter((l) => l.amount < 0).reduce((s, l) => s - l.amount, 0);
   const diff = totalDr - totalCr;
+  const accountName = (id: string) => {
+    const a = accounts.find((x) => x.id === id);
+    return a ? `${a.code} · ${a.name}` : "—";
+  };
+
   const ready = lines.length >= 2 && Math.abs(diff) < 0.0001;
 
   const moneyLabel = kind === "cash" ? "Cash account" : "Bank account";
@@ -135,12 +151,14 @@ export function VoucherForm({
       <div className="card doc-meta">
         <div className="card-head">
           <span className="m" style={{ color: "var(--muted)" }}>No. {nextNo}</span>
+          <span className="pill draft">Unposted</span>
         </div>
         <div className="card-body">
           <div className="row">
             <div className="field">
               <label htmlFor="doc_date">Date</label>
-              <input id="doc_date" name="doc_date" type="date" defaultValue={today} required />
+              <input id="doc_date" name="doc_date" type="date" value={docDate}
+                     onChange={(e) => setDocDate(e.target.value)} required />
             </div>
 
             {branches.length > 1 ? (
@@ -153,13 +171,20 @@ export function VoucherForm({
                   ))}
                 </select>
               </div>
-            ) : (
-              branches.length === 1 && <input type="hidden" name="location_id" value={branches[0].id} />
-            )}
+            ) : branches.length === 1 ? (
+              <div className="field">
+                <label htmlFor="location_id">Branch</label>
+                <input type="hidden" name="location_id" value={branches[0].id} />
+                <div className="staticfield">{branches[0].code} · {branches[0].name}</div>
+                <span className="hint">The only branch, so every line goes here</span>
+              </div>
+            ) : null}
 
             <div className="field">
               <label htmlFor="reference">Reference</label>
-              <input id="reference" name="reference" type="text" placeholder="Voucher or cheque no." />
+              <input id="reference" name="reference" type="text" value={reference}
+                     onChange={(e) => setReference(e.target.value)}
+                     placeholder="Voucher or cheque no." />
             </div>
           </div>
         </div>
@@ -235,13 +260,15 @@ export function VoucherForm({
         <div className="card">
           <div className="card-head">
             <h2>Lines</h2>
-            <button type="button" className="ghost tiny" onClick={addRow}>Add line</button>
+            <button type="button" className="ghost tiny" onClick={addRow}>
+              <Plus size={13} aria-hidden="true" /> Add line
+            </button>
           </div>
           <div className="tablewrap">
             <table className="linetable">
               <thead>
                 <tr>
-                  <th>Account</th><th>Description</th>
+                  <th>Account</th><th>Line description</th>
                   <th className="r">Debit</th><th className="r">Credit</th><th />
                 </tr>
               </thead>
@@ -270,10 +297,12 @@ export function VoucherForm({
                     </td>
                     <td className="narrow">
                       <input type="number" min="0" step="any" value={r.debit} aria-label="Debit"
+                        className="amt dr" placeholder="0"
                         onChange={(e) => setRow(r.key, { debit: e.target.value, credit: "" })} />
                     </td>
                     <td className="narrow">
                       <input type="number" min="0" step="any" value={r.credit} aria-label="Credit"
+                        className="amt cr" placeholder="0"
                         onChange={(e) => setRow(r.key, { credit: e.target.value, debit: "" })} />
                     </td>
                     <td className="tight">
@@ -285,9 +314,9 @@ export function VoucherForm({
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan={2}>{ready ? "Balanced" : diff === 0 ? "" : `Out by ${fmt(Math.abs(diff))}`}</td>
-                  <td className="r dr">{fmt(totalDr)}</td>
-                  <td className="r cr">{fmt(totalCr)}</td>
+                  <td colSpan={2} className="r">Total debit / credit</td>
+                  <td className="r"><span className="tot dr">{fmt(totalDr)}</span></td>
+                  <td className="r"><span className="tot cr">{fmt(totalCr)}</span></td>
                   <td />
                 </tr>
               </tfoot>
@@ -297,21 +326,73 @@ export function VoucherForm({
       )}
 
       <div className="field">
-        <label htmlFor="memo">Description</label>
-        <textarea id="memo" name="memo" rows={2} placeholder="What this voucher is for — English or Myanmar" />
+        <label htmlFor="memo">Journal narration</label>
+        <textarea id="memo" name="memo" rows={2} value={narration}
+                  onChange={(e) => setNarration(e.target.value)}
+                  placeholder="What this voucher is for — English or Myanmar" />
       </div>
 
+      {/* What the paper will say, before it is paper. The same component the
+          printed document uses, so a preview cannot drift from the thing it
+          previews — it is not a mock-up of the voucher, it is the voucher. */}
+      {preview && (
+        <div className="previewback" onClick={() => setPreview(false)}>
+          <div className="previewbody" onClick={(e) => e.stopPropagation()}>
+            <div className="actions previewbar">
+              <strong>Preview</strong>
+              <span className="page-sub">Not posted yet</span>
+              <button type="button" className="ghost tiny" style={{ marginLeft: "auto" }}
+                      onClick={() => setPreview(false)}>
+                <X size={13} aria-hidden="true" /> Close
+              </button>
+            </div>
+            <PrintableDocument doc={{
+              company: { name: companyName, currency: "MMK" },
+              title: kind === "cash" ? "Cash voucher"
+                   : kind === "bank" ? "Bank voucher" : "Journal voucher",
+              docNo: nextNo,
+              status: "UNPOSTED",
+              date: new Date(docDate || today).toLocaleDateString("en-GB",
+                { day: "2-digit", month: "short", year: "numeric" }),
+              reference: reference || null,
+              memo: narration || null,
+              entries: lines.map((l) => ({
+                account: accountName(l.accountId),
+                description: ("memo" in l ? l.memo : null) ?? null,
+                debit: l.amount > 0 ? l.amount : 0,
+                credit: l.amount < 0 ? -l.amount : 0,
+              })),
+              totals: [{ label: "Total", value: totalDr, strong: true }],
+              signatures: kind === "journal"
+                ? ["Prepared by", "Approved by"]
+                : ["Prepared by", "Received by", "Approved by"],
+            }} />
+          </div>
+        </div>
+      )}
+
       <div className="actions form-commit">
+        <span className={`balancestate ${ready ? "ok" : "wait"}`}>
+          {ready ? <CheckCircle2 size={17} aria-hidden="true" />
+                 : <CircleAlert size={17} aria-hidden="true" />}
+          <strong>
+            {ready ? "Balanced · ready to post"
+                   : simple ? "Fill in the account and amount"
+                            : "The two sides do not agree yet"}
+          </strong>
+          {!simple && (
+            <span className="page-sub">
+              Difference {fmt(Math.abs(diff))}
+            </span>
+          )}
+        </span>
+        <button type="button" className="ghost" disabled={lines.length === 0}
+                style={{ marginLeft: "auto" }} onClick={() => setPreview(true)}>
+          <Eye size={14} aria-hidden="true" /> Preview posting
+        </button>
         <button type="submit" disabled={pending || !ready}>
           {pending ? "Posting…" : ready ? `Post ${fmt(totalDr)}` : "Post voucher"}
         </button>
-        <span className="page-sub">
-          {ready
-            ? "Ready to post."
-            : simple
-              ? "Fill in the account and amount to continue."
-              : "The two sides don't add up to the same total yet."}
-        </span>
       </div>
     </form>
   );

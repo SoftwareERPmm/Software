@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { planVoid } from "@/lib/void";
 import { RelatedDocumentsPanel } from "@/components/related-documents";
+import { ReplaceSettlement } from "@/components/replace-settlement";
 import { VoidDocument } from "@/components/void-document";
 import { voidDocumentAction } from "@/lib/actions";
 import Link from "next/link";
@@ -21,8 +22,11 @@ import {
   getStockByLocation,
   getOrderProgress,
   getRelatedDocuments,
+  getUnsettledConsignment,
 } from "@/lib/queries";
-import { createDelivery, createGoodsReceipt } from "@/lib/actions";
+import {
+  createDelivery, createGoodsReceipt, replaceConsignmentSettlement,
+} from "@/lib/actions";
 import { FulfillOrderForm } from "@/components/fulfill-order-form";
 import { ErpOrderForm, type OrderLine as ErpOrderLine } from "@/components/erp-order-form";
 import { ErpDocShell } from "@/components/erp-doc-shell";
@@ -55,7 +59,19 @@ const PLURAL: Record<string, string> = {
   CUSTOMER_RECEIPT: "Customer receipts",
 };
 
-export default async function DocumentPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function DocumentPage({
+  params, searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ back?: string }>;
+}) {
+  // Where the reader came from, when it was not this document's own list.
+  // Only a path within the app is accepted: a `back` that could be pointed at
+  // another site is an open redirect wearing a breadcrumb.
+  const { back } = await searchParams;
+  const backHref = back && back.startsWith("/") && !back.startsWith("//") ? back : null;
+  const backLabel = backHref?.startsWith("/finance/general-ledger")
+    ? "General ledger" : backHref ? "Back" : null;
   const { id } = await params;
   const doc = await getDocument(id);
   if (!doc) notFound();
@@ -162,6 +178,14 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
   // A voided document must say so on its face. Finding out only by noticing
   // the status pill, on a document whose figures all still read normally, is
   // how someone acts on a number that has already been reversed.
+  // A consigned sale whose settlement was voided: the goods are sold, the
+  // consignor's payable is not standing, and nothing else in the product can
+  // put that right.
+  const unsettledConsignment =
+    doc.doc_type === "SALES_INVOICE" && doc.status === "POSTED" && doc.source_id
+      ? await getUnsettledConsignment(doc.company_id, doc.source_id)
+      : [];
+
   const voidInfo = doc.status === "REVERSED" ? (await sql`
     select r.id, r.doc_no, to_char(r.doc_date, 'YYYY-MM-DD') as doc_date,
            d.void_reason,
@@ -252,6 +276,8 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
 
     return (
       <ErpOrderForm
+        backHref={backHref}
+        backLabel={backLabel}
         config={{
           typeLabel: sales ? "Sales Order" : "Purchase Order",
           partyLabel: sales ? "Customer" : "Vendor",
@@ -300,6 +326,8 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
 
   return (
     <ErpDocShell
+      backHref={backHref}
+      backLabel={backLabel}
       docId={doc.id}
       docNo={doc.doc_no ?? "Draft"}
       typeLabel={label(doc.doc_type).replace(/\b\w/g, (c) => c.toUpperCase())}
@@ -329,6 +357,14 @@ export default async function DocumentPage({ params }: { params: Promise<{ id: s
         </>
       }
     >
+
+      {unsettledConsignment.length > 0 && (
+        <ReplaceSettlement
+          action={replaceConsignmentSettlement}
+          invoiceId={doc.id}
+          unsettled={unsettledConsignment}
+        />
+      )}
 
       <RelatedDocumentsPanel related={related} />
 

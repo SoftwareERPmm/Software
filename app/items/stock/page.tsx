@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Boxes, PackageCheck, TrendingDown, AlertTriangle, HandCoins } from "lucide-react";
-import { money, qty } from "@/lib/db";
+import { money, qty, shortDate } from "@/lib/db";
 import {
   getCompany, getItems, getReservedQty, getIncomingQty, getLowStock, getReorderPoints, getLocations,
   getStockByLocation, getConsignedStockOnHand,
@@ -16,6 +16,9 @@ type Row = {
   id: string; code: string; name: string; name_my: string | null;
   item_group_id: string; group_name: string; parent_group_name: string | null;
   uom_code: string; qty_on_hand: string; value_on_hand: string; is_stocked: boolean;
+  last_purchase_price: string | null;
+  last_purchase_doc_no: string | null;
+  last_purchase_date: string | null;
 };
 
 export default async function Stock({
@@ -108,6 +111,7 @@ export default async function Stock({
       incomingQty: i.incomingQty,
       projected: i.projected,
       value_on_hand: i.valueOnHand,
+      last_cost: Number(i.last_purchase_price ?? 0),
     },
     node: (
       <tr>
@@ -144,6 +148,19 @@ export default async function Stock({
           {i.incomingQty > 0 ? qty(String(i.incomingQty)) : "—"}
         </td>
         <td className="r">{qty(String(i.projected))}</td>
+        <td className="r">
+          {/* What the last one cost, not what the ones on hand are carried
+              at — a receipt at a new price does not restate the FIFO layers
+              already on the shelf. Shown with the document it came from, so
+              it reads as a fact with a date rather than "the" cost. */}
+          {i.last_purchase_price ? money(i.last_purchase_price) : "—"}
+          {i.last_purchase_doc_no && (
+            <div className="subline" style={{ color: "var(--muted)" }}
+                 title={`${i.last_purchase_doc_no}${i.last_purchase_date ? " · " + i.last_purchase_date : ""}`}>
+              {i.last_purchase_date ? shortDate(i.last_purchase_date) : i.last_purchase_doc_no}
+            </div>
+          )}
+        </td>
         <td className="r">{money(i.valueOnHand)}</td>
       </tr>
     ),
@@ -160,7 +177,10 @@ export default async function Stock({
           open orders and unfulfilled deliveries; Available and Projected are
           both derived, never stored. Consigned is stock physically on hand
           but owned by a consignor, not the company — it carries no value
-          here and is never added into On hand or Available.
+          here and is never added into On hand or Available. Last cost is the
+          most recent purchase price with the document it came from; Value is
+          what the stock on hand is actually carried at, which is the FIFO
+          layers behind it, not the last price paid.
         </span>
       </div>
 
@@ -321,11 +341,12 @@ export default async function Stock({
                 { key: "available", label: "Available", sortable: true, align: "r" },
                 { key: "incomingQty", label: "Incoming", sortable: true, align: "r" },
                 { key: "projected", label: "Projected", sortable: true, align: "r" },
+                { key: "last_cost", label: "Last cost", sortable: true, align: "r" },
                 { key: "value_on_hand", label: "Value", sortable: true, align: "r" },
               ]}
               footer={
                 <tr>
-                  <td colSpan={10}>Total stock value{!allLocations ? " at this location" : ""}</td>
+                  <td colSpan={11}>Total stock value{!allLocations ? " at this location" : ""}</td>
                   <td className="r">{money(totalValue)}</td>
                 </tr>
               }

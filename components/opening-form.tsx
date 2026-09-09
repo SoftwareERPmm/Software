@@ -7,7 +7,7 @@ import { ACCOUNT_TYPE_LABEL } from "./account-form";
 
 type Account = {
   id: string; code: string; name: string; parent_id?: string | null;
-  account_type: string; is_control: boolean;
+  account_type: string; is_control: boolean; subledger?: string | null;
 };
 /** Every account including the non-postable headings, so an account's section
  *  can be found by walking up to it. */
@@ -28,10 +28,15 @@ export function OpeningForm({
   action,
   accounts,
   accountTree = [],
+  branches = [],
   today,
 }: {
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   accounts: Account[];
+  /** Which branch these figures open. Opening balances had no branch at all,
+   *  so every account started from a figure belonging to no branch — and a
+   *  company reporting by branch could never make them add up. */
+  branches?: { id: string; code: string; name: string }[];
   /** The chart with its headings, so this list reads the way Master data
    *  draws it rather than as one long alphabet of accounts. */
   accountTree?: TreeNode[];
@@ -48,9 +53,13 @@ export function OpeningForm({
     { key: 3, accountId: "", debit: "", credit: "" },
   ]);
 
-  // Receivables and payables open through their own subledger, not here, or
-  // the control account would stop agreeing with the invoices behind it.
-  const postable = accounts.filter((a) => !a.is_control);
+  // A subledger owns its balance, so an opening figure typed against one puts
+  // a number in the general ledger that its subledger has never heard of —
+  // inventory value with no stock behind it, receivables no invoice explains.
+  // Opening stock is entered as stock; opening receivables as their invoices.
+  // The database refuses these too (migration 0046); this keeps them out of
+  // the picker so the refusal is never the first anyone hears of it.
+  const postable = accounts.filter((a) => !a.is_control && !a.subledger);
   const groups = groupAccountsBySection(
     postable, accountTree.length ? accountTree : (postable as never), ACCOUNT_TYPE_LABEL
   );
@@ -86,6 +95,21 @@ export function OpeningForm({
           <input id="doc_date" name="doc_date" type="date" defaultValue={today} required />
           <span className="hint">The day before you started trading in this system</span>
         </div>
+        {branches.length > 1 ? (
+          <div className="field">
+            <label htmlFor="location_id">Branch</label>
+            <select id="location_id" name="location_id" defaultValue="">
+              <option value="">None</option>
+              {branches.map((b) => (
+                <option key={b.id} value={b.id}>{b.code} · {b.name}</option>
+              ))}
+            </select>
+            <span className="hint">Which branch these balances open</span>
+          </div>
+        ) : (
+          branches.length === 1 &&
+            <input type="hidden" name="location_id" value={branches[0].id} />
+        )}
         <div className="field">
           <label htmlFor="memo">Description</label>
           <textarea id="memo" name="memo" rows={2} defaultValue="Opening balances" />

@@ -7,14 +7,15 @@ import { parseCsv, planImport, type MasterData } from "./import-items";
 import { xlsxToRows, type UploadFormat } from "./read-spreadsheet";
 import { planVoucherImport, voucherColumns, type VoucherMasterData, type VoucherKind }
   from "./import-vouchers";
-import { getImportMasterData, getVoucherImportMasterData } from "./queries";
+import { getImportMasterData, getVoucherImportMasterData, getPendingDeliveryLines } from "./queries";
 import { scaffoldCompany } from "./setup";
 import {
   postSalesInvoice, postPurchaseInvoice, postSaleWithDelivery, postPurchaseWithReceipt,
   postSalesOrder, postPurchaseOrder, postDelivery, postGoodsReceipt,
   postSupplierPayment, postCustomerReceipt,
   postCashVoucher, postBankVoucher, postJournalVoucher,
-  postCashTransfer, postAccountOpening, postStockAdjustment, postStockTransfer,
+  postCashTransfer, postAccountOpening, postOpeningBatch, resettleConsignmentSale,
+  postStockAdjustment, postStockTransfer,
   importItems, importVouchers, voidDocument, reconcileNegativeStock,
   postSalesReturn, postPurchaseReturn, postConsignmentReceipt,
   type InvoiceLine, type OrderLine, type FulfillmentLine, type Allocation, type VoucherLine,
@@ -1056,6 +1057,11 @@ function parseLines(fd: FormData): InvoiceLine[] {
       discountPct: Number(l.discountPct) || 0,
       focReasonId: l.focReasonId || null,
       sourceLineId: l.sourceLineId || null,
+      // Which pool the goods came out of, and whose. A parser that drops
+      // these turns a deliberate choice on the form into owned stock leaving
+      // the building — silently, because the entry still balances.
+      source: l.source === "CONSIGNMENT" ? "CONSIGNMENT" as const : "OWNED" as const,
+      consignorId: l.consignorId || null,
     }))
     .filter((l) => l.itemId && l.qty > 0);
 
@@ -1339,6 +1345,10 @@ function parseFulfillmentLines(fd: FormData): FulfillmentLine[] {
       // reason names.
       focReasonId: l.focReasonId || null,
       sourceLineId: l.sourceLineId || null,
+      // Same again, and it matters most here: the delivery is the document
+      // that actually takes the goods off the shelf.
+      source: l.source === "CONSIGNMENT" ? "CONSIGNMENT" as const : "OWNED" as const,
+      consignorId: l.consignorId || null,
     }))
     .filter((l) => l.itemId && l.qty > 0);
 
@@ -1474,19 +1484,20 @@ export async function deliverPendingInvoice(_prev: unknown, fd: FormData): Promi
     const invoiceId = str(fd, "invoice_id");
     if (!invoiceId) return { error: "Choose an invoice" };
 
-    const [invoice] = await sql`
-      select id, partner_id, location_id, doc_date
-        from document
-       where id = ${invoiceId} and company_id = ${co} and doc_type = 'SALES_INVOICE'`;
-    if (!invoice) return { error: "That invoice no longer exists" };
-
-    const lines = await sql`
-      select dl.item_id, dl.base_qty, dl.foc_reason_id
-        from document_line dl
-        join item i on i.id = dl.item_id
-       where dl.document_id = ${invoiceId} and i.is_stocked`;
-
-    if (lines.length === 0) return { error: "Nothing on this invoice needs delivering" };
+    // What is still to go, not what was invoiced. Shipping the invoiced
+    // quantity again after a partial delivery sends the whole order twice —
+    // and the second one posts, because a delivery is free to move stock the
+    // invoice has already been billed for.
+    const pending = await getPendingDeliveryLines(co);
+    const invoice = pending.find((d: any) => d.id === invoiceId) as any;
+    if (!invoice) {
+      const [exists] = await sql`
+        select id from document
+         where id = ${invoiceId} and company_id = ${co} and doc_type = 'SALES_INVOICE'`;
+      return { error: exists
+        ? "Everything on this invoice has been delivered"
+        : "That invoice no longer exists" };
+    }
 
     const result = await postDelivery({
       companyId: co,
@@ -1495,8 +1506,11 @@ export async function deliverPendingInvoice(_prev: unknown, fd: FormData): Promi
       docDate: new Date().toISOString().slice(0, 10),
       reference: `Against invoice`,
       sourceDocumentId: invoice.id,
-      lines: lines.map((l: any) => ({
-        itemId: l.item_id, qty: Number(l.base_qty), focReasonId: l.foc_reason_id,
+      // Each line says which invoice line it answers, so the next delivery
+      // reads what is left rather than inferring it.
+      lines: invoice.lines.map((l: any) => ({
+        itemId: l.itemId, qty: l.qty, focReasonId: l.focReasonId,
+        sourceLineId: l.lineId,
       })),
     });
 
@@ -1813,6 +1827,7 @@ export async function createAccountOpening(_prev: unknown, fd: FormData): Promis
       companyId: co,
       docDate: str(fd, "doc_date"),
       memo: str(fd, "memo") || null,
+      locationId: str(fd, "location_id") || null,
       lines: lines.map((l) => ({ accountId: l.accountId, amount: l.amount })),
     });
     id = r.id;
@@ -1851,7 +1866,8 @@ export async function getFinanceData() {
   const co = await companyId();
 
   const [accounts, accountTree, cashAccounts, bankAccounts, branches, costCenters] = await Promise.all([
-    sql`select id, code, name, parent_id, account_type, is_control, is_cash_account, is_bank_account
+    sql`select id, code, name, parent_id, account_type, is_control, is_cash_account,
+               is_bank_account, subledger
           from account
          where company_id = ${co} and is_postable and is_active
          order by code`,
@@ -2783,9 +2799,15 @@ function parseConsignmentReceiptLines(fd: FormData): ConsignmentReceiptLine[] {
     .map((l: any) => ({
       itemId: String(l.itemId ?? ""),
       qty: Number(l.qty),
-      agreementLineId: String(l.agreementLineId ?? ""),
+      // Blank for an item this consignor has not sent before, which arrives
+      // with its terms instead and is added to the agreement as it is
+      // received. The filter used to require one, so such a line vanished.
+      agreementLineId: l.agreementLineId ? String(l.agreementLineId) : null,
+      pricingMethod: l.pricingMethod === "FIXED" ? "FIXED" as const
+                   : l.pricingMethod === "PERCENTAGE" ? "PERCENTAGE" as const : null,
+      pricingValue: l.pricingValue != null ? Number(l.pricingValue) : null,
     }))
-    .filter((l) => l.itemId && l.qty > 0 && l.agreementLineId);
+    .filter((l) => l.itemId && l.qty > 0);
 }
 
 export async function createConsignmentReceipt(_prev: unknown, fd: FormData): Promise<ActionResult> {
@@ -3367,4 +3389,77 @@ export async function createMissingBrands(
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+
+/**
+ * The cutover, from the opening setup screen.
+ *
+ * The whole position arrives as one JSON payload rather than as flat form
+ * fields: it is four differently-shaped tables, and flattening them into
+ * `stock[0][qty]` names would only mean parsing the same structure back out
+ * again on this side.
+ */
+export async function createOpeningBatch(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  let id: string;
+  try {
+    const co = await companyId();
+    const raw = str(fd, "payload");
+    if (!raw) return { error: "Nothing to post" };
+
+    let parsed: {
+      cutoverDate?: string;
+      stock?: { itemId: string; locationId: string; qty: number; unitCost: number }[];
+      receivables?: { partnerId: string; reference: string; amount: number; dueDate: string | null }[];
+      payables?: { partnerId: string; reference: string; amount: number; dueDate: string | null }[];
+      accounts?: { accountId: string; amount: number }[];
+    };
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return { error: "The opening figures could not be read" };
+    }
+
+    if (!parsed.cutoverDate) return { error: "Choose the date you start using the system" };
+
+    const r = await postOpeningBatch({
+      companyId: co,
+      cutoverDate: parsed.cutoverDate,
+      memo: "Opening balances",
+      stock: parsed.stock ?? [],
+      receivables: parsed.receivables ?? [],
+      payables: parsed.payables ?? [],
+      accounts: parsed.accounts ?? [],
+    });
+    id = r.documents[0]?.id ?? "";
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  financeRevalidate();
+  revalidatePath("/", "layout");
+  redirectWithToast(id ? `/documents/${id}` : "/finance/opening", "Opening balances posted");
+}
+
+/**
+ * Raise a settlement again for a sale whose first one was voided.
+ *
+ * Deliberate rather than automatic. Voiding a settlement is a decision, and
+ * the replacement is another one — a posting that quietly re-ran on its own
+ * would make the void look like it had not worked.
+ */
+export async function replaceConsignmentSettlement(
+  _prev: unknown, fd: FormData,
+): Promise<ActionResult> {
+  const invoiceId = str(fd, "invoice_id");
+  try {
+    const co = await companyId();
+    if (!invoiceId) return { error: "No invoice given" };
+    const raised = await resettleConsignmentSale({ companyId: co, salesInvoiceId: invoiceId });
+    if (raised.length === 0) return { error: "Nothing was left to settle" };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  financeRevalidate();
+  revalidatePath(`/documents/${invoiceId}`);
+  redirectWithToast(`/documents/${invoiceId}`, "Replacement settlement posted");
 }

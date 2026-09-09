@@ -1,5 +1,5 @@
 import { getFormData, createSalesInvoice } from "@/lib/actions";
-import { getOpenDeliveries } from "@/lib/queries";
+import { getOpenDeliveries, getOwnershipMap } from "@/lib/queries";
 import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { SalesVoucher } from "@/components/sales-voucher";
@@ -14,6 +14,9 @@ export default async function NewSalesInvoice({
   const [co] = await sql`select id from company order by created_at limit 1`;
   const categories = await allCategories(co.id);
   const deliveries = await getOpenDeliveries(co.id);
+  // Whose goods are on the shelf. A Take Now invoice moves stock, so the line
+  // has to be able to say which pool it came out of.
+  const ownership = await getOwnershipMap(co.id);
   const today = new Date().toISOString().slice(0, 10);
 
   // Items are deliberately not required: a product can be created from the
@@ -54,6 +57,7 @@ export default async function NewSalesInvoice({
 
       <SalesVoucher
         action={createSalesInvoice}
+        ownership={ownership.consigned as never}
         customers={d.customers as never}
         items={d.items as never}
         locations={d.locations as never}
