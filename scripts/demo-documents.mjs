@@ -188,6 +188,15 @@ try {
     lines: [{ itemId: item.id, qty: 20, sourceLineId: soLine.id }],
   });
 
+  // Ten more go out against the invoice instead of the order — the sales
+  // mirror of the receipt that named a bill, and what the order's "link
+  // existing delivery" has to work with.
+  await P.postDelivery({
+    companyId: co.id, partnerId: customer.id, locationId: loc.id,
+    docDate: day(7), sourceDocumentId: si.id,
+    lines: [{ itemId: item.id, qty: 10 }],
+  });
+
   // And half the money comes in.
   await P.postCustomerReceipt({
     companyId: co.id, partnerId: customer.id, docDate: day(7),

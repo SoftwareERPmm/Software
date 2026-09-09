@@ -1304,6 +1304,71 @@ export async function getLinkableOrders(companyId: string, documentId: string) {
   return { lines, openLines: (openLines as any[]).filter((o) => o.outstanding > 0.0001) };
 }
 
+/**
+ * Goods already recorded that could answer this order — the same question as
+ * getLinkableOrders, asked from the order's side.
+ *
+ * Somebody standing on an order that reads "40 of 100 received" wants to say
+ * "the other sixty came in on that receipt", and the receipt is where they
+ * would otherwise have to go to say it. Offered here: every posted receipt
+ * (or delivery, for a sales order) from the same partner, for an item this
+ * order still expects, with whatever it has not already allocated elsewhere.
+ */
+export async function getLinkableFulfilments(companyId: string, orderId: string) {
+  const [order] = await sql`
+    select id, doc_type, partner_id, status from document
+     where id = ${orderId} and company_id = ${companyId}`;
+  if (!order || order.status !== "POSTED") return { orderLines: [], candidates: [] };
+  const fulfilmentType =
+    order.doc_type === "PURCHASE_ORDER" ? "GOODS_RECEIPT"
+    : order.doc_type === "SALES_ORDER" ? "DELIVERY"
+    : null;
+  if (!fulfilmentType) return { orderLines: [], candidates: [] };
+
+  // What each line still expects, by the reckoning every screen shares.
+  const orderLines = await sql`
+    select ol.id as "orderLineId", ol.item_id as "itemId",
+           i.code as "itemCode", i.name as "itemName",
+           (ol.base_qty
+            - coalesce((select sum(dl.base_qty) from document_line dl
+                          join document dd on dd.id = dl.document_id
+                         where dl.source_line_id = ol.id and dd.status = 'POSTED'), 0)
+            - coalesce((select sum(fl.qty) from fulfilment_link fl
+                         where fl.order_line_id = ol.id), 0))::float as outstanding
+      from document_line ol
+      join item i on i.id = ol.item_id
+     where ol.document_id = ${orderId}
+     order by ol.line_no`;
+  const open = (orderLines as any[]).filter((l) => l.outstanding > 0.0001);
+  if (open.length === 0) return { orderLines: [], candidates: [] };
+
+  // Lines on documents that moved those goods, less anything already spoken
+  // for. A receipt that named this order on the way in is excluded by the
+  // source_line_id test: it is not spare, it is already counted.
+  const candidates = await sql`
+    select dl.id as "lineId", dl.item_id as "itemId",
+           d.id as "documentId", d.doc_no as "docNo",
+           to_char(d.doc_date, 'YYYY-MM-DD') as "docDate",
+           src.doc_no as "relatedNo",
+           (dl.base_qty
+            - coalesce((select sum(fl.qty) from fulfilment_link fl
+                         where fl.fulfilment_line_id = dl.id), 0))::float as spare
+      from document_line dl
+      join document d on d.id = dl.document_id
+      left join document src on src.id = d.source_document_id
+     where d.company_id = ${companyId} and d.doc_type = ${fulfilmentType}
+       and d.status = 'POSTED' and d.partner_id = ${order.partner_id}
+       and dl.item_id = any(${open.map((l) => l.itemId)})
+       and coalesce(dl.source_line_id, '00000000-0000-0000-0000-000000000000'::uuid)
+             not in (select ol2.id from document_line ol2 where ol2.document_id = ${orderId})
+     order by d.doc_date desc, d.doc_no desc`;
+
+  return {
+    orderLines: open,
+    candidates: (candidates as any[]).filter((c) => c.spare > 0.0001),
+  };
+}
+
 /** Whether an order has been closed, and what it is still owed. */
 export async function getOrderOutstanding(companyId: string, documentId: string) {
   const [r] = await sql`
