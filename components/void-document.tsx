@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState, useState } from "react";
+import { Lock } from "lucide-react";
 import type { ActionResult } from "@/lib/actions";
 
 type Blocker = { reason: string; docNo?: string; docId?: string };
@@ -17,6 +18,13 @@ type Blocker = { reason: string; docNo?: string; docId?: string };
  * at all and the blockers are shown instead, each naming the document in the
  * way. "Void PI-000004 first" is an instruction; a greyed-out button is a
  * puzzle.
+ *
+ * But it says so on request rather than permanently. A red panel explaining
+ * why you cannot do a thing you never asked to do sat on every settled
+ * invoice in the system, shouting a prohibition at somebody reading their own
+ * books — and by being red and always there it taught people to read past
+ * exactly the colour that should stop them. Now it is a quiet line that opens
+ * when pressed.
  */
 export function VoidDocument({
   action, documentId, docNo, canVoid, blockers, effects,
@@ -35,20 +43,28 @@ export function VoidDocument({
 
   if (!canVoid) {
     return (
-      <div className="alert" style={{ marginTop: "0.75rem" }}>
-        <strong>This document cannot be voided yet.</strong>
-        <ul style={{ margin: "0.4rem 0 0", paddingLeft: "1.1rem" }}>
-          {blockers.map((b, i) => (
-            <li key={i}>
-              {b.docId ? (
-                <>
-                  <a href={`/documents/${b.docId}`} style={{ color: "var(--brand)" }}>{b.docNo}</a>
-                  {b.reason.replace(b.docNo ?? "", "")}
-                </>
-              ) : b.reason}
-            </li>
-          ))}
-        </ul>
+      <div className="voidlock">
+        <button type="button" className="btn ghost tiny" onClick={() => setOpen(!open)}
+                aria-expanded={open}>
+          <Lock size={13} aria-hidden="true" /> Cannot be voided
+        </button>
+        {open && (
+          <div className="voidlock-why">
+            <strong>Something is built on this document.</strong>
+            <ul>
+              {blockers.map((b, i) => (
+                <li key={i}>
+                  {b.docId ? (
+                    <>
+                      <a href={`/documents/${b.docId}`} style={{ color: "var(--brand)" }}>{b.docNo}</a>
+                      {b.reason.replace(b.docNo ?? "", "")}
+                    </>
+                  ) : b.reason}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
     );
   }

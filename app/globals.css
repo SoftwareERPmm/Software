@@ -1486,9 +1486,10 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 .half.late .half-amount { color: var(--warn); }
 .half-actions { margin-top: 0.85rem; flex-wrap: wrap; }
 
-/* Under the document, not beside it: what happened, and what it is joined to.
-   The history is a column of sentences and reads badly narrow, so it takes
-   three quarters; the links are short lines and take one. */
+/* Under the document, not beside it: what it is joined to, and what happened.
+   The links are the wider half — they are a table of documents somebody
+   follows — and the history the narrower, since it is a short column of
+   sentences read top to bottom. */
 .docfooter {
   display: grid;
   grid-template-columns: 3fr 1fr;
@@ -1497,6 +1498,7 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
   align-items: start;
 }
 .docfooter-links > .card { margin-bottom: 0; }
+.docfooter-history { height: fit-content; }
 /* Stacked where there is no room to be side by side, history first: it is
    the one somebody scrolled down for. */
 @media (max-width: 900px) {
@@ -1506,18 +1508,34 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
    other rather than fighting for 9rem each — and size to their content, or
    flex-grow stretches two short lists down the height of the history beside
    them and leaves a card of empty space. */
-.docfooter-links .card { height: fit-content; }
-
-/* Side by side where there is room, stacked and content-sized where there is
-   not — which is the footer's narrow column. */
-.reldoc-body { display: flex; gap: 2rem; flex-wrap: wrap; }
-.reldoc-section { min-width: 0; flex: 1 1 300px; }
-.docfooter-links .reldoc-body { flex-direction: column; gap: var(--s2); }
-.docfooter-links .reldoc-section { flex: 0 0 auto; }
+/* Source and downstream sit side by side, and size to their content: a
+   flex-basis read as a height once left two three-line lists 300px tall. */
+.reldoc-body { display: flex; gap: 2rem; flex-wrap: wrap; align-items: flex-start; }
+.reldoc-section { min-width: 0; flex: 1 1 260px; }
 .docfooter .timeline li { grid-template-columns: 1.1rem 1fr auto; align-items: start; }
 
-/* The link dialog is a table of choices, so it needs more width than a
-   confirmation but not the whole screen. */
-.linkpanel { width: min(56rem, 92vw); max-height: 86vh; overflow: auto; }
+/* A dialog carrying a table of choices, not a yes/no question. The width has
+   to be set on the dialog itself: .confirm caps at 26rem, and a panel asking
+   for more inside it is simply clipped — which cut the heading, the order
+   dropdown and the hint clean off their right-hand edge. */
+.confirm-wide { max-width: min(56rem, 92vw); }
+.linkpanel { max-height: 86vh; overflow: auto; }
+.linkpanel .linetable { width: 100%; }
 .linkpanel .card-head { padding-bottom: 0.5rem; }
 .linkpanel .actions { padding: 0.75rem 1rem 1rem; }
+
+/* Why a document cannot be voided — on request, not shouted.
+   As a permanent red panel this explained a prohibition to somebody who had
+   not asked to void anything, on every settled invoice in the system, and
+   taught them to read past the one colour that should stop them. */
+.voidlock { margin-top: 0.5rem; }
+.voidlock-why {
+  margin-top: 0.4rem;
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--muted);
+  border-radius: var(--r-sm);
+  background: var(--line-soft);
+  padding: 0.5rem 0.7rem;
+  font-size: var(--t-sm);
+}
+.voidlock-why ul { margin: 0.3rem 0 0; padding-left: 1.1rem; color: var(--muted); }

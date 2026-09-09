@@ -11,8 +11,9 @@ import type { DocEvent, Person } from "./document-rail";
  * is wrong was squeezing it. At the foot they are where a reader arrives
  * having already read the document, which is when either becomes interesting.
  *
- * The history takes three quarters because it is a column of sentences and
- * reads badly narrow; the links take one because they are short lines.
+ * The links take three quarters: they are a table of documents somebody
+ * follows, with numbers, dates and quantities across. The history takes one
+ * and reads down.
  */
 
 const ICON: Record<string, typeof CircleDot> = {
@@ -37,7 +38,9 @@ export function DocumentFooter({
 }) {
   return (
     <div className="docfooter">
-      <section className="card">
+      <div className="docfooter-links">{related}</div>
+
+      <section className="card docfooter-history">
         <div className="card-head">
           <h2>Activity</h2>
           <span className="page-sub">who did what, and when</span>
@@ -81,8 +84,6 @@ export function DocumentFooter({
           )}
         </div>
       </section>
-
-      <div className="docfooter-links">{related}</div>
     </div>
   );
 }

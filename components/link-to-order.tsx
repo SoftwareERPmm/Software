@@ -212,7 +212,7 @@ function LinkDialog({
   return (
     <dialog
       ref={ref}
-      className="confirm"
+      className="confirm confirm-wide"
       onCancel={(e) => { e.preventDefault(); onClose(); }}
       onClick={(e) => { if (e.target === ref.current) onClose(); }}
     >
