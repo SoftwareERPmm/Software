@@ -9,14 +9,30 @@ import { DataTable, type DataRow } from "@/components/data-table";
 
 const toTime = (v: unknown) => (v ? new Date(v as string).getTime() : 0);
 
-const TABS: Array<["" | OrderDisplayStatus, string]> = [
+/**
+ * "Overdue" is not one of the fulfilment statuses and cannot be: it is an
+ * open order whose own Needed-by date has passed, which is a fact about the
+ * date, not about the goods. It sits here as a filter beside them because
+ * that is what someone is looking for when the dashboard says two orders are
+ * overdue and they want to know which two.
+ */
+const OVERDUE = "overdue";
+
+const TABS: Array<["" | OrderDisplayStatus | typeof OVERDUE, string]> = [
   ["", "All"],
   ["DRAFT", "Draft"],
   ["OPEN", "Open"],
   ["PARTIALLY_FULFILLED", "Partially Fulfilled"],
+  [OVERDUE, "Overdue"],
   ["FULFILLED", "Fulfilled"],
   ["CANCELLED", "Cancelled"],
 ];
+
+/** Still owed something, and the date it was wanted by has gone. */
+const isOverdue = (r: { display: string; due_date: unknown }) =>
+  (r.display === "OPEN" || r.display === "PARTIALLY_FULFILLED")
+  && r.due_date != null
+  && new Date(String(r.due_date)) < new Date(new Date().toDateString());
 
 export default async function PurchaseOrders({
   searchParams,
@@ -36,7 +52,10 @@ export default async function PurchaseOrders({
     }),
   }));
 
-  const orders = status ? withStatus.filter((r) => r.display === status) : withStatus;
+  const orders =
+    status === OVERDUE ? withStatus.filter(isOverdue)
+    : status ? withStatus.filter((r) => r.display === status)
+    : withStatus;
   const openCount = withStatus.filter((r) => r.display === "OPEN" || r.display === "PARTIALLY_FULFILLED").length;
 
   const rows: DataRow[] = orders.map((o) => ({
@@ -46,6 +65,7 @@ export default async function PurchaseOrders({
       doc_no: o.doc_no ?? "",
       posting_date: toTime(o.posting_date),
       partner_name: o.partner_name ?? "",
+      due_date: toTime(o.due_date),
       gross_total: Number(o.gross_total),
       display: ORDER_STATUS_LABEL[o.display as OrderDisplayStatus],
     },
@@ -58,6 +78,12 @@ export default async function PurchaseOrders({
         </td>
         <td className="code">{shortDate(o.posting_date)}</td>
         <td className="wrap">{o.partner_name}</td>
+        {/* Why an order is overdue is a date, so the date is on the row.
+            Marked where it has passed with something still outstanding —
+            the same test the Overdue filter and the dashboard count use. */}
+        <td className="code" style={isOverdue(o) ? { color: "var(--warn)", fontWeight: 600 } : undefined}>
+          {o.due_date ? shortDate(o.due_date) : "—"}
+        </td>
         <td className="r">{money(o.gross_total)}</td>
         <td>
           <span className={`pill ${ORDER_STATUS_PILL[o.display as OrderDisplayStatus]}`}>
@@ -118,6 +144,7 @@ export default async function PurchaseOrders({
               { key: "doc_no", label: "Order #", sortable: true },
               { key: "posting_date", label: "Date", sortable: true },
               { key: "partner_name", label: "Supplier", sortable: true },
+              { key: "due_date", label: "Needed by", sortable: true },
               { key: "gross_total", label: "Total", sortable: true, align: "r" },
               { key: "display", label: "Status", sortable: true },
               { key: "actions", label: "" },
