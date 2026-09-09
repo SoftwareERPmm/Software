@@ -39,7 +39,7 @@ export type ChainStage = {
 export function ErpDocShell({
   docId, docNo, typeLabel, status, listHref, listLabel,
   chain, actions, badges, children, backHref, backLabel,
-  banner, stats, rail,
+  banner, stats, footer,
 }: {
   docId: string;
   docNo: string;
@@ -62,11 +62,12 @@ export function ErpDocShell({
   /** The two or three figures the document is really about. */
   stats?: React.ReactNode;
   /**
-   * The office around the document: its identity, the job outstanding on it,
-   * and what has happened. Given, the sheet becomes two columns; absent, the
-   * document keeps the full width it had.
+   * What happened and what it is linked to, both of which belong under the
+   * document rather than beside it. Beside it they took a fifth of the width
+   * from the lines — the one part of the page somebody actually reads across
+   * — to hold a history nobody consults until something is wrong.
    */
-  rail?: React.ReactNode;
+  footer?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const currentIndex = chain.findIndex((s) => s.doc?.doc_no === docNo);
@@ -136,20 +137,9 @@ export function ErpDocShell({
           {badges}
         </div>
         {banner}
-        {rail ? (
-          <div className="doclayout">
-            <div>
-              {stats}
-              {children}
-            </div>
-            {rail}
-          </div>
-        ) : (
-          <>
-            {stats}
-            {children}
-          </>
-        )}
+        {stats}
+        {children}
+        {footer}
       </div>
     </div>
   );

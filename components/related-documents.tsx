@@ -41,9 +41,13 @@ export function RelatedDocumentsPanel({
   const { source, downstream } = related;
   if (source.length === 0 && downstream.length === 0) return null;
 
+  // The section's width rules live in CSS rather than inline, because this
+  // panel is also rendered in the footer's narrow column, where it stacks —
+  // and inline "flex: 1 1 300px" would be read there as a height, leaving two
+  // short lists 300px tall apiece.
   const section = (heading: string, groups: RelatedDocuments["source"]) =>
     groups.length === 0 ? null : (
-      <div style={{ minWidth: 0, flex: "1 1 300px" }}>
+      <div className="reldoc-section">
         <div className="page-sub" style={{
           textTransform: "uppercase", letterSpacing: "0.06em",
           fontSize: "var(--t-xs)", marginBottom: "0.35rem",
@@ -102,7 +106,7 @@ export function RelatedDocumentsPanel({
         <h2>Related documents</h2>
         <span className="page-sub">what this is linked to, and what it is not</span>
       </div>
-      <div className="card-body" style={{ display: "flex", gap: "2rem", flexWrap: "wrap" }}>
+      <div className="card-body reldoc-body">
         {section("Source", source)}
         {section("Downstream", downstream)}
       </div>

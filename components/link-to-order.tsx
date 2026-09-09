@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useActionState } from "react";
 import { Link2 } from "lucide-react";
 import type { ActionResult } from "@/lib/actions";
@@ -40,6 +40,11 @@ const fmt = (n: number) =>
  * It is deliberately not a posting. No stock moves, no entry is written: the
  * goods already arrived and were already valued. All that changes is what the
  * order says it is still owed.
+ *
+ * Asked in a dialog rather than unfolded into the page. Inline it pushed the
+ * document down and left a half-filled form sitting among the facts, which
+ * reads as though the allocation were part of the record rather than a
+ * question being asked about it.
  */
 export function LinkToOrder({
   action, lines, openLines,
@@ -78,30 +83,28 @@ export function LinkToOrder({
     })
     .filter(Boolean);
 
-  if (!open) {
-    return (
+  return (
+    <>
       <div className="actions" style={{ marginTop: "-0.5rem" }}>
         <button type="button" className="btn ghost" onClick={() => setOpen(true)}>
           <Link2 size={14} aria-hidden="true" /> Link to a purchase order
         </button>
       </div>
-    );
-  }
 
-  return (
-    <form action={formAction} className="card" style={{ marginBottom: "1rem" }}>
-      <input type="hidden" name="allocations" value={JSON.stringify(allocations)} />
-      <div className="card-head">
-        <h2>Which order did these goods answer?</h2>
-        <span className="page-sub">
-          Changes what the order is owed. No stock moves and no entry is written.
-        </span>
-      </div>
+      <LinkDialog open={open} onClose={() => setOpen(false)}>
+        <form action={formAction}>
+          <input type="hidden" name="allocations" value={JSON.stringify(allocations)} />
+          <div className="card-head">
+            <h2>Which order did these goods answer?</h2>
+            <span className="page-sub">
+              Changes what the order is owed. No stock moves and no entry is written.
+            </span>
+          </div>
 
-      {state && "error" in state && <div className="alert">{state.error}</div>}
+          {state && "error" in state && <div className="alert">{state.error}</div>}
 
-      <div className="tablewrap">
-        <table className="linetable">
+          <div className="tablewrap">
+            <table className="linetable">
           <thead>
             <tr>
               <th>Item</th>
@@ -178,12 +181,42 @@ export function LinkToOrder({
         </div>
       </div>
 
-      <div className="actions">
-        <button type="submit" disabled={pending || allocations.length === 0}>
-          {pending ? "Linking…" : "Link to order"}
-        </button>
-        <button type="button" className="ghost" onClick={() => setOpen(false)}>Cancel</button>
-      </div>
-    </form>
+          <div className="actions">
+            <button type="submit" disabled={pending || allocations.length === 0}>
+              {pending ? "Linking…" : "Link to order"}
+            </button>
+            <button type="button" className="ghost" onClick={() => setOpen(false)}>Cancel</button>
+          </div>
+        </form>
+      </LinkDialog>
+    </>
+  );
+}
+
+/**
+ * A modal that closes on Escape and on the backdrop, and does not trap the
+ * reader in a decision they opened by accident.
+ */
+function LinkDialog({
+  open, onClose, children,
+}: { open: boolean; onClose: () => void; children: React.ReactNode }) {
+  const ref = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    if (open && !d.open) d.showModal();
+    if (!open && d.open) d.close();
+  }, [open]);
+
+  return (
+    <dialog
+      ref={ref}
+      className="confirm"
+      onCancel={(e) => { e.preventDefault(); onClose(); }}
+      onClick={(e) => { if (e.target === ref.current) onClose(); }}
+    >
+      <div className="confirm-panel linkpanel">{children}</div>
+    </dialog>
   );
 }

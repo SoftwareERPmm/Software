@@ -4,7 +4,8 @@ import { RelatedDocumentsPanel } from "@/components/related-documents";
 import { ReplaceSettlement } from "@/components/replace-settlement";
 import { VoidDocument } from "@/components/void-document";
 import { LinkToOrder } from "@/components/link-to-order";
-import { DocumentRail, TaskBanner } from "@/components/document-rail";
+import { TaskBanner } from "@/components/document-rail";
+import { DocumentFooter } from "@/components/document-footer";
 import { DocStats, type DocStat } from "@/components/doc-stats";
 import { InvoiceProgress } from "@/components/invoice-progress";
 import {
@@ -313,7 +314,7 @@ export default async function DocumentPage({
         note: left > 0 ? "Awaiting supplier invoice" : "Nothing outstanding",
         tone: left > 0 ? "warn" : "ok" },
     );
-  } else if (isInvoice) {
+  } else if (isInvoice && !progress) {
     stats.push(
       { icon: CircleDollarSign, label: "Invoice total", value: money(doc.gross_total) },
       { icon: Wallet, label: "Paid", value: money(Number(doc.gross_total) - outstanding),
@@ -339,19 +340,10 @@ export default async function DocumentPage({
     );
   }
 
-  const rail = (
-    <DocumentRail
-      details={[
-        { label: "Number", value: doc.doc_no ?? "Draft" },
-        { label: doc.doc_type.startsWith("PURCHASE") || doc.doc_type === "GOODS_RECEIPT"
-            ? "Supplier" : "Partner",
-          value: doc.partner_name ?? "—" },
-        { label: "Date", value: shortDate(doc.doc_date) },
-        ...(doc.due_date ? [{ label: "Due", value: shortDate(doc.due_date) }] : []),
-        { label: "Status", value: <span className={`pill ${doc.status.toLowerCase()}`}>{doc.status}</span> },
-      ]}
-      tasks={tasks}
+  const footer = (
+    <DocumentFooter
       activity={people.activity as never}
+      related={<RelatedDocumentsPanel related={related} />}
       createdBy={{ name: people.doc?.created_by ?? null, initials: people.doc?.created_initials ?? null }}
       postedBy={{ name: people.doc?.posted_by ?? null, initials: people.doc?.posted_initials ?? null }}
       postedAt={people.doc?.posted_at ? String(people.doc.posted_at) : null}
@@ -408,10 +400,9 @@ export default async function DocumentPage({
         memo={doc.memo ?? null}
         lines={erpLines}
         netTotal={Number(doc.net_total)}
-        related={<RelatedDocumentsPanel related={related} />}
         banner={<TaskBanner tasks={tasks.filter((t: any) => !t.aspect)} />}
         stats={<DocStats stats={stats} />}
-        rail={rail}
+        footer={footer}
         chain={chain.map((step) => ({
           type: step,
           label: label(step).replace(/\b\w/g, (c) => c.toUpperCase()),
@@ -473,7 +464,7 @@ export default async function DocumentPage({
         </>
       }
       stats={<DocStats stats={stats} />}
-      rail={rail}
+      footer={footer}
       badges={
         <>
           {isInvoice && outstanding > 0 && (
@@ -498,8 +489,6 @@ export default async function DocumentPage({
           unsettled={unsettledConsignment}
         />
       )}
-
-      <RelatedDocumentsPanel related={related} />
 
       {voidInfo && (
         <div className="alert" style={{ marginTop: "0.75rem" }}>
@@ -684,8 +673,12 @@ export default async function DocumentPage({
           owed — the three figures anyone opening an invoice is looking for,
           side by side rather than inferred from a pill and a journal.
           Paid is derived here for display; only the total and the
-          outstanding balance are ever read from the ledger. */}
-      {isInvoice && (
+          outstanding balance are ever read from the ledger.
+
+          Not shown where the two halves are: they carry the same three
+          figures and the same action, and saying it twice on one screen is
+          what made this page feel cluttered rather than thorough. */}
+      {isInvoice && !progress && (
         <div className="erp-settle">
           <div className="erp-settle-figs">
             <div className="erp-settle-fig">

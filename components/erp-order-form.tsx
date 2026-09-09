@@ -45,7 +45,7 @@ export type OrderFormConfig = {
 export function ErpOrderForm({
   config, docId, docNo, status, partnerName, partnerCode, docDate, dueDate,
   locationName, reference, memo, lines, netTotal, chain, actions, related,
-  banner, stats, rail,
+  banner, stats, footer,
   backHref, backLabel,
 }: {
   config: OrderFormConfig;
@@ -75,7 +75,7 @@ export function ErpOrderForm({
    *  document for having no ledger entry. */
   banner?: React.ReactNode;
   stats?: React.ReactNode;
-  rail?: React.ReactNode;
+  footer?: React.ReactNode;
   /** Passed straight through to the shell — see ErpDocShell. */
   backHref?: string | null;
   backLabel?: string | null;
@@ -101,7 +101,7 @@ export function ErpOrderForm({
       actions={actions}
       banner={banner}
       stats={stats}
-      rail={rail}
+      footer={footer}
       badges={
         totalOrdered > 0 ? (
           <span className={`pill ${complete ? "ok" : "warn"}`}>
@@ -112,8 +112,6 @@ export function ErpOrderForm({
         ) : null
       }
     >
-        {related}
-
         <div className="erp-fields">
           <div>
             <dl className="erp-kv">
