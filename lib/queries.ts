@@ -135,14 +135,11 @@ export async function getActionItems(companyId: string) {
       from per_order
      where remaining > 0.0001`;
 
-  const [pd] = await sql`
-    select count(*)::int as n
-      from document inv
-     where inv.company_id = ${companyId} and inv.doc_type = 'SALES_INVOICE'
-       and inv.to_deliver and inv.status = 'POSTED'
-       and not exists (
-         select 1 from document dd where dd.source_document_id = inv.id and dd.doc_type = 'DELIVERY'
-       )`;
+  // Counted the same way the delivery screen counts, or the dashboard says
+  // nothing is waiting while that page lists an invoice with 900 units still
+  // to ship. "Any delivery exists" was never the question; "anything left to
+  // deliver" is.
+  const pd = { n: (await getPendingDeliveryLines(companyId)).length };
 
   // Same both-directions check as getOpenDeliveries — a delivery already
   // linked to an invoice either way (composed atomically, or fulfilling a
@@ -383,6 +380,59 @@ export async function isGrirOutstanding(documentId: string): Promise<boolean> {
 }
 
 /**
+ * How much of its source each answering document actually took.
+ *
+ * One invoice can be answered by several shipments and they share it: 50 then
+ * 80 against a bill for 100 is 100 answered and 30 left over, not 130 twice.
+ * So the source is drawn down once, in the order the answers were posted, and
+ * each answer is told only what was still there for it.
+ *
+ * Every answer is replayed, not only the ones a caller happens to be showing.
+ * A list capped at the newest 200 documents would otherwise credit a later
+ * shipment with quantity an earlier one had already taken.
+ */
+async function sharedSourceLines(
+  companyId: string,
+  answeringType: "GOODS_RECEIPT" | "DELIVERY",
+  sourceIds: readonly (string | null)[]
+): Promise<Map<string, { itemId: string; qty: number }[]>> {
+  const out = new Map<string, { itemId: string; qty: number }[]>();
+  const ids = [...new Set(sourceIds.filter(Boolean) as string[])];
+  if (ids.length === 0) return out;
+
+  const srcLines = await sql`
+    select dl.id, dl.document_id, dl.item_id, dl.base_qty as qty, dl.net_amount as net
+      from document_line dl
+     where dl.document_id = any(${ids})
+     order by dl.line_no`;
+
+  const answers = await sql`
+    select d.id, d.source_document_id as src_id, dl.item_id,
+           dl.base_qty as qty, dl.source_line_id
+      from document_line dl
+      join document d on d.id = dl.document_id
+     where d.company_id = ${companyId}
+       and d.doc_type = ${answeringType} and d.status = 'POSTED'
+       and d.source_document_id = any(${ids})
+     order by d.posting_date, d.doc_no, dl.line_no`;
+
+  for (const srcId of ids) {
+    const draw = grirMatcher(
+      srcLines.filter((l: any) => l.document_id === srcId) as unknown as MatchableLine[]);
+    for (const a of answers.filter((x: any) => x.src_id === srcId)) {
+      const got = draw(a.item_id, Number(a.qty), a.source_line_id)
+        .taken.reduce((t: number, x: any) => t + x.qty, 0);
+      if (got > 0) {
+        const list = out.get(a.id) ?? [];
+        list.push({ itemId: a.item_id, qty: got });
+        out.set(a.id, list);
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Goods receipts that still have something to bill, with each line's
  * remaining quantity rather than its original one.
  *
@@ -392,7 +442,7 @@ export async function isGrirOutstanding(documentId: string): Promise<boolean> {
  * matcher the ledger settles with, so what the form offers and what GR/IR
  * still holds are the same figure.
  */
-export async function getOpenGoodsReceipts(companyId: string) {
+export async function getOpenGoodsReceipts(companyId: string, limit: number | null = 200) {
   const docs = await sql`
     select d.id, d.doc_no, d.doc_date, d.partner_id,
            -- The purchase order this receipt came in against, so an invoice
@@ -409,7 +459,7 @@ export async function getOpenGoodsReceipts(companyId: string) {
        -- not be offered a match: there is nothing of theirs to clear.
        and (g.document_id is not null or src.doc_type = 'PURCHASE_INVOICE')
      order by d.doc_date desc, d.doc_no desc
-     limit 200`;
+     ${limit === null ? sql`` : sql`limit ${limit}`}`;
   if (docs.length === 0) return [];
 
   const ids = docs.map((d: any) => d.id);
@@ -437,41 +487,8 @@ export async function getOpenGoodsReceipts(companyId: string) {
   // billed by that bill, for whatever it covers. What it covers is not
   // necessarily everything on the receipt — a mixed receipt brings in items
   // the invoice never mentioned, and those are still waiting to be billed.
-  const billedBy = [...new Set(docs.map((d: any) => d.billed_by_id).filter(Boolean))];
-  const billingLines = billedBy.length === 0 ? [] : await sql`
-    select dl.id, dl.document_id, dl.item_id, dl.base_qty as qty, dl.net_amount as net
-      from document_line dl
-     where dl.document_id = any(${billedBy})
-     order by dl.line_no`;
-
-  /**
-   * How much of its bill each of those receipts actually took.
-   *
-   * One invoice can be answered by several shipments, and they share it —
-   * 50 units then 80 against a bill for 100 is 100 billed and 30 held
-   * unbilled, not 130 billed twice over. So the invoice is drawn down once,
-   * shipments in the order they arrived, and each receipt is told only what
-   * was left for it.
-   */
-  const share = new Map<string, { itemId: string; qty: number }[]>();
-  for (const invId of billedBy) {
-    const drawInvoice = grirMatcher(
-      billingLines.filter((b: any) => b.document_id === invId) as unknown as MatchableLine[]
-    );
-    const against = docs
-      .filter((d: any) => d.billed_by_id === invId)
-      .slice()
-      .reverse(); // docs come newest first; a bill is taken oldest shipment first
-    for (const d of against) {
-      const taken: { itemId: string; qty: number }[] = [];
-      for (const l of lines.filter((x: any) => x.document_id === d.id)) {
-        const got = drawInvoice(l.item_id, Number(l.qty), l.source_line_id)
-          .taken.reduce((t: number, x: any) => t + x.qty, 0);
-        if (got > 0) taken.push({ itemId: l.item_id, qty: got });
-      }
-      share.set(d.id, taken);
-    }
-  }
+  const share = await sharedSourceLines(
+    companyId, "GOODS_RECEIPT", docs.map((d: any) => d.billed_by_id));
 
   return docs
     .map((d: any) => {
@@ -520,14 +537,14 @@ export async function getOpenGoodsReceipts(companyId: string) {
  * quantities when the same mistake was found there; this is the same fix on
  * the side that did not get it.
  */
-export async function getOpenPurchaseInvoices(companyId: string) {
+export async function getOpenPurchaseInvoices(companyId: string, limit: number | null = 200) {
   const docs = await sql`
     select d.id, d.doc_no, d.doc_date, d.partner_id
       from document d
       join v_grir_balance g on g.document_id = d.id and g.company_id = d.company_id
      where d.company_id = ${companyId} and d.doc_type = 'PURCHASE_INVOICE' and d.status = 'POSTED'
      order by d.doc_date desc, d.doc_no desc
-     limit 200`;
+     ${limit === null ? sql`` : sql`limit ${limit}`}`;
   if (docs.length === 0) return [];
 
   const ids = docs.map((d: any) => d.id);
@@ -597,30 +614,88 @@ export async function getOpenPurchaseInvoices(companyId: string) {
  * source_document_id point at the invoice instead — checking only one
  * direction would wrongly offer to re-invoice an already-billed delivery.
  */
-export async function getOpenDeliveries(companyId: string) {
-  return sql`
-    select d.id, d.doc_no, d.doc_date, d.partner_id, d.location_id,
-           -- The order this delivery was raised from, so an invoice made from
-           -- it can show which of our orders it belongs to rather than making
-           -- someone go and look it up.
-           src.doc_no as source_no,
-           coalesce(json_agg(json_build_object(
-             'itemId', dl.item_id, 'itemCode', i.code, 'itemName', i.name,
-             'qty', dl.base_qty
-           ) order by dl.line_no), '[]') as lines
-      from document d
-      join document_line dl on dl.document_id = d.id
+export async function getOpenDeliveries(companyId: string, limit: number | null = 200) {
+  const docs = limit === null
+    ? await sql`
+      select d.id, d.doc_no, d.doc_date, d.partner_id, d.location_id,
+             src.doc_no as source_no,
+             case when src.doc_type = 'SALES_INVOICE' then src.id end as billed_by_id
+        from document d
+        left join document src on src.id = d.source_document_id
+       where d.company_id = ${companyId} and d.doc_type = 'DELIVERY' and d.status = 'POSTED'
+       order by d.doc_date desc, d.doc_no desc`
+    : await sql`
+      select d.id, d.doc_no, d.doc_date, d.partner_id, d.location_id,
+             -- The order this delivery was raised from, so an invoice made
+             -- from it can show which of our orders it belongs to rather
+             -- than making someone go and look it up.
+             src.doc_no as source_no,
+             case when src.doc_type = 'SALES_INVOICE' then src.id end as billed_by_id
+        from document d
+        left join document src on src.id = d.source_document_id
+       where d.company_id = ${companyId} and d.doc_type = 'DELIVERY' and d.status = 'POSTED'
+       order by d.doc_date desc, d.doc_no desc
+       limit ${limit}`;
+  if (docs.length === 0) return [];
+
+  const ids = docs.map((d: any) => d.id);
+
+  const lines = await sql`
+    select dl.id, dl.document_id, dl.item_id, dl.base_qty as qty, dl.net_amount as net,
+           i.code as item_code, i.name as item_name
+      from document_line dl
       join item i on i.id = dl.item_id
-      left join document src on src.id = d.source_document_id
-     where d.company_id = ${companyId} and d.doc_type = 'DELIVERY' and d.status = 'POSTED'
-       and not exists (
-         select 1 from document si
-          where si.doc_type = 'SALES_INVOICE' and si.status = 'POSTED'
-            and (si.source_document_id = d.id or d.source_document_id = si.id)
-       )
-     group by d.id, d.doc_no, d.doc_date, d.partner_id, d.location_id, src.doc_no
-     order by d.doc_date desc, d.doc_no desc
-     limit 200`;
+     where dl.document_id = any(${ids})
+     order by dl.line_no`;
+
+  // Invoices raised from a delivery, and invoices a delivery was raised for:
+  // both directions bill it, and checking only one would offer to invoice
+  // goods already billed.
+  const billed = await sql`
+    select d.source_document_id as delivery_id, dl.item_id,
+           dl.base_qty as qty, dl.source_line_id
+      from document_line dl
+      join document d on d.id = dl.document_id
+     where d.company_id = ${companyId}
+       and d.doc_type = 'SALES_INVOICE' and d.status = 'POSTED'
+       and d.source_document_id = any(${ids})
+     order by d.posting_date, d.doc_no, dl.line_no`;
+
+  const share = await sharedSourceLines(
+    companyId, "DELIVERY", docs.map((d: any) => d.billed_by_id));
+
+  return docs
+    .map((d: any) => {
+      const own = lines.filter((l: any) => l.document_id === d.id);
+      const draw = grirMatcher(own as unknown as MatchableLine[]);
+      const gone = new Map<string, number>();
+
+      for (const b of billed.filter((x: any) => x.delivery_id === d.id)) {
+        for (const t of draw(b.item_id, Number(b.qty), b.source_line_id).taken) {
+          gone.set(t.lineId, (gone.get(t.lineId) ?? 0) + t.qty);
+        }
+      }
+      for (const b of share.get(d.id) ?? []) {
+        for (const t of draw(b.itemId, b.qty, null).taken) {
+          gone.set(t.lineId, (gone.get(t.lineId) ?? 0) + t.qty);
+        }
+      }
+
+      const open = own
+        .map((l: any) => ({
+          lineId: l.id,
+          itemId: l.item_id,
+          itemCode: l.item_code,
+          itemName: l.item_name,
+          qty: Math.round((Number(l.qty) - (gone.get(l.id) ?? 0)) * 10000) / 10000,
+        }))
+        .filter((l) => l.qty > 0);
+
+      return { ...d, lines: open };
+    })
+    // Fully billed — including a delivery raised to fulfil an invoice that
+    // covered everything on it.
+    .filter((d: any) => d.lines.length > 0);
 }
 
 export async function getDocument(id: string) {
@@ -1196,10 +1271,13 @@ export async function getGrirPositions(companyId: string) {
   // Read off the same two functions the forms offer from, so what a screen
   // says is outstanding and what a form lets you receive or bill cannot
   // disagree. Both are derived from documents; neither is stored.
+  // Every open document, not the newest page of them. A form can show the
+  // most recent 200 and still be useful; a total that quietly stops at 200
+  // is a total that stops reconciling to the account it claims to explain.
   const [invoices, receipts] = await Promise.all([
-    getOpenPurchaseInvoices(companyId) as unknown as Promise<
+    getOpenPurchaseInvoices(companyId, null) as unknown as Promise<
       { lines: { qty: number; unitPrice: number }[] }[]>,
-    getOpenGoodsReceipts(companyId) as unknown as Promise<
+    getOpenGoodsReceipts(companyId, null) as unknown as Promise<
       { lines: { qty: number; unitPrice: number }[] }[]>,
   ]);
   const total = (ds: { lines: { qty: number; unitPrice: number }[] }[]) =>
@@ -1330,16 +1408,34 @@ export async function getReservedQty(companyId: string) {
        group by ol.item_id, ol.location_id
       having sum(ol.base_qty - coalesce(d.delivered_qty, 0)) > 0
     ),
-    invoice_pending as (
-      select il.item_id, il.location_id, sum(il.base_qty) as qty
+    -- Committed to a customer and not yet shipped. Per invoice and item,
+    -- because "no delivery at all" both over-reserved (the whole invoice
+    -- stayed reserved while nothing had shipped, which is right) and then
+    -- under-reserved to nothing the moment one unit went out — releasing 900
+    -- units that are still owed to that customer.
+    invoice_billed as (
+      select inv.id as inv_id, il.item_id, il.location_id, sum(il.base_qty) as qty
         from document inv
         join document_line il on il.document_id = inv.id
        where inv.company_id = ${companyId} and inv.doc_type = 'SALES_INVOICE'
          and inv.to_deliver and inv.status = 'POSTED'
-         and not exists (
-           select 1 from document dd where dd.source_document_id = inv.id and dd.doc_type = 'DELIVERY'
-         )
-       group by il.item_id, il.location_id
+       group by inv.id, il.item_id, il.location_id
+    ),
+    invoice_shipped as (
+      select d.source_document_id as inv_id, dl.item_id, sum(dl.base_qty) as qty
+        from document d
+        join document_line dl on dl.document_id = d.id
+       where d.company_id = ${companyId} and d.doc_type = 'DELIVERY'
+         and d.status = 'POSTED' and d.source_document_id is not null
+       group by d.source_document_id, dl.item_id
+    ),
+    invoice_pending as (
+      select b.item_id, b.location_id,
+             sum(greatest(b.qty - coalesce(s.qty, 0), 0)) as qty
+        from invoice_billed b
+        left join invoice_shipped s
+               on s.inv_id = b.inv_id and s.item_id = b.item_id
+       group by b.item_id, b.location_id
     )
     select item_id, location_id, sum(qty) as reserved_qty
       from (select * from so_remaining union all select * from invoice_pending) x

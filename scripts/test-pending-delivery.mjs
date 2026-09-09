@@ -95,6 +95,16 @@ try {
     n((await sql`select fn_qty_on_hand(${co.id}, ${item.id}, ${loc.id}) as q`)[0].q) === 0,
     `${n((await sql`select fn_qty_on_hand(${co.id}, ${item.id}, ${loc.id}) as q`)[0].q)} on hand of 1,000 received`);
 
+  // Back to a part-shipped invoice for the checks below: another 1,000 in,
+  // billed to deliver, 200 of them gone.
+  await P.postGoodsReceipt({ companyId: co.id, partnerId: supp.id, locationId: loc.id,
+    docDate: today, lines: [{ itemId: item.id, qty: 1000, unitCost: 50 }] });
+  const inv2 = await P.postSalesInvoice({ companyId: co.id, partnerId: cust.id, locationId: loc.id,
+    docDate: today, dueDate: null, toDeliver: true,
+    lines: [{ itemId: item.id, qty: 1000, unitPrice: 90 }] });
+  await P.postDelivery({ companyId: co.id, partnerId: cust.id, locationId: loc.id,
+    docDate: today, sourceDocumentId: inv2.id, lines: [{ itemId: item.id, qty: 100 }] });
+
   // ---- a shipment that never happened -------------------------------------
   //
   // The list counts POSTED deliveries only, which is worth stating because
@@ -113,6 +123,78 @@ try {
     refused ? refused.slice(0, 58) : "VOIDED — the invoice must come back onto the list");
 
   void part;
+
+  // ---- everything that reads this agrees ----------------------------------
+  //
+  // The delivery page saying 900 outstanding while the dashboard says nothing
+  // is waiting, and the stock position calling those 900 units free to sell,
+  // is three screens disagreeing about one fact.
+
+  const dash = await Q.getActionItems(co.id);
+  check("the dashboard counts a part-shipped invoice as pending",
+    dash.pendingDeliveryInvoices === 1, `${dash.pendingDeliveryInvoices}`);
+
+  const reserved = (await Q.getReservedQty(co.id))
+    .filter((r) => r.item_id === item.id)
+    .reduce((s, r) => s + n(r.reserved_qty), 0);
+  check("  and the undelivered 900 are still reserved, not free to sell",
+    reserved === 900, `${reserved} reserved`);
+
+  // ---- and it cannot be shipped twice --------------------------------------
+
+  // Plenty on the shelf, so what refuses this is the invoice and not the
+  // stock: 1,000 asked for against 900 still owed.
+  await P.postGoodsReceipt({ companyId: co.id, partnerId: supp.id, locationId: loc.id,
+    docDate: today, lines: [{ itemId: item.id, qty: 1000, unitCost: 50 }] });
+
+  let over = null;
+  try {
+    await P.postDelivery({ companyId: co.id, partnerId: cust.id, locationId: loc.id,
+      docDate: today, sourceDocumentId: inv2.id, lines: [{ itemId: item.id, qty: 1000 }] });
+  } catch (e) { over = e.message; }
+  check("delivering more than the invoice has left is refused", over !== null,
+    over ? over.slice(0, 70) : "POSTED — 1,100 units shipped against a bill for 1,000");
+  check("  and the remainder still stands at 900",
+    n((await Q.getPendingDeliveryLines(co.id)).find((d) => d.id === inv2.id)?.lines[0].qty) === 900,
+    `${n((await Q.getPendingDeliveryLines(co.id)).find((d) => d.id === inv2.id)?.lines[0].qty)}`);
+
+  // Exactly what is left still posts.
+  await P.postDelivery({ companyId: co.id, partnerId: cust.id, locationId: loc.id,
+    docDate: today, sourceDocumentId: inv2.id, lines: [{ itemId: item.id, qty: 900 }] });
+  check("  while shipping exactly what is left goes through",
+    !(await Q.getPendingDeliveryLines(co.id)).some((d) => d.id === inv2.id));
+
+  // ---- a delivery carrying something the invoice never billed -------------
+  //
+  // The mirror of a mixed goods receipt. The extra goes out — it physically
+  // left — but it has not been billed to anyone, and the list of deliveries
+  // needing an invoice used to drop the whole delivery the moment any invoice
+  // was linked to it. Four units of another item walked out unbilled and
+  // nothing offered them.
+
+  const [other] = await sql`select id, code from item
+     where company_id = ${co.id} and is_stocked and is_active and id <> ${item.id}
+     order by code limit 1`;
+  await P.postGoodsReceipt({ companyId: co.id, partnerId: supp.id, locationId: loc.id,
+    docDate: today, lines: [{ itemId: other.id, qty: 50, unitCost: 20 }] });
+
+  const inv3 = await P.postSalesInvoice({ companyId: co.id, partnerId: cust.id, locationId: loc.id,
+    docDate: today, dueDate: null, toDeliver: true,
+    lines: [{ itemId: item.id, qty: 10, unitPrice: 90 }] });
+  const mixed = await P.postDelivery({ companyId: co.id, partnerId: cust.id, locationId: loc.id,
+    docDate: today, sourceDocumentId: inv3.id, lines: [
+      { itemId: item.id, qty: 10 },
+      { itemId: other.id, qty: 4 },
+    ]});
+
+  const stillToBill = (await Q.getOpenDeliveries(co.id)).find((d) => d.id === mixed.id);
+  check("a delivery with an unbilled item still needs an invoice", !!stillToBill,
+    stillToBill ? "offered" : "DROPPED — 4 units went out and nothing offers to bill them");
+  check("  for the unbilled item only",
+    stillToBill?.lines.length === 1 && stillToBill.lines[0].itemId === other.id,
+    (stillToBill?.lines ?? []).map((l) => `${l.itemCode} ${l.qty}`).join(", "));
+  check("  and for the four that were not on the bill",
+    n(stillToBill?.lines[0].qty) === 4, `${n(stillToBill?.lines[0].qty)}`);
 
   // ---- invariants ---------------------------------------------------------
 

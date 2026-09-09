@@ -335,6 +335,60 @@ async function assertSourceLines(
 }
 
 /**
+ * A delivery against an invoice cannot ship more of it than is left.
+ *
+ * The invoice row is locked by requireSource before this runs, which is the
+ * point: the remaining quantity is read here, inside the transaction, rather
+ * than on the screen that offered it. Two people pressing "deliver now" at
+ * the same moment both saw 900 outstanding; the second used to post its 900
+ * on top of the first, and 1,800 units left the building against a bill for
+ * 1,000. The lock made them take turns without making the second look again.
+ *
+ * Items the invoice never billed are not capped — a delivery may carry
+ * something extra, the same way a receipt may — but they are not invisible
+ * either: they show up as still needing an invoice.
+ */
+async function assertNotOverDelivered(
+  tx: TransactionSql,
+  invoiceId: string,
+  lines: ReadonlyArray<{ itemId: string; qty: number; sourceLineId?: string | null }>
+): Promise<void> {
+  const invLines = await tx`
+    select dl.id, dl.item_id, dl.base_qty as qty, dl.net_amount as net,
+           i.code as item_code, d.doc_no
+      from document_line dl
+      join item i on i.id = dl.item_id
+      join document d on d.id = dl.document_id
+     where dl.document_id = ${invoiceId}
+     order by dl.line_no`;
+  if (invLines.length === 0) return;
+
+  const prior = await tx`
+    select dl.item_id, dl.base_qty as qty, dl.source_line_id
+      from document_line dl
+      join document d on d.id = dl.document_id
+     where d.doc_type = 'DELIVERY' and d.status = 'POSTED'
+       and d.source_document_id = ${invoiceId}
+     order by d.posting_date, d.doc_no, dl.line_no`;
+
+  const draw = grirMatcher(invLines as unknown as MatchableLine[]);
+  for (const p of prior) draw(p.item_id, Number(p.qty), p.source_line_id);
+
+  lines.forEach((line, i) => {
+    const billed = invLines.find((l: any) => l.item_id === line.itemId);
+    if (!billed) return;
+    const taken = draw(line.itemId, line.qty, line.sourceLineId)
+      .taken.reduce((t: number, x: any) => t + x.qty, 0);
+    if (taken + 0.0001 < line.qty) {
+      throw new Error(
+        `Line ${i + 1}: ${billed.doc_no} has ${taken} of ${billed.item_code} left ` +
+        `to deliver, not ${line.qty}. Someone may have delivered against it already.`
+      );
+    }
+  });
+}
+
+/**
  * A return that names what it reverses cannot exceed it.
  *
  * The source relationship was validated but never the quantity, so fifty
@@ -1148,7 +1202,7 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
   // invoice that billed for them — never a purchase document, and never
   // another customer's.
   if (input.sourceDocumentId) {
-    await requireSource(tx, {
+    const src = await requireSource(tx, {
       id: input.sourceDocumentId,
       companyId,
       partnerId,
@@ -1156,6 +1210,9 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
       role: "document this delivery fulfils",
     });
     await assertSourceLines(tx, input.sourceDocumentId, input.lines);
+    if (src?.doc_type === "SALES_INVOICE") {
+      await assertNotOverDelivered(tx, input.sourceDocumentId, input.lines);
+    }
   }
 
   const [doc] = await tx`
