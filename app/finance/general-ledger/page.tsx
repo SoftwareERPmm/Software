@@ -7,6 +7,7 @@ import {
   getUnassignedBranchActivity, UNASSIGNED_BRANCH,
 } from "@/lib/queries";
 import { money } from "@/lib/db";
+import { AutoApply } from "@/components/auto-apply";
 import { AccountPicker } from "@/components/account-picker";
 import { JournalEntryList, type Entry } from "@/components/journal-entry-list";
 
@@ -220,7 +221,7 @@ async function EntriesView({
               </select>
             </div>
             <div className="field">
-              <label htmlFor="location">Branch / warehouse</label>
+              <label htmlFor="location">Branch</label>
               <select id="location" name="location" defaultValue={p.location ?? ""}>
                 <option value="">All branches</option>
                 {locations.map((l) => (
@@ -247,9 +248,14 @@ async function EntriesView({
               <input id="q" name="q" type="text" defaultValue={p.q ?? ""}
                      placeholder="Document or memo" />
             </div>
-            <div className="field" style={{ justifyContent: "flex-end" }}>
+            <div className="field">
+              {/* No label of its own, but the column needs one: without it
+                  this sits a line lower than the boxes it belongs to, on any
+                  row where another field carries a hint underneath. */}
+              <label aria-hidden="true">&nbsp;</label>
               <div className="actions">
-                <button type="submit" className="tiny">Apply</button>
+                <AutoApply />
+                <button type="submit" className="tiny" data-apply>Apply</button>
                 {filtered && (
                   <a href="/finance/general-ledger" className="btn ghost tiny">Clear</a>
                 )}
@@ -311,7 +317,7 @@ async function AccountView({
               <input id="a-to" name="to" type="date" defaultValue={p.to ?? ""} />
             </div>
             <div className="field">
-              <label htmlFor="a-location">Branch / warehouse</label>
+              <label htmlFor="a-location">Branch</label>
               <select id="a-location" name="location" defaultValue={p.location ?? ""}>
                 <option value="">All branches</option>
                 {locations.map((l) => (
@@ -322,9 +328,14 @@ async function AccountView({
                 )}
               </select>
             </div>
-            <div className="field" style={{ justifyContent: "flex-end" }}>
+            <div className="field">
+              {/* No label of its own, but the column needs one: without it
+                  this sits a line lower than the boxes it belongs to, on any
+                  row where another field carries a hint underneath. */}
+              <label aria-hidden="true">&nbsp;</label>
               <div className="actions">
-                <button type="submit" className="tiny">Apply</button>
+                <AutoApply />
+                <button type="submit" className="tiny" data-apply>Apply</button>
                 {(p.from || p.to || p.location) && (
                   <Link href={carry({ from: undefined, to: undefined, location: undefined })}
                         className="btn ghost tiny">Clear</Link>

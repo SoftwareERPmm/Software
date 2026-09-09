@@ -4,6 +4,7 @@ import {
   Scale, TriangleAlert, X,
 } from "lucide-react";
 import { money } from "@/lib/db";
+import { AutoApply } from "@/components/auto-apply";
 import {
   getCompany, getTrialBalanceAsOf, getHealth,
   getUnassignedBranchActivity, UNASSIGNED_BRANCH,
@@ -146,9 +147,14 @@ export default async function TrialBalance({
                   offering a choice of one is a control that cannot answer. */}
               <div className="staticfield m">{company.base_currency}</div>
             </div>
-            <div className="field" style={{ justifyContent: "flex-end" }}>
+            <div className="field">
+              {/* No label of its own, but the column needs one: without it
+                  this sits a line lower than the boxes it belongs to, on any
+                  row where another field carries a hint underneath. */}
+              <label aria-hidden="true">&nbsp;</label>
               <div className="actions">
-                <button type="submit" className="tiny">Apply</button>
+                <AutoApply />
+                <button type="submit" className="tiny" data-apply>Apply</button>
                 {(p.asOf || p.location || p.type) && (
                   <a href="/ledger" className="btn ghost tiny">Clear</a>
                 )}

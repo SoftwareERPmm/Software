@@ -1,4 +1,5 @@
 import { money } from "@/lib/db";
+import { AutoApply } from "@/components/auto-apply";
 import {
   getCompany, getCashFlowStatement, getBranches,
   getUnassignedBranchActivity, UNASSIGNED_BRANCH,
@@ -94,7 +95,10 @@ export default async function CashFlow({
             )}
           </select>
         </div>
-        <div className="actions"><button type="submit">Update</button></div>
+        <div className="actions">
+          <AutoApply />
+          <button type="submit" data-apply>Update</button>
+        </div>
       </form>
 
       {unassignedLines.lines > 0 && branchId === null && (
