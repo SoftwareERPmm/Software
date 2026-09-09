@@ -1342,7 +1342,7 @@ export async function getDocumentPeople(documentId: string) {
      where d.id = ${documentId}`;
 
   const tasks = await sql`
-    select t.id, t.task, t.due_date, t.done_at,
+    select t.id, t.task, t.due_date, t.done_at, t.aspect,
            u.name as responsible, u.initials,
            (t.done_at is null and t.due_date is not null and t.due_date < current_date)
              as overdue,
@@ -1373,6 +1373,104 @@ export async function getPaymentSchedules(companyId: string, partnerId: string |
       left join document d on d.id = s.executed_by_document_id
      where s.company_id = ${companyId} and s.partner_id = ${partnerId}
      order by s.planned_date`;
+}
+
+/**
+ * The two halves of a purchase invoice, which run independently.
+ *
+ * Goods can be outstanding while the money is settled, and the money can be
+ * outstanding while every box has arrived. Reading one number for "the
+ * invoice" hides whichever of the two is the problem — which is exactly how
+ * an invoice paid in full sat looking finished with sixty boxes never
+ * delivered.
+ *
+ * Goods are counted through the same matcher the ledger settles GR/IR with,
+ * so what this calls outstanding is what the clearing account still holds.
+ * Money comes from the allocations against it. Neither is re-derived here
+ * with a rule of its own.
+ */
+export async function getInvoiceProgress(companyId: string, documentId: string) {
+  const [doc] = await sql`
+    select d.id, d.doc_type, d.due_date, d.gross_total, d.partner_id
+      from document d where d.id = ${documentId} and d.company_id = ${companyId}`;
+  if (!doc) return null;
+
+  const match = await getMatchStatus(documentId);
+  const matchLines = match?.lines ?? [];
+  const billed = matchLines.reduce((t, l) => t + Number(l.qty), 0);
+  const arrived = matchLines.reduce((t, l) => t + Number(l.settled), 0);
+  const goodsOutstanding = Math.max(Math.round((billed - arrived) * 10000) / 10000, 0);
+  const [unit] = await sql`
+    select u.code from document_line dl
+      join item i on i.id = dl.item_id
+      join uom u on u.id = i.base_uom_id
+     where dl.document_id = ${documentId} limit 1`;
+
+  const paid = await getDocumentOutstanding(documentId);
+
+  /**
+   * When the goods were expected. An invoice has no delivery date of its own,
+   * so this is the order's, where the goods were ordered — and nothing at all
+   * where they were not. An invented date would make a supplier look late on
+   * a promise nobody recorded them making.
+   */
+  const [expected] = await sql`
+    select o.doc_no, o.due_date
+      from document o
+      join fulfilment_link fl on true
+      join document_line ol on ol.id = fl.order_line_id and ol.document_id = o.id
+     where o.company_id = ${companyId} and o.doc_type = 'PURCHASE_ORDER'
+       and o.partner_id = ${doc.partner_id} and o.status = 'POSTED'
+     order by o.due_date nulls last limit 1`;
+  const [anyOrder] = expected ? [expected] : await sql`
+    select o.doc_no, o.due_date from document o
+     where o.company_id = ${companyId} and o.doc_type = 'PURCHASE_ORDER'
+       and o.partner_id = ${doc.partner_id} and o.status = 'POSTED'
+       and exists (select 1 from v_order_outstanding v
+                    where v.order_id = o.id and v.outstanding > 0)
+     order by o.due_date nulls last limit 1`;
+
+  const tasks = await sql`
+    select t.aspect, t.task, t.due_date, u.name as responsible, u.initials
+      from document_task t
+      left join app_user u on u.id = t.responsible_id
+     where t.document_id = ${documentId} and t.done_at is null`;
+  const forAspect = (a: string) =>
+    (tasks as any[]).find((t) => t.aspect === a) ?? null;
+
+  const today = new Date(new Date().toDateString());
+  const asDate = (v: unknown) => (v ? new Date(String(v)) : null);
+  const goodsDue = asDate(anyOrder?.due_date);
+  const payDue = asDate(doc.due_date);
+
+  return {
+    unit: unit?.code ?? null,
+    goods: {
+      outstanding: goodsOutstanding,
+      billed,
+      arrived,
+      /**
+       * Goods are counted against this invoice only where a receipt names it.
+       * A shipment received against the order instead is invisible from here,
+       * which is why the card says so rather than letting "100 outstanding"
+       * be read as the supplier owing another hundred. The cure is the same
+       * relationship receipts and orders now have, applied to invoices — not
+       * a rule here that guesses which goods were for which bill.
+       */
+      unmatched: arrived === 0 && billed > 0,
+      expectedDate: anyOrder?.due_date ? String(anyOrder.due_date) : null,
+      expectedFrom: anyOrder?.doc_no ?? null,
+      overdue: goodsOutstanding > 0 && !!goodsDue && goodsDue < today,
+      ...(forAspect("GOODS") ?? {}),
+    },
+    payment: {
+      outstanding: paid,
+      total: Number(doc.gross_total),
+      dueDate: doc.due_date ? String(doc.due_date) : null,
+      overdue: paid > 0 && !!payDue && payDue < today,
+      ...(forAspect("PAYMENT") ?? {}),
+    },
+  };
 }
 
 /**

@@ -1443,3 +1443,45 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 .docstat.ok .docstat-icon {
   background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok);
 }
+
+/* The two halves of an invoice: goods still expected, money still owed. Side
+   by side because they are equal and independent — neither is a sub-heading
+   of the other — and stacked when there is not room to say so. */
+.halves {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--s3);
+  margin-bottom: var(--s3);
+}
+.half {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  padding: 0.9rem 1rem 1rem;
+}
+/* Toned only while somebody is late. An outstanding balance that is not yet
+   due is ordinary business and should look it. */
+.half.late {
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 6%, transparent);
+}
+.half.done { opacity: 0.85; }
+
+.half-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; }
+.half-head h2 { margin: 0; font-size: var(--t-md); font-weight: 600; }
+.half-head .pill { margin-left: auto; display: inline-flex; align-items: center; gap: 0.25rem; }
+.half-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.9rem; height: 1.9rem; border-radius: var(--r-sm);
+  background: var(--line-soft); color: var(--muted); flex: none;
+}
+.half.late .half-icon {
+  background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn);
+}
+.half-amount {
+  margin: 0 0 0.7rem;
+  font-family: var(--mono); font-size: var(--t-xl); font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.half.late .half-amount { color: var(--warn); }
+.half-actions { margin-top: 0.85rem; flex-wrap: wrap; }

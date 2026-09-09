@@ -6,6 +6,7 @@ import { VoidDocument } from "@/components/void-document";
 import { LinkToOrder } from "@/components/link-to-order";
 import { DocumentRail, TaskBanner } from "@/components/document-rail";
 import { DocStats, type DocStat } from "@/components/doc-stats";
+import { InvoiceProgress } from "@/components/invoice-progress";
 import {
   PackageCheck, FileText, Clock, Wallet, CircleDollarSign, Boxes, Truck,
 } from "lucide-react";
@@ -34,6 +35,7 @@ import {
   getOrderOutstanding,
   getOrderClosure,
   getDocumentPeople,
+  getInvoiceProgress,
 } from "@/lib/queries";
 import {
   createDelivery, createGoodsReceipt, replaceConsignmentSettlement,
@@ -279,6 +281,12 @@ export default async function DocumentPage({
   // happened since. Every document has this; only the figures beside it
   // differ by type.
   const people = await getDocumentPeople(doc.id);
+
+  // A purchase invoice has two things outstanding that move independently.
+  // Shown as two, because one combined status hides whichever is the problem.
+  const progress = doc.doc_type === "PURCHASE_INVOICE" && doc.status === "POSTED"
+    ? await getInvoiceProgress(doc.company_id, doc.id)
+    : null;
   const tasks = people.tasks as never as Parameters<typeof TaskBanner>[0]["tasks"];
 
   /**
@@ -444,7 +452,23 @@ export default async function DocumentPage({
         href: stageDoc[step] ? null : nextStageHref(step),
         optional: OPTIONAL_STAGE.has(step),
       }))}
-      banner={<TaskBanner tasks={tasks} />}
+      banner={
+        <>
+          {/* Tasks about one half of an invoice are shown in that half, with
+              the figure they are about. Banner them as well and the same
+              sentence appears twice, six inches apart. */}
+          <TaskBanner tasks={tasks.filter((t: any) => !t.aspect)} />
+          {progress && (
+            <InvoiceProgress
+              goods={progress.goods as never}
+              payment={progress.payment as never}
+              unit={progress.unit}
+              receiveHref={`/purchases/receive/new?match_invoice_id=${doc.id}`}
+              payHref={`/payables/pay?invoice=${doc.id}`}
+            />
+          )}
+        </>
+      }
       stats={<DocStats stats={stats} />}
       rail={rail}
       badges={

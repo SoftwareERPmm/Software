@@ -163,12 +163,13 @@ try {
 
   // ---- what somebody still owes -------------------------------------------
 
-  const task = async (docId, name, who, due) => {
+  const task = async (docId, name, who, due, aspect = null) => {
     await sql`
-      insert into document_task (company_id, document_id, task, responsible_id, due_date)
-      values (${co.id}, ${docId}, ${name}, ${who}, ${due}::date)
+      insert into document_task (company_id, document_id, task, responsible_id, due_date, aspect)
+      values (${co.id}, ${docId}, ${name}, ${who}, ${due}::date, ${aspect})
       on conflict (document_id, task) do update
-        set responsible_id = excluded.responsible_id, due_date = excluded.due_date`;
+        set responsible_id = excluded.responsible_id, due_date = excluded.due_date,
+            aspect = excluded.aspect`;
   };
   // Chasing the bill for goods that arrived and nobody has invoiced. That is
   // the first receipt: it came in against the order, so no invoice names it.
@@ -177,6 +178,12 @@ try {
   await task(po.id, "Chase outstanding delivery", aung.id, day(5));
   // Money out with nothing to attach it to.
   await task(pay2.id, "Payment reconciliation", suSu.id, day(8));
+
+  // The first invoice owes two different things to two different people:
+  // sixty boxes that have not arrived, and half the money. Which is the whole
+  // reason an invoice shows them as two halves rather than one status.
+  await task(pi1.id, "Chase delivery", aung.id, day(5), "GOODS");
+  await task(pi1.id, "Settle balance", suSu.id, day(8), "PAYMENT");
 
   // ---- what has happened so far -------------------------------------------
 
