@@ -409,9 +409,20 @@ export async function getOpenGoodsReceipts(companyId: string, limit: number | nu
 
   const lines = await sql`
     select dl.id, dl.document_id, dl.item_id, dl.base_qty as qty, dl.net_amount as net,
-           dl.unit_price, i.code as item_code, i.name as item_name
+           dl.unit_price, i.code as item_code, i.name as item_name,
+           -- What the order said this would cost, where the receipt came in
+           -- against one. Carried so the bill can be checked against the
+           -- agreement, not only against the quantity that arrived: a
+           -- supplier billing 1,300 for goods ordered at 1,000 is the case
+           -- the three-way match exists to catch, and it is invisible if the
+           -- form only ever shows the receipt's own figure.
+           ol.unit_price as order_price,
+           ord.id as order_id, ord.doc_no as order_no
       from document_line dl
       join item i on i.id = dl.item_id
+      left join document_line ol on ol.id = dl.source_line_id
+      left join document ord on ord.id = ol.document_id
+                            and ord.doc_type = 'PURCHASE_ORDER'
      where dl.document_id = any(${ids})
      order by dl.line_no`;
 
@@ -458,6 +469,9 @@ export async function getOpenGoodsReceipts(companyId: string, limit: number | nu
           itemName: l.item_name,
           qty: Math.round((Number(l.qty) - (billed.get(l.id) ?? 0)) * 10000) / 10000,
           unitPrice: Number(l.unit_price),
+          orderPrice: l.order_price === null ? null : Number(l.order_price),
+          orderId: (l.order_id as string) ?? null,
+          orderNo: (l.order_no as string) ?? null,
         }))
         .filter((l) => l.qty > 0);
 
@@ -585,9 +599,20 @@ export async function getOpenDeliveries(companyId: string, limit: number | null 
 
   const lines = await sql`
     select dl.id, dl.document_id, dl.item_id, dl.base_qty as qty, dl.net_amount as net,
-           i.code as item_code, i.name as item_name
+           i.code as item_code, i.name as item_name,
+           -- What the sales order agreed for these goods, where the delivery
+           -- came out of one. A delivery moves stock at cost and carries no
+           -- selling price of its own, so without this the invoice falls back
+           -- to the price list — and an order agreed at 1,200 bills at
+           -- whatever the list happens to say today. What was agreed is what
+           -- is billed.
+           ol.unit_price as order_price,
+           ord.id as order_id, ord.doc_no as order_no
       from document_line dl
       join item i on i.id = dl.item_id
+      left join document_line ol on ol.id = dl.source_line_id
+      left join document ord on ord.id = ol.document_id
+                            and ord.doc_type = 'SALES_ORDER'
      where dl.document_id = any(${ids})
      order by dl.line_no`;
 
@@ -631,6 +656,9 @@ export async function getOpenDeliveries(companyId: string, limit: number | null 
           itemCode: l.item_code,
           itemName: l.item_name,
           qty: Math.round((Number(l.qty) - (gone.get(l.id) ?? 0)) * 10000) / 10000,
+          orderPrice: l.order_price === null ? null : Number(l.order_price),
+          orderId: (l.order_id as string) ?? null,
+          orderNo: (l.order_no as string) ?? null,
         }))
         .filter((l) => l.qty > 0);
 
@@ -688,7 +716,8 @@ export async function getJournalForDocument(journalEntryId: string | null) {
 export async function getDownstream(documentId: string) {
   return sql`
     select id, doc_type, doc_no, posting_date, status, gross_total
-      from document where source_document_id = ${documentId}
+      from document
+     where source_document_id in (${versionsOf(documentId)})
      order by posting_date`;
 }
 
@@ -696,6 +725,27 @@ export async function getDownstream(documentId: string) {
 export async function getDocumentOutstanding(documentId: string): Promise<number> {
   const [row] = await sql`select outstanding from v_open_item where document_id = ${documentId}`;
   return row ? Number(row.outstanding) : 0;
+}
+
+/**
+ * Every version of the document this id belongs to, as a subquery.
+ *
+ * A correction keeps the number and posts the next version, so "raised
+ * against this order" has to mean "raised against any version of it" — a
+ * receipt that named v1 still answers the order after it becomes v2, and the
+ * link it recorded is deliberately never rewritten.
+ *
+ * Written as a family of ids rather than as `fn_current_document(...) =
+ * fn_current_document(...)`, which says the same thing and cannot use an
+ * index: wrapping the column in a function makes every such lookup a
+ * sequential scan of `document`. This form reads (company, doc_no) through
+ * the unique index and then `source_document_id` through its own.
+ */
+function versionsOf(documentId: string) {
+  return sql`
+    select v.id from document v
+      join document self on self.id = ${documentId}
+     where v.company_id = self.company_id and v.doc_no = self.doc_no`;
 }
 
 /**
@@ -722,7 +772,8 @@ export async function getChainDocuments(documentId: string) {
   let cursor = self.source_document_id;
   for (let hop = 0; hop < 3 && cursor; hop++) {
     const [row] = (await sql`
-      select id, doc_type, doc_no, source_document_id from document where id = ${cursor}`) as Row[];
+      select id, doc_type, doc_no, source_document_id
+        from document where id = fn_current_document(${cursor})`) as Row[];
     if (!row || seen.has(row.id)) break;
     seen.set(row.id, row);
     cursor = row.source_document_id;
@@ -732,7 +783,12 @@ export async function getChainDocuments(documentId: string) {
   for (let hop = 0; hop < 3 && frontier.length > 0; hop++) {
     const rows = (await sql`
       select id, doc_type, doc_no, source_document_id
-        from document where source_document_id = any(${frontier})`) as Row[];
+        from document
+       where source_document_id in (
+               select v.id from document v
+                 join document self on self.company_id = v.company_id
+                                   and self.doc_no = v.doc_no
+                where self.id = any(${frontier}::uuid[]))`) as Row[];
     const next: string[] = [];
     for (const r of rows) {
       if (!seen.has(r.id)) {
@@ -812,13 +868,18 @@ export async function getRelatedDocuments(documentId: string): Promise<RelatedDo
     }));
 
 
+  // Resolved to the version that stands, both ways. The stored link still
+  // names the version it was raised against — that record is never rewritten
+  // — but a panel headed "what this is linked to" that offers a cancelled
+  // document reads as a broken link rather than as history. History is
+  // reached from the version trail on the document itself.
   const parent = doc.source_document_id
     ? shape(await sql`
         select d.id, d.doc_type, d.doc_no, to_char(d.doc_date,'YYYY-MM-DD') as doc_date,
                d.status, d.gross_total,
                coalesce((select sum(dl.base_qty) from document_line dl
                           where dl.document_id = d.id), 0) as qty
-          from document d where d.id = ${doc.source_document_id}`)
+          from document d where d.id = fn_current_document(${doc.source_document_id})`)
     : [];
 
   const children = shape(await sql`
@@ -827,7 +888,8 @@ export async function getRelatedDocuments(documentId: string): Promise<RelatedDo
            coalesce((select sum(dl.base_qty) from document_line dl
                       where dl.document_id = d.id), 0) as qty
       from document d
-     where d.company_id = ${doc.company_id} and d.source_document_id = ${documentId}
+     where d.company_id = ${doc.company_id}
+       and d.source_document_id in (${versionsOf(documentId)})
      order by d.doc_date, d.doc_no`);
 
   // Money applied to this invoice, or the invoices this payment was applied
@@ -1414,14 +1476,23 @@ export async function getDocumentPeople(documentId: string) {
            (current_date - t.due_date) as days_late
       from document_task t
       left join app_user u on u.id = t.responsible_id
-     where t.document_id = ${documentId}
+     -- Across versions. A task is an obligation about the thing — chase the
+     -- delivery, get the bill approved — not about the piece of paper it was
+     -- written on, so correcting the document must not take it off somebody's
+     -- list. Before this, an overdue chase silently moved to the retired
+     -- version the moment the price was corrected, and nobody saw it again.
+     where t.document_id in (${versionsOf(documentId)})
      order by t.due_date nulls last, t.created_at`;
 
   const activity = await sql`
     select a.kind, a.note, a.happened_at, u.name as actor, u.initials
       from document_activity a
       left join app_user u on u.id = a.actor_id
-     where a.document_id = ${documentId}
+     -- Across versions too: this panel says "who did what, and when" about
+     -- this document, and a correction does not start the story over. Shown
+     -- on v2, the posting of v1 is exactly the history somebody is looking
+     -- for; the version trail above says which version each belongs to.
+     where a.document_id in (${versionsOf(documentId)})
      order by a.happened_at desc, a.created_at desc
      limit 20`;
 
@@ -1497,7 +1568,7 @@ export async function getInvoiceProgress(companyId: string, documentId: string) 
     select t.aspect, t.task, t.due_date, u.name as responsible, u.initials
       from document_task t
       left join app_user u on u.id = t.responsible_id
-     where t.document_id = ${documentId} and t.done_at is null`;
+     where t.document_id in (${versionsOf(documentId)}) and t.done_at is null`;
   const forAspect = (a: string) =>
     (tasks as any[]).find((t) => t.aspect === a) ?? null;
 
@@ -2287,13 +2358,19 @@ export async function getOrderProgress(orderId: string, docType: string) {
      where ol.document_id = ${orderId}
      order by ol.line_no`;
 
+  // Matched across versions, not by id. A receipt raised against v1 of this
+  // order still answered it after the order was corrected to v2 — the link it
+  // recorded is the truth about what happened and is deliberately never
+  // rewritten, so the reading follows the chain instead. Without this a
+  // corrected order reads as nothing received, with the goods sitting on a
+  // receipt that says it received them.
   const fulfilled = await sql`
     select dl.item_id, dl.base_qty as qty, dl.source_line_id
       from document_line dl
       join document d on d.id = dl.document_id
      where d.doc_type = ${fulfilmentType}
        and d.status = 'POSTED'
-       and d.source_document_id = ${orderId}
+       and d.source_document_id in (${versionsOf(orderId)})
      order by d.posting_date, d.doc_no, dl.line_no`;
 
   // A fulfilment line that names the order line it satisfies is credited to
@@ -2303,16 +2380,43 @@ export async function getOrderProgress(orderId: string, docType: string) {
   // asked for. Same rule the GR/IR matcher uses for the same reason: the
   // alternative is a screen that reports nothing delivered while the chain
   // plainly shows a delivery.
+  // Goods linked to this order after the fact — the receipt or delivery names
+  // its own source, or none at all, and somebody said afterwards that these
+  // goods answered this order. They count exactly as much as the ones that
+  // named it: v_order_outstanding has always counted them, so leaving them out
+  // here made the figures above the line table disagree with the line table.
+  const linked = await sql`
+    select fl.order_line_id, ol.item_id, sum(fl.qty) as qty
+      from fulfilment_link fl
+      join document_line ol on ol.id = fl.order_line_id
+      join document_line dl on dl.id = fl.fulfilment_line_id
+      join document dd on dd.id = dl.document_id
+     where ol.document_id in (${versionsOf(orderId)})
+       and dd.status = 'POSTED'
+     group by fl.order_line_id, ol.item_id`;
+
   const done = new Map<string, number>();
   const pool = new Map<string, number>();
 
-  for (const f of fulfilled) {
-    const q = Number(f.qty);
-    if (f.source_line_id) {
-      done.set(f.source_line_id, (done.get(f.source_line_id) ?? 0) + q);
+  // A line id belongs to one version of the order. A fulfilment that names a
+  // line of the version this one replaced cannot be credited to a line here —
+  // there is no such line — so it goes to the item, and is spread the same way
+  // as anything that named no line at all.
+  const mine = new Set(lines.map((l: any) => l.id as string));
+  const credit = (lineId: string | null, itemId: string, q: number) => {
+    if (lineId && mine.has(lineId)) {
+      done.set(lineId, (done.get(lineId) ?? 0) + q);
     } else {
-      pool.set(f.item_id, (pool.get(f.item_id) ?? 0) + q);
+      pool.set(itemId, (pool.get(itemId) ?? 0) + q);
     }
+  };
+
+  for (const l of linked) {
+    credit(l.order_line_id as string, l.item_id as string, Number(l.qty));
+  }
+
+  for (const f of fulfilled) {
+    credit(f.source_line_id as string | null, f.item_id as string, Number(f.qty));
   }
 
   return lines.map((l: any) => {
@@ -2328,6 +2432,33 @@ export async function getOrderProgress(orderId: string, docType: string) {
 
     return { ...l, fulfilled: got };
   });
+}
+
+/**
+ * Every version of a document number, oldest first.
+ *
+ * A correction keeps the number and posts the next version, so the number on
+ * a customer's copy has to lead to all of them: the one standing now, and
+ * every one it replaced, each with the reason it was replaced and by whom.
+ * That last part is the point — a version history without the reason is a
+ * list of numbers that changed, which tells nobody anything.
+ *
+ * The AMEND row sits on the version that was replaced, not on its
+ * replacement, so the reason reads as "why this one stopped being right".
+ */
+export async function getDocumentVersions(companyId: string, docNo: string | null) {
+  if (!docNo) return [];
+  return sql`
+    select d.id, d.version, d.status, d.gross_total, d.doc_date,
+           d.superseded_by_document_id is not null as superseded,
+           h.reason, h.acted_at,
+           u.name as edited_by, u.initials as edited_initials
+      from document d
+      left join document_history h
+             on h.document_id = d.id and h.action = 'AMEND'
+      left join app_user u on u.id = h.acted_by
+     where d.company_id = ${companyId} and d.doc_no = ${docNo}
+     order by d.version`;
 }
 
 // ------------------------------------------------------- consignment --

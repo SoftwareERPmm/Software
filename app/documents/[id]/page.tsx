@@ -13,7 +13,14 @@ import {
   PackageCheck, FileText, Clock, Wallet, CircleDollarSign, Boxes, Truck,
 } from "lucide-react";
 import { CloseOrder } from "@/components/close-order";
-import { voidDocumentAction, linkReceiptToOrder, closeOrderAction } from "@/lib/actions";
+import { CorrectOrder, type CorrectableLine } from "@/components/correct-order";
+import { VersionBadge, VersionTrail, type DocumentVersion }
+  from "@/components/version-history";
+import {
+  voidDocumentAction, linkReceiptToOrder, closeOrderAction,
+  previewOrderCorrection, correctOrder,
+  previewInvoiceCorrection, correctInvoice,
+} from "@/lib/actions";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { sql, money, qty, shortDate } from "@/lib/db";
@@ -32,6 +39,7 @@ import {
   getStockByLocation,
   getOrderProgress,
   getRelatedDocuments,
+  getDocumentVersions,
   getUnsettledConsignment,
   getLinkableOrders,
   getOrderOutstanding,
@@ -152,8 +160,28 @@ export default async function DocumentPage({
     ? await getLinkableOrders(doc.company_id, doc.id)
     : { lines: [], openLines: [] };
 
+  // Every version of this number. One row for anything never corrected, which
+  // is nearly everything — the trail renders nothing at all in that case.
+  const versions = (await getDocumentVersions(
+    doc.company_id, doc.doc_no)) as unknown as DocumentVersion[];
+  const versionTrail = <VersionTrail versions={versions} currentId={doc.id} />;
+  const versionBadge = (
+    <VersionBadge
+      version={Number(doc.version ?? 1)}
+      superseded={!!doc.superseded_by_document_id}
+    />
+  );
+
   const isPostedOrder = ["PURCHASE_ORDER", "SALES_ORDER"].includes(doc.doc_type)
     && doc.status === "POSTED";
+  // Fetched once here rather than inside the order branch below: the
+  // correction dialog sits with the figures, which are built before the page
+  // splits into its two render paths. Every order, not only a standing one —
+  // a superseded version still has to render its own lines, which is the
+  // whole point of keeping it readable.
+  const orderProgress = ["PURCHASE_ORDER", "SALES_ORDER"].includes(doc.doc_type)
+    ? ((await getOrderProgress(doc.id, doc.doc_type)) as Record<string, unknown>[])
+    : [];
   const orderState = isPostedOrder
     ? await getOrderOutstanding(doc.company_id, doc.id)
     : { outstanding: 0, isClosed: false };
@@ -359,7 +387,75 @@ export default async function DocumentPage({
    * and passed with the stats so both render paths get them: the order form
    * returns long before the generic document body is built.
    */
-  const orderActions = isPostedOrder && orderState.outstanding > 0 && !orderState.isClosed ? (
+  /**
+   * Correcting an invoice, and where that is allowed to happen.
+   *
+   * The tester's rule, enforced rather than described: an invoice with an
+   * order behind it is corrected at the order, because that is where the
+   * price was agreed and correcting the bill alone would leave the two
+   * disagreeing with nothing saying which is right. An invoice raised on its
+   * own agreed its price on itself, so it is corrected here.
+   *
+   * The quantity is fixed wherever the invoice bills a receipt or a delivery:
+   * those goods moved, and how many moved is not a matter of opinion.
+   */
+  const isLiveInvoice = isInvoice && doc.status === "POSTED"
+    && !doc.superseded_by_document_id;
+  const orderBehind = stageDoc["PURCHASE_ORDER"] ?? stageDoc["SALES_ORDER"] ?? null;
+
+  const correctInvoiceAction = isLiveInvoice && !orderBehind ? (
+    <CorrectOrder
+      noun="invoice"
+      preview={previewInvoiceCorrection}
+      confirm={correctInvoice}
+      documentId={doc.id}
+      docNo={doc.doc_no ?? ""}
+      version={Number(doc.version ?? 1)}
+      sales={doc.doc_type === "SALES_INVOICE"}
+      lines={(lines as Record<string, unknown>[]).map((l): CorrectableLine => ({
+        itemId: String(l.item_id),
+        itemCode: String(l.item_code),
+        itemName: String(l.item_name),
+        uomCode: (l.uom_code as string) ?? null,
+        ordered: Number(l.base_qty),
+        fulfilled: 0,
+        unitPrice: Number(l.unit_price),
+        lockQty: !!doc.source_document_id,
+      }))}
+    />
+  ) : null;
+
+  const canFulfil = isPostedOrder && orderState.outstanding > 0 && !orderState.isClosed;
+
+  /**
+   * Correcting the order is offered for as long as the order stands, not only
+   * while something is still outstanding. The case that matters most is the
+   * finished one: everything received, the invoice raised, and then the
+   * supplier says the price was wrong. That is precisely when the figure has
+   * to be corrected at the order and carried into the bill — so hiding the
+   * action once the goods are all in would hide it exactly when it is needed.
+   */
+  const correction = isPostedOrder && !doc.superseded_by_document_id ? (
+    <CorrectOrder
+      preview={previewOrderCorrection}
+      confirm={correctOrder}
+      documentId={doc.id}
+      docNo={doc.doc_no ?? ""}
+      version={Number(doc.version ?? 1)}
+      sales={doc.doc_type === "SALES_ORDER"}
+      lines={orderProgress.map((l): CorrectableLine => ({
+        itemId: String(l.item_id),
+        itemCode: String(l.item_code),
+        itemName: String(l.item_name),
+        uomCode: (l.uom_code as string) ?? null,
+        ordered: Number(l.ordered),
+        fulfilled: Number(l.fulfilled),
+        unitPrice: Number(l.unit_price),
+      }))}
+    />
+  ) : null;
+
+  const orderActions = canFulfil ? (
     <OrderActions
       sales={doc.doc_type === "SALES_ORDER"}
       href={doc.doc_type === "SALES_ORDER"
@@ -372,13 +468,25 @@ export default async function DocumentPage({
         candidates={linkableGoods.candidates as never}
         sales={doc.doc_type === "SALES_ORDER"}
       />
+      {correction}
     </OrderActions>
+  ) : correction ? (
+    <div className="docactions">{correction}</div>
   ) : null;
 
   const statsNode = (
     <>
       <DocStats stats={stats} />
       {orderActions}
+      {/* Said once, where somebody would otherwise go looking for an edit
+          button and conclude there isn't one. */}
+      {isLiveInvoice && orderBehind && (
+        <p className="page-sub" style={{ margin: "0 0 0.75rem" }}>
+          Priced by{" "}
+          <Link href={`/documents/${orderBehind.id}`}>{orderBehind.doc_no}</Link>.
+          Correct it there and the correction carries into this bill.
+        </p>
+      )}
     </>
   );
 
@@ -405,7 +513,7 @@ export default async function DocumentPage({
 
   if (isOrder) {
     const sales = doc.doc_type === "SALES_ORDER";
-    const progress = (await getOrderProgress(doc.id, doc.doc_type)) as any[];
+    const progress = orderProgress as any[];
 
     const erpLines: ErpOrderLine[] = progress.map((l) => ({
       id: l.id,
@@ -442,7 +550,13 @@ export default async function DocumentPage({
         memo={doc.memo ?? null}
         lines={erpLines}
         netTotal={Number(doc.net_total)}
-        banner={<TaskBanner tasks={tasks.filter((t: any) => !t.aspect)} />}
+        banner={
+          <>
+            {versionTrail}
+            <TaskBanner tasks={tasks.filter((t: any) => !t.aspect)} />
+          </>
+        }
+        badges={versionBadge}
         stats={statsNode}
         footer={footer}
         chain={chain.map((step) => ({
@@ -490,6 +604,7 @@ export default async function DocumentPage({
       }))}
       banner={
         <>
+          {versionTrail}
           {/* Tasks about one half of an invoice are shown in that half, with
               the figure they are about. Banner them as well and the same
               sentence appears twice, six inches apart. */}
@@ -514,6 +629,7 @@ export default async function DocumentPage({
       footer={footer}
       badges={
         <>
+          {versionBadge}
           {isInvoice && outstanding > 0 && (
             <span className="pill warn">{money(outstanding)} outstanding</span>
           )}
@@ -576,7 +692,9 @@ export default async function DocumentPage({
           canVoid={voidPlan.canVoid}
           blockers={voidPlan.blockers}
           effects={voidPlan.effects}
-        />
+        >
+          {correctInvoiceAction}
+        </VoidDocument>
       )}
 
       {movesGoods && (

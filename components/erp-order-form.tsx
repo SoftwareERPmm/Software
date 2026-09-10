@@ -45,7 +45,7 @@ export type OrderFormConfig = {
 export function ErpOrderForm({
   config, docId, docNo, status, partnerName, partnerCode, docDate, dueDate,
   locationName, reference, memo, lines, netTotal, chain, actions, related,
-  banner, stats, footer,
+  banner, stats, footer, badges,
   backHref, backLabel,
 }: {
   config: OrderFormConfig;
@@ -76,6 +76,8 @@ export function ErpOrderForm({
   banner?: React.ReactNode;
   stats?: React.ReactNode;
   footer?: React.ReactNode;
+  /** Beside the fulfilment pill this builds for itself — the version, mainly. */
+  badges?: React.ReactNode;
   /** Passed straight through to the shell — see ErpDocShell. */
   backHref?: string | null;
   backLabel?: string | null;
@@ -103,13 +105,16 @@ export function ErpOrderForm({
       stats={stats}
       footer={footer}
       badges={
-        totalOrdered > 0 ? (
-          <span className={`pill ${complete ? "ok" : "warn"}`}>
-            {complete
-              ? `Fully ${config.fulfilledLabel.toLowerCase()}`
-              : `${fmtQty(totalFulfilled)} of ${fmtQty(totalOrdered)} ${config.fulfilledLabel.toLowerCase()}`}
-          </span>
-        ) : null
+        <>
+          {totalOrdered > 0 && (
+            <span className={`pill ${complete ? "ok" : "warn"}`}>
+              {complete
+                ? `Fully ${config.fulfilledLabel.toLowerCase()}`
+                : `${fmtQty(totalFulfilled)} of ${fmtQty(totalOrdered)} ${config.fulfilledLabel.toLowerCase()}`}
+            </span>
+          )}
+          {badges}
+        </>
       }
     >
         <div className="erp-fields">

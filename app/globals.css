@@ -1560,6 +1560,92 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 .linkpanel .card-head { padding-bottom: 0.5rem; }
 .linkpanel .actions { padding: 0.75rem 1rem 1rem; }
 
+/* What this line leaves behind. Under the quantity rather than beside it —
+   the quantity cell is as narrow as the number in it, and a sentence set
+   alongside runs straight under the next column. */
+.qtyleft {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+  white-space: nowrap;
+  text-align: right;
+}
+
+/* Billing less than arrived, said deliberately rather than typed. In the
+   card head beside "Lines", because it governs the table underneath it. */
+.billpart {
+  margin-left: auto;
+  margin-right: 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: var(--t-sm);
+  color: var(--muted);
+  cursor: pointer;
+}
+.billpart input { margin: 0; }
+
+/* The versions of one document number. Quiet by default — most documents
+   have one version and never show this at all — and warned only on the one
+   that has been retired, which is the case where somebody is reading a figure
+   that is no longer true. */
+.vtrail {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--line-soft);
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 0.75rem;
+  font-size: var(--t-sm);
+}
+.vtrail.stale {
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 7%, transparent);
+}
+.vtrail-head { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.vtrail.stale .vtrail-head { color: var(--warn); }
+.vtrail-jump { margin-left: auto; display: inline-flex; align-items: center; gap: 0.2rem; }
+.vtrail-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.15rem;
+}
+/* Grid rather than a table so the reason can wrap without the version and the
+   figure beside it losing their column. */
+.vtrail-list li {
+  display: grid;
+  grid-template-columns: 2.5rem max-content max-content minmax(0, 1fr) max-content;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.2rem 0;
+  border-top: 1px solid var(--line);
+}
+.vtrail-list li.here { font-weight: 600; }
+.vtrail-v { color: var(--muted); font-variant-numeric: tabular-nums; }
+.vtrail-total { font-variant-numeric: tabular-nums; }
+.vtrail-when { color: var(--muted); }
+.vtrail-why { color: var(--muted); font-weight: 400; overflow-wrap: anywhere; }
+.vtrail-open.here { color: var(--muted); }
+@media (max-width: 40rem) {
+  .vtrail-list li { grid-template-columns: 2.5rem minmax(0, 1fr) max-content; }
+  .vtrail-when, .vtrail-why { grid-column: 2 / -1; }
+}
+
+/* The middle step of a correction: what confirming would do, before it does
+   it. A row is a document, and the two figures are the same document before
+   and after — so the arrow between them carries the meaning and must not be
+   mistaken for a column of its own. */
+.cx-arrow { width: 1.5rem; text-align: center; color: var(--muted); }
+.cx-blocked td { background: color-mix(in srgb, var(--warn) 7%, transparent); }
+.cx-why {
+  margin-top: 0.25rem;
+  font-size: var(--t-sm);
+  color: var(--warn);
+  overflow-wrap: anywhere;
+}
+
 /* Why a document cannot be voided — on request, not shouted.
    As a permanent red panel this explained a prohibition to somebody who had
    not asked to void anything, on every settled invoice in the system, and

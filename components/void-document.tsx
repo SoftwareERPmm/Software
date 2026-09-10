@@ -27,7 +27,7 @@ type Blocker = { reason: string; docNo?: string; docId?: string };
  * when pressed.
  */
 export function VoidDocument({
-  action, documentId, docNo, canVoid, blockers, effects,
+  action, documentId, docNo, canVoid, blockers, effects, children,
 }: {
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   documentId: string;
@@ -35,6 +35,13 @@ export function VoidDocument({
   canVoid: boolean;
   blockers: Blocker[];
   effects: string[];
+  /**
+   * The other thing you can do to a posted document: correct it. Rendered in
+   * the same row rather than a second one of its own, because two lone
+   * buttons stacked read as two unrelated sections when they are the same
+   * question — this is wrong, what now?
+   */
+  children?: React.ReactNode;
 }) {
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     action as never, null
@@ -44,6 +51,7 @@ export function VoidDocument({
   if (!canVoid) {
     return (
       <div className="docactions voidlock">
+        {children}
         <button type="button" className="btn ghost tiny" onClick={() => setOpen(!open)}
                 aria-expanded={open}>
           <Lock size={13} aria-hidden="true" /> Cannot be voided
@@ -72,6 +80,7 @@ export function VoidDocument({
   if (!open) {
     return (
       <div className="docactions">
+        {children}
         <button type="button" className="warn" onClick={() => setOpen(true)}>Void this document</button>
       </div>
     );

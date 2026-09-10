@@ -46,6 +46,26 @@ the bill genuinely disagrees with an estimate already posted. That is where
 `PURCHASE_PRICE_VARIANCE` still receives entries, and where the choice between
 variance account and inventory revaluation is unresolved.
 
+**Where a correction lands, 2026-09-10.** Editing a supplier invoice takes the
+same path, which makes the open question concrete rather than hypothetical.
+Twenty boxes received at 100 and billed at 130:
+
+```
+STR20260910002 v1  POSTED     1040 Inventory              2,000
+                              1060 GR/IR Clearing        -2,000
+DP20260910001 v1   REVERSED   1060 GR/IR Clearing         2,000
+                              2000 Accounts Payable      -2,000
+DP20260910001 v2   POSTED     5050 Purchase Price Var.      600
+                              1060 GR/IR Clearing         2,000
+                              2000 Accounts Payable      -2,600
+```
+
+The 600 is expensed and the twenty boxes stay on the books at 100 each. Under
+inventory revaluation the boxes still on hand would be carried at 130 and only
+the sold portion would reach the profit and loss. Both are defensible; the
+system does the first, and the difference is a real one to put to the auditor
+with these numbers in front of them.
+
 **Needs.** Accountant sign-off. This is the single most important question to
 put to a Myanmar auditor, because changing it later means re-posting history.
 
