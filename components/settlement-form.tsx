@@ -2,6 +2,7 @@
 
 import { useActionState, useMemo, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
+import { PartnerPicker } from "./partner-picker";
 
 type Partner = { id: string; code: string; name: string };
 type CashAccount = { id: string; code: string; name: string };
@@ -50,11 +51,20 @@ export function SettlementForm({
   );
 
   const [partnerId, setPartnerId] = useState(initialPartnerId ?? "");
-  const [amounts, setAmounts] = useState<Record<string, string>>(() => {
+
+  /** What the invoice this screen was opened for still owes, if any. */
+  const prefill = (forPartner: string): Record<string, string> => {
     if (!initialInvoiceId) return {};
     const inv = invoices.find((i) => i.document_id === initialInvoiceId);
-    return inv ? { [inv.document_id]: String(Number(inv.outstanding)) } : {};
-  });
+    // Only where it belongs to the partner being settled with. An amount
+    // against somebody else's invoice is not a starting point, it is a
+    // mistake waiting to be posted.
+    if (!inv || (forPartner && inv.partner_id !== forPartner)) return {};
+    return { [inv.document_id]: String(Number(inv.outstanding)) };
+  };
+
+  const [amounts, setAmounts] = useState<Record<string, string>>(
+    () => prefill(initialPartnerId ?? ""));
   const isPay = kind === "pay";
 
   const open = useMemo(
@@ -101,15 +111,18 @@ export function SettlementForm({
           <div className="row">
             <div className="field">
               <label htmlFor="partner_id">{isPay ? "Supplier" : "Customer"}</label>
-              <select
-                id="partner_id" name="partner_id" value={partnerId} required
-                onChange={(e) => { setPartnerId(e.target.value); setAmounts({}); }}
-              >
-                <option value="">Choose…</option>
-                {partners.map((p) => (
-                  <option key={p.id} value={p.id}>{p.code} · {p.name}</option>
-                ))}
-              </select>
+              {/* Amounts belong to one partner's bills, so changing partner
+                  clears them — but the invoice this screen was opened for is
+                  filled in again where it belongs to the new one. It used to
+                  be wiped unconditionally, so arriving from an invoice and
+                  then choosing its supplier by hand lost the figure the screen
+                  had just said was filled in for you. */}
+              <PartnerPicker
+                partners={partners as never}
+                value={partnerId}
+                placeholder={isPay ? "Type a supplier…" : "Type a customer…"}
+                onPick={(id) => { setPartnerId(id); setAmounts(prefill(id)); }}
+              />
             </div>
 
             <div className="field">
@@ -190,7 +203,13 @@ export function SettlementForm({
                     <tr key={i.document_id}>
                       <td className="code">
                         {i.doc_no}
-                        {i.document_id === initialInvoiceId && (
+                        {/* Only where something actually was. The label used
+                            to key off which invoice this screen was opened
+                            for, so it kept saying "filled in for you" over an
+                            empty box — which is the screen telling somebody
+                            their own eyes are wrong. */}
+                        {i.document_id === initialInvoiceId
+                          && (Number(amounts[i.document_id]) || 0) > 0 && (
                           <div className="hint" style={{ fontSize: "var(--t-2xs)" }}>
                             filled in for you
                           </div>

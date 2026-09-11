@@ -23,7 +23,12 @@ type MatchLine = {
   lineId: string; itemId: string; itemCode: string; itemName: string;
   qty: number; unitPrice: number;
 };
-type OpenDoc = { id: string; doc_no: string; doc_date: string; partner_id: string; lines: MatchLine[] };
+type OpenDoc = {
+  id: string; doc_no: string; doc_date: string; partner_id: string;
+  /** The warehouse the bill names, so goods answering it arrive there. */
+  location_id?: string | null;
+  lines: MatchLine[];
+};
 
 const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 0 });
 
@@ -88,6 +93,7 @@ export function ReceiptForm({
   const [docDate, setDocDate] = useState(today);
   const [receivedTime, setReceivedTime] = useState("");
   const [matchedPiId, setMatchedPiId] = useState("");
+  const [locationId, setLocationId] = useState(locations[0]?.id ?? "");
   // Chose "not matched" deliberately, as opposed to not having answered yet.
   // Only distinguishable while more than one invoice is waiting; with one it
   // is picked for you and this is how you say no to it.
@@ -122,7 +128,11 @@ export function ReceiptForm({
     setUnmatched(false);
     setAutoMatched(auto);
     const pi = openInvoices.find((d) => d.id === id);
-    if (pi) fillFrom(pi);
+    if (!pi) return;
+    fillFrom(pi);
+    // The bill names a warehouse; goods answering it arrive there. Asking
+    // again is asking a question already answered on the screen.
+    if (pi.location_id) setLocationId(pi.location_id);
   }
 
   /**
@@ -260,7 +270,8 @@ export function ReceiptForm({
 
             <div className="field">
               <label htmlFor="location_id">Warehouse</label>
-              <select id="location_id" name="location_id" defaultValue={locations[0]?.id ?? ""} required>
+              <select id="location_id" name="location_id" value={locationId}
+                      onChange={(e) => setLocationId(e.target.value)} required>
                 {locations.map((l) => (
                   <option key={l.id} value={l.id}>{l.code} · {l.name}</option>
                 ))}

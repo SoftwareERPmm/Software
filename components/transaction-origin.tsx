@@ -73,12 +73,21 @@ export function TransactionOrigin({
                 {" "}— this {sales ? "sale" : "purchase"} did not go through one
               </span>
             </span>
+          ) : order.state === "USED" ? (
+            <Link href={`/documents/${order.doc.id}`}>{order.doc.doc_no}</Link>
           ) : (
             <>
-              <Link href={`/documents/${order.doc.id}`}>{order.doc.doc_no}</Link>
-              {order.state === "LINKED_LATER" && (
-                <span className="origin-why"> · linked later, not where this began</span>
-              )}
+              {/* All of them. Goods from one receipt can answer two orders,
+                  and naming one reads as the whole answer. */}
+              {order.docs.map((o, i) => (
+                <span key={o.id}>
+                  {i > 0 && " · "}
+                  <Link href={`/documents/${o.id}`}>{o.doc_no}</Link>
+                </span>
+              ))}
+              <span className="origin-why">
+                {" "}· linked {order.docs.length === 1 ? "later" : "later"}, not where this began
+              </span>
             </>
           )}
         </dd>
