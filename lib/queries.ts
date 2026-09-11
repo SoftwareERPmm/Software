@@ -97,15 +97,32 @@ export async function getActionItems(companyId: string) {
             and (si.source_document_id = d.id or d.source_document_id = si.id)
        )`;
 
-  const [custOverdue] = await sql`
-    select coalesce(sum(outstanding), 0) as total, count(*)::int as n
-      from v_open_item
-     where company_id = ${companyId} and doc_type = 'SALES_INVOICE' and aging_bucket <> 'CURRENT'`;
+  /**
+   * Money somebody could actually pay.
+   *
+   * An invoice for 1,601,071.471 settled with 1,601,071 leaves 0.471 kyat
+   * outstanding, and the kyat has no subunit — nobody can pay it, ever. It
+   * stays in the ledger because it really is in the receivables control
+   * account and the reconciliation check ties the two together; what it must
+   * not do is stand at the top of the dashboard asking for action. It was
+   * doing exactly that, as "1 customer invoice overdue" with an amount that
+   * rendered as "0", which reads as a bug in the figure rather than a
+   * half-kyat nobody will ever collect.
+   *
+   * Half the currency's smallest unit is the line, taken from the currency
+   * rather than assumed: 0.5 for the kyat, 0.005 for the dollar.
+   */
+  const overdueFor = (docType: "SALES_INVOICE" | "PURCHASE_INVOICE") => sql`
+    select coalesce(sum(oi.outstanding), 0) as total, count(*)::int as n
+      from v_open_item oi
+      join currency c on c.code = oi.currency
+     where oi.company_id = ${companyId}
+       and oi.doc_type = ${docType}
+       and oi.aging_bucket <> 'CURRENT'
+       and abs(oi.outstanding) >= 0.5 / power(10, c.decimal_places)`;
 
-  const [supOverdue] = await sql`
-    select coalesce(sum(outstanding), 0) as total, count(*)::int as n
-      from v_open_item
-     where company_id = ${companyId} and doc_type = 'PURCHASE_INVOICE' and aging_bucket <> 'CURRENT'`;
+  const [custOverdue] = await overdueFor("SALES_INVOICE");
+  const [supOverdue] = await overdueFor("PURCHASE_INVOICE");
 
   const grirRows = await sql`
     select d.doc_type,
@@ -251,11 +268,20 @@ export async function getInvoiceList(companyId: string, docType: "SALES_INVOICE"
 /** What each customer/supplier owes or is owed, for a per-partner rollup. */
 export async function getPartnerBalances(companyId: string, docType: "SALES_INVOICE" | "PURCHASE_INVOICE") {
   return sql`
-    select partner_id, partner_code, partner_name,
-           open_invoices, invoiced, paid, outstanding, overdue, due_soon, credit_limit
-      from v_partner_balance
-     where company_id = ${companyId} and doc_type = ${docType}
-     order by outstanding desc`;
+    select b.partner_id, b.partner_code, b.partner_name,
+           b.open_invoices, b.invoiced, b.paid, b.outstanding, b.overdue,
+           b.due_soon, b.credit_limit,
+           -- Whether what is left is enough for anyone to pay. A balance
+           -- below the currency's smallest unit is a rounding remnant, not a
+           -- debt, and listing it under "Overdue" beside a figure that prints
+           -- as 0 tells the reader their screen is broken.
+           (abs(b.overdue) >= 0.5 / power(10, c.decimal_places)) as overdue_material,
+           (abs(b.outstanding) >= 0.5 / power(10, c.decimal_places)) as outstanding_material
+      from v_partner_balance b
+      join company co on co.id = b.company_id
+      join currency c on c.code = co.base_currency
+     where b.company_id = ${companyId} and b.doc_type = ${docType}
+     order by b.outstanding desc`;
 }
 
 export async function getOpenItems(companyId: string, docType: string) {

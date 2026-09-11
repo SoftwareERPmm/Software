@@ -413,6 +413,7 @@ export default async function DocumentPage({
       version={Number(doc.version ?? 1)}
       sales={doc.doc_type === "SALES_INVOICE"}
       lines={(lines as Record<string, unknown>[]).map((l): CorrectableLine => ({
+        lineId: String(l.id),
         itemId: String(l.item_id),
         itemCode: String(l.item_code),
         itemName: String(l.item_name),
@@ -444,6 +445,7 @@ export default async function DocumentPage({
       version={Number(doc.version ?? 1)}
       sales={doc.doc_type === "SALES_ORDER"}
       lines={orderProgress.map((l): CorrectableLine => ({
+        lineId: String(l.id),
         itemId: String(l.item_id),
         itemCode: String(l.item_code),
         itemName: String(l.item_name),

@@ -335,5 +335,40 @@ console.log("\n  free of charge, which is not a discount\n");
   await sql.end();
 }
 
+
+// ---- money lands where the currency can express it -------------------------
+//
+// The pilot invoice that started this: a wholesale price of 107,142.86 with a
+// 1% reduction baked into it, fifteen units, plus a 10,000 delivery charge.
+// At four decimal places that is 1,601,071.471 — and 0.471 kyat that nobody
+// can ever pay sat in receivables asking for action.
+
+{
+  const r = priceLines(
+    [{ itemId: "a", qty: 15, unitPrice: 106071.4314, discountPct: 0 }], [], 0);
+  check("a fractional price bills a whole kyat",
+    r.total === 1591071, `${r.total}`);
+  check("  and the line agrees with the total",
+    r.lines[0].net === r.total, `${r.lines[0].net} vs ${r.total}`);
+
+  // Several lines, each rounded, summing to exactly what they say.
+  const many = priceLines([
+    { itemId: "a", qty: 3, unitPrice: 33.333, discountPct: 0 },
+    { itemId: "b", qty: 3, unitPrice: 33.333, discountPct: 0 },
+    { itemId: "c", qty: 3, unitPrice: 33.333, discountPct: 0 },
+  ], [], 0);
+  check("  a total is the sum of its rounded lines, not a rounded sum",
+    many.total === many.lines.reduce((s, l) => s + l.net, 0),
+    `${many.total} vs ${many.lines.map((l) => l.net).join("+")}`);
+  check("  every line is payable",
+    many.lines.every((l) => Number.isInteger(l.net)),
+    many.lines.map((l) => l.net).join(", "));
+
+  // A currency with subunits keeps them.
+  const usd = priceLines(
+    [{ itemId: "a", qty: 3, unitPrice: 10.111, discountPct: 0 }], [], 2);
+  check("  a currency with cents still gets cents", usd.total === 30.33, `${usd.total}`);
+}
+
 console.log(`\n  ${failures === 0 ? "all discount tests pass" : failures + " FAILED"}\n`);
 process.exit(failures === 0 ? 0 : 1);

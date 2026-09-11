@@ -85,6 +85,7 @@ function addDays(iso: string, days: number) {
 export function SalesVoucher({
   action, customers, items: initialItems, locations, salesmen, cashAccounts, promotions,
   volumeDiscounts,
+  currencyScale = 4,
   focReasons, openInvoices, nextInvoiceNo, today, categories, uoms,
   itemPrices, priceLevels, stockByLocation, deliveries, initialDeliveryId,
   ownership = [],
@@ -99,6 +100,8 @@ export function SalesVoucher({
   salesmen: Salesman[];
   cashAccounts: CashAccount[];
   promotions: Promotion[];
+  /** Decimal places this company's money has — 0 for the kyat. */
+  currencyScale?: number;
   /** Quantity and invoice-total discount bands, for previewing what the
    *  engine will apply. */
   volumeDiscounts?: VolumeBand[];
@@ -360,7 +363,11 @@ export function SalesVoucher({
       unitPrice: Number(l.unitPrice) || 0,
       discountPct: Number(l.discountPct) || 0,
     })),
-    volumeDiscounts ?? []
+    volumeDiscounts ?? [],
+    // Rounded the same way the posting will round it. Previewing at four
+    // decimal places and posting at whole kyat is how a voucher comes to show
+    // one total and post another by half a unit.
+    currencyScale,
   );
   const pricedFor = new Map(chargedLines.map((l, i) => [l.key, pricing.lines[i]]));
 

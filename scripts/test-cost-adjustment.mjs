@@ -248,6 +248,60 @@ try {
       near(await onHand(), 20), `${await onHand()} on hand`);
   }
 
+  // ---- goods moved between warehouses are still goods ---------------------
+
+  console.log("\n  goods transferred, not sold\n");
+  {
+    await fresh();
+    const [other] = await sql`select id from location
+       where company_id = ${co.id} and is_stock_location and is_active
+         and id <> ${loc.id} order by code limit 1`;
+
+    const gr = await P.postGoodsReceipt({
+      companyId: co.id, partnerId: supp.id, locationId: loc.id, docDate: today,
+      lines: [{ itemId: item.id, qty: 20, unitCost: 100 }],
+    });
+    const [grLine] = await sql`select id from document_line where document_id = ${gr.id}`;
+
+    // Eight boxes move to another warehouse. They have not been sold; they are
+    // on a different shelf.
+    await P.postStockTransfer({
+      companyId: co.id, fromLocationId: loc.id, toLocationId: other.id,
+      docDate: today, lines: [{ itemId: item.id, qty: 8 }],
+    });
+
+    const cogsBefore = await balance("5000");
+    const invBefore = await inventoryBalance();
+
+    await P.postPurchaseInvoice({
+      companyId: co.id, partnerId: supp.id, locationId: loc.id,
+      docDate: today, dueDate: null, goodsReceiptId: gr.id,
+      lines: [{ itemId: item.id, qty: 20, unitPrice: 130, sourceLineId: grLine.id }],
+    });
+
+    const toInv = round(await inventoryBalance() - invBefore);
+    const toCogs = round(await balance("5000") - cogsBefore);
+
+    check("all 600 goes to inventory — none of it was sold",
+      near(toInv, 600), `inventory +${toInv}`);
+    check("  and nothing reaches cost of sales", near(toCogs, 0),
+      `cost of sales +${toCogs}`);
+    check("  the twenty boxes are worth 2,600 across both warehouses",
+      near(await stockValue(), 2600), `stock ${await stockValue()}`);
+    check("  and are still twenty", near(await onHand(), 20), `${await onHand()} on hand`);
+
+    // The eight that moved carry the corrected cost too, or selling them from
+    // the second warehouse would relieve inventory at the old figure.
+    const cogsBefore2 = await balance("5000");
+    await P.postDelivery({
+      companyId: co.id, partnerId: cust.id, locationId: other.id, docDate: today,
+      lines: [{ itemId: item.id, qty: 8, unitPrice: 500 }],
+    });
+    const relieved = round(await balance("5000") - cogsBefore2);
+    check("  selling them from the other warehouse costs 130 each",
+      near(relieved, 1040), `cost of sale ${relieved}`);
+  }
+
   // ---- a revaluation whose goods have gone cannot be undone ----------------
 
   console.log("\n  what cannot be undone\n");
@@ -273,6 +327,63 @@ try {
     } catch (e) { blocked = e.message; }
     check("goods sold at the corrected cost block undoing the correction",
       blocked !== null, blocked ? blocked.slice(0, 72) : "VOIDED — stock now states a value the ledger does not");
+  }
+
+  // ---- the correction goes back where the cost went -----------------------
+
+  console.log("\n  the account the cost actually went to\n");
+  {
+    await fresh();
+    const gr = await P.postGoodsReceipt({
+      companyId: co.id, partnerId: supp.id, locationId: loc.id, docDate: today,
+      lines: [{ itemId: item.id, qty: 20, unitCost: 100 }],
+    });
+    const [grLine] = await sql`select id from document_line where document_id = ${gr.id}`;
+
+    await P.postDelivery({
+      companyId: co.id, partnerId: cust.id, locationId: loc.id, docDate: today,
+      lines: [{ itemId: item.id, qty: 8, unitPrice: 500 }],
+    });
+
+    // The delivery recorded which account it charged the cost to.
+    const [rec] = await sql`
+      select a.code from stock_lot_consumption c
+        join account a on a.id = c.expense_account_id limit 1`;
+    check("a delivery records the account it charged the cost to",
+      !!rec, rec ? rec.code : "nothing recorded");
+
+    // Re-map the item's cost of sales to a different account, the way a
+    // re-chart would. The correction must still land where the sale did.
+    const [other] = await sql`
+      select id, code from account where company_id = ${co.id}
+         and code = ${"5030"} limit 1`;
+    const [grp] = await sql`select item_group_id from item where id = ${item.id}`;
+    const before5000 = await balance("5000");
+    if (other && grp?.item_group_id) {
+      await sql`
+        insert into account_determination (company_id, role, account_id, item_group_id)
+        values (${co.id}, 'COGS', ${other.id}, ${grp.item_group_id})
+        on conflict do nothing`;
+    }
+
+    await P.postPurchaseInvoice({
+      companyId: co.id, partnerId: supp.id, locationId: loc.id,
+      docDate: today, dueDate: null, goodsReceiptId: gr.id,
+      lines: [{ itemId: item.id, qty: 20, unitPrice: 130, sourceLineId: grLine.id }],
+    });
+
+    const moved = round(await balance("5000") - before5000);
+    check("  the correction adjusts that account, not today's mapping",
+      near(moved, 240), `5000 moved by ${moved}`);
+    check("  and nothing landed in the re-mapped account",
+      near(await balance("5030"), 0), `5030 ${await balance("5030")}`);
+
+    // Put the chart back so later runs are unaffected.
+    if (other && grp?.item_group_id) {
+      await sql`delete from account_determination
+                 where company_id = ${co.id} and role = 'COGS'
+                   and account_id = ${other.id} and item_group_id = ${grp.item_group_id}`;
+    }
   }
 
   // ---- the books still hold ------------------------------------------------

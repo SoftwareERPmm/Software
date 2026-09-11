@@ -229,16 +229,24 @@ try {
     join document dl on dl.id = si.source_document_id and dl.doc_type = 'DELIVERY'
    where si.id = ${sale3.id}`;
 
-  // A second invoice referencing the same delivery — legitimate in this app
-  // (partial invoicing of one delivery across documents) — must find nothing
-  // left to settle rather than double-bill the consignor.
+  // A second invoice for the same ten units is refused before it can settle
+  // anything. This used to post and then find nothing left to settle, which
+  // protected the consignor by accident at the last moment; the quantity guard
+  // now stops it at the door, which protects the customer too — they were
+  // being billed 1,000 a bottle twice for ten bottles that left once.
   const before = n((await sql`select count(*)::int as c from document
     where doc_type = 'PURCHASE_INVOICE' and source_document_id = ${sale3.id}`)[0].c);
-  await postSalesInvoice({ ...base, partnerId: customer.id, dueDate: null, deliveryId: d3.id,
-    lines: [{ itemId: coke.id, qty: 10, unitPrice: 1000 }] });
+  let twice = null;
+  try {
+    await postSalesInvoice({ ...base, partnerId: customer.id, dueDate: null, deliveryId: d3.id,
+      lines: [{ itemId: coke.id, qty: 10, unitPrice: 1000 }] });
+  } catch (e) { twice = e.message; }
+  check("billing an already-invoiced delivery a second time is refused",
+    twice !== null, twice ? twice.slice(0, 58) : "POSTED — ten bottles billed twice");
+
   const after = n((await sql`select count(*)::int as c from document
     where doc_type = 'PURCHASE_INVOICE' and source_document_id = ${sale3.id}`)[0].c);
-  check("a second invoice against an already-settled delivery creates no second settlement",
+  check("  and the consignor is not settled with twice",
     after === before, `${before} -> ${after}`);
 
   // ---- Invariants -----------------------------------------------------------
