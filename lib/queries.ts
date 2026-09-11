@@ -414,6 +414,10 @@ async function sharedSourceLines(
 export async function getOpenGoodsReceipts(companyId: string, limit: number | null = 200) {
   const docs = await sql`
     select d.id, d.doc_no, d.doc_date, d.partner_id,
+           -- Where the goods went. An invoice raised from this receipt bills
+           -- for stock in that warehouse, so the form should not make somebody
+           -- pick it again from a list they cannot get wrong.
+           d.location_id,
            -- The purchase order this receipt came in against, so an invoice
            -- billing it can show which of our orders it belongs to.
            src.doc_no as source_no,
@@ -522,7 +526,7 @@ export async function getOpenGoodsReceipts(companyId: string, limit: number | nu
  */
 export async function getOpenPurchaseInvoices(companyId: string, limit: number | null = 200) {
   const docs = await sql`
-    select d.id, d.doc_no, d.doc_date, d.partner_id
+    select d.id, d.doc_no, d.doc_date, d.partner_id, d.location_id
       from document d
       join v_grir_balance g on g.document_id = d.id and g.company_id = d.company_id
      where d.company_id = ${companyId} and d.doc_type = 'PURCHASE_INVOICE' and d.status = 'POSTED'
@@ -2486,7 +2490,8 @@ export type TransactionOrigin = {
   startDoc: { id: string; doc_no: string; doc_type: string } | null;
   order:
     | { state: "USED"; doc: { id: string; doc_no: string } }
-    | { state: "LINKED_LATER"; doc: { id: string; doc_no: string } }
+    /** One or more orders the goods were allocated to after the event. */
+    | { state: "LINKED_LATER"; docs: { id: string; doc_no: string }[] }
     | { state: "NOT_USED" };
   fulfilment: OriginFulfilment;
   /** Goods documents this invoice was raised from — they came first. */
@@ -2550,24 +2555,49 @@ export async function getTransactionOrigin(
 
   const orderInChain = chain.find((c) => c.doc_type === orderType) ?? null;
 
-  // An order attached after the fact, through the goods rather than through
-  // the chain. Reported as what it is: not where this began.
-  const [linkedLater] = orderInChain ? [] : await sql`
+  /**
+   * Orders the goods were allocated to after the event, reported as what they
+   * are: not where this began.
+   *
+   * Both directions, because goods reach an invoice both ways. Billing a
+   * delivery, the invoice's lines name the delivery's lines and the link hangs
+   * off those — upstream. Billing first and shipping later, the delivery is
+   * raised *from* the invoice and carries the link itself — downstream, which
+   * the upstream query cannot see and which used to read as "Order: Not used"
+   * on a transaction that plainly had one.
+   *
+   * All of them, not the first. Goods from one receipt can answer two orders,
+   * and naming one of them is worse than naming none: it reads as the whole
+   * answer.
+   */
+  const linkedLater = orderInChain ? [] : await sql`
     select distinct o.id, o.doc_no
-      from document_line il
-      join document_line fl on fl.id = il.source_line_id
-      join fulfilment_link k on k.fulfilment_line_id = fl.id
+      from fulfilment_link k
       join document_line ol on ol.id = k.order_line_id
       join document o on o.id = fn_current_document(ol.document_id)
-     where il.document_id in (${versionsOf(documentId)})
-       and o.doc_type = ${orderType}
-     limit 1`;
+      join document_line fl on fl.id = k.fulfilment_line_id
+     where o.doc_type = ${orderType}
+       and (
+         -- upstream: this document bills a goods line that was linked
+         exists (
+           select 1 from document_line il
+            where il.document_id in (${versionsOf(documentId)})
+              and il.source_line_id = fl.id)
+         -- downstream: goods raised from this document, linked afterwards
+         or fl.document_id in (
+           select d.id from document d
+            where d.source_document_id in (${versionsOf(documentId)})
+              and d.status = 'POSTED')
+       )
+     order by o.doc_no`;
 
   const order: TransactionOrigin["order"] =
     orderInChain ? { state: "USED", doc: orderInChain }
-    : linkedLater ? { state: "LINKED_LATER",
-                      doc: { id: linkedLater.id as string, doc_no: linkedLater.doc_no as string } }
-    : { state: "NOT_USED" };
+    : linkedLater.length > 0
+      ? { state: "LINKED_LATER",
+          docs: (linkedLater as unknown as { id: string; doc_no: string }[])
+            .map((o) => ({ id: o.id, doc_no: o.doc_no })) }
+      : { state: "NOT_USED" };
 
   // Everything that moved goods for this invoice, in either direction: the
   // one it was raised from, and any raised from it afterwards.

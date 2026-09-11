@@ -497,12 +497,7 @@ export default async function DocumentPage({
   const footer = (
     <DocumentFooter
       activity={people.activity as never}
-      related={
-        <>
-          {origin && <TransactionOrigin origin={origin} docNo={doc.doc_no ?? ""} />}
-          <RelatedDocumentsPanel related={related} />
-        </>
-      }
+      related={<RelatedDocumentsPanel related={related} />}
       createdBy={{ name: people.doc?.created_by ?? null, initials: people.doc?.created_initials ?? null }}
       postedBy={{ name: people.doc?.posted_by ?? null, initials: people.doc?.posted_initials ?? null }}
       postedAt={people.doc?.posted_at ? String(people.doc.posted_at) : null}
@@ -614,6 +609,7 @@ export default async function DocumentPage({
       banner={
         <>
           {versionTrail}
+          {origin && <TransactionOrigin origin={origin} docNo={doc.doc_no ?? ""} />}
           {/* Tasks about one half of an invoice are shown in that half, with
               the figure they are about. Banner them as well and the same
               sentence appears twice, six inches apart. */}
@@ -629,7 +625,11 @@ export default async function DocumentPage({
                 : `/purchases/receive/new?match_invoice_id=${doc.id}`}
               payHref={isSalesInvoice
                 ? `/receivables/receive?partner=${doc.partner_id}&invoice=${doc.id}`
-                : `/payables/pay?invoice=${doc.id}`}
+                // The supplier travels with the invoice. Without it the
+                // settlement screen opens with nobody chosen, so it lists no
+                // bills at all — and the amount it had filled in is thrown
+                // away the moment somebody picks the supplier by hand.
+                : `/payables/pay?partner=${doc.partner_id}&invoice=${doc.id}`}
             />
           )}
         </>

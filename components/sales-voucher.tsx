@@ -6,6 +6,7 @@ import { NegativeStockConfirm, type Shortfall } from "./negative-stock-confirm";
 import { StockSourceDialog, poolsFor, type OwnershipSplit } from "./stock-source";
 import { priceLines, type VolumeBand } from "@/lib/discount";
 import { ItemPicker } from "./item-picker";
+import { PartnerPicker } from "./partner-picker";
 
 type Item = PickerItem;
 type Node = { id: string; code: string; segment: string; name: string; parent_id: string | null };
@@ -526,13 +527,11 @@ export function SalesVoucher({
 
             <div className="field">
               <label htmlFor="partner_id">Customer</label>
-              <select id="partner_id" name="partner_id" value={customerId}
-                onChange={(e) => pickCustomer(e.target.value)} required>
-                <option value="">Choose…</option>
-                {customers.map((c) => (
-                  <option key={c.id} value={c.id}>{c.code} · {c.name}</option>
-                ))}
-              </select>
+              <PartnerPicker
+                partners={customers as never}
+                value={customerId}
+                onPick={pickCustomer}
+              />
             </div>
 
             <div className="field">

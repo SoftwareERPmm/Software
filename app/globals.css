@@ -1586,6 +1586,40 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 }
 .billpart input { margin: 0; }
 
+/* Type to find a partner. Shaped like the select it replaces so the forms
+   around it need no other change, and so it behaves the way something that
+   shape is expected to. */
+.ppick { position: relative; }
+.ppick > input[type="text"] { width: 100%; }
+/* The browser needs something focusable to hang "please fill this in" on; a
+   hidden input cannot be focused, so this sits under the field, invisible and
+   the same size as nothing. */
+.ppick-guard {
+  position: absolute; left: 0; bottom: 0;
+  width: 100%; height: 1px; padding: 0; border: 0;
+  opacity: 0; pointer-events: none;
+}
+.ppick-list {
+  position: absolute; z-index: 40; left: 0; right: 0; top: 100%;
+  margin: 0.15rem 0 0; padding: 0.2rem;
+  list-style: none;
+  max-height: 17rem; overflow: auto;
+  background: var(--surface, #fff);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.10);
+}
+.ppick-list li {
+  padding: 0.3rem 0.45rem;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-size: var(--t-sm);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ppick-list li.on { background: var(--line-soft); }
+.ppick-where, .ppick-none { color: var(--muted); }
+.ppick-none { padding: 0.4rem 0.45rem; font-size: var(--t-sm); }
+
 /* Which route a transaction took. Sits with the related documents because it
    answers the same question from the other side: those say what exists, this
    says how it came to be. Quiet by design — it is context, not an alarm — and

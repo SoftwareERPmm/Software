@@ -20,6 +20,8 @@ type MatchLine = {
 };
 type OpenDoc = {
   id: string; doc_no: string; doc_date: string; partner_id: string;
+  /** Where the goods went, so a bill for them opens on that warehouse. */
+  location_id?: string | null;
   /** The purchase order this receipt came in against, when it came from one. */
   source_no?: string | null;
   lines: MatchLine[];
@@ -86,6 +88,12 @@ export function InvoiceForm({
   const [cashAccountId, setCashAccountId] = useState("");
   const [matchedGrId, setMatchedGrId] = useState("");
   /**
+   * Which warehouse this bill is for. Follows the receipt being matched: an
+   * invoice billing goods that went into Magway is an invoice for Magway, and
+   * asking again is asking a question whose answer is already on the screen.
+   */
+  const [locationId, setLocationId] = useState(locations[0]?.id ?? "");
+  /**
    * Bill less than arrived — asked for, not typed into.
    *
    * A line filled from a receipt carries that receipt's quantity and is not
@@ -121,6 +129,7 @@ export function InvoiceForm({
     setBillPart(false);
     const gr = openReceipts.find((d) => d.id === id);
     if (!gr) return;
+    if (gr.location_id) setLocationId(gr.location_id);
     setLines(
       gr.lines.map((l, idx) => ({
         key: idx + 1,
@@ -142,6 +151,7 @@ export function InvoiceForm({
     if (!gr) return;
     setPartnerId(gr.partner_id);
     setMatchedGrId(gr.id);
+    if (gr.location_id) setLocationId(gr.location_id);
     // Only when the invoice was opened from a receipt — walking the chain is
     // what makes the order relevant. Someone who opened a blank invoice and
     // chose a receipt from the list is composing it themselves.
@@ -274,7 +284,8 @@ export function InvoiceForm({
 
             <div className="field">
               <label htmlFor="location_id">Warehouse</label>
-              <select id="location_id" name="location_id" defaultValue={locations[0]?.id ?? ""} required>
+              <select id="location_id" name="location_id" value={locationId}
+                      onChange={(e) => setLocationId(e.target.value)} required>
                 {locations.map((l) => (
                   <option key={l.id} value={l.id}>
                     {l.code} · {l.name}

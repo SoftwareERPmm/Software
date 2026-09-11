@@ -213,11 +213,81 @@ try {
 
     const o = await origin(pi.id);
     check("the order is reported as linked later, not as where this began",
-      o.order.state === "LINKED_LATER" && o.order.doc.doc_no === po.docNo, o.order.state);
+      o.order.state === "LINKED_LATER"
+        && o.order.docs.some((d) => d.doc_no === po.docNo),
+      o.order.state === "LINKED_LATER"
+        ? o.order.docs.map((d) => d.doc_no).join(", ") : o.order.state);
     check("  the route still says it started at the receipt",
       o.startedFrom === "FULFILMENT", o.startedFrom);
     check("  so a correction still belongs on the bill itself",
       o.correctAt.kind === "SELF", o.correctAt.kind);
+  }
+
+  // ---- an order linked to goods raised *from* the invoice ----------------
+
+  console.log("\n  an order linked to goods the invoice itself produced\n");
+  {
+    // Bill first, ship later, then say the shipment answered an order. The
+    // link hangs off the delivery, which is downstream of the invoice — the
+    // opposite direction from billing a delivery, and invisible to a query
+    // that only looks upstream.
+    const inv = await P.postSalesInvoice({ companyId: co.id, partnerId: cust.id, locationId: loc.id,
+      docDate: today, dueDate: today, toDeliver: true,
+      lines: [{ itemId: item.id, qty: 7, unitPrice: 900 }] });
+    const [il] = await sql`select id from document_line where document_id = ${inv.id}`;
+    const dl = await P.postDelivery({ companyId: co.id, partnerId: cust.id, locationId: loc.id,
+      docDate: today, sourceDocumentId: inv.id,
+      lines: [{ itemId: item.id, qty: 7, unitPrice: 900, sourceLineId: il.id }] });
+    const [dll] = await sql`select id from document_line where document_id = ${dl.id}`;
+
+    const so = await P.postSalesOrder({ companyId: co.id, partnerId: cust.id, locationId: loc.id,
+      docDate: today, dueDate: today, lines: [{ itemId: item.id, qty: 7, unitPrice: 900 }] });
+    const [sol] = await sql`select id from document_line where document_id = ${so.id}`;
+    await P.linkFulfilmentToOrder({ companyId: co.id,
+      lines: [{ fulfilmentLineId: dll.id, orderLineId: sol.id, qty: 7 }],
+      reason: "that shipment answered this order" });
+
+    const o = await origin(inv.id);
+    check("an order linked to the delivery this invoice produced is found",
+      o.order.state === "LINKED_LATER", o.order.state);
+    check("  naming it", o.order.state === "LINKED_LATER" && o.order.docs[0].doc_no === so.docNo,
+      o.order.state === "LINKED_LATER" ? o.order.docs.map((d) => d.doc_no).join(", ") : "—");
+    check("  and the route still began at the invoice",
+      o.startedFrom === "INVOICE", o.startedFrom);
+  }
+
+  // ---- goods answering more than one order -------------------------------
+
+  console.log("\n  goods split across two orders\n");
+  {
+    const gr = await P.postGoodsReceipt({ companyId: co.id, partnerId: supp.id, locationId: loc.id,
+      docDate: today, lines: [{ itemId: item.id, qty: 30, unitCost: 500 }] });
+    const [grl] = await sql`select id from document_line where document_id = ${gr.id}`;
+    const pi = await P.postPurchaseInvoice({ companyId: co.id, partnerId: supp.id, locationId: loc.id,
+      docDate: today, dueDate: today, goodsReceiptId: gr.id,
+      lines: [{ itemId: item.id, qty: 30, unitPrice: 500, sourceLineId: grl.id }] });
+
+    const mk = async (qty) => {
+      const po = await P.postPurchaseOrder({ companyId: co.id, partnerId: supp.id,
+        locationId: loc.id, docDate: today, dueDate: today,
+        lines: [{ itemId: item.id, qty, unitPrice: 500 }] });
+      const [pol] = await sql`select id from document_line where document_id = ${po.id}`;
+      await P.linkFulfilmentToOrder({ companyId: co.id,
+        lines: [{ fulfilmentLineId: grl.id, orderLineId: pol.id, qty }],
+        reason: "part of this receipt answered it" });
+      return po.docNo;
+    };
+    const first = await mk(20);
+    const second = await mk(10);
+
+    const o = await origin(pi.id);
+    check("both orders are named, not just the first",
+      o.order.state === "LINKED_LATER" && o.order.docs.length === 2,
+      o.order.state === "LINKED_LATER" ? o.order.docs.map((d) => d.doc_no).join(" · ") : o.order.state);
+    check("  and they are the two that were linked",
+      o.order.state === "LINKED_LATER"
+        && [first, second].every((n) => o.order.docs.some((d) => d.doc_no === n)),
+      `${first}, ${second}`);
   }
 
   console.log("");
