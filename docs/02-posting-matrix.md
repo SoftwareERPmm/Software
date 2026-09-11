@@ -25,13 +25,22 @@ Dr  Inventory                   800,000     ItemGroup.inventory_account
     Cr  GR/IR Clearing                      800,000    system
 ```
 
-**Purchase Invoice** — supplier bills 810,000:
+**Purchase Invoice** — supplier bills 810,000, all 100 units still in stock:
 
 ```
 Dr  GR/IR Clearing              800,000     system
-Dr  Purchase Price Variance      10,000     system
+Dr  Inventory                    10,000     ItemGroup.inventory_account
     Cr  Accounts Payable                    810,000    Partner.ap_control
 ```
+
+The 10,000 is a cost that was wrong, not an expense, so it goes back onto the
+goods it was wrong about. Had 40 of the 100 units already been sold, the split
+would follow where they are — 6,000 onto the stock still held and 4,000 to cost
+of sales — and the stock movement carrying it adds **zero quantity**: nothing is
+received twice. Goods issued afterwards are relieved at the corrected 8,100.
+See [decision D1](03-decisions.md) for why, and what it replaced.
+
+Purchase Price Variance still exists, for a difference with no goods behind it.
 
 **Supplier Payment** — with 10,000 settlement discount:
 

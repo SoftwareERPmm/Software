@@ -15,6 +15,8 @@ import {
   postSupplierPayment, postCustomerReceipt,
   postCashVoucher, postBankVoucher, postJournalVoucher,
   linkFulfilmentToOrder, closeOrderRemaining, reopenOrder,
+  amendOrder, planOrderAmendment, amendInvoice, planInvoiceAmendment,
+  type AmendmentPlan,
   postCashTransfer, postAccountOpening, postOpeningBatch, resettleConsignmentSale,
   postStockAdjustment, postStockTransfer,
   importItems, importVouchers, voidDocument, reconcileNegativeStock,
@@ -1809,6 +1811,199 @@ export async function closeOrderAction(_prev: unknown, fd: FormData): Promise<Ac
   revalidatePath("/sales/orders");
   revalidatePath("/");
   return { ok: true } as ActionResult;
+}
+
+export type PreviewResult =
+  | { error: string }
+  | { ok: true; plan: AmendmentPlan };
+
+/**
+ * What correcting this order would change — read-only, for the screen that
+ * asks before doing it.
+ *
+ * Returned rather than rendered so the confirmation can show the real
+ * consequence: the order's own total before and after, which invoices inherit
+ * from it, what each of those would become, and which of them cannot be
+ * carried because something has settled against it.
+ */
+export async function previewOrderCorrection(
+  _prev: unknown, fd: FormData,
+): Promise<PreviewResult> {
+  try {
+    const co = await companyId();
+    const documentId = str(fd, "document_id");
+    const lines = correctionLines(fd);
+    if (lines.length === 0) return { error: "An order needs at least one line" };
+    return { ok: true, plan: await planOrderAmendment({ companyId: co, documentId, lines }) };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** The edited lines, as the correction form sends them. */
+function correctionLines(fd: FormData) {
+  let parsed: { itemId?: string; qty?: number; unitPrice?: number }[];
+  try {
+    parsed = JSON.parse(String(fd.get("lines") ?? "[]"));
+  } catch {
+    throw new Error("Could not read the corrected lines");
+  }
+  return parsed
+    .map((l) => ({
+      itemId: String(l.itemId ?? ""),
+      qty: Number(l.qty),
+      unitPrice: Number(l.unitPrice ?? 0),
+    }))
+    .filter((l) => l.itemId && Number.isFinite(l.qty) && l.qty > 0);
+}
+
+/**
+ * Correct a posted order, and everything that inherited from it.
+ *
+ * One confirmation, one transaction: the order becomes its next version, the
+ * invoices raised through it become theirs, and the accounts follow. If any
+ * part is blocked — a payment against one of those invoices — nothing moves
+ * and the message names the document in the way.
+ */
+export async function correctOrder(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  let landOn: string;
+  try {
+    const documentId = str(fd, "document_id");
+    const co = await companyId();
+    const reason = str(fd, "reason");
+    if (!reason.trim()) return { error: "Say why this is being corrected" };
+
+    const [order] = await sql`
+      select partner_id, location_id,
+             to_char(doc_date, 'YYYY-MM-DD') as doc_date,
+             to_char(due_date, 'YYYY-MM-DD') as due_date,
+             memo, reference
+        from document where id = ${documentId} and company_id = ${co}`;
+    if (!order) return { error: "That order no longer exists" };
+
+    const lines = correctionLines(fd);
+    if (lines.length === 0) return { error: "An order needs at least one line" };
+
+    // The reader is sent to the version that now stands, not the one they
+    // were reading — which the correction has just retired. Landing back on
+    // v1 shows the old figure under a "Superseded" banner and reads as though
+    // the correction had not taken.
+    const { replacementId } = await amendOrder({
+      companyId: co,
+      documentId,
+      reason,
+      cascade: true,
+      order: {
+        companyId: co,
+        partnerId: order.partner_id as string,
+        locationId: order.location_id as string,
+        docDate: order.doc_date as string,
+        dueDate: (order.due_date as string) ?? null,
+        memo: order.memo as string | null,
+        reference: order.reference as string | null,
+        lines,
+      },
+    });
+    landOn = replacementId;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/documents", "layout");
+  revalidatePath("/purchases/orders");
+  revalidatePath("/sales/orders");
+  revalidatePath("/");
+  redirectWithToast(`/documents/${landOn}`, "Correction posted");
+}
+/**
+ * What correcting this invoice would change.
+ *
+ * Shorter than the order's plan by nature: an invoice raised outside an order
+ * carries nothing downstream that inherits from it, so the only questions are
+ * what its total becomes and whether anything has settled against it.
+ */
+export async function previewInvoiceCorrection(
+  _prev: unknown, fd: FormData,
+): Promise<PreviewResult> {
+  try {
+    const co = await companyId();
+    const documentId = str(fd, "document_id");
+    const lines = correctionLines(fd);
+    if (lines.length === 0) return { error: "An invoice needs at least one line" };
+    return { ok: true, plan: await planInvoiceAmendment({ companyId: co, documentId, lines }) };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * Correct an invoice that was raised on its own.
+ *
+ * The tester's second workflow. An invoice with an order behind it is
+ * corrected at the order — that is where the price was agreed, and editing
+ * the bill alone would leave the two disagreeing with nothing recording which
+ * is right. An invoice raised directly agreed its price here, so here is
+ * where it is corrected.
+ */
+export async function correctInvoice(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  let landOn: string;
+  try {
+    const co = await companyId();
+    const documentId = str(fd, "document_id");
+    const reason = str(fd, "reason");
+    if (!reason.trim()) return { error: "Say why this is being corrected" };
+
+    const [inv] = await sql`
+      select doc_type, partner_id, location_id, source_document_id, to_deliver,
+             to_char(doc_date, 'YYYY-MM-DD') as doc_date,
+             to_char(due_date, 'YYYY-MM-DD') as due_date,
+             memo, reference
+        from document where id = ${documentId} and company_id = ${co}`;
+    if (!inv) return { error: "That invoice no longer exists" };
+
+    const lines = correctionLines(fd);
+    if (lines.length === 0) return { error: "An invoice needs at least one line" };
+
+    // Whatever it was raised from, it stays raised from — the correction is
+    // about price, not about which goods it bills. The source keeps GR/IR
+    // clearing against the same receipt or delivery it always did.
+    const [src] = inv.source_document_id
+      ? await sql`select doc_type from document where id = ${inv.source_document_id}`
+      : [null];
+    const sales = inv.doc_type === "SALES_INVOICE";
+
+    const { replacementId } = await amendInvoice({
+      companyId: co,
+      documentId,
+      reason,
+      invoice: {
+        companyId: co,
+        partnerId: inv.partner_id as string,
+        locationId: inv.location_id as string,
+        docDate: inv.doc_date as string,
+        dueDate: (inv.due_date as string) ?? null,
+        memo: inv.memo as string | null,
+        reference: inv.reference as string | null,
+        toDeliver: !!inv.to_deliver,
+        deliveryId: src?.doc_type === "DELIVERY" ? (inv.source_document_id as string) : null,
+        goodsReceiptId:
+          src?.doc_type === "GOODS_RECEIPT" ? (inv.source_document_id as string) : null,
+        lines: lines.map((l) => ({
+          itemId: l.itemId,
+          qty: l.qty,
+          unitPrice: l.unitPrice,
+        })),
+      } as never,
+    });
+    landOn = replacementId;
+    void sales;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/documents", "layout");
+  revalidatePath("/sales/invoices");
+  revalidatePath("/purchases/invoices");
+  revalidatePath("/");
+  redirectWithToast(`/documents/${landOn}`, "Correction posted");
 }
 
 function financeRevalidate() {

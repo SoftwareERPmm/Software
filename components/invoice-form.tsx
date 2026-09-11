@@ -10,7 +10,14 @@ type Node = { id: string; code: string; segment: string; name: string; parent_id
 type Partner = { id: string; code: string; name: string; payment_terms_days: number };
 type Location = { id: string; code: string; name: string };
 type CashAccount = { id: string; code: string; name: string };
-type MatchLine = { lineId: string; itemId: string; itemCode: string; itemName: string; qty: number; unitPrice: number };
+type MatchLine = {
+  lineId: string; itemId: string; itemCode: string; itemName: string;
+  qty: number; unitPrice: number;
+  /** What the purchase order agreed, where the receipt came in against one. */
+  orderPrice?: number | null;
+  orderId?: string | null;
+  orderNo?: string | null;
+};
 type OpenDoc = {
   id: string; doc_no: string; doc_date: string; partner_id: string;
   /** The purchase order this receipt came in against, when it came from one. */
@@ -21,7 +28,12 @@ type OpenDoc = {
 // sourceLineId is set only when the line was prefilled from a goods receipt.
 // It is what lets GR/IR be settled at the rate that particular line came in
 // at, rather than at an average across every line of the same item.
-type Line = { key: number; itemId: string; qty: string; unitPrice: string; sourceLineId?: string };
+type Line = {
+  key: number; itemId: string; qty: string; unitPrice: string;
+  sourceLineId?: string;
+  /** What the source still has unbilled — the ceiling on this line. */
+  sourceQty?: string;
+};
 
 const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 0 });
 
@@ -73,6 +85,19 @@ export function InvoiceForm({
   const [cashOut, setCashOut] = useState("");
   const [cashAccountId, setCashAccountId] = useState("");
   const [matchedGrId, setMatchedGrId] = useState("");
+  /**
+   * Bill less than arrived — asked for, not typed into.
+   *
+   * A line filled from a receipt carries that receipt's quantity and is not
+   * editable, which is right: an invoice for 110 against 100 received is a
+   * mistake, and one for 60 typed over 100 is indistinguishable from a
+   * typo. But billing part of a delivery is ordinary — half the load now,
+   * half when the rest clears customs — so it needs a way to be said, and
+   * saying it deliberately is the difference. Ticking this opens the
+   * quantities and caps each at what that line still has unbilled; the rest
+   * stays on the receipt, waiting for the next bill.
+   */
+  const [billPart, setBillPart] = useState(false);
   const [reference, setReference] = useState("");
 
   const isSales = kind === "sales";
@@ -93,6 +118,7 @@ export function InvoiceForm({
 
   function matchGoodsReceipt(id: string) {
     setMatchedGrId(id);
+    setBillPart(false);
     const gr = openReceipts.find((d) => d.id === id);
     if (!gr) return;
     setLines(
@@ -102,6 +128,7 @@ export function InvoiceForm({
         qty: String(l.qty),
         unitPrice: String(l.unitPrice),
         sourceLineId: l.lineId,
+        sourceQty: String(l.qty),
       }))
     );
   }
@@ -126,10 +153,18 @@ export function InvoiceForm({
         qty: String(l.qty),
         unitPrice: String(l.unitPrice),
         sourceLineId: l.lineId,
+        sourceQty: String(l.qty),
       }))
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialGoodsReceiptId]);
+
+  function billWholeReceipt(part: boolean) {
+    setBillPart(part);
+    if (!part) {
+      setLines((ls) => ls.map((l) => (l.sourceQty ? { ...l, qty: l.sourceQty } : l)));
+    }
+  }
 
   function setLine(key: number, patch: Partial<Line>) {
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
@@ -187,6 +222,25 @@ export function InvoiceForm({
         return receivedLine && Number(l.qty) !== receivedLine.qty;
       })
     : [];
+
+  /**
+   * Three prices, kept apart: what the order agreed, what the goods came in
+   * at, and what the supplier is billing. Only shown when there is an order
+   * behind the receipt — without one there is no agreement to be at odds
+   * with, and an empty column would only suggest something is missing.
+   */
+  const anyOrdered = !!matchedGr
+    && matchedGr.lines.some((gl) => gl.orderPrice !== null && gl.orderPrice !== undefined);
+
+  const priceGaps = anyOrdered
+    ? lines.filter((l) => {
+        const gl = matchedGr!.lines.find((x) => x.itemId === l.itemId);
+        const ordered = gl?.orderPrice ?? null;
+        return ordered !== null && Math.abs(Number(l.unitPrice) - ordered) > 0.0001;
+      })
+    : [];
+
+  const orderBehind = matchedGr?.lines.find((gl) => gl.orderId) ?? null;
 
   const cashOverpaid = !isSales && Number(cashOut) > total;
   const leavesBalance = !isSales && Number(cashOut) < total;
@@ -292,10 +346,27 @@ export function InvoiceForm({
       <div className="card">
         <div className="card-head">
           <h2>Lines</h2>
+          {lines.some((l) => l.sourceLineId) && (
+            <label className="billpart">
+              <input
+                type="checkbox"
+                checked={billPart}
+                onChange={(e) => billWholeReceipt(e.target.checked)}
+              />
+              Bill only part of what arrived
+            </label>
+          )}
           <button type="button" className="ghost tiny" onClick={addLine}>
             Add line
           </button>
         </div>
+        {billPart && (
+          <p className="hint" style={{ padding: "0 1rem 0.5rem" }}>
+            Reduce a quantity to bill less than arrived. Whatever is left stays
+            on {matchedGr?.doc_no ?? "the receipt"}, waiting for the next bill —
+            it is not written off.
+          </p>
+        )}
 
         <div className="tablewrap">
           <table className="linetable">
@@ -304,8 +375,9 @@ export function InvoiceForm({
                 <th>Item</th>
                 <th className="r">{isSales ? "On hand" : "Next cost"}</th>
                 {matchedGr && <th className="r">Received</th>}
+                {anyOrdered && <th className="r">Order price</th>}
                 <th className="r">Qty</th>
-                <th className="r">Unit price</th>
+                <th className="r">{matchedGr ? "Billed price" : "Unit price"}</th>
                 <th className="r">Amount</th>
                 <th />
               </tr>
@@ -316,6 +388,13 @@ export function InvoiceForm({
                 const short = isSales && item?.is_stocked && Number(l.qty) > Number(item.on_hand);
                 const receivedLine = matchedGr?.lines.find((gl) => gl.itemId === l.itemId);
                 const qtyMismatch = matchedGr && receivedLine && Number(l.qty) !== receivedLine.qty;
+                // Three figures, not one: what was agreed, what arrived at,
+                // and what the supplier is now asking. They usually match, and
+                // the times they do not are the times somebody has to decide
+                // something.
+                const ordered = receivedLine?.orderPrice ?? null;
+                const priceGap = ordered !== null
+                  && Math.abs(Number(l.unitPrice) - ordered) > 0.0001;
 
                 return (
                   <tr key={l.key}>
@@ -346,16 +425,41 @@ export function InvoiceForm({
                         {receivedLine ? fmt(receivedLine.qty) : "—"}
                       </td>
                     )}
+                    {anyOrdered && (
+                      <td className="r" style={{ color: priceGap ? "var(--warn)" : undefined }}>
+                        {ordered === null ? "—" : fmt(ordered)}
+                      </td>
+                    )}
                     <td className="narrow">
+                      {/* What arrived, arrived. A line billing a receipt takes
+                          its quantity from that receipt and cannot be typed
+                          over: an invoice for 110 against 100 received is not
+                          a correction anybody meant to make, and the engine
+                          refuses it anyway. The price stays editable — the
+                          supplier's bill is external truth, and a difference
+                          there is what variance exists for. */}
                       <input
                         type="number"
                         min="0"
                         step="any"
+                        max={l.sourceLineId && billPart ? l.sourceQty : undefined}
                         value={l.qty}
                         onChange={(e) => setLine(l.key, { qty: e.target.value })}
                         aria-label="Quantity"
-                        style={qtyMismatch ? { borderColor: "var(--warn)" } : undefined}
+                        readOnly={!!l.sourceLineId && !billPart}
+                        title={l.sourceLineId && receivedLine
+                          ? `${fmt(receivedLine.qty)} received on ${matchedGr?.doc_no}`
+                          : undefined}
+                        style={l.sourceLineId && !billPart
+                          ? { background: "var(--line-soft)", cursor: "not-allowed" }
+                          : qtyMismatch ? { borderColor: "var(--warn)" } : undefined}
                       />
+                      {l.sourceLineId && billPart
+                       && Number(l.qty) < Number(l.sourceQty) - 0.0001 && (
+                        <span className="qtyleft">
+                          {fmt(Number(l.sourceQty) - Number(l.qty))} left to bill
+                        </span>
+                      )}
                     </td>
                     <td className="narrow">
                       <input
@@ -405,6 +509,29 @@ export function InvoiceForm({
           Billed quantity doesn&rsquo;t match what {matchedGr?.doc_no} recorded as received for{" "}
           {qtyMismatches.map((l) => byId(l.itemId)?.code ?? matchedGr?.lines.find((gl) => gl.itemId === l.itemId)?.itemCode).join(", ")}.
           Not blocked — a partial delivery or short shipment can be legitimate — but check before posting.
+        </div>
+      )}
+
+      {/* The bill disagrees with the order. Not blocked: the supplier's
+          invoice is what will be paid, and a price that moved between
+          ordering and delivery is an ordinary fact. What matters is that
+          somebody decides which of the two is now true, rather than posting
+          past it — so both are named, and the way to make the order agree is
+          offered rather than described. */}
+      {priceGaps.length > 0 && (
+        <div className="alert" style={{ borderColor: "var(--warn)", color: "var(--warn)", background: "color-mix(in srgb, var(--warn) 8%, transparent)" }}>
+          The supplier is billing a different price from{" "}
+          {orderBehind?.orderNo ?? "the order"} for{" "}
+          {priceGaps.map((l) => byId(l.itemId)?.code
+            ?? matchedGr?.lines.find((gl) => gl.itemId === l.itemId)?.itemCode).join(", ")}.
+          {" "}The bill posts at what is typed here, and the difference goes back
+          onto the goods: onto the stock still held, and to cost of sales for
+          whatever has already been sold. If the new price is the agreed one,{" "}
+          {orderBehind?.orderId
+            ? <a href={`/documents/${orderBehind.orderId}`} target="_blank" rel="noreferrer">
+                correct {orderBehind.orderNo}
+              </a>
+            : "correct the order"} instead, and it will carry into this bill.
         </div>
       )}
 

@@ -45,10 +45,19 @@ export default async function StockMovements({
           )}
         </td>
         <td className="code">{r.location_code}</td>
-        <td className="code">{r.batch_no ?? "—"}</td>
+        <td className="code">
+          {/* A revaluation moves value and no goods: the bill disagreed with
+              the receipt and the difference went back onto stock that was
+              already here. Said in the batch column because both quantity
+              columns are correctly empty, and a row with nothing in either
+              otherwise reads as a movement that failed to record. */}
+          {Number(r.qty) === 0 ? "revaluation" : r.batch_no ?? "—"}
+        </td>
         <td className="r">{Number(r.qty) > 0 ? qty(r.qty) : ""}</td>
         <td className="r">{Number(r.qty) < 0 ? qty(String(-Number(r.qty))) : ""}</td>
-        <td className="r">{money(r.unit_cost)}</td>
+        <td className="r">
+          {Number(r.qty) === 0 ? money(r.total_cost) : money(r.unit_cost)}
+        </td>
         <td className="r">{qty(String(r.balance))}</td>
       </tr>
     ),

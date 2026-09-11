@@ -32,7 +32,15 @@ type OpenInvoice = {
   posting_date: string; due_date: string | null;
   gross_total: string; outstanding: string; aging_bucket: string;
 };
-type MatchLine = { itemId: string; itemCode: string; itemName: string; qty: number };
+type MatchLine = {
+  /** The delivery line itself, so an invoice can say which line it bills. */
+  lineId: string;
+  itemId: string; itemCode: string; itemName: string; qty: number;
+  /** What the sales order agreed, where the delivery came out of one. */
+  orderPrice?: number | null;
+  orderId?: string | null;
+  orderNo?: string | null;
+};
 type OpenDelivery = {
   id: string; doc_no: string; doc_date: string; partner_id: string; location_id: string;
   /** The sales order this delivery was raised from, when it came from one. */
@@ -42,6 +50,18 @@ type OpenDelivery = {
 
 type Line = {
   key: number; itemId: string; qty: string; unitPrice: string; discountPct: string;
+  /**
+   * The delivery line this one bills, when the invoice was raised from a
+   * delivery. Recorded so the quantity can be held to what actually went out
+   * — and so the engine can refuse an invoice for more than that.
+   */
+  sourceLineId?: string;
+  /** What that delivery line still has unbilled — the ceiling on this line. */
+  sourceQty?: string;
+  /** The order's agreed price, when there is an order behind this line. */
+  agreedPrice?: number | null;
+  orderId?: string | null;
+  orderNo?: string | null;
   /** Given away on this line, on top of anything a promotion earns. */
   focQty: string;
   /** Why they are free — promotion, sample, office use, damaged. Blank
@@ -114,6 +134,15 @@ export function SalesVoucher({
   const [customerId, setCustomerId] = useState("");
   const [locationId, setLocationId] = useState(locations[0]?.id ?? "");
   const [matchedDeliveryId, setMatchedDeliveryId] = useState("");
+  /**
+   * Bill less than went out — asked for, not typed into. The purchase side's
+   * rule, on this side for the same reason: an invoice for 90 typed over a
+   * delivery of 100 is indistinguishable from a slip, while billing half a
+   * shipment now and half next month is an ordinary thing to want. Ticking
+   * this opens the quantities and caps each at what that delivery line still
+   * has unbilled.
+   */
+  const [billPart, setBillPart] = useState(false);
   const [reference, setReference] = useState("");
   // Set only by answering the dialog. It rides along as a hidden field, so
   // the posting engine is told a person confirmed rather than inferring it
@@ -162,6 +191,10 @@ export function SalesVoucher({
     return anyLevel ? Number(anyLevel.price) : 0;
   }
 
+  /** The order these prices were agreed on, when one is behind them. */
+  const agreedFrom = lines.find((l) => l.agreedPrice != null && l.orderId)
+    ?? null;
+
   const setLine = (key: number, patch: Partial<Line>) =>
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
 
@@ -207,18 +240,27 @@ export function SalesVoucher({
 
   function matchDelivery(id: string) {
     setMatchedDeliveryId(id);
+    setBillPart(false);
     const d = (deliveries ?? []).find((x) => x.id === id);
     if (!d) return;
     setCustomerId(d.partner_id);
     setLocationId(d.location_id);
     setToDeliver(false); // stock already left — "deliver later" no longer applies
-    // Delivery lines carry no price — they moved stock at cost, not at what
-    // the customer is charged — so this still looks the price up normally.
+    // A delivery moves stock at cost and carries no selling price of its own,
+    // so the price comes from somewhere else. Where the delivery came out of
+    // an order, that somewhere is the order: what was agreed is what is
+    // billed, and it is held rather than offered — changing it is correcting
+    // the agreement, which is done at the order and carries into the bill.
+    // With no order behind it, nothing was agreed and the price list is the
+    // right answer.
     setLines(
       d.lines.map((l, idx) => {
-        const p = priceFor(l.itemId);
+        const agreed = l.orderPrice ?? null;
+        const p = agreed ?? priceFor(l.itemId);
         return { key: idx + 1, itemId: l.itemId, qty: String(l.qty), unitPrice: p > 0 ? String(p) : "",
-                 discountPct: "", focQty: "", focReasonId: "", source: "OWNED" };
+                 discountPct: "", focQty: "", focReasonId: "", source: "OWNED",
+                 sourceLineId: l.lineId, sourceQty: String(l.qty),
+                 agreedPrice: agreed, orderId: l.orderId ?? null, orderNo: l.orderNo ?? null };
       })
     );
   }
@@ -237,6 +279,13 @@ export function SalesVoucher({
     if (d) setReference(referenceFor(d));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialDeliveryId]);
+
+  function billWholeDelivery(part: boolean) {
+    setBillPart(part);
+    if (!part) {
+      setLines((ls) => ls.map((l) => (l.sourceQty ? { ...l, qty: l.sourceQty } : l)));
+    }
+  }
 
   const addLine = () =>
     setLines((ls) => [
@@ -371,6 +420,10 @@ export function SalesVoucher({
           itemId: l.itemId, qty,
           unitPrice: Number(l.unitPrice) || 0,
           discountPct: Number(l.discountPct) || 0,
+          // Which delivery line this bills, so the engine can hold it to what
+          // went out. Free lines carry no source: a giveaway is not part of
+          // what the delivery is owed billing for.
+          ...(l.sourceLineId ? { sourceLineId: l.sourceLineId } : {}),
           ...pool,
         };
         // Kept as two lines when both apply, because they are two different
@@ -557,8 +610,22 @@ export function SalesVoucher({
       <div className="card">
         <div className="card-head">
           <h2>Items</h2>
+          {lines.some((l) => l.sourceLineId) && (
+            <label className="billpart">
+              <input type="checkbox" checked={billPart}
+                     onChange={(e) => billWholeDelivery(e.target.checked)} />
+              Bill only part of what went out
+            </label>
+          )}
           <button type="button" className="ghost tiny" onClick={addLine}>Add line</button>
         </div>
+        {billPart && (
+          <p className="hint" style={{ padding: "0 1rem 0.5rem" }}>
+            Reduce a quantity to bill less than was delivered. Whatever is left
+            stays on the delivery, waiting for the next invoice — it is not
+            written off.
+          </p>
+        )}
         <div className="tablewrap">
           <table className="linetable">
             <thead>
@@ -650,11 +717,42 @@ export function SalesVoucher({
                       ) : "service"}
                     </td>
                     <td className="narrow">
+                      {/* What went out, went out. A line billing a delivery
+                          takes its quantity from that delivery: 100 delivered
+                          bills 100, and neither 90 nor 110. The price is still
+                          yours to set — it is your price list, not a fact
+                          about the goods. */}
                       <input type="number" min="0" step="any" value={l.qty} aria-label="Quantity"
+                        max={l.sourceLineId && billPart ? l.sourceQty : undefined}
+                        readOnly={!!l.sourceLineId && !billPart}
+                        title={l.sourceLineId ? "Delivered quantity — billed as it went out" : undefined}
+                        style={l.sourceLineId && !billPart
+                          ? { background: "var(--line-soft)", cursor: "not-allowed" }
+                          : undefined}
                         onChange={(e) => setLine(l.key, { qty: e.target.value })} />
+                      {l.sourceLineId && billPart
+                       && Number(l.qty) < Number(l.sourceQty) - 0.0001 && (
+                        <span className="qtyleft">
+                          {fmt(Number(l.sourceQty) - Number(l.qty))} left to bill
+                        </span>
+                      )}
                     </td>
                     <td className="narrow">
+                      {/* An agreed price is not a suggestion. A line billing a
+                          delivery that came out of an order carries the price
+                          that order agreed, and typing over it here would put
+                          the invoice and the order at odds with nothing
+                          recording which is right. Correcting the agreement is
+                          done at the order, where it is versioned and reasoned
+                          — and from there it carries into this bill. */}
                       <input type="number" min="0" step="any" value={l.unitPrice} aria-label="Unit price"
+                        readOnly={l.agreedPrice !== null && l.agreedPrice !== undefined}
+                        title={l.agreedPrice != null
+                          ? `Agreed on ${l.orderNo ?? "the order"}`
+                          : undefined}
+                        style={l.agreedPrice != null
+                          ? { background: "var(--line-soft)", cursor: "not-allowed" }
+                          : undefined}
                         onChange={(e) => setLine(l.key, { unitPrice: e.target.value })} />
                     </td>
                     <td className="tight">
@@ -857,6 +955,21 @@ export function SalesVoucher({
           )}
         </div>
       </div>
+
+      {/* The prices on this bill came from an order, and are held to it. Said
+          once under the table rather than repeated on every line, and it
+          offers the way to change them rather than only naming the rule. */}
+      {agreedFrom && (
+        <p className="hint" style={{ marginTop: "0.5rem" }}>
+          Prices are the ones {agreedFrom.orderNo} agreed. To change what the
+          customer is charged,{" "}
+          <a href={`/documents/${agreedFrom.orderId}`} target="_blank" rel="noreferrer">
+            correct the agreed price on {agreedFrom.orderNo}
+          </a>{" "}
+          — it carries into this bill, and both keep their number with the
+          reason on the record.
+        </p>
+      )}
 
       {shortages.length > 0 && !negativeConfirmed && (
         <div className="alert">
