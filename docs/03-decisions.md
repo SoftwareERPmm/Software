@@ -18,7 +18,10 @@ price, where does the difference go?
   portion already sold. More accurate, materially more work, and it means
   posting into prior periods when receipts and invoices straddle a month-end.
 
-**Recommendation.** Variance account for v1.
+**Resolved, 2026-09-11 — the difference goes back onto the goods.**
+Inventory revaluation, split by where the goods actually are. See the bottom of
+this entry for what that means in entries and why the earlier recommendation
+was dropped.
 
 **Partly resolved, 2026-09-08 — the invoice-first case has no variance.**
 The question above is about a receipt that *estimated* a cost and a bill that
@@ -46,9 +49,10 @@ the bill genuinely disagrees with an estimate already posted. That is where
 `PURCHASE_PRICE_VARIANCE` still receives entries, and where the choice between
 variance account and inventory revaluation is unresolved.
 
-**Where a correction lands, 2026-09-10.** Editing a supplier invoice takes the
-same path, which makes the open question concrete rather than hypothetical.
-Twenty boxes received at 100 and billed at 130:
+**Where a correction landed, 2026-09-10 — and why it moved.** Editing a
+supplier invoice took the same path, which made the open question concrete
+rather than hypothetical. Twenty boxes received at 100 and billed at 130 posted
+this, with the goods left on the books at 100 each:
 
 ```
 STR20260910002 v1  POSTED     1040 Inventory              2,000
@@ -60,14 +64,58 @@ DP20260910001 v2   POSTED     5050 Purchase Price Var.      600
                               2000 Accounts Payable      -2,600
 ```
 
-The 600 is expensed and the twenty boxes stay on the books at 100 each. Under
-inventory revaluation the boxes still on hand would be carried at 130 and only
-the sold portion would reach the profit and loss. Both are defensible; the
-system does the first, and the difference is a real one to put to the auditor
-with these numbers in front of them.
+That is what a standard-costing system should do, and a variance account is
+the whole point of one. It is not what an actual-cost FIFO system should do,
+and it produced an obvious absurdity: twenty boxes sitting unsold in the
+warehouse, demonstrably worth the 2,600 that was paid for them, carried at
+2,000 with the 600 already through the profit and loss.
 
-**Needs.** Accountant sign-off. This is the single most important question to
-put to a Myanmar auditor, because changing it later means re-posting history.
+**What it does now (0057).** The difference is split by where the goods are:
+
+| Situation | Inventory | Cost of sales |
+| --- | ---: | ---: |
+| All 20 still held | +600 | 0 |
+| 8 issued, 12 held | +360 | +240 |
+| All 20 issued | 0 | +600 |
+
+Three mechanisms make that work, and each exists because something else in the
+schema refused the obvious approach:
+
+- `stock_lot` is append-only, so the lot's cost cannot be edited. A companion
+  `stock_lot_adjustment` row carries the correction, and `v_stock_lot_open`
+  adds the two together. This is the same shape Odoo reaches by the same
+  route — an additional valuation layer rather than a rewritten one.
+- The correction has to reach the stock ledger, not just the inventory
+  account, because `v_check_inventory_reconciliation` ties one to the other.
+  So it writes a `stock_movement` carrying value and **zero quantity**. The
+  goods are not received again; the receipt keeps its history and its
+  quantity. `stock_movement`'s `qty <> 0` check had to be relaxed to
+  `qty <> 0 or total_cost <> 0` to allow it.
+- The FIFO draw reads the corrected cost. Without this the 600 would sit in
+  the inventory account forever with no stock behind it: goods issued after
+  the correction would still be relieved at 100, and the account would never
+  come back to zero.
+
+**What did not change.** The issued share lands in cost of sales at the date of
+the correction, in whatever period that is — it does not reach back into sales
+that already happened, which is where Business Central goes further than this
+does and where a closed period would otherwise have to be reopened. And a
+revaluation whose goods have since been sold cannot be undone: `planVoid`
+refuses it, because taking the value back off would leave the remaining stock
+stating one figure and the ledger another. Correct forward with another bill.
+
+**Purchase price variance still exists**, and now means only what its name says:
+a difference with no goods behind it. In practice that is a narrow case, since
+billing more than was received is refused outright.
+
+Prompted by a comparison against Odoo 18 and Dynamics 365 Business Central,
+both of which separate goods still in stock from goods already issued rather
+than expensing the whole difference. Proved by `scripts/test-cost-adjustment.mjs`.
+
+**Still worth an accountant's eye**, but no longer a fork in the road: this is
+the ordinary actual-cost treatment, and it is what IAS 2 describes. The
+question that remains is the narrower one of landed costs — freight, duties and
+the rest — which belong in inventory too and are **not built**.
 
 ---
 

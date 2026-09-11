@@ -375,17 +375,26 @@ try {
   const grirBefore = n((await sql`select coalesce(sum(jl.amount),0) as v from journal_line jl
     join account a on a.id = jl.account_id where a.code = ${GRIR}`)[0].v);
 
-  await postPurchaseInvoice({ ...buy, dueDate: null, goodsReceiptId: gr.id,
-    lines: [{ itemId: item.id, qty: 20, unitPrice: 1000 }] });
+  // This used to post, clear nothing further from GR/IR, and drop 20,000 into
+  // variance — visible, but only to someone who went looking at the variance
+  // account. It is now refused outright: the receipt has nothing left to bill,
+  // and the message says so at the moment somebody tries.
+  let twice = null;
+  try {
+    await postPurchaseInvoice({ ...buy, dueDate: null, goodsReceiptId: gr.id,
+      lines: [{ itemId: item.id, qty: 20, unitPrice: 1000 }] });
+  } catch (e) { twice = e.message; }
+
+  check("billing the same receipt a second time is refused", twice !== null,
+    twice ? twice.slice(0, 64) : "POSTED — the same goods billed twice");
 
   const grirAfter = n((await sql`select coalesce(sum(jl.amount),0) as v from journal_line jl
     join account a on a.id = jl.account_id where a.code = ${GRIR}`)[0].v);
-
-  check("a second invoice for the same receipt clears nothing more from GR/IR",
-    grirAfter === grirBefore, `${grirBefore} → ${grirAfter}`);
-  check("and its value lands in variance where it is visible, not hidden in GR/IR",
-    n((await sql`select coalesce(sum(jl.amount),0) as v from journal_line jl
-        join account a on a.id = jl.account_id where a.code = ${PPV}`)[0].v) === 20000);
+  check("  and nothing moved in GR/IR", grirAfter === grirBefore,
+    `${grirBefore} → ${grirAfter}`);
+  check("  nor into variance", n((await sql`select coalesce(sum(jl.amount),0) as v
+      from journal_line jl join account a on a.id = jl.account_id
+     where a.code = ${PPV}`)[0].v) === 0);
 
   // ---- Continuing a document that is not what it claims ------------------
 

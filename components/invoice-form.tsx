@@ -524,8 +524,9 @@ export function InvoiceForm({
           {orderBehind?.orderNo ?? "the order"} for{" "}
           {priceGaps.map((l) => byId(l.itemId)?.code
             ?? matchedGr?.lines.find((gl) => gl.itemId === l.itemId)?.itemCode).join(", ")}.
-          {" "}The bill posts at what is typed here and the difference goes to
-          purchase price variance. If the new price is the agreed one,{" "}
+          {" "}The bill posts at what is typed here, and the difference goes back
+          onto the goods: onto the stock still held, and to cost of sales for
+          whatever has already been sold. If the new price is the agreed one,{" "}
           {orderBehind?.orderId
             ? <a href={`/documents/${orderBehind.orderId}`} target="_blank" rel="noreferrer">
                 correct {orderBehind.orderNo}

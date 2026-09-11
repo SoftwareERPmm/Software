@@ -718,13 +718,22 @@ async function planFifoConsumption(
      order by sl.received_date, sl.created_at
        for update`;
 
+  // At what the lot costs now, not at what the receipt first guessed. A bill
+  // that disagreed with its receipt put the difference back onto the goods
+  // still held (0057), and an issue after that has to relieve inventory at the
+  // corrected figure — otherwise the correction sits in the inventory account
+  // forever with no stock left behind it.
   const lots = await tx`
-    select sl.id, sl.unit_cost,
+    select sl.id, sl.unit_cost + coalesce(a.delta, 0) as unit_cost,
            sl.qty_received - coalesce(sum(c.qty), 0) as remaining
       from stock_lot sl
       left join stock_lot_consumption c on c.lot_id = sl.id
+      left join lateral (
+            select sum(adj.delta_unit_cost) as delta
+              from stock_lot_adjustment adj where adj.lot_id = sl.id
+      ) a on true
      where sl.company_id = ${companyId} and sl.item_id = ${itemId} and sl.location_id = ${locationId}
-     group by sl.id, sl.unit_cost, sl.qty_received, sl.received_date, sl.created_at
+     group by sl.id, sl.unit_cost, a.delta, sl.qty_received, sl.received_date, sl.created_at
     having sl.qty_received - coalesce(sum(c.qty), 0) > 0.0001
      order by sl.received_date, sl.created_at`;
 
@@ -1032,6 +1041,180 @@ async function createFifoLot(
   await tx`
     insert into stock_lot (company_id, item_id, location_id, received_date, unit_cost, qty_received, stock_movement_id)
     values (${companyId}, ${itemId}, ${locationId}, ${receivedAt}::timestamptz, ${unitCost}, ${qty}, ${stockMovementId})`;
+}
+
+/**
+ * The bill disagreed with the receipt, so the goods were worth something
+ * different from what was first recorded.
+ *
+ * Splits that difference by where the goods actually are. What is still on the
+ * shelf gets revalued — the stock is worth what was paid for it, and the next
+ * issue relieves it at the corrected figure. What has already been sold cannot
+ * be revalued, because it is gone: its share goes to cost of sales, in the
+ * period the correction belongs to.
+ *
+ *     20 still held        →  600 onto the stock, nothing expensed
+ *     8 issued, 12 held    →  360 onto the stock, 240 to cost of sales
+ *     20 issued            →  nothing to add to, 600 to cost of sales
+ *
+ * The quantity added is zero. The receipt keeps its history and nothing is
+ * received twice; only the value moves, which is the whole distinction between
+ * a revaluation and a second delivery.
+ *
+ * The difference is spread over the lot's whole received quantity rather than
+ * over the units this particular bill covers, because a lot's units are
+ * fungible — there is no telling a billed box from an unbilled one on the same
+ * pallet. Billing 12 of 20 at thirty more each puts 360 across all twenty, and
+ * a later bill for the other 8 puts the remaining 240 across them too. Both
+ * bills together land the lot exactly where paying 130 for all of it would
+ * have.
+ */
+async function adjustReceiptCost(
+  tx: TransactionSql,
+  input: {
+    companyId: string;
+    documentId: string;
+    docDate: string;
+    locationId: string;
+    reason?: string | null;
+    /**
+     * What this bill settles: the receipt line, how many of its units, and
+     * what the bill charges for them. `heldValue` is what GR/IR gave up for
+     * those units — the difference between the two is what has to go
+     * somewhere.
+     */
+    billed: {
+      receiptLineId: string; qty: number; newUnitCost: number; heldValue: number;
+    }[];
+  }
+): Promise<{ journal: JournalLine[]; toInventory: number; toCogs: number }> {
+  const journal: JournalLine[] = [];
+  let toInventory = 0;
+  let toCogs = 0;
+
+  // Per item and location, because that is the grain a stock movement and an
+  // inventory account both work at — several receipt lines of the same item
+  // produce one revaluation between them.
+  const inventoryByItem = new Map<string, { itemId: string; locationId: string; amount: number }>();
+  const cogsByItem = new Map<string, number>();
+
+  for (const b of input.billed) {
+    const difference = round4(b.qty * b.newUnitCost - b.heldValue);
+    if (difference === 0) continue;
+
+    // Which lots this receipt line put on the shelf. Matched by the receipt
+    // and the item rather than by the line, because a receipt's stock movement
+    // does not record which of its lines it came from — and reading it that
+    // way also keeps working for stock received before any of this existed.
+    // A receipt with two lines of the same item shares the difference between
+    // their lots in proportion to what each brought in, which is the right
+    // answer for goods nobody can tell apart on the pallet.
+    const [receiptLine] = await tx`
+      select document_id, item_id from document_line where id = ${b.receiptLineId}`;
+    if (!receiptLine) continue;
+
+    // Locked on its own first: Postgres refuses FOR UPDATE on a query that
+    // groups, and the aggregate below has to see a stable picture. Without the
+    // lock, two bills revaluing the same lot at the same moment would each
+    // read the same remaining quantity and each split the difference as though
+    // it were the only one.
+    await tx`
+      select sl.id from stock_lot sl
+        join stock_movement sm on sm.id = sl.stock_movement_id
+       where sm.document_id = ${receiptLine.document_id}
+         and sl.item_id = ${receiptLine.item_id}
+       order by sl.created_at
+         for update of sl`;
+
+    const lots = await tx`
+      select sl.id, sl.item_id, sl.location_id, sl.qty_received,
+             sl.qty_received - coalesce(sum(c.qty), 0) as remaining
+        from stock_lot sl
+        join stock_movement sm on sm.id = sl.stock_movement_id
+        left join stock_lot_consumption c on c.lot_id = sl.id
+       where sm.document_id = ${receiptLine.document_id}
+         and sl.item_id = ${receiptLine.item_id}
+       group by sl.id, sl.item_id, sl.location_id, sl.qty_received, sl.created_at
+       order by sl.created_at`;
+
+    // Nothing to revalue: the goods never became a lot. A service line, or a
+    // receipt from before lot tracking. The caller sends what is left to
+    // variance, which is where a difference with no goods behind it belongs.
+    if (lots.length === 0) continue;
+
+    const received = lots.reduce((t: number, l: Record<string, unknown>) =>
+      t + Number(l.qty_received), 0);
+    if (received <= 0) continue;
+
+    for (const lot of lots) {
+      const qtyReceived = Number(lot.qty_received);
+      const remaining = Math.max(0, round4(Number(lot.remaining)));
+      const issued = round4(qtyReceived - remaining);
+
+      // This lot's share of the difference, then split within the lot by what
+      // is still here. Spread over the whole lot for the reason in the note
+      // above; the two halves add back to the share exactly, because
+      // remaining and issued add back to the quantity received.
+      const share = round4(difference * (qtyReceived / received));
+      // Rounded before it is used, not after, because this is the figure the
+      // lot actually stores — numeric(18,4) would round it on the way in
+      // anyway. Adding 100 to inventory across three units and later relieving
+      // 3 × 33.3333 leaves a tenth of a cent behind forever; rounding here and
+      // letting cost of sales absorb the remainder leaves nothing.
+      const perUnit = qtyReceived > 0 ? round4(share / qtyReceived) : 0;
+      const inventoryShare = round4(remaining * perUnit);
+      const cogsShare = round4(share - inventoryShare);
+
+      await tx`
+        insert into stock_lot_adjustment
+          (company_id, lot_id, document_id, delta_unit_cost,
+           qty_remaining, qty_issued, reason)
+        values
+          (${input.companyId}, ${lot.id}, ${input.documentId}, ${perUnit},
+           ${remaining}, ${issued}, ${input.reason ?? null})`;
+
+      const key = `${lot.item_id}|${lot.location_id}`;
+      if (inventoryShare !== 0) {
+        const at = inventoryByItem.get(key)
+          ?? { itemId: lot.item_id as string, locationId: lot.location_id as string, amount: 0 };
+        at.amount = round4(at.amount + inventoryShare);
+        inventoryByItem.set(key, at);
+      }
+      if (cogsShare !== 0) {
+        cogsByItem.set(lot.item_id as string,
+          round4((cogsByItem.get(lot.item_id as string) ?? 0) + cogsShare));
+      }
+    }
+  }
+
+  // The stock ledger has to move with the inventory account, or
+  // v_check_inventory_reconciliation stops tying. Quantity zero: this is what
+  // the goods are worth, not more of them.
+  for (const at of inventoryByItem.values()) {
+    if (at.amount === 0) continue;
+    await tx`
+      insert into stock_movement
+        (company_id, item_id, location_id, movement_date, qty, unit_cost,
+         total_cost, document_id)
+      values
+        (${input.companyId}, ${at.itemId}, ${at.locationId}, ${input.docDate}::date,
+         0, 0, ${at.amount}, ${input.documentId})`;
+
+    const inv = await tx`
+      select fn_resolve_account_for_item(${input.companyId}, 'INVENTORY', ${at.itemId}) as a`;
+    journal.push({ accountId: inv[0].a, amount: at.amount, locationId: at.locationId });
+    toInventory = round4(toInventory + at.amount);
+  }
+
+  for (const [itemId, amount] of cogsByItem) {
+    if (amount === 0) continue;
+    const cogs = await tx`
+      select fn_resolve_account_for_item(${input.companyId}, 'COGS', ${itemId}) as a`;
+    journal.push({ accountId: cogs[0].a, amount, locationId: input.locationId });
+    toCogs = round4(toCogs + amount);
+  }
+
+  return { journal, toInventory, toCogs };
 }
 
 /**
@@ -2576,16 +2759,46 @@ async function _postPurchaseInvoice(
       // in GR/IR; the excess falls into variance below, where it shows up
       // rather than silently balancing.
       let relieved = 0;
+      // Which receipt lines this bill settles and how many units of each, so
+      // the difference between what they were received at and what the
+      // supplier is charging can be put where those goods actually are.
+      const billed: {
+        receiptLineId: string; qty: number; newUnitCost: number; heldValue: number;
+      }[] = [];
       for (const line of input.lines) {
         if (!isStocked.get(line.itemId)) continue;
-        relieved += draw(line.itemId, line.qty, line.sourceLineId).value;
+        const got = draw(line.itemId, line.qty, line.sourceLineId);
+        relieved += got.value;
+
+        for (const t of got.taken) {
+          billed.push({
+            receiptLineId: t.lineId,
+            qty: t.qty,
+            newUnitCost: line.unitPrice,
+            heldValue: t.value,
+          });
+        }
       }
       grirAmount = round4(relieved);
 
-      // Whatever the invoice charges beyond the cost of the goods it settles:
-      // a price difference on the matched quantity, or a quantity the receipt
-      // never covered.
-      const variance = round4(stockedNet - grirAmount);
+      // A price that turned out to be wrong is a cost, not an expense. It goes
+      // back onto the goods it was wrong about — split between the ones still
+      // on the shelf and the ones already sold, which is the whole of decision
+      // D1 and the reason PPV is no longer the catch-all it was.
+      const revalued = await adjustReceiptCost(tx, {
+        companyId,
+        documentId: doc.id as string,
+        docDate,
+        locationId,
+        reason: `${docNo} billed at a different price from the receipt`,
+        billed,
+      });
+      for (const jl of revalued.journal) journal.push(jl);
+
+      // What is left has no goods behind it: either the bill charges for more
+      // than ever arrived, or the goods never became a lot. Variance is
+      // exactly right for that, and now means only that.
+      const variance = round4(stockedNet - grirAmount - revalued.toInventory - revalued.toCogs);
       if (variance !== 0) {
         const pv = await tx`select fn_system_account(${companyId}, 'PURCHASE_PRICE_VARIANCE') as a`;
         journal.push({ accountId: pv[0].a, amount: variance, locationId });
@@ -4249,6 +4462,44 @@ async function voidDocumentIn(
              void_reason = ${input.reason ?? null}
        where id = ${doc.id}`;
 
+
+    // The journal reversal above put the inventory account back. The stock
+    // side has to follow it, or the two stop tying — and the lot has to go
+    // back to what it cost before this bill had an opinion about it, or the
+    // next issue would relieve at a price no document supports any more.
+    //
+    // Negated one for one, like the entry: another adjustment row rather than
+    // deleting the first, because a cost that was believed and then withdrawn
+    // is part of the history of that lot. planVoidIn has already refused the
+    // case where goods went out at the corrected figure in between, which is
+    // the only case this could not honestly undo.
+    const revaluations = await tx`
+      select lot_id, delta_unit_cost, qty_remaining, qty_issued
+        from stock_lot_adjustment where document_id = ${doc.id}`;
+    for (const r of revaluations) {
+      await tx`
+        insert into stock_lot_adjustment
+          (company_id, lot_id, document_id, delta_unit_cost,
+           qty_remaining, qty_issued, reason)
+        values
+          (${doc.company_id}, ${r.lot_id}, ${reversal.id},
+           ${-Number(r.delta_unit_cost)},
+           ${Number(r.qty_remaining)}, ${Number(r.qty_issued)},
+           ${`Void of ${doc.doc_no}`})`;
+    }
+
+    const valueOnly = await tx`
+      select item_id, location_id, total_cost
+        from stock_movement where document_id = ${doc.id} and qty = 0`;
+    for (const m of valueOnly) {
+      await tx`
+        insert into stock_movement
+          (company_id, item_id, location_id, movement_date, qty, unit_cost,
+           total_cost, document_id)
+        values
+          (${doc.company_id}, ${m.item_id}, ${m.location_id},
+           ${plan.reversalDate}::date, 0, 0, ${-Number(m.total_cost)}, ${reversal.id})`;
+    }
 
     await tx`
       insert into document_history (company_id, document_id, action, reason, related_id, detail)

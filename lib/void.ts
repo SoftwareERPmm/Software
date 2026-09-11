@@ -147,13 +147,42 @@ export async function planVoidIn(db: Db, documentId: string): Promise<VoidPlan> 
     });
   }
 
+  // ---- goods this document revalued, since issued --------------------------
+  // Undoing a revaluation means taking the value back off the goods it was put
+  // on. That works while the goods are still there. Once some have been sold —
+  // relieved at the corrected cost, into a period that may since have closed —
+  // taking it back off leaves the remaining stock stating one value and the
+  // ledger another, by exactly what went out at the higher figure. Correcting
+  // forward is the honest move; this is the same reasoning as the receipt rule
+  // above, applied to value rather than quantity.
+  const revalued = await db`
+    select coalesce(sum(c.qty), 0) as qty
+      from stock_lot_adjustment adj
+      join stock_lot_consumption c on c.lot_id = adj.lot_id
+     where adj.document_id = ${documentId}
+       and c.created_at > adj.created_at`;
+  const revaluedQty = Number((revalued as unknown as { qty: string }[])[0]?.qty ?? 0);
+  if (revaluedQty > 0) {
+    blockers.push({
+      reason: `${revaluedQty} unit${revaluedQty === 1 ? "" : "s"} whose cost this document ` +
+              `corrected have been issued since. Correct the cost forward with another ` +
+              `bill rather than undoing this one.`,
+    });
+  }
+
   // ---- stock this document took off the shelf ------------------------------
   // Putting it back means re-creating the layers it consumed at the cost it
   // consumed them at. That is exactly what a sales return already does, and
   // is not built here yet.
+  // Movements that moved goods. A revaluation writes a movement carrying value
+  // and no quantity (0057), and that is not what this rule is about: nothing
+  // was received to return and nothing was issued whose cost layers would have
+  // to be rebuilt. Counting one would have made a bill uncorrectable the
+  // moment it disagreed with its receipt — which is precisely the bill most
+  // likely to need correcting again.
   const movements = await db`
     select count(*)::int as n, coalesce(sum(case when qty < 0 then 1 else 0 end), 0)::int as issues
-      from stock_movement where document_id = ${documentId}`;
+      from stock_movement where document_id = ${documentId} and qty <> 0`;
   const mv = (movements as unknown as { n: number; issues: number }[])[0];
   if (mv && mv.issues > 0) {
     blockers.push({

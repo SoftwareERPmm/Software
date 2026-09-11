@@ -149,10 +149,22 @@ try {
     (await balance(GRIR)) === -100000, `${-(await balance(GRIR))} still owed`);
   check("no variance invented", (await balance(PPV)) === 0);
 
+  const stockValue = async () => Number((await sql`
+    select coalesce(sum(total_cost), 0)::float as v
+      from stock_movement where company_id = ${co.id}`)[0].v);
+
+  const beforeOvercharge = await stockValue();
   await postPurchaseInvoice({ ...base, dueDate: null, goodsReceiptId: gr2.id,
     lines: [{ itemId: item.id, qty: 50, unitPrice: 2200 }] });
-  check("a genuine overcharge does reach variance",
-    (await balance(PPV)) === 10000, `${await balance(PPV)} on 50 × 200`);
+
+  // 0057: an overcharge on goods that are still here is a cost that was
+  // wrong, not an expense. It goes onto those goods — which is why variance
+  // stays empty and the stock is worth 10,000 more than it was.
+  check("a genuine overcharge lands on the goods, not in variance",
+    Math.round(await stockValue() - beforeOvercharge) === 10000,
+    `stock +${Math.round(await stockValue() - beforeOvercharge)} on 50 × 200`);
+  check("  and variance stays empty", (await balance(PPV)) === 0,
+    `${await balance(PPV)}`);
 
   // ---- Bill first, goods in two shipments --------------------------------
 
