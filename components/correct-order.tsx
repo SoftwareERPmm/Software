@@ -7,6 +7,14 @@ import { money, qty } from "@/lib/format";
 import type { ActionResult } from "@/lib/actions";
 
 export type CorrectableLine = {
+  /**
+   * The stored line this row edits. Sent back with the edit so the correction
+   * changes that line rather than rebuilding one from the item and the price —
+   * everything else the line carries (a discount, a free-goods reason, which
+   * receipt line it bills) has to survive being corrected, and can only do so
+   * if the correction knows which line it is looking at.
+   */
+  lineId: string;
   itemId: string;
   itemCode: string;
   itemName: string;
@@ -35,7 +43,11 @@ type Affected = {
 };
 
 type Plan = { order: Affected; affected: Affected[] };
-type PreviewState = { error: string } | { ok: true; plan: Plan };
+type PreviewState = { error: string } | { ok: true; plan: Plan; fingerprint: string };
+/** The confirmation either posts, refuses, or hands back a changed plan. */
+type ConfirmState =
+  | ActionResult
+  | { stale: true; plan: Plan; fingerprint: string };
 
 const TYPE_WORD: Record<string, string> = {
   SALES_INVOICE: "Sales invoice",
@@ -69,7 +81,7 @@ export function CorrectOrder({
   preview, confirm, documentId, docNo, version, sales, lines, noun = "order",
 }: {
   preview: (prev: unknown, fd: FormData) => Promise<PreviewState>;
-  confirm: (prev: unknown, fd: FormData) => Promise<ActionResult>;
+  confirm: (prev: unknown, fd: FormData) => Promise<ConfirmState>;
   documentId: string;
   docNo: string;
   version: number;
@@ -81,7 +93,7 @@ export function CorrectOrder({
   const [previewState, previewAction, previewing] =
     useActionState<PreviewState | null, FormData>(preview as never, null);
   const [confirmState, confirmAction, confirming] =
-    useActionState<ActionResult | null, FormData>(confirm as never, null);
+    useActionState<ConfirmState | null, FormData>(confirm as never, null);
 
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<"edit" | "review">("edit");
@@ -96,9 +108,19 @@ export function CorrectOrder({
     if (previewState && "ok" in previewState) setStep("review");
   }, [previewState]);
 
+  // And the confirmation can come back saying the world moved — somebody paid
+  // one of these invoices, or shipped the rest of the order, between the
+  // preview being drawn and the button being pressed. Nothing is posted in
+  // that case; the revised plan is shown instead, and the reader decides
+  // again knowing what it says now.
+  useEffect(() => {
+    if (confirmState && "stale" in confirmState) setStep("review");
+  }, [confirmState]);
+
   if (lines.length === 0) return null;
 
   const payload = lines.map((l, i) => ({
+    lineId: l.lineId,
     itemId: l.itemId,
     qty: Number(draft[i]?.qty ?? l.ordered),
     unitPrice: Number(draft[i]?.unitPrice ?? l.unitPrice),
@@ -116,7 +138,15 @@ export function CorrectOrder({
     setDraft((d) => d.map((row, j) => (j === i ? { ...row, [field]: value } : row)));
   };
 
-  const plan = previewState && "ok" in previewState ? previewState.plan : null;
+  // The revised plan wins when the confirmation returned one: it is the newer
+  // account of the same question.
+  const stale = confirmState && "stale" in confirmState ? confirmState : null;
+  const plan = stale
+    ? stale.plan
+    : previewState && "ok" in previewState ? previewState.plan : null;
+  const fingerprint = stale
+    ? stale.fingerprint
+    : previewState && "ok" in previewState ? previewState.fingerprint : "";
   const blockers = plan
     ? [plan.order, ...plan.affected].filter((a) => a.blocked)
     : [];
@@ -145,6 +175,13 @@ export function CorrectOrder({
         )}
         {confirmState && "error" in confirmState && (
           <div className="alert">{confirmState.error}</div>
+        )}
+        {stale && (
+          <div className="alert">
+            <TriangleAlert size={14} aria-hidden="true" />{" "}
+            This changed while you were looking at it — nothing has been posted.
+            What it would do now is below.
+          </div>
         )}
 
         {step === "edit" ? (
@@ -311,6 +348,9 @@ export function CorrectOrder({
               <input type="hidden" name="document_id" value={documentId} />
               <input type="hidden" name="lines" value={JSON.stringify(payload)} />
               <input type="hidden" name="reason" value={reason} />
+              {/* What was shown, sent back so the server can tell whether it
+                  is still true before acting on it. */}
+              <input type="hidden" name="fingerprint" value={fingerprint} />
               <button type="submit" disabled={confirming || blockers.length > 0 || !reason.trim()}>
                 {confirming
                   ? "Correcting…"

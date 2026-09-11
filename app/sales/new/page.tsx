@@ -65,6 +65,7 @@ export default async function NewSalesInvoice({
         cashAccounts={d.cashAccounts as never}
         promotions={d.promotions as never}
         volumeDiscounts={d.volumeDiscounts as never}
+        currencyScale={d.currencyScale}
         focReasons={d.focReasons as never}
         openInvoices={d.openInvoices as never}
         stockByLocation={d.stockByLocation as never}

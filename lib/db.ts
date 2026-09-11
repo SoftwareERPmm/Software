@@ -37,4 +37,4 @@ if (process.env.NODE_ENV !== "production") global.__sql = sql;
 
 // Re-exported so the many pages importing these from "@/lib/db" keep working.
 // New code should import from "@/lib/format" directly.
-export { money, qty, shortDate, dateTime, timeOfDay, timeAgo, DISPLAY_TZ } from "./format";
+export { money, moneyOrTrace, qty, shortDate, dateTime, timeOfDay, timeAgo, DISPLAY_TZ } from "./format";

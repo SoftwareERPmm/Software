@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { money } from "@/lib/db";
+import { money, moneyOrTrace } from "@/lib/db";
 import { getCompany, getPartnerBalances } from "@/lib/queries";
 import { DataTable, type DataRow } from "@/components/data-table";
 
@@ -22,7 +22,10 @@ export default async function Payables({
   const all = (await getPartnerBalances(company.id, "PURCHASE_INVOICE")) as any[];
 
   const rowState = (r: any) => {
-    if (Number(r.overdue) > 0) return "overdue";
+    // A remnant below the currency's smallest unit is not a debt anybody can
+    // settle, so it is not overdue — it would otherwise sit in this tab
+    // showing "0" and reading as an empty list with a row in it.
+    if (r.overdue_material) return "overdue";
     if (Number(r.paid) > 0 && Number(r.outstanding) > 0) return "partial";
     return "current";
   };
@@ -75,12 +78,12 @@ export default async function Payables({
       <div className="kpis">
         <div className="kpi">
           <span className="kpi-label">Total Payable</span>
-          <span className="kpi-value">{money(totalPayable)}</span>
+          <span className="kpi-value">{moneyOrTrace(totalPayable)}</span>
         </div>
         <div className="kpi">
           <span className="kpi-label">Overdue</span>
           <span className="kpi-value" style={{ color: totalOverdue > 0 ? "var(--bad)" : undefined }}>
-            {money(totalOverdue)}
+            {moneyOrTrace(totalOverdue)}
           </span>
         </div>
         <div className="kpi">
@@ -126,8 +129,8 @@ export default async function Payables({
             footer={
               <tr>
                 <td colSpan={2}>Total outstanding</td>
-                <td className="r">{money(totalPayable)}</td>
-                <td className="r">{money(totalOverdue)}</td>
+                <td className="r">{moneyOrTrace(totalPayable)}</td>
+                <td className="r">{moneyOrTrace(totalOverdue)}</td>
                 <td />
               </tr>
             }

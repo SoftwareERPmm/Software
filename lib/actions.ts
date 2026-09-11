@@ -16,6 +16,7 @@ import {
   postCashVoucher, postBankVoucher, postJournalVoucher,
   linkFulfilmentToOrder, closeOrderRemaining, reopenOrder,
   amendOrder, planOrderAmendment, amendInvoice, planInvoiceAmendment,
+  amendmentFingerprint,
   type AmendmentPlan,
   postCashTransfer, postAccountOpening, postOpeningBatch, resettleConsignmentSale,
   postStockAdjustment, postStockTransfer,
@@ -1815,7 +1816,99 @@ export async function closeOrderAction(_prev: unknown, fd: FormData): Promise<Ac
 
 export type PreviewResult =
   | { error: string }
-  | { ok: true; plan: AmendmentPlan };
+  | { ok: true; plan: AmendmentPlan; fingerprint: string };
+
+/**
+ * What the confirmation returns when the world moved under it: the plan as it
+ * is now, for the reader to look at before deciding again.
+ */
+export type CorrectionResult =
+  | ActionResult
+  | { stale: true; plan: AmendmentPlan; fingerprint: string };
+
+/**
+ * The corrected order, assembled once.
+ *
+ * Built here rather than twice, because the preview and the confirmation have
+ * to be posting the same thing. Two builders drift, and a preview that shows a
+ * figure the confirmation does not post is worse than no preview.
+ */
+async function orderCorrection(co: string, fd: FormData) {
+  const documentId = str(fd, "document_id");
+  const [order] = await sql`
+    select partner_id, location_id,
+           to_char(doc_date, 'YYYY-MM-DD') as doc_date,
+           to_char(due_date, 'YYYY-MM-DD') as due_date,
+           memo, reference
+      from document where id = ${documentId} and company_id = ${co}`;
+  if (!order) throw new Error("That order no longer exists");
+
+  const edits = correctionLines(fd);
+  if (edits.length === 0) throw new Error("An order needs at least one line");
+
+  return {
+    documentId,
+    order: {
+      companyId: co,
+      partnerId: order.partner_id as string,
+      locationId: order.location_id as string,
+      docDate: order.doc_date as string,
+      dueDate: (order.due_date as string) ?? null,
+      memo: order.memo as string | null,
+      reference: order.reference as string | null,
+      lines: await correctedLines(documentId, edits),
+    },
+  };
+}
+
+/** The corrected invoice, assembled once — same reason as above. */
+async function invoiceCorrection(co: string, fd: FormData) {
+  const documentId = str(fd, "document_id");
+  const [inv] = await sql`
+    select doc_type, partner_id, location_id, source_document_id, to_deliver,
+           salesman_id, payment_type, delivery_fee,
+           to_char(doc_date, 'YYYY-MM-DD') as doc_date,
+           to_char(due_date, 'YYYY-MM-DD') as due_date,
+           memo, reference
+      from document where id = ${documentId} and company_id = ${co}`;
+  if (!inv) throw new Error("That invoice no longer exists");
+
+  const edits = correctionLines(fd);
+  if (edits.length === 0) throw new Error("An invoice needs at least one line");
+
+  // Whatever it was raised from, it stays raised from — the correction is
+  // about price, not about which goods it bills. The source keeps GR/IR
+  // clearing against the same receipt or delivery it always did.
+  const [src] = inv.source_document_id
+    ? await sql`select doc_type from document where id = ${inv.source_document_id}`
+    : [null];
+
+  return {
+    documentId,
+    invoice: {
+      companyId: co,
+      partnerId: inv.partner_id as string,
+      locationId: inv.location_id as string,
+      docDate: inv.doc_date as string,
+      dueDate: (inv.due_date as string) ?? null,
+      memo: inv.memo as string | null,
+      reference: inv.reference as string | null,
+      toDeliver: !!inv.to_deliver,
+      deliveryId: src?.doc_type === "DELIVERY" ? (inv.source_document_id as string) : null,
+      goodsReceiptId:
+        src?.doc_type === "GOODS_RECEIPT" ? (inv.source_document_id as string) : null,
+      salesmanId: (inv.salesman_id as string) ?? null,
+      paymentType: (inv.payment_type as "CASH" | "CREDIT") ?? undefined,
+      // The charge for carrying the goods is not revenue on them and is not
+      // what is being corrected. Carried across unchanged, or a correction
+      // would hand the customer their delivery back for nothing.
+      deliveryFee: inv.delivery_fee === null || inv.delivery_fee === undefined
+        ? undefined
+        : Number(inv.delivery_fee),
+      lines: await correctedLines(documentId, edits),
+    },
+  };
+}
 
 /**
  * What correcting this order would change — read-only, for the screen that
@@ -1831,18 +1924,82 @@ export async function previewOrderCorrection(
 ): Promise<PreviewResult> {
   try {
     const co = await companyId();
-    const documentId = str(fd, "document_id");
-    const lines = correctionLines(fd);
-    if (lines.length === 0) return { error: "An order needs at least one line" };
-    return { ok: true, plan: await planOrderAmendment({ companyId: co, documentId, lines }) };
+    const { documentId, order } = await orderCorrection(co, fd);
+    const plan = await planOrderAmendment({
+      companyId: co, documentId, order, reason: str(fd, "reason"),
+    });
+    return {
+      ok: true,
+      plan,
+      fingerprint: amendmentFingerprint(plan),
+    };
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
 }
 
+/**
+ * What the document already said, with the edit laid over it.
+ *
+ * A correction changes a quantity or a price. It does not change the discount
+ * that was agreed, the reason goods were given free, which receipt line a bill
+ * settles, or anything else the line carries — but rebuilding a line from an
+ * item and a price silently drops all of it, so a corrected invoice quietly
+ * lost a 10% discount and billed the customer more than the original did.
+ * That is the opposite of what correcting is for.
+ *
+ * So the stored line is the starting point and the edit is applied to it. A
+ * line the form did not send is one the user removed, and is dropped; a line
+ * it sent that no longer exists is ignored rather than invented.
+ */
+async function correctedLines(
+  documentId: string,
+  edits: { lineId: string | null; itemId: string; qty: number; unitPrice: number }[],
+) {
+  const stored = await sql`
+    select id, item_id, base_qty, unit_price, discount_pct, foc_reason_id,
+           source_line_id, is_consignment, batch_no, expiry_date
+      from document_line where document_id = ${documentId} order by line_no`;
+
+  // Consigned goods are somebody else's until they sell, and which consignor's
+  // is recorded in the consumption rather than on the line. Re-posting the
+  // line without it would settle the sale against owned stock and quietly
+  // change whose goods were sold, so this refuses rather than guesses.
+  if ((stored as Record<string, unknown>[]).some((l) => l.is_consignment)) {
+    // No route is offered because none is correct yet. Voiding is not blocked
+    // — a consigned line writes no stock movement, so the void guards never
+    // fire — but nothing releases consignment_lot_consumption on the way out,
+    // so the consignor's goods would stay drawn down against a document that
+    // no longer exists. Pointing somebody at that would be worse than saying
+    // it cannot be done.
+    throw new Error(
+      "This document sells consigned goods, which cannot be corrected yet: the " +
+      "correction would have to restate whose goods were sold. Voiding it will " +
+      "not help either — the consignor's stock stays drawn down. Leave it and " +
+      "record the difference separately until consignment corrections are built."
+    );
+  }
+
+  const byId = new Map(
+    (stored as Record<string, unknown>[]).map((l) => [String(l.id), l]));
+
+  return edits
+    .map((e) => {
+      const was = e.lineId ? byId.get(e.lineId) : undefined;
+      return {
+        itemId: e.itemId,
+        qty: e.qty,
+        unitPrice: e.unitPrice,
+        discountPct: was ? Number(was.discount_pct ?? 0) : 0,
+        focReasonId: was ? ((was.foc_reason_id as string) ?? null) : null,
+        sourceLineId: was ? ((was.source_line_id as string) ?? null) : null,
+      };
+    });
+}
+
 /** The edited lines, as the correction form sends them. */
 function correctionLines(fd: FormData) {
-  let parsed: { itemId?: string; qty?: number; unitPrice?: number }[];
+  let parsed: { lineId?: string; itemId?: string; qty?: number; unitPrice?: number }[];
   try {
     parsed = JSON.parse(String(fd.get("lines") ?? "[]"));
   } catch {
@@ -1850,6 +2007,7 @@ function correctionLines(fd: FormData) {
   }
   return parsed
     .map((l) => ({
+      lineId: l.lineId ? String(l.lineId) : null,
       itemId: String(l.itemId ?? ""),
       qty: Number(l.qty),
       unitPrice: Number(l.unitPrice ?? 0),
@@ -1865,44 +2023,36 @@ function correctionLines(fd: FormData) {
  * part is blocked — a payment against one of those invoices — nothing moves
  * and the message names the document in the way.
  */
-export async function correctOrder(_prev: unknown, fd: FormData): Promise<ActionResult> {
+export async function correctOrder(
+  _prev: unknown, fd: FormData,
+): Promise<CorrectionResult> {
   let landOn: string;
   try {
-    const documentId = str(fd, "document_id");
     const co = await companyId();
     const reason = str(fd, "reason");
     if (!reason.trim()) return { error: "Say why this is being corrected" };
 
-    const [order] = await sql`
-      select partner_id, location_id,
-             to_char(doc_date, 'YYYY-MM-DD') as doc_date,
-             to_char(due_date, 'YYYY-MM-DD') as due_date,
-             memo, reference
-        from document where id = ${documentId} and company_id = ${co}`;
-    if (!order) return { error: "That order no longer exists" };
+    const { documentId, order } = await orderCorrection(co, fd);
 
-    const lines = correctionLines(fd);
-    if (lines.length === 0) return { error: "An order needs at least one line" };
+    // What the reader was shown, against what is true now. Somebody can pay
+    // one of these invoices or ship the rest of the order between looking and
+    // confirming, and posting what they saw rather than what is there would be
+    // the one thing a confirmation screen exists to prevent.
+    const shown = str(fd, "fingerprint");
+    if (shown) {
+      const now = await planOrderAmendment({ companyId: co, documentId, order, reason });
+      const fingerprint = amendmentFingerprint(now);
+      if (fingerprint !== shown) {
+        return { stale: true, plan: now, fingerprint };
+      }
+    }
 
     // The reader is sent to the version that now stands, not the one they
     // were reading — which the correction has just retired. Landing back on
     // v1 shows the old figure under a "Superseded" banner and reads as though
     // the correction had not taken.
     const { replacementId } = await amendOrder({
-      companyId: co,
-      documentId,
-      reason,
-      cascade: true,
-      order: {
-        companyId: co,
-        partnerId: order.partner_id as string,
-        locationId: order.location_id as string,
-        docDate: order.doc_date as string,
-        dueDate: (order.due_date as string) ?? null,
-        memo: order.memo as string | null,
-        reference: order.reference as string | null,
-        lines,
-      },
+      companyId: co, documentId, reason, cascade: true, order,
     });
     landOn = replacementId;
   } catch (e) {
@@ -1914,6 +2064,7 @@ export async function correctOrder(_prev: unknown, fd: FormData): Promise<Action
   revalidatePath("/");
   redirectWithToast(`/documents/${landOn}`, "Correction posted");
 }
+
 /**
  * What correcting this invoice would change.
  *
@@ -1926,10 +2077,15 @@ export async function previewInvoiceCorrection(
 ): Promise<PreviewResult> {
   try {
     const co = await companyId();
-    const documentId = str(fd, "document_id");
-    const lines = correctionLines(fd);
-    if (lines.length === 0) return { error: "An invoice needs at least one line" };
-    return { ok: true, plan: await planInvoiceAmendment({ companyId: co, documentId, lines }) };
+    const { documentId, invoice } = await invoiceCorrection(co, fd);
+    const plan = await planInvoiceAmendment({
+      companyId: co, documentId, invoice: invoice as never, reason: str(fd, "reason"),
+    });
+    return {
+      ok: true,
+      plan,
+      fingerprint: amendmentFingerprint(plan),
+    };
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
@@ -1944,58 +2100,31 @@ export async function previewInvoiceCorrection(
  * is right. An invoice raised directly agreed its price here, so here is
  * where it is corrected.
  */
-export async function correctInvoice(_prev: unknown, fd: FormData): Promise<ActionResult> {
+export async function correctInvoice(
+  _prev: unknown, fd: FormData,
+): Promise<CorrectionResult> {
   let landOn: string;
   try {
     const co = await companyId();
-    const documentId = str(fd, "document_id");
     const reason = str(fd, "reason");
     if (!reason.trim()) return { error: "Say why this is being corrected" };
 
-    const [inv] = await sql`
-      select doc_type, partner_id, location_id, source_document_id, to_deliver,
-             to_char(doc_date, 'YYYY-MM-DD') as doc_date,
-             to_char(due_date, 'YYYY-MM-DD') as due_date,
-             memo, reference
-        from document where id = ${documentId} and company_id = ${co}`;
-    if (!inv) return { error: "That invoice no longer exists" };
+    const { documentId, invoice } = await invoiceCorrection(co, fd);
 
-    const lines = correctionLines(fd);
-    if (lines.length === 0) return { error: "An invoice needs at least one line" };
-
-    // Whatever it was raised from, it stays raised from — the correction is
-    // about price, not about which goods it bills. The source keeps GR/IR
-    // clearing against the same receipt or delivery it always did.
-    const [src] = inv.source_document_id
-      ? await sql`select doc_type from document where id = ${inv.source_document_id}`
-      : [null];
-    const sales = inv.doc_type === "SALES_INVOICE";
-
+    const shown = str(fd, "fingerprint");
+    if (shown) {
+      const now = await planInvoiceAmendment({
+        companyId: co, documentId, invoice: invoice as never, reason,
+      });
+      const fingerprint = amendmentFingerprint(now);
+      if (fingerprint !== shown) {
+        return { stale: true, plan: now, fingerprint };
+      }
+    }
     const { replacementId } = await amendInvoice({
-      companyId: co,
-      documentId,
-      reason,
-      invoice: {
-        companyId: co,
-        partnerId: inv.partner_id as string,
-        locationId: inv.location_id as string,
-        docDate: inv.doc_date as string,
-        dueDate: (inv.due_date as string) ?? null,
-        memo: inv.memo as string | null,
-        reference: inv.reference as string | null,
-        toDeliver: !!inv.to_deliver,
-        deliveryId: src?.doc_type === "DELIVERY" ? (inv.source_document_id as string) : null,
-        goodsReceiptId:
-          src?.doc_type === "GOODS_RECEIPT" ? (inv.source_document_id as string) : null,
-        lines: lines.map((l) => ({
-          itemId: l.itemId,
-          qty: l.qty,
-          unitPrice: l.unitPrice,
-        })),
-      } as never,
+      companyId: co, documentId, reason, invoice: invoice as never,
     });
     landOn = replacementId;
-    void sales;
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
@@ -2195,7 +2324,7 @@ export async function getFormData() {
   const [
     customers, suppliers, items, locations, volumeDiscounts, groups, uoms,
     salesmen, promotions, cashAccounts, focReasons, itemPrices, priceLevels,
-    openInvoices, nextNo, stockByLocation,
+    openInvoices, nextNo, stockByLocation, moneyScale,
   ] = await Promise.all([
     sql`select id, code, name, payment_terms_days, price_level_id from business_partner
          where company_id = ${co} and is_customer and is_active order by code`,
@@ -2282,6 +2411,10 @@ export async function getFormData() {
     // Per item, per location — what the company-wide on_hand above can't
     // show: whether the specific warehouse making this sale actually has it.
     sql`select item_id, location_id, qty_on_hand from v_stock_on_hand where company_id = ${co}`,
+    // What the money can express, so a voucher previews the figure that will
+    // post rather than one four decimal places finer.
+    sql`select c.decimal_places from company co
+          join currency c on c.code = co.base_currency where co.id = ${co}`,
   ]);
 
   return {
@@ -2291,6 +2424,7 @@ export async function getFormData() {
     // depends on a series that has not been created yet.
     nextInvoiceNo: (nextNo[0]?.no as string | null) ?? null,
     stockByLocation,
+    currencyScale: Number(moneyScale[0]?.decimal_places ?? 2),
   };
 }
 

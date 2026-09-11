@@ -61,6 +61,23 @@ const num = (v: string | number | null | undefined) => Number(v ?? 0);
 const round4 = (n: number) => Math.round(n * 10000) / 10000;
 
 /**
+ * Money, rounded to what the currency can actually express.
+ *
+ * The kyat has no subunit, so an amount of 1,591,071.471 is not a smaller
+ * amount than 1,591,071 — it is the same amount written in a way nobody can
+ * pay. Left at four decimal places it became a receivable of 0.471 that no
+ * payment could ever clear and that sat on the dashboard asking for action.
+ *
+ * Applied to amounts, never to rates. A unit price of 106,071.4314 per box is
+ * legitimate and stays exact; what has to land on a whole kyat is the figure
+ * somebody is asked to hand over.
+ */
+export const roundMoney = (n: number, scale: number) => {
+  const f = Math.pow(10, scale);
+  return Math.round(n * f) / f;
+};
+
+/**
  * The band a value falls in, narrowest scope first.
  *
  * A rule naming this item beats one naming its category, which beats one
@@ -105,58 +122,74 @@ export function bandFor(
  * The invoice band is chosen from the subtotal *after* line discounts, since
  * that is the figure the customer is being asked for.
  */
-export function priceLines(lines: DiscountedLine[], bands: VolumeBand[]): {
+export function priceLines(
+  lines: DiscountedLine[],
+  bands: VolumeBand[],
+  /**
+   * Decimal places the currency can express — 0 for the kyat, 2 for the
+   * dollar. Every amount below lands on one of those, so the figures that
+   * reach the ledger are figures somebody can pay. Defaults to four for
+   * callers reasoning about the discount arithmetic itself rather than about
+   * money; every posting passes the real one.
+   */
+  scale = 4,
+): {
   lines: LineDiscounts[];
   subtotal: number;
   total: number;
   invoiceBand: VolumeBand | null;
 } {
+  const r = (n: number) => roundMoney(n, scale);
+
   const stage1 = lines.map((l) => {
-    const gross = round4(l.qty * l.unitPrice);
+    const gross = r(l.qty * l.unitPrice);
     const itemPct = l.discountPct || 0;
-    const itemAmount = round4(gross * (itemPct / 100));
-    const afterItem = round4(gross - itemAmount);
+    const itemAmount = r(gross * (itemPct / 100));
+    const afterItem = r(gross - itemAmount);
 
     const band = bandFor(bands, "QUANTITY", l.qty, l.itemId, l.itemGroupId ?? null);
     const volPct = band ? num(band.discount_pct) : 0;
-    const volAmount = round4(afterItem * (volPct / 100));
+    const volAmount = r(afterItem * (volPct / 100));
 
     return {
       line: l, gross, itemPct, itemAmount, band, volPct, volAmount,
-      afterVolume: round4(afterItem - volAmount),
+      afterVolume: r(afterItem - volAmount),
     };
   });
 
-  const subtotal = round4(stage1.reduce((s, r) => s + r.afterVolume, 0));
+  const subtotal = r(stage1.reduce((s, x) => s + x.afterVolume, 0));
   const invoiceBand = bandFor(bands, "INVOICE_TOTAL", subtotal);
   const invPct = invoiceBand ? num(invoiceBand.discount_pct) : 0;
 
-  const priced: LineDiscounts[] = stage1.map((r) => {
+  const priced: LineDiscounts[] = stage1.map((row) => {
     // Spread across the lines rather than held as one figure on the invoice,
     // so revenue per item stays right — an invoice-wide discount that only
     // existed on the header would leave every line overstating what it
     // actually earned.
-    const invAmount = round4(r.afterVolume * (invPct / 100));
+    const invAmount = r(row.afterVolume * (invPct / 100));
     return {
-      gross: r.gross,
-      itemDiscountPct: r.itemPct,
-      itemDiscountAmount: r.itemAmount,
-      volumeDiscountPct: r.volPct,
-      volumeDiscountAmount: r.volAmount,
-      volumeDiscountId: r.band?.id ?? null,
-      volumeDiscountName: r.band?.name ?? null,
+      gross: row.gross,
+      itemDiscountPct: row.itemPct,
+      itemDiscountAmount: row.itemAmount,
+      volumeDiscountPct: row.volPct,
+      volumeDiscountAmount: row.volAmount,
+      volumeDiscountId: row.band?.id ?? null,
+      volumeDiscountName: row.band?.name ?? null,
       invoiceDiscountPct: invPct,
       invoiceDiscountAmount: invAmount,
       invoiceDiscountId: invoiceBand?.id ?? null,
       invoiceDiscountName: invoiceBand?.name ?? null,
-      net: round4(r.afterVolume - invAmount),
+      net: r(row.afterVolume - invAmount),
     };
   });
 
   return {
     lines: priced,
     subtotal,
-    total: round4(priced.reduce((s, l) => s + l.net, 0)),
+    // Summed from the rounded lines, so the total is exactly what the lines
+    // say — not the exact arithmetic rounded afterwards, which would leave the
+    // two disagreeing by a fraction.
+    total: r(priced.reduce((s, l) => s + l.net, 0)),
     invoiceBand,
   };
 }

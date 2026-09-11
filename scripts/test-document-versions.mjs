@@ -238,6 +238,59 @@ try {
 
   void poLine;
 
+  // ---- a correction changes what it was asked to, and nothing else --------
+
+  console.log("\n  what a correction must not quietly drop\n");
+  {
+    await sql.unsafe(`truncate table document_history, fulfilment_link, order_closure,
+      payment_allocation, stock_lot_adjustment, stock_lot_consumption, stock_lot,
+      stock_movement, document_line, document, journal_line, journal_entry
+      restart identity cascade`);
+    await sql`update number_series set next_value = 1`;
+
+    await P.postGoodsReceipt({ companyId: co.id, partnerId: supp.id, locationId: loc.id,
+      docDate: today, lines: [{ itemId: item.id, qty: 100, unitCost: 400 }] });
+
+    // 10 at 1,000 with 10% off — the customer agreed 9,000, not 10,000.
+    const disc = await P.postSalesInvoice({
+      companyId: co.id, partnerId: cust.id, locationId: loc.id,
+      docDate: today, dueDate: null, toDeliver: true,
+      lines: [{ itemId: item.id, qty: 10, unitPrice: 1000, discountPct: 10 }],
+    });
+    const [v1] = await sql`select gross_total::float as t from document where id = ${disc.id}`;
+    check("an invoice with 10% off bills 9,000", n(v1.t) === 9000, `${n(v1.t)}`);
+
+    const [line] = await sql`select id from document_line where document_id = ${disc.id}`;
+
+    // The preview and the posting must agree. Both are asked the same
+    // question, through the same builder the screens use.
+    const corrected = {
+      companyId: co.id, partnerId: cust.id, locationId: loc.id,
+      docDate: today, dueDate: null, toDeliver: true,
+      lines: [{ itemId: item.id, qty: 10, unitPrice: 1200, discountPct: 10,
+                focReasonId: null, sourceLineId: null }],
+    };
+    const plan = await P.planInvoiceAmendment({
+      companyId: co.id, documentId: disc.id, invoice: corrected, reason: "preview",
+    });
+    check("correcting the price to 1,200 previews 10,800, not 12,000",
+      n(plan.order.totalAfter) === 10800, `previewed ${n(plan.order.totalAfter)}`);
+
+    const after = await P.amendInvoice({
+      companyId: co.id, documentId: disc.id, reason: "agreed 1,200 before discount",
+      invoice: corrected,
+    });
+    check("  and posts exactly what it previewed",
+      n(after.totalAfter) === n(plan.order.totalAfter),
+      `previewed ${n(plan.order.totalAfter)} · posted ${n(after.totalAfter)}`);
+    check("  the discount survived the correction",
+      n((await sql`select discount_pct::float as d from document_line
+                    where document_id = ${after.replacementId}`)[0].d) === 10);
+    check("  and the dry run left nothing behind",
+      (await sql`select 1 from document where doc_no = ${disc.docNo} and version > 2`).length === 0);
+    void line;
+  }
+
   // ---- the books still hold ------------------------------------------------
 
   console.log("");

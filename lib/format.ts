@@ -7,6 +7,23 @@ export function money(v: string | number | null | undefined): string {
   return n.toLocaleString("en-US", { maximumFractionDigits: 0 });
 }
 
+/**
+ * A figure that is real, but smaller than the currency can say.
+ *
+ * `money` rounds to whole kyat, so a 0.471 remnant prints as "0" — and a row
+ * that says a customer owes 0 reads as a broken screen rather than as a
+ * half-kyat nobody will collect. This says what is true instead: there is
+ * something there, and it is less than one.
+ *
+ * Only for balances, where the distinction matters. A total or a price that
+ * genuinely is zero still prints as 0 through `money`.
+ */
+export function moneyOrTrace(v: string | number | null | undefined): string {
+  const n = Number(v ?? 0);
+  if (n !== 0 && Math.abs(n) < 0.5) return n < 0 ? "> −1" : "under 1";
+  return money(n);
+}
+
 export function qty(v: string | number | null | undefined): string {
   const n = Number(v ?? 0);
   return n.toLocaleString("en-US", { maximumFractionDigits: 2 });

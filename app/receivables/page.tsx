@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { money } from "@/lib/db";
+import { money, moneyOrTrace } from "@/lib/db";
 import { getCompany, getPartnerBalances } from "@/lib/queries";
 import { DataTable, type DataRow } from "@/components/data-table";
 
@@ -22,7 +22,10 @@ export default async function Receivables({
   const all = (await getPartnerBalances(company.id, "SALES_INVOICE")) as any[];
 
   const rowState = (r: any) => {
-    if (Number(r.overdue) > 0) return "overdue";
+    // A remnant below the currency's smallest unit is not a debt anybody can
+    // settle, so it is not overdue — it would otherwise sit in this tab
+    // showing "0" and reading as an empty list with a row in it.
+    if (r.overdue_material) return "overdue";
     if (Number(r.paid) > 0 && Number(r.outstanding) > 0) return "partial";
     return "current";
   };
@@ -50,9 +53,9 @@ export default async function Receivables({
           <div className="m" style={{ color: "var(--muted)" }}>{c.partner_code}</div>
         </td>
         <td className="r">{c.open_invoices}</td>
-        <td className="r">{money(c.outstanding)}</td>
+        <td className="r">{moneyOrTrace(c.outstanding)}</td>
         <td className="r" style={{ color: Number(c.overdue) > 0 ? "var(--bad)" : undefined }}>
-          {Number(c.overdue) > 0 ? money(c.overdue) : "—"}
+          {Number(c.overdue) !== 0 ? moneyOrTrace(c.overdue) : "—"}
         </td>
         <td className="r">{c.credit_limit != null ? money(c.credit_limit) : "—"}</td>
         <td className="tight">
@@ -77,12 +80,12 @@ export default async function Receivables({
       <div className="kpis">
         <div className="kpi">
           <span className="kpi-label">Total Receivable</span>
-          <span className="kpi-value">{money(totalReceivable)}</span>
+          <span className="kpi-value">{moneyOrTrace(totalReceivable)}</span>
         </div>
         <div className="kpi">
           <span className="kpi-label">Overdue</span>
           <span className="kpi-value" style={{ color: totalOverdue > 0 ? "var(--bad)" : undefined }}>
-            {money(totalOverdue)}
+            {moneyOrTrace(totalOverdue)}
           </span>
         </div>
         <div className="kpi">
@@ -129,8 +132,8 @@ export default async function Receivables({
             footer={
               <tr>
                 <td colSpan={2}>Total outstanding</td>
-                <td className="r">{money(totalReceivable)}</td>
-                <td className="r">{money(totalOverdue)}</td>
+                <td className="r">{moneyOrTrace(totalReceivable)}</td>
+                <td className="r">{moneyOrTrace(totalOverdue)}</td>
                 <td colSpan={2} />
               </tr>
             }
