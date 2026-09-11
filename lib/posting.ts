@@ -5138,6 +5138,8 @@ export async function amendOrder(input: {
    * billed. What travels is price.
    */
   cascade?: boolean;
+  /** What the reader was shown — see amendOrderIn. */
+  expect?: string | null;
 }) {
   return sql.begin((tx) => amendOrderIn(tx, input));
 }
@@ -5157,6 +5159,20 @@ export async function amendOrderIn(tx: TransactionSql, input: {
   reason: string;
   order: Omit<OrderInput, "amendOf">;
   cascade?: boolean;
+  /**
+   * The plan the reader was shown, as a fingerprint. Checked against what this
+   * amendment actually did, inside the same transaction — so a correction that
+   * would do something other than what was on the screen rolls back instead of
+   * committing.
+   *
+   * Checked here rather than before starting, because before starting means
+   * running the whole correction twice: once to see, once to do. On a slow
+   * link that made confirming take a minute, most of it spent proving that
+   * nothing had changed since a moment ago. Inside the transaction there is
+   * also no window between the checking and the acting for anything to change
+   * in.
+   */
+  expect?: string | null;
 }): Promise<{
   docNo: string; version: number; previousId: string; replacementId: string;
   totalBefore: number; totalAfter: number;
@@ -5164,6 +5180,12 @@ export async function amendOrderIn(tx: TransactionSql, input: {
   affected: AffectedDocument[];
 }> {
   const affected: AffectedDocument[] = [];
+
+  // What the order says now, read before anything moves, so the comparison is
+  // against the same "before" the preview reported.
+  const before = input.expect
+    ? await currentFigures(tx, input.companyId, input.documentId)
+    : null;
   const result = await amendDocumentIn(tx, {
     companyId: input.companyId,
     documentId: input.documentId,
@@ -5296,7 +5318,33 @@ export async function amendOrderIn(tx: TransactionSql, input: {
     },
   });
 
+  if (before && input.expect) {
+    const actual = amendmentFingerprint({
+      order: { ...stripStatus(before), totalAfter: result.totalAfter },
+      affected,
+    });
+    if (actual !== input.expect) {
+      // Rolls the whole correction back. The caller turns this into the
+      // revised plan on screen rather than an error — nothing was wrong, the
+      // world simply moved.
+      throw new StalePlan(actual);
+    }
+  }
+
   return { ...result, affected };
+}
+
+/**
+ * The correction would not have done what the screen said it would.
+ *
+ * Thrown inside the transaction, so nothing is committed. Carries what the
+ * amendment actually came to, which is what the reader is shown next.
+ */
+export class StalePlan extends Error {
+  constructor(public readonly fingerprint: string) {
+    super("This changed while you were looking at it");
+    this.name = "StalePlan";
+  }
 }
 
 /**

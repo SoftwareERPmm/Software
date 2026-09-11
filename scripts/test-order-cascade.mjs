@@ -430,6 +430,59 @@ try {
 
   // ---- the books ----------------------------------------------------------
 
+  // ---- the plan the reader saw is the plan that posts --------------------
+
+  console.log("\n  confirming something other than what was shown\n");
+  {
+    // A fresh order of its own; an order posts nothing, so it needs no stock.
+    const so = await P.postSalesOrder({
+      companyId: co.id, partnerId: cust.id, locationId: loc.id,
+      docDate: today, dueDate: today,
+      lines: [{ itemId: item.id, qty: 10, unitPrice: 1000 }],
+    });
+
+    // A fingerprint from a plan that never matched this order. The amendment
+    // runs, finds it came to something else, and rolls the whole thing back.
+    let stale = null;
+    try {
+      await P.amendOrder({
+        companyId: co.id, documentId: so.id, reason: "confirming a stale screen",
+        cascade: true, expect: "SOMETHING-ELSE@1:0>0",
+        order: { companyId: co.id, partnerId: cust.id, locationId: loc.id,
+          docDate: today, dueDate: today,
+          lines: [{ itemId: item.id, qty: 10, unitPrice: 1200 }] },
+      });
+    } catch (e) { stale = e; }
+
+    check("a correction that would differ from the preview is refused",
+      stale !== null && stale.name === "StalePlan",
+      stale ? stale.name : "POSTED — the screen said one thing and it did another");
+
+    const versions = await sql`select version, status from document
+       where doc_no = ${so.docNo} order by version`;
+    check("  and nothing at all was posted",
+      versions.length === 1 && versions[0].status === "POSTED",
+      versions.map((v) => `v${v.version} ${v.status}`).join(" · "));
+
+    // The matching fingerprint goes through.
+    const plan = await P.planOrderAmendment({
+      companyId: co.id, documentId: so.id,
+      order: { companyId: co.id, partnerId: cust.id, locationId: loc.id,
+        docDate: today, dueDate: today,
+        lines: [{ itemId: item.id, qty: 10, unitPrice: 1200 }] },
+    });
+    const ok = await P.amendOrder({
+      companyId: co.id, documentId: so.id, reason: "confirming what was shown",
+      cascade: true, expect: P.amendmentFingerprint(plan),
+      order: { companyId: co.id, partnerId: cust.id, locationId: loc.id,
+        docDate: today, dueDate: today,
+        lines: [{ itemId: item.id, qty: 10, unitPrice: 1200 }] },
+    });
+    check("  the plan that was actually shown goes through",
+      ok.version === 2 && n(ok.totalAfter) === 12000,
+      `v${ok.version} · ${n(ok.totalAfter).toLocaleString()}`);
+  }
+
   console.log("");
   const [tb] = await sql`select coalesce(sum(balance), 0) as v from v_trial_balance`;
   check("trial balance nets to zero", Math.abs(n(tb.v)) < 0.0001, `${n(tb.v)}`);

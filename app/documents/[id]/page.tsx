@@ -16,6 +16,7 @@ import { CloseOrder } from "@/components/close-order";
 import { CorrectOrder, type CorrectableLine } from "@/components/correct-order";
 import { VersionBadge, VersionTrail, type DocumentVersion }
   from "@/components/version-history";
+import { TransactionOrigin } from "@/components/transaction-origin";
 import {
   voidDocumentAction, linkReceiptToOrder, closeOrderAction,
   previewOrderCorrection, correctOrder,
@@ -40,6 +41,7 @@ import {
   getOrderProgress,
   getRelatedDocuments,
   getDocumentVersions,
+  getTransactionOrigin,
   getUnsettledConsignment,
   getLinkableOrders,
   getOrderOutstanding,
@@ -325,6 +327,15 @@ export default async function DocumentPage({
   // is exactly as wrong as a supplier one, and hides the same way behind a
   // single status.
   const isSalesInvoice = doc.doc_type === "SALES_INVOICE";
+
+  /**
+   * Which route this transaction took. Only on invoices, where the question
+   * "why has this no order?" actually gets asked — an order or a receipt is
+   * self-evidently the start of its own chain.
+   */
+  const origin = (doc.doc_type === "PURCHASE_INVOICE" || isSalesInvoice)
+    ? await getTransactionOrigin(doc.company_id, doc.id)
+    : null;
   const progress = (doc.doc_type === "PURCHASE_INVOICE" || isSalesInvoice)
     && doc.status === "POSTED"
     ? await getInvoiceProgress(doc.company_id, doc.id)
@@ -480,22 +491,18 @@ export default async function DocumentPage({
     <>
       <DocStats stats={stats} />
       {orderActions}
-      {/* Said once, where somebody would otherwise go looking for an edit
-          button and conclude there isn't one. */}
-      {isLiveInvoice && orderBehind && (
-        <p className="page-sub" style={{ margin: "0 0 0.75rem" }}>
-          Priced by{" "}
-          <Link href={`/documents/${orderBehind.id}`}>{orderBehind.doc_no}</Link>.
-          Correct it there and the correction carries into this bill.
-        </p>
-      )}
     </>
   );
 
   const footer = (
     <DocumentFooter
       activity={people.activity as never}
-      related={<RelatedDocumentsPanel related={related} />}
+      related={
+        <>
+          {origin && <TransactionOrigin origin={origin} docNo={doc.doc_no ?? ""} />}
+          <RelatedDocumentsPanel related={related} />
+        </>
+      }
       createdBy={{ name: people.doc?.created_by ?? null, initials: people.doc?.created_initials ?? null }}
       postedBy={{ name: people.doc?.posted_by ?? null, initials: people.doc?.posted_initials ?? null }}
       postedAt={people.doc?.posted_at ? String(people.doc.posted_at) : null}

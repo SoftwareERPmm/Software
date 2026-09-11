@@ -107,6 +107,52 @@ psql "$DATABASE_URL" -f db/tests/smoke.sql
 
 Every line of that must read PASS.
 
+## Checking the screens
+
+The suites above prove the ledger. None of them opens a page, so every UI fault
+this project has had — buttons landing on each other, a panel painting over the
+column beside it, an order's lines vanishing on its superseded version — was
+found by somebody looking at it. These two close part of that gap, and neither
+replaces looking.
+
+They drive a real browser through `playwright-cli`, reading pages as text
+rather than pictures. Install it once:
+
+```bash
+npm install --prefix ~/.npm-global @playwright/cli@latest
+ln -sf ~/.npm-global/node_modules/.bin/playwright-cli ~/.local/bin/playwright-cli
+playwright-cli install --skills --global      # the Claude Code skill
+```
+
+Both want a production build, not `next dev` — the two share `.next` and break
+each other's CSS:
+
+```bash
+npm run build && npm start &
+
+npm run smoke      # every route: does it render, does the console complain
+npm run test:ui    # correcting an order, through the dialog a person uses
+```
+
+`npm run smoke` walks all 61 routes the app defines and reports the two things
+a browser can tell you without a human reading the page: the status it came
+back with, and what the console said. It takes the base URL as an argument, so
+it works against the live site too:
+
+```bash
+npm run smoke -- https://software-five-lake.vercel.app
+```
+
+`npm run test:ui` reseeds the database first — same rule as every other suite,
+scratch copies only.
+
+**What a snapshot cannot see.** `playwright-cli` returns an accessibility tree:
+structure and content, never appearance. Two elements on top of each other, a
+label clipped at its edge, the wrong colour — all of it reads as perfectly fine
+in the text. Twice in one afternoon a DOM measurement said a cell was inside
+its box while the text in it plainly was not. For anything you would describe
+by pointing at it, take a screenshot and look.
+
 ## Read these before changing anything
 
 | | |

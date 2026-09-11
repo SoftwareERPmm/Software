@@ -901,11 +901,25 @@ export async function getRelatedDocuments(documentId: string): Promise<RelatedDo
   // reached from the version trail on the document itself.
   const parent = doc.source_document_id
     ? shape(await sql`
+        -- The document this was raised from, and the one that was raised
+        -- from — an invoice billing a delivery that answered an order is
+        -- linked to that order, one hop further up. Saying "Sales order:
+        -- None" beside a chain strip naming the order was the panel
+        -- contradicting the rest of the page about the same fact.
+        with lineage as (
+          select fn_current_document(${doc.source_document_id}) as id
+          union
+          select fn_current_document(p.source_document_id)
+            from document p
+           where p.id = fn_current_document(${doc.source_document_id})
+             and p.source_document_id is not null
+        )
         select d.id, d.doc_type, d.doc_no, to_char(d.doc_date,'YYYY-MM-DD') as doc_date,
                d.status, d.gross_total,
                coalesce((select sum(dl.base_qty) from document_line dl
                           where dl.document_id = d.id), 0) as qty
-          from document d where d.id = fn_current_document(${doc.source_document_id})`)
+          from lineage l join document d on d.id = l.id
+         order by d.posting_date, d.doc_no`)
     : [];
 
   const children = shape(await sql`
@@ -2458,6 +2472,156 @@ export async function getOrderProgress(orderId: string, docType: string) {
 
     return { ...l, fulfilled: got };
   });
+}
+
+export type OriginFulfilment =
+  | { state: "NOT_REQUIRED" }
+  | { state: "PENDING" }
+  | { state: "PARTIAL"; outstanding: number; unit: string | null }
+  | { state: "DONE" };
+
+export type TransactionOrigin = {
+  /** Where this piece of work actually began. */
+  startedFrom: "ORDER" | "FULFILMENT" | "INVOICE";
+  startDoc: { id: string; doc_no: string; doc_type: string } | null;
+  order:
+    | { state: "USED"; doc: { id: string; doc_no: string } }
+    | { state: "LINKED_LATER"; doc: { id: string; doc_no: string } }
+    | { state: "NOT_USED" };
+  fulfilment: OriginFulfilment;
+  /** Goods documents this invoice was raised from — they came first. */
+  fulfilmentBefore: { id: string; doc_no: string; doc_type: string }[];
+  /** Goods documents raised from this invoice — they came after. */
+  fulfilmentAfter: { id: string; doc_no: string; doc_type: string }[];
+  payment: "PAID" | "PARTIAL" | "UNPAID";
+  /** Where a correction to this transaction belongs. */
+  correctAt: { kind: "ORDER"; doc: { id: string; doc_no: string } } | { kind: "SELF" };
+  sales: boolean;
+};
+
+/**
+ * How this transaction came about, and where correcting it belongs.
+ *
+ * An invoice with no order is not an unfinished one — a walk-in sale and a
+ * phoned-in purchase are ordinary, complete business — but every screen that
+ * draws the chain as a row of stages makes the missing stage look like a gap.
+ * So the document says which route it actually took, and names the difference
+ * between three things a blank space cannot distinguish:
+ *
+ *   not used      an optional stage this transaction skipped
+ *   pending       a stage this transaction needs and has not reached
+ *   not required  a stage that does not apply at all, as for a service
+ *
+ * Read from what the documents record about each other — the chain they were
+ * raised through, and the links somebody made afterwards — never from matching
+ * names or dates, which is guessing dressed as fact.
+ *
+ * The starting point survives a correction. A correction re-posts the document
+ * against the same source it was raised from, so the route it took is the
+ * route it still took; and an order attached after the fact is reported
+ * separately rather than rewriting where the work began, because it did not
+ * begin there.
+ */
+export async function getTransactionOrigin(
+  companyId: string, documentId: string,
+): Promise<TransactionOrigin | null> {
+  const [doc] = await sql`
+    select id, doc_type, source_document_id, to_deliver, gross_total
+      from document where id = ${documentId} and company_id = ${companyId}`;
+  if (!doc) return null;
+
+  const sales = doc.doc_type === "SALES_INVOICE";
+  const orderType = sales ? "SALES_ORDER" : "PURCHASE_ORDER";
+  const moveType = sales ? "DELIVERY" : "GOODS_RECEIPT";
+
+  // The chain this document was raised through, walked upward. At most two
+  // hops: invoice → delivery or receipt → order.
+  const chain: { id: string; doc_no: string; doc_type: string }[] = [];
+  let cursor = doc.source_document_id as string | null;
+  for (let hop = 0; hop < 3 && cursor; hop++) {
+    const [row] = await sql`
+      select id, doc_no, doc_type, source_document_id
+        from document where id = fn_current_document(${cursor})`;
+    if (!row) break;
+    chain.push({ id: row.id as string, doc_no: row.doc_no as string,
+                 doc_type: row.doc_type as string });
+    cursor = row.source_document_id as string | null;
+  }
+
+  const orderInChain = chain.find((c) => c.doc_type === orderType) ?? null;
+
+  // An order attached after the fact, through the goods rather than through
+  // the chain. Reported as what it is: not where this began.
+  const [linkedLater] = orderInChain ? [] : await sql`
+    select distinct o.id, o.doc_no
+      from document_line il
+      join document_line fl on fl.id = il.source_line_id
+      join fulfilment_link k on k.fulfilment_line_id = fl.id
+      join document_line ol on ol.id = k.order_line_id
+      join document o on o.id = fn_current_document(ol.document_id)
+     where il.document_id in (${versionsOf(documentId)})
+       and o.doc_type = ${orderType}
+     limit 1`;
+
+  const order: TransactionOrigin["order"] =
+    orderInChain ? { state: "USED", doc: orderInChain }
+    : linkedLater ? { state: "LINKED_LATER",
+                      doc: { id: linkedLater.id as string, doc_no: linkedLater.doc_no as string } }
+    : { state: "NOT_USED" };
+
+  // Everything that moved goods for this invoice, in either direction: the
+  // one it was raised from, and any raised from it afterwards.
+  const movedFrom = chain.filter((c) => c.doc_type === moveType);
+  const movedAfter = await sql`
+    select id, doc_no, doc_type from document
+     where company_id = ${companyId} and doc_type = ${moveType} and status = 'POSTED'
+       and source_document_id in (${versionsOf(documentId)})
+     order by doc_no`;
+  const fulfilmentAfter =
+    movedAfter as unknown as { id: string; doc_no: string; doc_type: string }[];
+  const fulfilmentDocs = [...movedFrom, ...fulfilmentAfter];
+
+  // Nothing physical to deliver. A service invoice is complete with no
+  // delivery and must not be drawn as waiting for one.
+  const [stocked] = await sql`
+    select count(*)::int as n
+      from document_line dl join item i on i.id = dl.item_id
+     where dl.document_id = ${documentId} and i.is_stocked`;
+
+  let fulfilment: OriginFulfilment;
+  if (Number(stocked.n) === 0) {
+    fulfilment = { state: "NOT_REQUIRED" };
+  } else {
+    // The same reckoning the two halves of the invoice use, rather than a
+    // second opinion about the same goods.
+    const progress = await getInvoiceProgress(companyId, documentId);
+    const outstanding = Number(progress?.goods.outstanding ?? 0);
+    fulfilment =
+      fulfilmentDocs.length === 0 ? { state: "PENDING" }
+      : outstanding > 0.0001
+        ? { state: "PARTIAL", outstanding, unit: progress?.unit ?? null }
+        : { state: "DONE" };
+  }
+
+  const owed = await getDocumentOutstanding(documentId);
+  const gross = Number(doc.gross_total);
+  const payment: TransactionOrigin["payment"] =
+    owed <= 0.0001 ? "PAID" : owed >= gross - 0.0001 ? "UNPAID" : "PARTIAL";
+
+  return {
+    startedFrom: orderInChain ? "ORDER" : chain.length > 0 ? "FULFILMENT" : "INVOICE",
+    startDoc: orderInChain ?? chain[chain.length - 1] ?? null,
+    order,
+    fulfilment,
+    fulfilmentBefore: movedFrom,
+    fulfilmentAfter,
+    payment,
+    // The tester's rule, said on the document rather than discovered by
+    // pressing a button that is not there: an order-based invoice is
+    // corrected at the order.
+    correctAt: orderInChain ? { kind: "ORDER", doc: orderInChain } : { kind: "SELF" },
+    sales,
+  };
 }
 
 /**

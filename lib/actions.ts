@@ -16,7 +16,7 @@ import {
   postCashVoucher, postBankVoucher, postJournalVoucher,
   linkFulfilmentToOrder, closeOrderRemaining, reopenOrder,
   amendOrder, planOrderAmendment, amendInvoice, planInvoiceAmendment,
-  amendmentFingerprint,
+  amendmentFingerprint, StalePlan,
   type AmendmentPlan,
   postCashTransfer, postAccountOpening, postOpeningBatch, resettleConsignmentSale,
   postStockAdjustment, postStockTransfer,
@@ -2027,35 +2027,35 @@ export async function correctOrder(
   _prev: unknown, fd: FormData,
 ): Promise<CorrectionResult> {
   let landOn: string;
-  try {
-    const co = await companyId();
-    const reason = str(fd, "reason");
-    if (!reason.trim()) return { error: "Say why this is being corrected" };
+  const co = await companyId();
+  const reason = str(fd, "reason");
+  if (!reason.trim()) return { error: "Say why this is being corrected" };
 
+  try {
     const { documentId, order } = await orderCorrection(co, fd);
 
-    // What the reader was shown, against what is true now. Somebody can pay
-    // one of these invoices or ship the rest of the order between looking and
-    // confirming, and posting what they saw rather than what is there would be
-    // the one thing a confirmation screen exists to prevent.
-    const shown = str(fd, "fingerprint");
-    if (shown) {
-      const now = await planOrderAmendment({ companyId: co, documentId, order, reason });
-      const fingerprint = amendmentFingerprint(now);
-      if (fingerprint !== shown) {
-        return { stale: true, plan: now, fingerprint };
-      }
-    }
+    // What the reader was shown, checked against what the correction actually
+    // does — inside the transaction that does it, so there is no window
+    // between the two and no second run of the whole thing.
+    const shown = str(fd, "fingerprint") || null;
 
     // The reader is sent to the version that now stands, not the one they
     // were reading — which the correction has just retired. Landing back on
     // v1 shows the old figure under a "Superseded" banner and reads as though
     // the correction had not taken.
     const { replacementId } = await amendOrder({
-      companyId: co, documentId, reason, cascade: true, order,
+      companyId: co, documentId, reason, cascade: true, order, expect: shown,
     });
     landOn = replacementId;
   } catch (e) {
+    // Not an error: the world moved, nothing was posted, and the reader gets
+    // the revised plan to look at before deciding again.
+    if (e instanceof StalePlan) {
+      const again = await orderCorrection(co, fd);
+      const now = await planOrderAmendment({
+        companyId: co, documentId: again.documentId, order: again.order, reason });
+      return { stale: true, plan: now, fingerprint: amendmentFingerprint(now) };
+    }
     return { error: e instanceof Error ? e.message : String(e) };
   }
   revalidatePath("/documents", "layout");
