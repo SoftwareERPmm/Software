@@ -150,7 +150,8 @@ export default async function Dashboard() {
             <h2><AlertTriangle size={15} style={{ verticalAlign: "-2px", marginRight: "0.3rem" }} /> Action required</h2>
             {actions.length > 0 && (
               <span className="page-sub">
-                {actions.length} thing{actions.length === 1 ? "" : "s"} genuinely need attention
+                {actions.length} thing{actions.length === 1 ? "" : "s"} genuinely
+                {actions.length === 1 ? " needs" : " need"} attention
               </span>
             )}
           </div>
