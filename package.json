@@ -6,6 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "smoke": "bash scripts/smoke-ui.sh",
+    "test:ui": "npx tsx scripts/seed-correction-flow.mjs && bash scripts/test-ui-correction.sh",
     "db:migrate": "node scripts/migrate.mjs",
     "db:seed": "node scripts/migrate.mjs --seed"
   },

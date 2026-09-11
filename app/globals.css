@@ -1586,6 +1586,45 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 }
 .billpart input { margin: 0; }
 
+/* Which route a transaction took. Sits with the related documents because it
+   answers the same question from the other side: those say what exists, this
+   says how it came to be. Quiet by design — it is context, not an alarm — and
+   the only coloured thing in it is a stage still waiting. */
+.origin {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--line-soft);
+  padding: 0.6rem 0.75rem;
+  font-size: var(--t-sm);
+  margin-bottom: 0.75rem;
+}
+.origin-head { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.5rem; }
+.origin-list {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.25rem 0.75rem;
+  margin: 0;
+  align-items: baseline;
+}
+.origin-list dt { color: var(--muted); }
+.origin-list dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+/* A stage nobody used and a stage nobody has reached are different facts, so
+   they do not look the same: one is simply absent, the other is outstanding. */
+.origin-skip { color: var(--muted); }
+.origin-wait { color: var(--warn); }
+.origin-why { color: var(--muted); font-weight: 400; }
+.origin-path {
+  margin-top: 0.55rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  font-family: var(--mono, ui-monospace, monospace);
+}
+.origin-path svg { color: var(--muted); vertical-align: -1px; margin-right: 0.3rem; }
+
 /* The versions of one document number. Quiet by default — most documents
    have one version and never show this at all — and warned only on the one
    that has been retired, which is the case where somebody is reading a figure

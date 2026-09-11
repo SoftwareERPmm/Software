@@ -5,6 +5,9 @@ reference/
 scratch/
 scratchpad/
 
+# Browser snapshots the Playwright CLI writes beside whatever it inspects.
+.playwright-cli/
+
 # Dependencies
 node_modules/
 __pycache__/
