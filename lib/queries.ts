@@ -1303,6 +1303,93 @@ export async function getOpenPurchaseOrders(companyId: string) {
      order by o.doc_no, ol.line_no`;
 }
 
+/** One order and one item on it, still awaited and untouched. */
+export type AwaitingLine = {
+  order_id: string;
+  doc_no: string;
+  partner_id: string;
+  posting_date: string;
+  due_date: string | null;
+  item_id: string;
+  item_code: string;
+  item_name: string;
+  uom_code: string;
+  outstanding: number;
+};
+
+/**
+ * Orders already out to this partner that nothing has happened to yet.
+ *
+ * The mistake this exists to prevent — ordering goods that are already
+ * coming — is made at one moment, by someone who has no reason to suspect
+ * it: the supplier is chosen on a blank order and the last one, placed nine
+ * days ago by somebody else, is nowhere on the screen. So the answer has to
+ * arrive unasked, at that moment, and it has to be specific: not "this
+ * supplier has open orders" but "100 BOX of Item A is already coming".
+ *
+ * "Untouched" is deliberately strict. Goods still outstanding, not closed,
+ * nothing received against any line of it, and no posted document naming the
+ * order or anything raised from it. An order that is half received, or
+ * already billed, is a different conversation — it has a receipt or an
+ * invoice to answer to, and re-ordering the missing half may be exactly the
+ * right thing to do. Listing those too would make a reminder that fires on
+ * orders nobody can act on, which is how a reminder stops being read.
+ *
+ * Outstanding comes from v_order_outstanding, the same reckoning the
+ * dashboard and the receive form use, so this cannot disagree with them
+ * about what is still owed.
+ */
+export async function getUntouchedOpenOrders(
+  companyId: string,
+  docType: "SALES_ORDER" | "PURCHASE_ORDER"
+) {
+  const rows = await sql`
+    with touched as (
+        -- Anything posted that names the order, resolved to the version
+        -- standing now, then one hop further for whatever names that.
+        -- Today only a receipt or a delivery names an order — an invoice
+        -- names the receipt, never the order — so this is wider than the
+        -- paths that exist. Deliberately: the list prints the sentence
+        -- "nothing has been received, invoiced or paid against these", and
+        -- that has to stay true the day something bills an order directly.
+        select fn_current_document(c.source_document_id) as order_id
+          from document c
+         where c.company_id = ${companyId}
+           and c.status = 'POSTED'
+           and c.source_document_id is not null
+        union
+        select fn_current_document(s.source_document_id) as order_id
+          from document c
+          join document s on s.id = c.source_document_id
+         where c.company_id = ${companyId}
+           and c.status = 'POSTED'
+           and s.source_document_id is not null
+    )
+    select v.order_id, o.doc_no, o.partner_id,
+           to_char(o.posting_date, 'YYYY-MM-DD') as posting_date,
+           to_char(o.due_date, 'YYYY-MM-DD') as due_date,
+           v.item_id, i.code as item_code, i.name as item_name,
+           u.code as uom_code,
+           v.outstanding::float as outstanding
+      from v_order_outstanding v
+      join document o on o.id = v.order_id
+      join item i on i.id = v.item_id
+      join uom u on u.id = i.base_uom_id
+     where v.company_id = ${companyId}
+       and v.doc_type = ${docType}
+       and v.outstanding > 0
+       and not v.is_closed
+       -- Nothing arrived against any line of it, named or linked afterwards.
+       and not exists (
+             select 1 from v_order_outstanding f
+              where f.order_id = v.order_id and f.fulfilled > 0)
+       and v.order_id not in (
+             select order_id from touched where order_id is not null)
+     order by o.due_date nulls last, o.posting_date, o.doc_no, i.name`;
+
+  return rows as unknown as AwaitingLine[];
+}
+
 /**
  * Goods receipts already posted, newest first.
  *

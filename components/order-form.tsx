@@ -1,9 +1,11 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useMemo, useState } from "react";
 import type { ActionResult, PickerItem } from "@/lib/actions";
+import type { AwaitingLine } from "@/lib/queries";
 import { ItemPicker } from "./item-picker";
 import { PartnerPicker } from "./partner-picker";
+import { AwaitingOrders, AlreadyAwaited } from "./awaiting-orders";
 
 type Item = PickerItem;
 type Node = { id: string; code: string; segment: string; name: string; parent_id: string | null };
@@ -33,6 +35,7 @@ export function OrderForm({
   today,
   categories,
   uoms,
+  awaiting = [],
 }: {
   kind: "sales" | "purchase";
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
@@ -42,6 +45,8 @@ export function OrderForm({
   today: string;
   categories: Node[];
   uoms: { id: string; code: string; name: string }[];
+  /** Open orders to this partner that nothing has happened to yet. */
+  awaiting?: AwaitingLine[];
 }) {
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     action as never,
@@ -58,6 +63,14 @@ export function OrderForm({
 
   const isSales = kind === "sales";
   const byId = (id: string) => items.find((i) => i.id === id);
+
+  // Everything already awaited from whoever is chosen. Held for the whole
+  // form so the banner and the line flags cannot disagree: same rows, read
+  // twice, once as a list of orders and once per item.
+  const awaited = useMemo(
+    () => (partnerId ? awaiting.filter((a) => a.partner_id === partnerId) : []),
+    [awaiting, partnerId]
+  );
 
   function setLine(key: number, patch: Partial<Line>) {
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
@@ -136,6 +149,8 @@ export function OrderForm({
         </div>
       </div>
 
+      <AwaitingOrders lines={awaited} sales={isSales} />
+
       <div className="card">
         <div className="card-head">
           <h2>Lines</h2>
@@ -164,6 +179,10 @@ export function OrderForm({
                         value={l.itemId}
                         onPick={(id) => pickItem(l.key, id)}
                         onCreated={addItem}
+                      />
+                      <AlreadyAwaited
+                        lines={awaited.filter((a) => a.item_id === l.itemId)}
+                        sales={isSales}
                       />
                     </td>
                     <td className="narrow">
