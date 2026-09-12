@@ -129,6 +129,27 @@ export async function planVoidIn(db: Db, documentId: string): Promise<VoidPlan> 
     });
   }
 
+  // ---- advances this payment has already been spent on ---------------------
+  // Voiding the receipt would stop its allocations counting, so the invoices
+  // would reopen — but the applications' own entries would still stand, with
+  // receivables credited for money no longer there. Voiding one document must
+  // not quietly void another, so the applications come off first, by hand and
+  // in sight.
+  const spent = await db`
+    select app.id, app.doc_no, sum(pa.amount) as amount
+      from payment_allocation pa
+      join document app on app.id = pa.applied_by_document_id
+     where pa.payment_id = ${documentId} and app.status = 'POSTED'
+     group by app.id, app.doc_no
+     order by app.doc_no`;
+  for (const a of spent as unknown as { id: string; doc_no: string; amount: string }[]) {
+    blockers.push({
+      reason: `${a.doc_no} applied ${money(a.amount)} of this to an invoice. `
+            + `Void that application first.`,
+      docNo: a.doc_no, docId: a.id,
+    });
+  }
+
   // ---- stock this document put on the shelf, since consumed ----------------
   // A receipt whose goods have been sold cannot be taken back: the layers it
   // created are partly gone, and the cost of the sale that took them was

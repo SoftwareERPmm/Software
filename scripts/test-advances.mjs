@@ -221,6 +221,109 @@ try {
     `${await available(cust.id)}`);
   await invariants("at the end");
 
+  // ---- undoing an application ---------------------------------------------
+
+  console.log("\n  taking an application back\n");
+  {
+    const a = await P.postCustomerReceipt({
+      companyId: co.id, partnerId: cust.id, docDate: today,
+      cashAccountId: bank.id, locationId: loc.id, allocations: [], advance: 8000 });
+    const i = await P.postSalesInvoice({
+      companyId: co.id, partnerId: cust.id, locationId: loc.id,
+      docDate: today, dueDate: today, toDeliver: true,
+      lines: [{ itemId: item.id, qty: 2, unitPrice: 6000 }] });
+    const app = await P.applyAdvance({ companyId: co.id, invoiceId: i.id, docDate: today,
+      allocations: [{ paymentId: a.id, amount: 8000 }] });
+
+    check("applied, the invoice owes 4,000", near(await owes(i.id), 4000), `${await owes(i.id)}`);
+
+    await P.voidDocument({ companyId: co.id, documentId: app.id, reason: "applied by mistake" });
+
+    check("voiding the application puts the invoice back to 12,000",
+      near(await owes(i.id), 12000), `${await owes(i.id)}`);
+    check("  and the money back on account",
+      near(await available(cust.id), 8000 + 3000), `${await available(cust.id)}`);
+    await invariants("after undoing it");
+
+    // And the receipt underneath can then be voided too.
+    await P.voidDocument({ companyId: co.id, documentId: a.id, reason: "money returned" });
+    check("  the receipt can then be voided", near(await available(cust.id), 3000),
+      `${await available(cust.id)}`);
+    await invariants("after voiding the receipt");
+  }
+
+  // ---- the receipt cannot be pulled out from under a live application -----
+
+  console.log("\n  what an application protects\n");
+  {
+    const a = await P.postCustomerReceipt({
+      companyId: co.id, partnerId: cust.id, docDate: today,
+      cashAccountId: bank.id, locationId: loc.id, allocations: [], advance: 5000 });
+    const i = await P.postSalesInvoice({
+      companyId: co.id, partnerId: cust.id, locationId: loc.id,
+      docDate: today, dueDate: today, toDeliver: true,
+      lines: [{ itemId: item.id, qty: 2, unitPrice: 6000 }] });
+    const app = await P.applyAdvance({ companyId: co.id, invoiceId: i.id, docDate: today,
+      allocations: [{ paymentId: a.id, amount: 5000 }] });
+
+    let blocked = null;
+    try {
+      await P.voidDocument({ companyId: co.id, documentId: a.id, reason: "pulling it out" });
+    } catch (e) { blocked = e.message; }
+    check("a spent advance cannot be voided under its application", blocked !== null,
+      blocked ? blocked.slice(0, 60) : "VOIDED — the application now credits money that is gone");
+    check("  and the invoice is untouched by the attempt",
+      near(await owes(i.id), 7000), `${await owes(i.id)}`);
+    check("  the message names the application to void first",
+      blocked !== null && blocked.includes(app.docNo), app.docNo);
+    await invariants("after the refusal");
+  }
+
+  // ---- one branch's money paying another branch's bill --------------------
+
+  console.log("\n  money taken in one branch, a bill raised in another\n");
+  {
+    const branches = await sql`select id, code from location
+       where company_id = ${co.id} and is_stock_location and is_active order by code limit 2`;
+    if (branches.length === 2) {
+      const [yangon, mandalay] = branches;
+      const per = async (code, locId) => {
+        const [r] = await sql`select coalesce(sum(jl.base_amount),0)::float v
+           from journal_line jl join account acc on acc.id = jl.account_id
+          where jl.company_id = ${co.id} and acc.code = ${code}
+            and jl.location_id = ${locId}`;
+        return n(r.v);
+      };
+
+      const a = await P.postCustomerReceipt({
+        companyId: co.id, partnerId: cust.id, docDate: today,
+        cashAccountId: bank.id, locationId: yangon.id, allocations: [], advance: 9000 });
+      const i = await P.postSalesInvoice({
+        companyId: co.id, partnerId: cust.id, locationId: mandalay.id,
+        docDate: today, dueDate: today, toDeliver: true,
+        lines: [{ itemId: item.id, qty: 2, unitPrice: 6000 }] });
+
+      // Measured across the application alone. Earlier sections of this suite
+      // left advances of their own sitting in the same branch, so an absolute
+      // balance here would be reading their residue rather than this.
+      const yangonBefore = await per("2060", yangon.id);
+      const mandalayBefore = await per("2060", mandalay.id);
+
+      await P.applyAdvance({ companyId: co.id, invoiceId: i.id, docDate: today,
+        allocations: [{ paymentId: a.id, amount: 9000 }] });
+
+      check("the advance clears in the branch that took it",
+        near((await per("2060", yangon.id)) - yangonBefore, 9000),
+        `Yangon 2060 moved ${(await per("2060", yangon.id)) - yangonBefore}`);
+      check("  and the branch that raised the bill is untouched by it",
+        near((await per("2060", mandalay.id)) - mandalayBefore, 0),
+        `Mandalay 2060 moved ${(await per("2060", mandalay.id)) - mandalayBefore}`);
+      check("  the receivable clears where the invoice was raised",
+        near(await owes(i.id), 3000), `${await owes(i.id)}`);
+      await invariants("across branches");
+    }
+  }
+
   console.log(bad === 0
     ? "\n  money can arrive before the invoice does\n"
     : `\n  ${bad} FAILED\n`);

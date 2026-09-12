@@ -3987,9 +3987,14 @@ export async function applyAdvance(input: {
       );
     }
 
+    // Where each advance was taken, so it can be cleared from there. Kept
+    // per advance rather than as one figure: a customer can have paid two
+    // branches and both have to come down.
+    const takenIn = new Map<string, number>();
+
     for (const a of lines) {
       const [adv] = await tx`
-        select d.doc_no, d.partner_id, d.doc_type,
+        select d.doc_no, d.partner_id, d.doc_type, d.location_id,
                v.available
           from document d
           left join v_partner_advance v on v.payment_id = d.id
@@ -4017,6 +4022,8 @@ export async function applyAdvance(input: {
           `${adv.doc_no} has ${available} left on account, so ${a.amount} cannot be applied.`
         );
       }
+      const branch = (adv.location_id as string) ?? "";
+      takenIn.set(branch, round4((takenIn.get(branch) ?? 0) + a.amount));
     }
 
     const noRows = await tx`
@@ -4040,8 +4047,10 @@ export async function applyAdvance(input: {
     for (const a of lines) {
       await tx`
         insert into payment_allocation
-          (company_id, payment_id, invoice_id, amount, base_amount)
-        values (${companyId}, ${a.paymentId}, ${inv.id}, ${a.amount}, ${a.amount})`;
+          (company_id, payment_id, invoice_id, amount, base_amount,
+           applied_by_document_id)
+        values (${companyId}, ${a.paymentId}, ${inv.id}, ${a.amount}, ${a.amount},
+                ${doc.id})`;
     }
 
     const holding = await tx`
@@ -4053,16 +4062,32 @@ export async function applyAdvance(input: {
 
     // Customer: the advance stops being owed back (debit) and the receivable
     // is relieved (credit). Supplier: the reverse.
+    //
+    // Each side clears where it actually sits. The advance came into whichever
+    // branch took the money and has to come down there; the receivable was
+    // raised by the branch that issued the invoice and has to come down there.
+    // Posting both against the invoice's branch — which is what this did at
+    // first — left Yangon still carrying an advance it no longer held while
+    // Mandalay's books showed one it never took.
     const sign = isPayment ? -1 : 1;
+    const journal: JournalLine[] = [];
+    for (const [branch, amount] of takenIn) {
+      journal.push({
+        accountId: holding[0].a, amount: round4(sign * amount),
+        partnerId: inv.partner_id as string,
+        locationId: branch === "" ? null : branch,
+      });
+    }
+    journal.push({
+      accountId: control[0].a, amount: round4(-sign * total),
+      partnerId: inv.partner_id as string,
+      locationId: inv.location_id as string | null,
+    });
+
     const entryId = await writeJournal(
       tx, companyId, docDate, "ADVANCE_APPLICATION", doc.id,
       `${docNo} applying ${total} to ${inv.doc_no}`,
-      [
-        { accountId: holding[0].a, amount: round4(sign * total),
-          partnerId: inv.partner_id as string, locationId: inv.location_id as string | null },
-        { accountId: control[0].a, amount: round4(-sign * total),
-          partnerId: inv.partner_id as string, locationId: inv.location_id as string | null },
-      ]
+      journal
     );
     await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
 

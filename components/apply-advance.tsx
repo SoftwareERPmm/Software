@@ -153,11 +153,17 @@ export function ApplyAdvance({
                 <div className="advpreview">
                   <h3>After applying</h3>
                   <dl>
-                    <dt>Invoice total</dt>
+                    {/* What the invoice still owes, which is not the same as
+                        what it was raised for — a bill already part paid would
+                        otherwise be labelled with a figure it has not carried
+                        for weeks. */}
+                    <dt>Outstanding before this</dt>
                     <dd>{money(outstanding)} MMK</dd>
                     <dt>Advance to apply</dt>
                     <dd>−{money(applying)} MMK</dd>
-                    <dt className="strong">Remaining to collect</dt>
+                    <dt className="strong">
+                      Remaining to {sales ? "collect" : "pay"}
+                    </dt>
                     <dd className="strong">{money(outstanding - applying)} MMK</dd>
                     <dt>Unused advance remaining</dt>
                     <dd>{money(total - applying)} MMK</dd>
