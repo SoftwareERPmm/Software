@@ -416,6 +416,84 @@ async function sharedSourceLines(
   return out;
 }
 
+/** One side of a suspected double: goods waiting on a bill, or a bill waiting on goods. */
+export type GrirCollisionLine = {
+  partner_id: string;
+  side: "GOODS" | "BILL";
+  document_id: string;
+  doc_no: string;
+  doc_date: string;
+  item_id: string;
+  item_name: string;
+  uom_code: string;
+  qty: number;
+};
+
+/**
+ * Goods waiting on a bill and a bill waiting on goods, for the same items
+ * from the same supplier — which is usually one purchase entered twice.
+ *
+ * A purchase invoice can only name a goods receipt, never an order. So a bill
+ * that arrives before the goods is an orphan: nothing connects it to the
+ * order it pays for, the order still reads as owed the goods, and each door
+ * then produces a receipt of its own. Two receipts, twice the stock, two
+ * payables, and every document individually correct.
+ *
+ * The receive form already warns while an order is still owed goods. This is
+ * the state *after* that warning goes quiet — the order has just been
+ * satisfied, so nothing is outstanding on it, and what is left is a receipt
+ * holding a credit in GR/IR and a bill holding a debit for the same goods.
+ * The ledger cannot net them: GR/IR is matched by the link documents record
+ * about each other, and these two never named each other.
+ *
+ * Read from the clearing account, not from names or dates: a receipt awaiting
+ * a bill credits GR/IR, a bill awaiting goods debits it, and a pair that did
+ * find each other nets to zero and drops out of v_grir_balance by itself.
+ * Restricted to items appearing on both sides, because a supplier who is
+ * genuinely owed a bill for one thing while billing ahead for another is
+ * doing nothing wrong and must not be told they are.
+ */
+export async function getGrirCollisions(companyId: string) {
+  const rows = await sql`
+    with open_grir as (
+        select g.partner_id, g.document_id, d.doc_type, d.doc_no, d.doc_date
+          from v_grir_balance g
+          join document d on d.id = g.document_id
+         where g.company_id = ${companyId}
+           and d.doc_type in ('GOODS_RECEIPT', 'PURCHASE_INVOICE')
+           and g.partner_id is not null
+    ),
+    named as (
+        select o.partner_id, o.document_id, o.doc_type, o.doc_no,
+               to_char(o.doc_date, 'YYYY-MM-DD') as doc_date,
+               dl.item_id, i.name as item_name, u.code as uom_code,
+               sum(dl.base_qty) as qty
+          from open_grir o
+          join document_line dl on dl.document_id = o.document_id
+          join item i on i.id = dl.item_id
+          join uom u on u.id = i.base_uom_id
+         group by o.partner_id, o.document_id, o.doc_type, o.doc_no, o.doc_date,
+                  dl.item_id, i.name, u.code
+    ),
+    -- Only where the same item is on both sides. One of each is the whole
+    -- signal; a bill for paint and goods for cement are two purchases.
+    both_sides as (
+        select partner_id, item_id
+          from named
+         group by partner_id, item_id
+        having count(distinct doc_type) = 2
+    )
+    select n.partner_id,
+           case when n.doc_type = 'GOODS_RECEIPT' then 'GOODS' else 'BILL' end as side,
+           n.document_id, n.doc_no, n.doc_date,
+           n.item_id, n.item_name, n.uom_code, n.qty::float as qty
+      from named n
+      join both_sides b on b.partner_id = n.partner_id and b.item_id = n.item_id
+     order by n.partner_id, side, n.doc_date, n.doc_no`;
+
+  return rows as unknown as GrirCollisionLine[];
+}
+
 /**
  * Goods receipts that still have something to bill, with each line's
  * remaining quantity rather than its original one.
