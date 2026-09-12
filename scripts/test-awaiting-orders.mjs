@@ -301,6 +301,70 @@ try {
   check("  and purchase orders stay out of it",
     (await owed("SALES_ORDER")).every((r) => r.doc_no !== f.docNo));
 
+
+  // ---- a bill filled from an order belongs to that order ------------------
+  //
+  // "Fill from this order" is not only a typing convenience. The voucher it
+  // fills names the order's own lines, which is what amendInvoice and the
+  // correction cascade already read — so the bill stops being a document of
+  // its own and becomes part of that order's chain. The dialog says exactly
+  // that before it happens; these are the three claims it makes.
+
+  console.log("\n  a bill filled from an order\n");
+  {
+    const f = await po(supp.id, [{ itemId: itemA.id, qty: 20, unitPrice: 1500 }]);
+    const [fl] = await sql`select id from document_line where document_id = ${f.id}`;
+
+    // What the form sends once the dialog is confirmed.
+    const bill = await P.postPurchaseInvoice({
+      companyId: co.id, partnerId: supp.id, locationId: loc.id,
+      docDate: today, dueDate: today, reference: f.docNo,
+      lines: [{ itemId: itemA.id, qty: 20, unitPrice: 1500, sourceLineId: fl.id }],
+    });
+
+    const [stored] = await sql`select reference from document where id = ${bill.id}`;
+    check("the order number is kept on the bill", stored.reference === f.docNo,
+      `${stored.reference}`);
+
+    const origin = await Q.getTransactionOrigin(co.id, bill.id);
+    check("  the document page calls it an order-based bill, not a direct one",
+      origin?.startedFrom === "ORDER", `${origin?.startedFrom}`);
+    check("  naming the order it came from",
+      origin?.order.state === "USED" && origin.order.doc.doc_no === f.docNo,
+      origin?.order.state === "USED" ? origin.order.doc.doc_no : String(origin?.order.state));
+    check("  and sending corrections there",
+      origin?.correctAt.kind === "ORDER" && origin.correctAt.doc.doc_no === f.docNo);
+
+    // Corrected at the order, not on the bill — the same rule as a bill
+    // raised through that order's receipt.
+    let refused = null;
+    try {
+      await P.amendInvoice({ companyId: co.id, documentId: bill.id, reason: "supplier billed 1,600",
+        invoice: { companyId: co.id, partnerId: supp.id, locationId: loc.id,
+          docDate: today, dueDate: today,
+          lines: [{ itemId: itemA.id, qty: 20, unitPrice: 1600 }] } });
+    } catch (e) { refused = e.message; }
+    check("the bill cannot be corrected on its own", !!refused);
+    check("  and the refusal names where to do it",
+      !!refused && refused.includes(f.docNo), refused?.slice(0, 60));
+
+    // And the other half of the dialog's promise: a price changed at the
+    // order carries into the bill it filled.
+    const amended = await P.amendOrder({
+      companyId: co.id, documentId: f.id, reason: "price renegotiated to 1,600",
+      order: { companyId: co.id, partnerId: supp.id, locationId: loc.id,
+        docDate: today, dueDate: today,
+        lines: [{ itemId: itemA.id, qty: 20, unitPrice: 1600 }] },
+      cascade: true,
+    });
+    const [billNow] = await sql`
+      select version, gross_total::float g from document
+       where doc_no = ${bill.docNo} and superseded_by_document_id is null`;
+    check("correcting the order carries into the bill it filled",
+      near(billNow?.g, 32000), `${billNow?.g} at v${billNow?.version}`);
+    void amended;
+  }
+
   console.log(`\n  ${bad === 0 ? "All good." : `${bad} failed.`}\n`);
 } catch (e) {
   console.error("\n  ERROR", e.message, "\n");

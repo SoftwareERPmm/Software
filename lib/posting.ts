@@ -2767,11 +2767,12 @@ async function _postPurchaseInvoice(
     insert into document
       (company_id, doc_type, doc_no, version, fiscal_year_id, doc_date, posting_date, due_date,
        partner_id, location_id, currency, exchange_rate, status,
-       net_total, tax_total, gross_total, memo, posted_at, source_document_id)
+       net_total, tax_total, gross_total, memo, posted_at, reference, source_document_id)
     values
       (${companyId}, 'PURCHASE_INVOICE', ${docNo}, ${version}, ${fiscalYear}, ${docDate}::date,
        ${docDate}::date, ${dueDate}, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
-       ${netTotal}, 0, ${netTotal}, ${input.memo ?? null}, now(), ${input.goodsReceiptId ?? null})
+       ${netTotal}, 0, ${netTotal}, ${input.memo ?? null}, now(),
+       ${input.reference ?? null}, ${input.goodsReceiptId ?? null})
     returning id`;
 
   const journal: JournalLine[] = [];

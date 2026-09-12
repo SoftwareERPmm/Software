@@ -2787,7 +2787,30 @@ export async function getTransactionOrigin(
     cursor = row.source_document_id as string | null;
   }
 
-  const orderInChain = chain.find((c) => c.doc_type === orderType) ?? null;
+  /**
+   * The order this document was raised from, where it was raised from one
+   * without a delivery or receipt in between.
+   *
+   * An invoice's source slot holds the goods it bills, so a bill raised
+   * straight from an order cannot put the order there — it names the order's
+   * lines on its own lines instead, which is what "fill from this order"
+   * writes and what amendInvoice and the correction cascade already read.
+   * Without this the card called such a bill a direct invoice, contradicting
+   * both of them about the same document.
+   */
+  const [fromOrderLines] = chain.some((c) => c.doc_type === orderType) ? [] : await sql`
+    select distinct o.id, o.doc_no, o.doc_type
+      from document_line il
+      join document_line ol on ol.id = il.source_line_id
+      join document o on o.id = fn_current_document(ol.document_id)
+     where il.document_id in (${versionsOf(documentId)})
+       and o.doc_type = ${orderType}
+     order by o.doc_no
+     limit 1`;
+
+  const orderInChain = chain.find((c) => c.doc_type === orderType)
+    ?? (fromOrderLines as { id: string; doc_no: string; doc_type: string } | undefined)
+    ?? null;
 
   /**
    * Orders the goods were allocated to after the event, reported as what they

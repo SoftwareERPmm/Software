@@ -61,6 +61,12 @@ type Line = {
   sourceLineId?: string;
   /** What that delivery line still has unbilled — the ceiling on this line. */
   sourceQty?: string;
+  /**
+   * The order line this one bills, when the voucher was filled from an open
+   * sales order. Separate from sourceLineId, which means "prefilled from a
+   * delivery" and holds the quantity to what went out.
+   */
+  orderLineId?: string;
   /** The order's agreed price, when there is an order behind this line. */
   agreedPrice?: number | null;
   orderId?: string | null;
@@ -260,6 +266,7 @@ export function SalesVoucher({
   const referenceFor = (d: OpenDelivery) => d.source_no || d.doc_no;
 
   function matchDelivery(id: string) {
+    setFromOrderId(null);
     setMatchedDeliveryId(id);
     setBillPart(false);
     const d = (deliveries ?? []).find((x) => x.id === id);
@@ -322,6 +329,9 @@ export function SalesVoucher({
       focReasonId: "",
       source: "OWNED" as const,
       agreedPrice: r.unit_price,
+      orderLineId: r.order_line_id,
+      orderId: r.order_id,
+      orderNo: r.doc_no,
     })));
     setReference(rows[0].doc_no);
   }
@@ -473,7 +483,11 @@ export function SalesVoucher({
           // Which delivery line this bills, so the engine can hold it to what
           // went out. Free lines carry no source: a giveaway is not part of
           // what the delivery is owed billing for.
-          ...(l.sourceLineId ? { sourceLineId: l.sourceLineId } : {}),
+          // Whichever this line came from — a delivery line, or the order
+          // line the voucher was filled from. Never both.
+          ...(l.sourceLineId || l.orderLineId
+            ? { sourceLineId: l.sourceLineId ?? l.orderLineId }
+            : {}),
           ...pool,
         };
         // Kept as two lines when both apply, because they are two different

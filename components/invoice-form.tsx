@@ -36,6 +36,13 @@ type OpenDoc = {
 type Line = {
   key: number; itemId: string; qty: string; unitPrice: string;
   sourceLineId?: string;
+  /**
+   * The order line this one bills, when the voucher was filled from an open
+   * order. Kept apart from sourceLineId, which means "prefilled from a goods
+   * receipt" and locks the quantity to what arrived: an order is a promise,
+   * and the supplier may well bill a different amount of it.
+   */
+  orderLineId?: string;
   /** What the source still has unbilled — the ceiling on this line. */
   sourceQty?: string;
 };
@@ -157,6 +164,7 @@ export function InvoiceForm({
         sourceQty: String(l.qty),
       }))
     );
+    setFromOrderId(null);
   }
 
   /**
@@ -182,6 +190,7 @@ export function InvoiceForm({
       itemId: r.item_id,
       qty: String(r.outstanding),
       unitPrice: String(r.unit_price),
+      orderLineId: r.order_line_id,
     })));
     setReference(rows[0].doc_no);
   }
@@ -260,7 +269,9 @@ export function InvoiceForm({
         itemId: l.itemId,
         qty: Number(l.qty),
         unitPrice: Number(l.unitPrice) || 0,
-        sourceLineId: l.sourceLineId,
+        // Whichever this line came from. A receipt line and an order line
+        // never both apply — matching a receipt replaces the lines.
+        sourceLineId: l.sourceLineId ?? l.orderLineId,
       }))
   );
 

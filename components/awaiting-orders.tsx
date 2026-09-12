@@ -1,7 +1,8 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, Link2 } from "lucide-react";
 import { qty, shortDate } from "@/lib/format";
 import type { AwaitingLine } from "@/lib/queries";
 
@@ -52,6 +53,16 @@ export function AwaitingOrders({
    */
   purpose?: "order" | "bill";
 }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [asking, setAsking] = useState<string | null>(null);
+  const close = () => { dialog.current?.close(); setAsking(null); };
+
+  // Opened from the effect rather than in the handler, so the panel is only
+  // ever shown for an order the list actually has.
+  useEffect(() => {
+    if (asking && !dialog.current?.open) dialog.current?.showModal();
+  }, [asking]);
+
   if (lines.length === 0) return null;
 
   // One row per order, its items named on it — because "2 open orders" is the
@@ -72,6 +83,8 @@ export function AwaitingOrders({
   // arrow for a `back` it can prove is a path inside this app.
   const hrefFor = (id: string) =>
     `/documents/${id}${backTo ? `?back=${encodeURIComponent(backTo)}` : ""}`;
+
+  const asked = orders.find((o) => o.id === asking) ?? null;
 
   return (
     <div className="awaiting">
@@ -128,7 +141,7 @@ export function AwaitingOrders({
                     <span className="awaiting-done">Filled in below</span>
                   ) : (
                     <button type="button" className="ghost tiny"
-                            onClick={() => onUse(o.id)}>
+                            onClick={() => setAsking(o.id)}>
                       Fill from this order
                     </button>
                   ))}
@@ -147,6 +160,57 @@ export function AwaitingOrders({
           : <>Carry on below only if this is a separate{" "}
               {sales ? "sale" : "purchase"} — nothing here is blocked.</>}
       </p>
+
+      {/* Filling from an order is not a convenience with no consequences:
+          the voucher stops being a document of its own and becomes part of
+          that order's chain. Said before it happens, because afterwards the
+          only visible sign is that some figures appeared. */}
+      <dialog ref={dialog} className="confirm" onClick={(e) => {
+        if (e.target === dialog.current) close();
+      }}>
+        {asked && (
+          <div className="confirm-panel">
+            <div className="confirm-icon" aria-hidden="true">
+              <Link2 size={18} />
+            </div>
+
+            <h2 className="confirm-title">
+              Fill this {sales ? "invoice" : "bill"} from {asked.docNo}?
+            </h2>
+
+            <ul className="confirm-list">
+              <li>
+                The lines come from the order: what it is still owed, at the
+                price agreed there. Change any of it before posting.
+              </li>
+              <li>
+                <strong>
+                  This {sales ? "invoice" : "bill"} becomes part of {asked.docNo}
+                </strong>{" "}
+                — not a {sales ? "direct invoice" : "direct bill"}. It shows in
+                that order's chain, and it is corrected at the order: a price
+                changed there carries into this one.
+              </li>
+              <li>
+                When the goods {sales ? "go out" : "arrive"}, {sales ? "deliver" : "receive"}{" "}
+                them <strong>against this {sales ? "invoice" : "bill"}</strong>,
+                not against {asked.docNo} — then link that{" "}
+                {sales ? "delivery" : "receipt"} to the order to close it.
+                Doing it the other way round leaves this{" "}
+                {sales ? "invoice" : "bill"} waiting for goods that have already{" "}
+                {sales ? "gone" : "come"}.
+              </li>
+            </ul>
+
+            <div className="confirm-actions">
+              <button type="button" className="ghost" onClick={close}>Cancel</button>
+              <button type="button" onClick={() => { onUse?.(asked.id); close(); }}>
+                Fill from {asked.docNo}
+              </button>
+            </div>
+          </div>
+        )}
+      </dialog>
     </div>
   );
 }
