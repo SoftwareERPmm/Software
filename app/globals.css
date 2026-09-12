@@ -1407,6 +1407,62 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 .taskbanner strong { color: var(--ink); }
 .taskbanner .page-sub { color: var(--muted); }
 
+/* Goods already on their way, said on the form that would order them again.
+   Built on the taskbanner's reading of a warning — the alarm spent on a rule
+   and an icon, not on a field of orange — because this one carries a table,
+   and orange writing on orange is unreadable at the size figures are read.
+   It is a reminder beside an open form, never a wall in front of it. */
+.awaiting {
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--warn);
+  background: var(--surface);
+  border-radius: var(--r-md);
+  padding: 0.7rem 0.9rem;
+  margin-bottom: var(--s3);
+  font-size: var(--t-sm);
+  line-height: 1.45;
+}
+.awaiting-head { display: flex; gap: 0.55rem; align-items: flex-start; }
+.awaiting-head > svg { flex: none; margin-top: 0.2rem; color: var(--warn); }
+.awaiting-head > div { display: flex; flex-direction: column; gap: 0.15rem; }
+.awaiting-head strong { color: var(--ink); }
+.awaiting-head .page-sub { color: var(--muted); }
+
+.awaiting .tablewrap {
+  margin: 0.6rem 0 0;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+}
+.awaiting-table { font-size: var(--t-sm); }
+.awaiting-table th, .awaiting-table td { padding: 0.4rem 0.6rem; }
+.awaiting-table td:first-child { font-family: var(--mono); }
+/* The one thing in here that does something, so it is the one thing that
+   looks like it does — this app colours no links, and a lone green word in a
+   warning would read as a status rather than a way out. */
+.awaiting-go { text-align: right; }
+.awaiting-go a {
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+.awaiting-go a:hover { color: var(--ink); }
+.awaiting-go svg { vertical-align: -2px; }
+
+.awaiting-foot { margin: 0.55rem 0 0; color: var(--muted); }
+
+/* The line-level version. Quiet — it sits under an item picker inside a row
+   of inputs, and shouting there would make the form look broken rather than
+   informed. */
+.awaiting-line {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: var(--t-xs);
+  line-height: 1.35;
+  white-space: normal;
+  color: color-mix(in srgb, var(--warn) 80%, var(--ink));
+}
+
 /* The figures a document is about. */
 .docstats {
   display: grid;
