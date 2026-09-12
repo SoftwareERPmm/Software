@@ -359,6 +359,85 @@ async function assertSourceLines(
 }
 
 /**
+ * An invoice raised from an order bills that order's terms.
+ *
+ * The item, the quantity and the price come from the order and are not the
+ * invoice's to change: that was the whole point of raising it there. Locking
+ * the inputs on the form is not enough — a request that reaches this function
+ * has not been past any form — so it is checked here, where every path has to
+ * come through.
+ *
+ * Quantity is capped at what that order line still has to be billed, not at
+ * what it ordered, so billing an order in two halves works and billing it
+ * twice over does not.
+ *
+ * Skipped where the order line belongs to a superseded version of its order.
+ * Correcting an order reposts the invoices raised through it at the order's
+ * new figures, and those invoices still name the lines of the version they
+ * were raised against — the cascade is the mechanism that keeps the two in
+ * step, and checking its work against the version it has just replaced would
+ * refuse the correction it is carrying out.
+ */
+async function assertOrderTerms(
+  tx: TransactionSql,
+  companyId: string,
+  lines: ReadonlyArray<{
+    itemId: string; qty: number; unitPrice: number; sourceLineId?: string | null;
+  }>,
+): Promise<void> {
+  const named = lines.filter((l) => l.sourceLineId);
+  if (named.length === 0) return;
+
+  const rows = await tx`
+    select ol.id, ol.item_id, ol.base_qty as ordered, ol.unit_price,
+           o.doc_no, o.superseded_by_document_id is not null as superseded
+      from document_line ol
+      join document o on o.id = ol.document_id
+     where ol.id = any(${named.map((l) => l.sourceLineId as string)})
+       and o.company_id = ${companyId}
+       and o.doc_type in ('PURCHASE_ORDER', 'SALES_ORDER')`;
+  if (rows.length === 0) return;
+
+  const byLine = new Map((rows as any[]).map((r) => [r.id as string, r]));
+
+  for (const [i, l] of lines.entries()) {
+    const ol = l.sourceLineId ? byLine.get(l.sourceLineId) : undefined;
+    if (!ol || ol.superseded) continue;
+
+    if (ol.item_id !== l.itemId) {
+      throw new Error(
+        `Line ${i + 1}: that line of ${ol.doc_no} is for a different item. `
+        + `An invoice raised from an order bills what the order asked for — `
+        + `change the order, or bill this item on its own.`
+      );
+    }
+
+    if (Math.abs(Number(ol.unit_price) - l.unitPrice) > 0.0001) {
+      throw new Error(
+        `Line ${i + 1}: ${ol.doc_no} agreed ${Number(ol.unit_price)}, not ${l.unitPrice}. `
+        + `Correct the order if the price has changed — it is where the price was agreed.`
+      );
+    }
+
+    const [billed] = await tx`
+      select coalesce(sum(il.base_qty), 0) as v
+        from document_line il
+        join document inv on inv.id = il.document_id
+       where il.source_line_id = ${ol.id}
+         and inv.doc_type in ('PURCHASE_INVOICE', 'SALES_INVOICE')
+         and inv.status = 'POSTED'
+         and inv.superseded_by_document_id is null`;
+    const left = round4(Number(ol.ordered) - Number((billed as { v: string }).v));
+
+    if (l.qty > left + 0.0001) {
+      throw new Error(
+        `Line ${i + 1}: ${ol.doc_no} has ${left} of that item left to bill, not ${l.qty}.`
+      );
+    }
+  }
+}
+
+/**
  * The number a posting should carry.
  *
  * Ordinarily the next one in the series. When a document is being edited it
@@ -1987,6 +2066,9 @@ async function _postSalesInvoice(
   // its own reason and version; every other posting bills what was agreed.
   if (!input.amendOf) {
     await assertAgreedPriceKept(tx, input.companyId, input.lines);
+    // The one-hop case the above cannot see: an invoice filled from a sales
+    // order names the order's own lines, with no delivery in between.
+    await assertOrderTerms(tx, input.companyId, input.lines as never);
   }
 
   const cashIn = round4(input.cashIn ?? 0);
@@ -2447,6 +2529,10 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
   // is the value of the goods themselves, so a receipt can never release more
   // of a bill than it actually brought in.
   const grirAmount = netTotal;
+  // Held outside the block: what this receipt answers is read again at the
+  // end, to carry an order allocation the bill was filled with.
+  let src: { id: string; doc_no: string; doc_type: string } | null = null;
+
   if (input.sourceDocumentId) {
     // Locked, not merely read: the matching below decides how much of this
     // invoice is still unreceived, and two receipts arriving at once must
@@ -2456,7 +2542,7 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
     //
     // A receipt continues either the order that asked for the goods or the
     // invoice that billed for them, and nothing else.
-    const src = await requireSource(tx, {
+    src = await requireSource(tx, {
       id: input.sourceDocumentId,
       companyId,
       partnerId,
@@ -2495,6 +2581,59 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
     tx, companyId, docDate, "GOODS_RECEIPT", doc.id, `${docNo} goods receipt`, journal, locationId
   );
   await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
+
+  /**
+   * The order behind the bill this receipt answers.
+   *
+   * A bill filled from an open order names that order's lines. Receiving
+   * against such a bill clears GR/IR correctly and left the order at nothing
+   * received — so it sat there looking unfulfilled, going overdue, with the
+   * goods already on the shelf. That is the complaint this whole family of
+   * warnings started from, and nothing but a human remembering to press
+   * "Link existing receipt" closed it.
+   *
+   * The goods have arrived and the order they were ordered on is answered,
+   * so it is recorded, through the same link and the same checks somebody
+   * would otherwise make by hand — partner, item, what the order still
+   * expects, and what this receipt line has left to give. Capped at the
+   * outstanding quantity, so receiving in halves fulfils in halves and a
+   * receipt for more than was ordered links only what was.
+   */
+  if (src?.doc_type === "PURCHASE_INVOICE") {
+    const carried = await tx`
+      select rl.id as fulfilment_line_id, rl.base_qty::float as qty,
+             ol.id as order_line_id, ol.item_id, o.id as order_id
+        from document_line rl
+        join document_line il on il.id = rl.source_line_id
+        join document_line ol on ol.id = il.source_line_id
+        join document o on o.id = ol.document_id
+       where rl.document_id = ${doc.id}
+         and o.doc_type = 'PURCHASE_ORDER'
+         and o.status = 'POSTED'
+       order by rl.line_no`;
+
+    const links: { fulfilmentLineId: string; orderLineId: string; qty: number }[] = [];
+    for (const c of carried as unknown as {
+      fulfilment_line_id: string; qty: number;
+      order_line_id: string; item_id: string; order_id: string;
+    }[]) {
+      const [owed] = await tx`
+        select coalesce(sum(outstanding), 0)::float as v from v_order_outstanding
+         where order_id = ${c.order_id} and item_id = ${c.item_id}`;
+      const qty = round4(Math.min(Number(c.qty), Number((owed as { v: number }).v)));
+      if (qty > 0.0001) {
+        links.push({ fulfilmentLineId: c.fulfilment_line_id,
+                     orderLineId: c.order_line_id, qty });
+      }
+    }
+
+    if (links.length > 0) {
+      await linkFulfilmentIn(tx, {
+        companyId, lines: links, source: "POSTING",
+        reason: `Received against ${src.doc_no}, which was billed from the order`,
+      });
+    }
+  }
 
   return { id: doc.id as string, docNo: docNo as string };
 }
@@ -2760,6 +2899,17 @@ async function _postPurchaseInvoice(
   // from those — not the exact arithmetic rounded afterwards, which would
   // leave the document total and its own lines disagreeing by a fraction.
   const scale = await currencyScale(tx, companyId);
+
+  // Where these lines were filled from an order, the order's terms hold. An
+  // amendment is exempt for the same reason the sales side's price guard is:
+  // it is the sanctioned way to change what was agreed, it carries its own
+  // reason and version, and correcting an order reposts the invoices raised
+  // through it — checking those against the order they are being brought into
+  // line with would refuse the correction itself.
+  if (!input.amendOf) {
+    await assertOrderTerms(tx, companyId, input.lines);
+  }
+
   const lineNets = input.lines.map((l) => roundMoney(l.qty * l.unitPrice, scale));
   const netTotal = roundMoney(lineNets.reduce((t, v) => t + v, 0), scale);
 
@@ -3019,7 +3169,52 @@ export async function postPurchaseWithReceipt(
     const stocked = new Set(flags.filter((r: any) => r.is_stocked).map((r: any) => r.id));
     const toReceive = input.lines.filter((l) => stocked.has(l.itemId));
 
+    /**
+     * Where these lines came from an order.
+     *
+     * A bill filled from an open order names that order's own lines, because
+     * there is no receipt yet for it to name. Receiving in the same breath
+     * creates one — and the invoice's lines have to end up naming *that*,
+     * since assertSourceLines and the GR/IR matcher both read an invoice's
+     * line sources as lines of the receipt it bills. Left alone, this path
+     * refused outright: "Line 1 refers to a line that is not on that
+     * document".
+     *
+     * So the order allocation is moved to where it belongs. The receipt is
+     * raised against the order, which is what fulfils it, and the bill then
+     * names the receipt lines that just answered it. One posting closes the
+     * order, clears GR/IR, and leaves the order still reachable from the
+     * bill through the receipt.
+     */
+    // Checked here, against the order lines the caller actually sent, because
+    // below they are rewritten to name the receipt this creates.
+    if (!input.amendOf) {
+      await assertOrderTerms(tx, input.companyId, input.lines);
+    }
+
+    const named = input.lines.filter((l) => l.sourceLineId);
+    let orderId: string | null = null;
+    if (named.length > 0) {
+      const rows = await tx`
+        select dl.id, d.id as document_id, d.doc_type
+          from document_line dl
+          join document d on d.id = dl.document_id
+         where dl.id = any(${named.map((l) => l.sourceLineId as string)})`;
+      const orders = [...new Set((rows as any[])
+        .filter((r) => r.doc_type === "PURCHASE_ORDER")
+        .map((r) => r.document_id as string))];
+      if (orders.length > 1) {
+        throw new Error(
+          "These lines come from more than one order. Bill each order separately, "
+          + "so the goods can be received against the order that asked for them."
+        );
+      }
+      orderId = orders[0] ?? null;
+    }
+
     let goodsReceiptId: string | undefined;
+    let lines = input.lines;
+
     if (toReceive.length > 0) {
       const gr = await _postGoodsReceipt(tx, {
         companyId: input.companyId,
@@ -3031,12 +3226,39 @@ export async function postPurchaseWithReceipt(
         receivedAt: new Date().toISOString(),
         memo: input.memo,
         reference: input.reference,
-        lines: toReceive.map((l) => ({ itemId: l.itemId, qty: l.qty, unitCost: l.unitPrice })),
+        sourceDocumentId: orderId,
+        lines: toReceive.map((l) => ({
+          itemId: l.itemId, qty: l.qty, unitCost: l.unitPrice,
+          // Only where the order is what this receipt answers. Without an
+          // order these carry nothing, exactly as before.
+          sourceLineId: orderId ? l.sourceLineId : undefined,
+        })),
       });
       goodsReceiptId = gr.id;
+
+      if (orderId) {
+        // Each billed line onto the receipt line that just answered it,
+        // taken in order per item so two lines of one item stay distinct.
+        const grLines = await tx`
+          select id, item_id from document_line
+           where document_id = ${gr.id} order by line_no`;
+        const queue = new Map<string, string[]>();
+        for (const r of grLines as any[]) {
+          const list = queue.get(r.item_id as string) ?? [];
+          list.push(r.id as string);
+          queue.set(r.item_id as string, list);
+        }
+        lines = input.lines.map((l) => ({
+          ...l,
+          // A service line has no receipt line to name, and the order line
+          // it named is not on the receipt either, so it names nothing. The
+          // order is still reachable from the bill through the receipt.
+          sourceLineId: stocked.has(l.itemId) ? queue.get(l.itemId)?.shift() : undefined,
+        }));
+      }
     }
 
-    return _postPurchaseInvoice(tx, { ...input, goodsReceiptId });
+    return _postPurchaseInvoice(tx, { ...input, lines, goodsReceiptId });
   });
 }
 

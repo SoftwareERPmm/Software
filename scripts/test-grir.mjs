@@ -101,9 +101,15 @@ try {
   const INV = await acct.forItem("INVENTORY", item.id);
 
   // A second item, so "a bill for something else" can be told apart from
-  // "a bill for these goods" — found by name, since a trigger builds the code.
+  // "a bill for these goods". Any stocked item that is not the first one will
+  // do — asked for that way round because the one this suite creates sorts
+  // ahead of the others by code, so on the second run it became the "first"
+  // item above and the two were the same row, which made that distinction
+  // untestable and the test wrong rather than the code.
   let [item2] = await sql`
-    select id, code from item where company_id = ${co.id} and name = 'GR/IR Second Item'`;
+    select id, code from item
+     where company_id = ${co.id} and is_stocked and is_active and id <> ${item.id}
+     order by code limit 1`;
   if (!item2) {
     const [grp] = await sql`select id from item_group where company_id = ${co.id} order by code limit 1`;
     const [uom] = await sql`select id from uom where company_id = ${co.id} order by code limit 1`;
@@ -299,14 +305,16 @@ try {
   const other = await postPurchaseInvoice({ ...base, dueDate: null,
     lines: [{ itemId: item2.id, qty: 5, unitPrice: 100 }] });
   check("a bill for a different item is not paired with these goods",
-    (await collisions()).every((r) => r.doc_no !== other.docNo));
+    (await collisions()).every((r) => r.doc_no !== other.docNo),
+    (await collisions()).map((r) => `${r.side} ${r.doc_no} ${r.item_name}`).join(" · "));
 
   // And receiving the bill's goods anyway is the mistake. Afterwards there is
   // nothing to detect, which is the reason the warning has to come first.
   await postGoodsReceipt({ ...base, sourceDocumentId: bill.id,
     lines: [{ itemId: item.id, qty: 100, unitCost: 1000 }] });
   check("once it has happened, the clearing account is clean again",
-    (await collisions()).length === 0);
+    (await collisions()).length === 0,
+    (await collisions()).map((r) => `${r.side} ${r.doc_no} ${r.item_name}`).join(" · "));
   check("  and the only trace is twice the goods",
     n((await sql`select coalesce(sum(qty), 0) as q from stock_movement
                   where item_id = ${item.id}`)[0].q) === 200,
