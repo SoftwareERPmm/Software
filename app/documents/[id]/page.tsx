@@ -51,6 +51,7 @@ import {
   getDocumentPeople,
   getInvoiceProgress,
   getLinkableFulfilments,
+  getGrirCollisions,
 } from "@/lib/queries";
 import {
   createDelivery, createGoodsReceipt, replaceConsignmentSettlement,
@@ -126,6 +127,13 @@ export default async function DocumentPage({
     getDownstream(id),
     getChainDocuments(id),
   ]);
+
+  // Goods already in and a bill already waiting for them, from this order's
+  // supplier: shown on the receive form this page carries, since receiving
+  // against the order is exactly the move that would double them.
+  const collisions = doc.doc_type === "PURCHASE_ORDER"
+    ? (await getGrirCollisions(doc.company_id)).filter((r) => r.partner_id === doc.partner_id)
+    : [];
 
   const chain = CHAINS[doc.doc_type] ?? [doc.doc_type];
   const totalDebit = journal.reduce((s: number, l: any) => s + Number(l.debit), 0);
@@ -883,6 +891,7 @@ export default async function DocumentPage({
           lines={orderLines}
           action={doc.doc_type === "SALES_ORDER" ? createDelivery : createGoodsReceipt}
           stockByLocation={doc.doc_type === "SALES_ORDER" ? stockByLocation : undefined}
+          collisions={doc.doc_type === "PURCHASE_ORDER" ? collisions : []}
         />
       )}
 

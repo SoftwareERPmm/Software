@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { MaybeSamePurchase } from "./same-purchase";
+import type { GrirCollisionLine } from "@/lib/queries";
 import { NegativeStockConfirm, type Shortfall } from "./negative-stock-confirm";
 import { useActionState, useEffect, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
@@ -33,6 +35,7 @@ export function FulfillOrderForm({
   action,
   stockByLocation,
   focReasons = [],
+  collisions = [],
 }: {
   kind: "sales" | "purchase";
   orderId: string;
@@ -46,6 +49,10 @@ export function FulfillOrderForm({
   stockByLocation?: StockRow[];
   /** Why units might go out free. Sales only — a receipt has no giveaway. */
   focReasons?: { id: string; code: string; name: string }[];
+  /** Goods already in and a bill already raised for the same items from this
+   *  supplier. See getGrirCollisions — purchase only, GR/IR being a purchase
+   *  account. */
+  collisions?: GrirCollisionLine[];
 }) {
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     action as never,
@@ -139,6 +146,17 @@ export function FulfillOrderForm({
           </button>
         </span>
       </div>
+
+      {/* Only once the form is open. Receiving against the order is the right
+          thing to do most of the time; it is wrong only when a bill for these
+          same goods is already sitting there waiting for them, and saying so
+          on every collapsed row would put the warning where no decision is
+          being made. */}
+      {open && (
+        <div style={{ padding: "0 1rem" }}>
+          <MaybeSamePurchase lines={collisions} />
+        </div>
+      )}
 
       {open && (
         <div className="card-body">

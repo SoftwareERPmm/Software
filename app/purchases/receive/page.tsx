@@ -3,7 +3,7 @@ import { PackageCheck, Clock, Boxes } from "lucide-react";
 import { money, shortDate } from "@/lib/db";
 import {
   getCompany, getOpenPurchaseOrders, getGoodsReceiptHistory, getGrirPositions,
-  getOpenGoodsReceipts,
+  getOpenGoodsReceipts, getGrirCollisions,
 } from "@/lib/queries";
 import { createGoodsReceipt } from "@/lib/actions";
 import { FulfillOrderForm } from "@/components/fulfill-order-form";
@@ -39,13 +39,23 @@ export default async function Receive({
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
-  const [openLines, history, grir, stillToBill] = await Promise.all([
+  const [openLines, history, grir, stillToBill, collisionRows] = await Promise.all([
     getOpenPurchaseOrders(company.id),
     getGoodsReceiptHistory(company.id) as unknown as Promise<Receipt[]>,
     getGrirPositions(company.id),
     getOpenGoodsReceipts(company.id) as unknown as Promise<
       { id: string; lines: { qty: number; unitPrice: number }[] }[]>,
+    getGrirCollisions(company.id),
   ]);
+
+  // Goods already in and a bill already waiting for them, per supplier: the
+  // one case where receiving against this order is the wrong move.
+  const collisions = new Map<string, typeof collisionRows>();
+  for (const r of collisionRows) {
+    const list = collisions.get(r.partner_id) ?? [];
+    list.push(r);
+    collisions.set(r.partner_id, list);
+  }
 
   // What each receipt is still owed a bill for, from the same reckoning the
   // invoice form offers to bill. The clearing account's own balance cannot
@@ -220,6 +230,7 @@ export default async function Receive({
             locationId={o.locationId}
             lines={o.lines}
             action={createGoodsReceipt}
+            collisions={collisions.get(o.partnerId) ?? []}
           />
         ))
       )}
