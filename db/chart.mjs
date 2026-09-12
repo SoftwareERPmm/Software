@@ -30,6 +30,8 @@ export const CHART = [
   ["1040",  "Inventory",                         "ASSET",     true],
   ["1050",  "Prepaid Expenses",                  "ASSET",     true],
   ["1060",  "GR/IR Clearing",                    "ASSET",     true,  { added: true }],
+  // Paid to a supplier before they billed us. Ours until they do.
+  ["1070",  "Supplier Advances",                 "ASSET",     true,  { added: true }],
   ["1-FA",  "Non-Current Assets (Fixed Assets)", "ASSET",     false],
   ["1100",  "Land",                              "ASSET",     true],
   ["1110",  "Building",                          "ASSET",     true],
@@ -45,6 +47,8 @@ export const CHART = [
   ["2010",  "Salary Payable",                    "LIABILITY", true],
   ["2020",  "Tax Payable",                       "LIABILITY", true],
   ["2030",  "Accrued Expenses",                  "LIABILITY", true],
+  // Taken from a customer before we billed them. Theirs until we do.
+  ["2060",  "Customer Advances",                 "LIABILITY", true,  { added: true }],
   ["2-LT", "Long-Term Liabilities",             "LIABILITY", false],
   ["2040",  "Loan Payable – Short Term",         "LIABILITY", true],
   ["2050",  "Loan Payable – Long Term",          "LIABILITY", true],
@@ -105,6 +109,13 @@ export const SYSTEM = {
   // reason it is kept out of 4000 Sales.
   FX_GAIN: "4100", FX_LOSS: "6110", ROUNDING_DIFFERENCE: "6110",
   DELIVERY_INCOME: "4100",
+
+  // Money that moved before the invoice did. Deliberately not the control
+  // accounts: an advance has no open item, so parking it in receivables would
+  // put the ledger and the subledger out of step the moment it was taken —
+  // and it is not a receivable anyway. It is something owed to the customer
+  // until the goods go, and something owed to us until the supplier delivers.
+  CUSTOMER_ADVANCE: "2060", SUPPLIER_ADVANCE: "1070",
 };
 
 // COGS points at 5000 "Purchase" — they are the same account here. The

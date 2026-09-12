@@ -139,6 +139,7 @@ from (values
     ('1-CA', '1040', 'Inventory',                           'ASSET'::account_type,   false,  false,  false),
     ('1-CA', '1050', 'Prepaid Expenses',                    'ASSET'::account_type,   false,  false,  false),
     ('1-CA', '1060', 'GR/IR Clearing',                      'ASSET'::account_type,   false,  false,  false),
+    ('1-CA', '1070', 'Supplier Advances',                   'ASSET'::account_type,   false,  false,  false),
     ('1-FA', '1100', 'Land',                                'ASSET'::account_type,   false,  false,  false),
     ('1-FA', '1110', 'Building',                            'ASSET'::account_type,   false,  false,  false),
     ('1-FA', '1120', 'Office Equipment',                    'ASSET'::account_type,   false,  false,  false),
@@ -151,6 +152,7 @@ from (values
     ('2-CL', '2010', 'Salary Payable',                      'LIABILITY'::account_type,  false,  false,  false),
     ('2-CL', '2020', 'Tax Payable',                         'LIABILITY'::account_type,  false,  false,  false),
     ('2-CL', '2030', 'Accrued Expenses',                    'LIABILITY'::account_type,  false,  false,  false),
+    ('2-CL', '2060', 'Customer Advances',                   'LIABILITY'::account_type,  false,  false,  false),
     ('2-LT', '2040', 'Loan Payable – Short Term',           'LIABILITY'::account_type,  false,  false,  false),
     ('2-LT', '2050', 'Loan Payable – Long Term',            'LIABILITY'::account_type,  false,  false,  false),
     ('3-EQ', '3000', 'Owner''s Capital',                    'EQUITY'::account_type,  false,  false,  false),
@@ -202,7 +204,9 @@ from (values
     ('FX_GAIN',                     '4100'),
     ('FX_LOSS',                     '6110'),
     ('ROUNDING_DIFFERENCE',         '6110'),
-    ('DELIVERY_INCOME',             '4100')
+    ('DELIVERY_INCOME',             '4100'),
+    ('CUSTOMER_ADVANCE',            '2060'),
+    ('SUPPLIER_ADVANCE',            '1070')
 ) as r(role, code)
 join account a on a.company_id = co and a.code = r.code;
 

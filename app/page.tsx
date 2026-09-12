@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Boxes, Receipt, Wallet, Banknote, AlertTriangle } from "lucide-react";
+import { Boxes, Receipt, Wallet, Banknote, AlertTriangle, HandCoins } from "lucide-react";
 import { money } from "@/lib/db";
 import {
   getCompany, getKpis, getHealth, getAging, getDocuments, getStock, getActionItems,
@@ -137,6 +137,25 @@ export default async function Dashboard() {
           <span className="kpi-value">{money(kpis.ap.total)}</span>
           <span className="kpi-note">{kpis.ap.n} open bill{kpis.ap.n === 1 ? "" : "s"}</span>
         </div>
+        {/* Money that moved before any invoice did. Neither a receivable nor a
+            payable, so it has nowhere else to appear — and it matters: cash in
+            the bank that is already spoken for, and cash gone out that has
+            bought nothing yet. Shown only when there is some. */}
+        {(Number(kpis.advances.customer) > 0 || Number(kpis.advances.supplier) > 0) && (
+          <div className="kpi">
+            <span className="kpi-label"><HandCoins size={13} /> On account</span>
+            <span className="kpi-value">
+              {money(Number(kpis.advances.customer) + Number(kpis.advances.supplier))}
+            </span>
+            <span className="kpi-note">
+              {Number(kpis.advances.customer) > 0
+                && `${money(kpis.advances.customer)} from customers`}
+              {Number(kpis.advances.customer) > 0 && Number(kpis.advances.supplier) > 0 && " · "}
+              {Number(kpis.advances.supplier) > 0
+                && `${money(kpis.advances.supplier)} paid ahead`}
+            </span>
+          </div>
+        )}
         <div className="kpi">
           <span className="kpi-label"><Banknote size={13} /> Cash at bank</span>
           <span className="kpi-value">{money(kpis.cash.total)}</span>

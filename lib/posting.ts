@@ -3721,6 +3721,18 @@ export type SettlementInput = {
    * postSettlement.
    */
   locationId?: string | null;
+  /**
+   * Money taken or paid with no invoice to put it against.
+   *
+   * Set instead of allocations, never alongside them: a receipt is either
+   * settling bills or sitting on account, and one that tried to be both would
+   * need a rule about which part of it the next invoice may claim. It goes to
+   * the advances account rather than to receivables — an advance has no open
+   * item, so parking it in the control account would put the ledger and the
+   * subledger out of step the moment it posted, and it is not a receivable
+   * anyway. It is owed back until the goods go.
+   */
+  advance?: number;
 };
 
 async function postSettlement(
@@ -3738,10 +3750,27 @@ async function postSettlement(
   });
 
   const lines = input.allocations.filter((a) => a.amount > 0);
-  if (lines.length === 0) throw new Error("Enter an amount against at least one invoice");
+  const advance = round4(input.advance ?? 0);
+  if (advance < 0) throw new Error("An advance cannot be negative");
+  if (advance > 0 && lines.length > 0) {
+    throw new Error(
+      "This is either settling invoices or money on account, not both. Post " +
+      "the advance on its own and apply it to the invoice afterwards."
+    );
+  }
+  if (advance === 0 && lines.length === 0) {
+    throw new Error("Enter an amount against at least one invoice, or record it as an advance");
+  }
   if (!input.cashAccountId) throw new Error("Choose which cash or bank account to use");
+  // An advance settles nothing, so there are no invoice branches for the cash
+  // side to follow. Left unattributed it would sit in no branch at all and
+  // reappear as an unexplained difference the first time anyone reads the
+  // branch reports, so it is asked for rather than guessed.
+  if (advance > 0 && !input.locationId) {
+    throw new Error("Choose which branch is taking this money — an advance has no invoice to follow");
+  }
 
-  const total = round4(lines.reduce((s, a) => s + a.amount, 0));
+  const total = advance > 0 ? advance : round4(lines.reduce((s, a) => s + a.amount, 0));
   const isPayment = kind === "SUPPLIER_PAYMENT";
   const controlRole = isPayment ? "AP_CONTROL" : "AR_CONTROL";
 
@@ -3848,16 +3877,31 @@ async function postSettlement(
         values (${companyId}, ${doc.id}, ${a.invoiceId}, ${a.amount}, ${a.amount})`;
     }
 
-    const control = await tx`
-      select fn_resolve_control_account(${companyId}, ${controlRole}, ${partnerId}) as a`;
-
     const sign = isPayment ? 1 : -1;
     const journal: JournalLine[] = [];
-    for (const [key, amount] of controlByLocation) {
+
+    if (advance > 0) {
+      // Nothing is being relieved, so nothing touches the control account.
+      // The other side is the advances account: what the customer has paid us
+      // and we still owe them in goods, or what we have paid a supplier and
+      // they still owe us. It carries the partner so the balance can be read
+      // per customer rather than as one company-wide figure.
+      const holding = await tx`
+        select fn_system_account(${companyId},
+          ${isPayment ? "SUPPLIER_ADVANCE" : "CUSTOMER_ADVANCE"}) as a`;
       journal.push({
-        accountId: control[0].a, amount: round4(sign * amount), partnerId,
-        locationId: key === "" ? null : key,
+        accountId: holding[0].a, amount: round4(sign * advance), partnerId,
+        locationId: cashLocationId,
       });
+    } else {
+      const control = await tx`
+        select fn_resolve_control_account(${companyId}, ${controlRole}, ${partnerId}) as a`;
+      for (const [key, amount] of controlByLocation) {
+        journal.push({
+          accountId: control[0].a, amount: round4(sign * amount), partnerId,
+          locationId: key === "" ? null : key,
+        });
+      }
     }
     journal.push({
       accountId: input.cashAccountId, amount: round4(-sign * total), locationId: cashLocationId,
@@ -3868,10 +3912,158 @@ async function postSettlement(
     // relieving invoices that never had a branch.
     const entryId = await writeJournal(
       tx, companyId, docDate, kind, doc.id,
-      `${docNo} settling ${lines.length} invoice${lines.length === 1 ? "" : "s"}`,
+      advance > 0
+        ? `${docNo} on account`
+        : `${docNo} settling ${lines.length} invoice${lines.length === 1 ? "" : "s"}`,
       journal
     );
 
+    await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
+
+    return { id: doc.id as string, docNo: docNo as string, total };
+  });
+}
+
+/**
+ * Put money already received against an invoice.
+ *
+ * No cash moves. The money came in when the advance was taken; all this does
+ * is stop it being owed back and start it settling a bill:
+ *
+ *   customer   Dr Customer Advances   Cr Accounts Receivable
+ *   supplier   Dr Accounts Payable    Cr Supplier Advances
+ *
+ * The invoice's outstanding falls through `payment_allocation`, the same rows
+ * an ordinary settlement writes, so every screen that reads what an invoice
+ * still owes keeps working without being told about advances at all. That is
+ * the reason this is an allocation against the original receipt rather than a
+ * new payment: recording the money twice is exactly what somebody reaching for
+ * this feature is trying to avoid.
+ */
+export async function applyAdvance(input: {
+  companyId: string;
+  /** The bill being settled. */
+  invoiceId: string;
+  /** Which advances to draw on, and how much of each. */
+  allocations: { paymentId: string; amount: number }[];
+  docDate: string;
+  memo?: string | null;
+}) {
+  const lines = input.allocations.filter((a) => a.amount > 0);
+  if (lines.length === 0) throw new Error("Choose an advance to apply");
+  lines.forEach((a, i) => assertFinite(a.amount, `Advance ${i + 1}: amount`));
+
+  return sql.begin(async (tx) => {
+    const { companyId, docDate } = input;
+
+    const fyRows = await tx`select fn_fiscal_year_for(${companyId}, ${docDate}::date) as fy`;
+    const fiscalYear = fyRows[0]?.fy ?? null;
+    if (!fiscalYear) throw new Error(`No fiscal year covers ${docDate}`);
+
+    // Locked, because everything below reads what the invoice still owes and
+    // what each advance still has, and then spends both.
+    const [inv] = await tx`
+      select id, doc_no, doc_type, partner_id, location_id, status, gross_total
+        from document
+       where id = ${input.invoiceId} and company_id = ${companyId}
+         for update`;
+    if (!inv) throw new Error("That invoice no longer exists");
+    if (inv.status !== "POSTED") {
+      throw new Error(`${inv.doc_no} is ${String(inv.status).toLowerCase()} and cannot be settled`);
+    }
+    const isPayment = inv.doc_type === "PURCHASE_INVOICE";
+    if (!isPayment && inv.doc_type !== "SALES_INVOICE") {
+      throw new Error(`${inv.doc_no} is not an invoice`);
+    }
+
+    const [owed] = await tx`
+      select outstanding from v_open_item where document_id = ${inv.id}`;
+    const outstanding = Number(owed?.outstanding ?? 0);
+    const total = round4(lines.reduce((t, a) => t + a.amount, 0));
+    if (total > outstanding + 0.0001) {
+      throw new Error(
+        `${inv.doc_no} has ${outstanding} outstanding, so ${total} cannot be applied to it. ` +
+        `Whatever is left over stays on account for the next invoice.`
+      );
+    }
+
+    for (const a of lines) {
+      const [adv] = await tx`
+        select d.doc_no, d.partner_id, d.doc_type,
+               v.available
+          from document d
+          left join v_partner_advance v on v.payment_id = d.id
+         where d.id = ${a.paymentId} and d.company_id = ${companyId}
+           for update of d`;
+      if (!adv) throw new Error("That advance no longer exists");
+      if (adv.partner_id !== inv.partner_id) {
+        throw new Error(
+          `${adv.doc_no} belongs to a different partner. Money taken from one ` +
+          `customer cannot settle another's bill.`
+        );
+      }
+      // A receipt settles sales invoices, a payment settles purchase ones —
+      // the same rule ordinary settlement follows, for the same reason.
+      const settles = adv.doc_type === "CUSTOMER_RECEIPT" ? "SALES_INVOICE" : "PURCHASE_INVOICE";
+      if (settles !== inv.doc_type) {
+        throw new Error(
+          `${adv.doc_no} cannot settle ${inv.doc_no} — one is money from a ` +
+          `customer and the other is a bill from a supplier.`
+        );
+      }
+      const available = Number(adv.available ?? 0);
+      if (a.amount > available + 0.0001) {
+        throw new Error(
+          `${adv.doc_no} has ${available} left on account, so ${a.amount} cannot be applied.`
+        );
+      }
+    }
+
+    const noRows = await tx`
+      select fn_next_document_no(${companyId}, 'ADVANCE_APPLICATION', ${docDate}::date) as no`;
+    const docNo = noRows[0].no;
+
+    const [doc] = await tx`
+      insert into document
+        (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
+         partner_id, location_id, currency, exchange_rate, status,
+         net_total, tax_total, gross_total, memo, source_document_id, posted_at)
+      values
+        (${companyId}, 'ADVANCE_APPLICATION', ${docNo}, ${fiscalYear},
+         ${docDate}::date, ${docDate}::date, ${inv.partner_id}, ${inv.location_id},
+         'MMK', 1, 'POSTED', ${total}, 0, ${total},
+         ${input.memo ?? `Applied to ${inv.doc_no}`}, ${inv.id}, now())
+      returning id`;
+
+    // Against the original receipt, not against this document: the money is
+    // that receipt's, and this is only the act of pointing it at a bill.
+    for (const a of lines) {
+      await tx`
+        insert into payment_allocation
+          (company_id, payment_id, invoice_id, amount, base_amount)
+        values (${companyId}, ${a.paymentId}, ${inv.id}, ${a.amount}, ${a.amount})`;
+    }
+
+    const holding = await tx`
+      select fn_system_account(${companyId},
+        ${isPayment ? "SUPPLIER_ADVANCE" : "CUSTOMER_ADVANCE"}) as a`;
+    const control = await tx`
+      select fn_resolve_control_account(${companyId},
+        ${isPayment ? "AP_CONTROL" : "AR_CONTROL"}, ${inv.partner_id}) as a`;
+
+    // Customer: the advance stops being owed back (debit) and the receivable
+    // is relieved (credit). Supplier: the reverse.
+    const sign = isPayment ? -1 : 1;
+    const entryId = await writeJournal(
+      tx, companyId, docDate, "ADVANCE_APPLICATION", doc.id,
+      `${docNo} applying ${total} to ${inv.doc_no}`,
+      [
+        { accountId: holding[0].a, amount: round4(sign * total),
+          partnerId: inv.partner_id as string, locationId: inv.location_id as string | null },
+        { accountId: control[0].a, amount: round4(-sign * total),
+          partnerId: inv.partner_id as string, locationId: inv.location_id as string | null },
+      ]
+    );
     await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
 
     return { id: doc.id as string, docNo: docNo as string, total };

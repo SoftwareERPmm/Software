@@ -58,12 +58,15 @@ try {
   check("company created", Boolean(co.id));
 
   const count = async (t) => Number((await sql.unsafe(`select count(*)::int as n from ${t}`))[0].n);
-  // One chart everywhere now: the same 65 the loader and the seed build.
-  check("65 accounts", await count("account") === 65, String(await count("account")));
+  // One chart everywhere now: the same 67 the loader and the seed build.
+  // 67 since advances got accounts of their own — money that moves before an
+  // invoice does has to land somewhere that is not a control account.
+  check("67 accounts", await count("account") === 67, String(await count("account")));
   check("12 fiscal periods", await count("fiscal_period") === 12);
-  // Twelve since delivery income got an account of its own: a scaffolded
-  // company that cannot charge carriage is not fully set up.
-  check("12 system accounts", await count("system_account") === 12,
+  // Fourteen: delivery income, then the two advance accounts. A scaffolded
+  // company that cannot charge carriage, or cannot take a deposit, is not
+  // fully set up.
+  check("14 system accounts", await count("system_account") === 14,
     String(await count("system_account")));
   check("6 posting rules", await count("account_determination") === 6,
     String(await count("account_determination")));
