@@ -1586,6 +1586,100 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 }
 .billpart input { margin: 0; }
 
+/* Money already in the books, offered against the bill in front of you. Green
+   because it is good news — there is less to collect than the invoice says —
+   and stated as a figure rather than a hint, because it changes what somebody
+   is about to ask the customer for. */
+.advbanner {
+  display: flex; align-items: center; gap: 0.55rem; flex-wrap: wrap;
+  padding: 0.6rem 0.75rem; margin-bottom: 0.75rem;
+  border: 1px solid var(--ok, #1b7f4b);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--ok, #1b7f4b) 8%, transparent);
+  font-size: var(--t-sm);
+}
+.advbanner > button { margin-left: auto; }
+.advbanner-why { color: var(--muted); }
+
+/* A panel over the document rather than a page away from it: the decision is
+   about the invoice behind it, and the figures on both need to be readable at
+   once. */
+.advscrim {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgb(0 0 0 / 0.28);
+}
+.advpanel {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 201;
+  width: min(30rem, 100vw);
+  display: flex; flex-direction: column;
+  background: var(--surface, #fff);
+  border-left: 1px solid var(--line);
+  box-shadow: -12px 0 32px rgb(0 0 0 / 0.12);
+}
+.advpanel form { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.advpanel-head {
+  display: flex; align-items: flex-start; gap: 0.75rem;
+  padding: 0.9rem 1rem; border-bottom: 1px solid var(--line);
+}
+.advpanel-head h2 { margin: 0; font-size: var(--t-lg); }
+.advpanel-head > button { margin-left: auto; }
+.advpanel-body { padding: 0.9rem 1rem; overflow: auto; flex: 1; min-height: 0; }
+.advpanel-body h3 {
+  margin: 0 0 0.5rem; font-size: var(--t-2xs); letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--muted);
+}
+.advpanel-foot {
+  display: flex; gap: 0.5rem; align-items: center;
+  padding: 0.75rem 1rem; border-top: 1px solid var(--line);
+}
+.advpreview { margin-top: 1rem; }
+.advpreview dl {
+  display: grid; grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 0.3rem 0.75rem; margin: 0 0 0.5rem;
+  font-size: var(--t-sm); align-items: baseline;
+}
+.advpreview dt { color: var(--muted); }
+.advpreview dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.advpreview .strong { color: var(--fg); font-weight: 600; }
+
+/* Settling bills, or money on account. Two genuinely different transactions,
+   so they are chosen before anything else on the screen rather than implied by
+   which box got filled in. */
+.purpose {
+  display: flex; flex-wrap: wrap; gap: 0.5rem;
+  border: 0; padding: 0; margin: 0 0 0.75rem;
+}
+.purpose legend {
+  font-size: var(--t-2xs); letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--muted); padding: 0; margin-bottom: 0.35rem;
+}
+.purpose label {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  cursor: pointer; font-size: var(--t-sm);
+}
+.purpose label.on {
+  border-color: var(--brand);
+  background: color-mix(in srgb, var(--brand) 7%, transparent);
+}
+.advance-note { align-self: center; }
+.advance-after {
+  margin: 0.75rem 0 0;
+  padding: 0.45rem 0.6rem;
+  border-radius: var(--r-sm);
+  background: var(--line-soft);
+  font-size: var(--t-sm);
+}
+.amountbox { display: flex; align-items: stretch; }
+.amountbox input { flex: 1 1 auto; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.amountbox-unit {
+  display: inline-flex; align-items: center; padding: 0 0.6rem;
+  border: 1px solid var(--line); border-left: 0;
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: var(--line-soft); color: var(--muted); font-size: var(--t-sm);
+}
+
 /* Type to find a partner. Shaped like the select it replaces so the forms
    around it need no other change, and so it behaves the way something that
    shape is expected to. */

@@ -17,10 +17,11 @@ import { CorrectOrder, type CorrectableLine } from "@/components/correct-order";
 import { VersionBadge, VersionTrail, type DocumentVersion }
   from "@/components/version-history";
 import { TransactionOrigin } from "@/components/transaction-origin";
+import { ApplyAdvance } from "@/components/apply-advance";
 import {
   voidDocumentAction, linkReceiptToOrder, closeOrderAction,
   previewOrderCorrection, correctOrder,
-  previewInvoiceCorrection, correctInvoice,
+  previewInvoiceCorrection, correctInvoice, applyAdvanceAction,
 } from "@/lib/actions";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -42,6 +43,7 @@ import {
   getRelatedDocuments,
   getDocumentVersions,
   getTransactionOrigin,
+  getAdvancesFor,
   getUnsettledConsignment,
   getLinkableOrders,
   getOrderOutstanding,
@@ -315,6 +317,16 @@ export default async function DocumentPage({
   }
 
   const outstanding = isInvoice ? await getDocumentOutstanding(doc.id) : 0;
+
+  /**
+   * Money this partner already handed over, waiting for a bill. Offered on the
+   * invoice because that is where somebody is standing when they notice the
+   * customer has a deposit — and because the alternative is recording the same
+   * money twice.
+   */
+  const advances = isInvoice && outstanding > 0
+    ? ((await getAdvancesFor(doc.company_id, doc.id)) as Record<string, unknown>[])
+    : [];
 
   // Who raised it, who posted it, what is still owed on it, and what has
   // happened since. Every document has this; only the figures beside it
@@ -609,6 +621,21 @@ export default async function DocumentPage({
       banner={
         <>
           {versionTrail}
+          {advances.length > 0 && (
+            <ApplyAdvance
+              action={applyAdvanceAction}
+              invoiceId={doc.id}
+              invoiceNo={doc.doc_no ?? ""}
+              outstanding={outstanding}
+              sales={doc.doc_type === "SALES_INVOICE"}
+              advances={advances.map((a) => ({
+                paymentId: String(a.payment_id),
+                docNo: String(a.doc_no),
+                docDate: String(a.doc_date),
+                available: Number(a.available),
+              }))}
+            />
+          )}
           {origin && <TransactionOrigin origin={origin} docNo={doc.doc_no ?? ""} />}
           {/* Tasks about one half of an invoice are shown in that half, with
               the figure they are about. Banner them as well and the same

@@ -16,7 +16,7 @@ import {
   postCashVoucher, postBankVoucher, postJournalVoucher,
   linkFulfilmentToOrder, closeOrderRemaining, reopenOrder,
   amendOrder, planOrderAmendment, amendInvoice, planInvoiceAmendment,
-  amendmentFingerprint, StalePlan,
+  amendmentFingerprint, StalePlan, applyAdvance,
   type AmendmentPlan,
   postCashTransfer, postAccountOpening, postOpeningBatch, resettleConsignmentSale,
   postStockAdjustment, postStockTransfer,
@@ -1591,8 +1591,19 @@ async function settle(
   const co = await companyId();
   const allocations = parseAllocations(fd);
 
-  if (allocations.length === 0) {
-    return { error: "Enter an amount against at least one invoice" };
+  // Money taken with no invoice to put it against. Kept apart from the
+  // allocations rather than mixed with them: a receipt is either settling
+  // bills or sitting on account, and the engine refuses anything that tries
+  // to be both.
+  const advance = str(fd, "purpose") === "advance" ? num(fd, "advance") : 0;
+
+  if (advance <= 0 && allocations.length === 0) {
+    return { error: "Enter an amount against at least one invoice, or record it as an advance" };
+  }
+  if (advance > 0 && !str(fd, "location_id")) {
+    return {
+      error: "Choose which branch is taking this money — an advance has no invoice to follow",
+    };
   }
   if (!str(fd, "partner_id")) {
     return { error: kind === "pay" ? "Choose a supplier" : "Choose a customer" };
@@ -1612,7 +1623,8 @@ async function settle(
     // resolves. Only worth setting when a payment spans branches, or when the
     // cash leaves a different branch from the one that raised the bill.
     locationId: str(fd, "location_id") || null,
-    allocations,
+    allocations: advance > 0 ? [] : allocations,
+    advance,
   };
 
   const result = kind === "pay"
@@ -2133,6 +2145,49 @@ export async function correctInvoice(
   revalidatePath("/purchases/invoices");
   revalidatePath("/");
   redirectWithToast(`/documents/${landOn}`, "Correction posted");
+}
+/**
+ * Put money already received against this invoice.
+ *
+ * No cash moves — the money came in when the advance was taken. All this does
+ * is stop it being owed back and start it settling a bill, which is the whole
+ * reason it exists: somebody who took a deposit and then invoiced the goods is
+ * otherwise one keystroke from recording the same money twice.
+ */
+export async function applyAdvanceAction(
+  _prev: unknown, fd: FormData,
+): Promise<ActionResult> {
+  let invoiceId: string;
+  try {
+    const co = await companyId();
+    invoiceId = str(fd, "invoice_id");
+    if (!invoiceId) return { error: "Which invoice is this for?" };
+
+    let parsed: { paymentId?: string; amount?: number }[];
+    try {
+      parsed = JSON.parse(String(fd.get("allocations") ?? "[]"));
+    } catch {
+      return { error: "Could not read which advances to apply" };
+    }
+    const allocations = parsed
+      .map((a) => ({ paymentId: String(a.paymentId ?? ""), amount: Number(a.amount) }))
+      .filter((a) => a.paymentId && Number.isFinite(a.amount) && a.amount > 0);
+    if (allocations.length === 0) return { error: "Choose an advance to apply" };
+
+    await applyAdvance({
+      companyId: co,
+      invoiceId,
+      allocations,
+      docDate: new Date().toISOString().slice(0, 10),
+    });
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/documents", "layout");
+  revalidatePath("/receivables");
+  revalidatePath("/payables");
+  revalidatePath("/");
+  redirectWithToast(`/documents/${invoiceId}`, "Advance applied");
 }
 
 function financeRevalidate() {

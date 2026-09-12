@@ -28,7 +28,22 @@ export async function getKpis(companyId: string) {
       join account a on a.id = jl.account_id
      where jl.company_id = ${companyId} and a.code in ('1110', '1120')`;
 
-  return { stock, ar, ap, cash };
+  /**
+   * Money that has changed hands with no invoice against it yet — customers'
+   * deposits and what we have paid suppliers up front. Worth its own figure
+   * because it is neither receivable nor payable and would otherwise be
+   * invisible: cash that is in the bank but already spoken for, and cash that
+   * has left but bought nothing yet.
+   */
+  const [advances] = await sql`
+    select
+      coalesce(sum(available) filter (where doc_type = 'CUSTOMER_RECEIPT'), 0) as customer,
+      coalesce(sum(available) filter (where doc_type = 'SUPPLIER_PAYMENT'), 0) as supplier,
+      count(*) filter (where doc_type = 'CUSTOMER_RECEIPT')::int as customer_n,
+      count(*) filter (where doc_type = 'SUPPLIER_PAYMENT')::int as supplier_n
+      from v_partner_advance where company_id = ${companyId}`;
+
+  return { stock, ar, ap, cash, advances };
 }
 
 /**
@@ -2652,6 +2667,30 @@ export async function getTransactionOrigin(
     correctAt: orderInChain ? { kind: "ORDER", doc: orderInChain } : { kind: "SELF" },
     sales,
   };
+}
+
+/**
+ * Money this partner has on account, for an invoice that could use it.
+ *
+ * Matched to the invoice's own kind: a customer's receipt settles a sales
+ * invoice and a supplier payment a purchase one, which is the same rule
+ * ordinary settlement follows and stops a deposit from one side being offered
+ * against the other's bill.
+ */
+export async function getAdvancesFor(companyId: string, documentId: string) {
+  const [doc] = await sql`
+    select partner_id, doc_type from document
+     where id = ${documentId} and company_id = ${companyId}`;
+  if (!doc) return [];
+  const kind = doc.doc_type === "PURCHASE_INVOICE" ? "SUPPLIER_PAYMENT" : "CUSTOMER_RECEIPT";
+
+  return sql`
+    select payment_id, doc_no, to_char(doc_date, 'YYYY-MM-DD') as doc_date, available
+      from v_partner_advance
+     where company_id = ${companyId}
+       and partner_id = ${doc.partner_id}
+       and doc_type = ${kind}
+     order by doc_date, doc_no`;
 }
 
 /**

@@ -67,6 +67,19 @@ export function SettlementForm({
     () => prefill(initialPartnerId ?? ""));
   const isPay = kind === "pay";
 
+  /**
+   * What this money is for. Settling bills, or sitting on the partner's
+   * account until there is a bill to settle.
+   *
+   * Two purposes rather than an amount field that may or may not be filled,
+   * because they are genuinely different transactions — one relieves a
+   * receivable, the other creates a liability — and a screen that lets both
+   * happen at once would have to explain which part of the money the next
+   * invoice may claim.
+   */
+  const [purpose, setPurpose] = useState<"settle" | "advance">("settle");
+  const [advance, setAdvance] = useState("");
+
   const open = useMemo(
     () => invoices.filter((i) => i.partner_id === partnerId),
     [invoices, partnerId]
@@ -102,6 +115,24 @@ export function SettlementForm({
       {state && "error" in state && <div className="alert">{state.error}</div>}
 
       <input type="hidden" name="allocations" value={payload} />
+      <input type="hidden" name="purpose" value={purpose} />
+
+      <fieldset className="purpose">
+        <legend>Payment purpose</legend>
+        {([
+          ["settle", isPay ? "Pay existing bills" : "Pay existing invoices"],
+          ["advance", isPay ? "Advance to supplier" : "Customer advance"],
+        ] as const).map(([value, label]) => (
+          <label key={value} className={purpose === value ? "on" : undefined}>
+            <input
+              type="radio" name="purpose_choice" value={value}
+              checked={purpose === value}
+              onChange={() => setPurpose(value)}
+            />
+            {label}
+          </label>
+        ))}
+      </fieldset>
 
       <div className="card">
         <div className="card-head">
@@ -137,17 +168,32 @@ export function SettlementForm({
 
             {branches.length > 1 && (
               <div className="field">
-                <label htmlFor="location_id">Branch</label>
-                <select id="location_id" name="location_id" defaultValue="">
-                  <option value="">Follow the invoices</option>
+                <label htmlFor="location_id">
+                  Branch{purpose === "advance" && <span aria-hidden="true"> *</span>}
+                </label>
+                {/* An advance settles nothing, so there are no invoices for the
+                    cash side to follow. Asked for rather than guessed: money in
+                    no branch at all reappears as an unexplained difference the
+                    first time anyone reads the branch reports. */}
+                <select
+                  id="location_id" name="location_id" defaultValue=""
+                  required={purpose === "advance"}
+                >
+                  <option value="">
+                    {purpose === "advance" ? "Choose a branch…" : "Follow the invoices"}
+                  </option>
                   {branches.map((b) => (
                     <option key={b.id} value={b.id}>{b.code} · {b.name}</option>
                   ))}
                 </select>
                 <span className="hint">
-                  Which branch&rsquo;s cash moves. Left alone it follows the invoices being
-                  settled, which is right unless one branch pays another&rsquo;s bills. The
-                  payable itself always clears in the branch that raised it.
+                  {purpose === "advance"
+                    ? "Required for an advance: there is no invoice branch to follow."
+                    : <>
+                        Which branch&rsquo;s cash moves. Left alone it follows the invoices being
+                        settled, which is right unless one branch pays another&rsquo;s bills. The
+                        payable itself always clears in the branch that raised it.
+                      </>}
                 </span>
               </div>
             )}
@@ -166,6 +212,42 @@ export function SettlementForm({
         </div>
       </div>
 
+      {purpose === "advance" ? (
+        <div className="card">
+          <div className="card-head">
+            <h2>{isPay ? "Advance to supplier" : "Customer advance"}</h2>
+          </div>
+          <div className="card-body">
+            <div className="row">
+              <div className="field">
+                <label htmlFor="advance">Amount {isPay ? "paid" : "received"}</label>
+                <div className="amountbox">
+                  <input
+                    id="advance" name="advance" type="number" min="0" step="any" required
+                    value={advance} onChange={(e) => setAdvance(e.target.value)}
+                  />
+                  <span className="amountbox-unit">MMK</span>
+                </div>
+              </div>
+              <div className="field advance-note">
+                <strong>No invoice required</strong>
+                <span className="hint">
+                  {isPay
+                    ? "This money stays available against a future bill from them."
+                    : "This money stays available for a future invoice."}
+                </span>
+              </div>
+            </div>
+
+            <p className="advance-after">
+              After posting: <strong>
+                {isPay ? "Advance paid" : "Available advance"} +{fmt(Number(advance) || 0)} MMK
+              </strong>
+              {" · "}Allocated to invoices 0 MMK
+            </p>
+          </div>
+        </div>
+      ) : (
       <div className="card">
         <div className="card-head">
           <h2>{isPay ? "Bills outstanding" : "Invoices outstanding"}</h2>
@@ -252,8 +334,9 @@ export function SettlementForm({
           </div>
         )}
       </div>
+      )}
 
-      {overApplied.length > 0 && (
+      {purpose === "settle" && overApplied.length > 0 && (
         <div className="alert">
           More than the outstanding amount applied to{" "}
           {overApplied.map((i) => i.doc_no).join(", ")}.
@@ -268,7 +351,7 @@ export function SettlementForm({
       {/* What is about to be settled, named. One invoice needs no list; two or
           more is exactly the case where an amount nobody typed rides along
           on the total. */}
-      {settling.length > 1 && (
+      {purpose === "settle" && settling.length > 1 && (
         <div className="alert" style={{ marginBottom: "0.75rem" }}>
           <strong>
             This one {isPay ? "payment" : "receipt"} settles {settling.length} invoices.
@@ -285,15 +368,28 @@ export function SettlementForm({
       )}
 
       <div className="actions">
-        <button type="submit" disabled={pending || applied <= 0 || overApplied.length > 0}>
+        <button
+          type="submit"
+          disabled={pending
+            || (purpose === "advance"
+              ? !(Number(advance) > 0)
+              : applied <= 0 || overApplied.length > 0)}
+        >
           {pending ? "Posting…"
+            : purpose === "advance"
+              ? Number(advance) > 0
+                ? `Post ${isPay ? "payment" : "receipt"} of ${fmt(Number(advance))} on account`
+                : `Post ${isPay ? "payment" : "receipt"}`
             : applied > 0
               ? `Post ${isPay ? "payment" : "receipt"} of ${fmt(applied)}`
                 + (settling.length > 1 ? ` across ${settling.length} invoices` : "")
               : `Post ${isPay ? "payment" : "receipt"}`}
         </button>
         <span className="page-sub">
-          The invoices are not edited — this records a document allocated against them.
+          {purpose === "advance"
+            ? `Records money ${isPay ? "paid" : "received"} on account. No invoice is `
+              + "settled and no stock moves; it waits until there is a bill to put it against."
+            : "The invoices are not edited — this records a document allocated against them."}
         </span>
       </div>
     </form>
