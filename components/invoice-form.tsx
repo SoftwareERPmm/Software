@@ -125,6 +125,15 @@ export function InvoiceForm({
 
   const isSales = kind === "sales";
   const byId = (id: string) => items.find((i) => i.id === id);
+
+  /**
+   * A line that came from somewhere else, and so is not this voucher's to
+   * change: a receipt line (what arrived, arrived) or an order line (the
+   * item, quantity and price were agreed there). Either way the way to
+   * change it is at the document it came from — enforced on the server too,
+   * in assertOrderTerms and assertSourceLines.
+   */
+  const inherited = (l: Line) => !!(l.sourceLineId || l.orderLineId);
   const openReceipts = (goodsReceipts ?? []).filter((d) => d.partner_id === partnerId);
   const matchedGr = openReceipts.find((d) => d.id === matchedGrId) ?? null;
 
@@ -191,6 +200,9 @@ export function InvoiceForm({
       qty: String(r.outstanding),
       unitPrice: String(r.unit_price),
       orderLineId: r.order_line_id,
+      // What the order still has to be billed — the ceiling on this line,
+      // and the figure "Bill part" counts down from.
+      sourceQty: String(r.outstanding),
     })));
     setReference(rows[0].doc_no);
   }
@@ -418,14 +430,16 @@ export function InvoiceForm({
       <div className="card">
         <div className="card-head">
           <h2>Lines</h2>
-          {lines.some((l) => l.sourceLineId) && (
+          {lines.some(inherited) && (
             <label className="billpart">
               <input
                 type="checkbox"
                 checked={billPart}
                 onChange={(e) => billWholeReceipt(e.target.checked)}
               />
-              Bill only part of what arrived
+              {lines.some((l) => l.orderLineId)
+                ? "Bill part of the order"
+                : "Bill only part of what arrived"}
             </label>
           )}
           <button type="button" className="ghost tiny" onClick={addLine}>
@@ -434,9 +448,13 @@ export function InvoiceForm({
         </div>
         {billPart && (
           <p className="hint" style={{ padding: "0 1rem 0.5rem" }}>
-            Reduce a quantity to bill less than arrived. Whatever is left stays
-            on {matchedGr?.doc_no ?? "the receipt"}, waiting for the next bill —
-            it is not written off.
+            Reduce a quantity to bill less than{" "}
+            {lines.some((l) => l.orderLineId) ? "the order asked for" : "arrived"}.
+            Whatever is left stays on{" "}
+            {lines.some((l) => l.orderLineId)
+              ? (reference || "the order")
+              : (matchedGr?.doc_no ?? "the receipt")}
+            , waiting for the next bill — it is not written off.
           </p>
         )}
 
@@ -471,15 +489,23 @@ export function InvoiceForm({
                 return (
                   <tr key={l.key}>
                     <td style={{ minWidth: 240 }}>
-                      <ItemPicker
-                        mode={kind}
-                        items={items}
-                        categories={categories}
-                        uoms={uoms}
-                        value={l.itemId}
-                        onPick={(id) => pickItem(l.key, id)}
-                        onCreated={addItem}
-                      />
+                      {/* An order line's item is not this voucher's to swap:
+                          changing what is being bought starts at the order. */}
+                      {l.orderLineId ? (
+                        <span className="readout" title="On the order — change it there">
+                          {item ? `${item.code} · ${item.name}` : "—"}
+                        </span>
+                      ) : (
+                        <ItemPicker
+                          mode={kind}
+                          items={items}
+                          categories={categories}
+                          uoms={uoms}
+                          value={l.itemId}
+                          onPick={(id) => pickItem(l.key, id)}
+                          onCreated={addItem}
+                        />
+                      )}
                       {/* This line is the goods an open order is waiting for.
                           The banner says the order exists; this says the bill
                           being typed is for the same thing. */}
@@ -511,30 +537,31 @@ export function InvoiceForm({
                       </td>
                     )}
                     <td className="narrow">
-                      {/* What arrived, arrived. A line billing a receipt takes
-                          its quantity from that receipt and cannot be typed
-                          over: an invoice for 110 against 100 received is not
-                          a correction anybody meant to make, and the engine
-                          refuses it anyway. The price stays editable — the
-                          supplier's bill is external truth, and a difference
-                          there is what variance exists for. */}
+                      {/* What arrived, arrived, and what was agreed was
+                          agreed. A line billing a receipt takes its quantity
+                          from that receipt; a line filled from an order takes
+                          item, quantity and price from the order. Neither is
+                          typed over here — billing less is said deliberately,
+                          with "Bill part", and capped at what is left. */}
                       <input
                         type="number"
                         min="0"
                         step="any"
-                        max={l.sourceLineId && billPart ? l.sourceQty : undefined}
+                        max={inherited(l) && billPart ? l.sourceQty : undefined}
                         value={l.qty}
                         onChange={(e) => setLine(l.key, { qty: e.target.value })}
                         aria-label="Quantity"
-                        readOnly={!!l.sourceLineId && !billPart}
+                        readOnly={inherited(l) && !billPart}
                         title={l.sourceLineId && receivedLine
                           ? `${fmt(receivedLine.qty)} received on ${matchedGr?.doc_no}`
-                          : undefined}
-                        style={l.sourceLineId && !billPart
+                          : l.orderLineId
+                            ? `${fmt(Number(l.sourceQty ?? 0))} still to bill on the order`
+                            : undefined}
+                        style={inherited(l) && !billPart
                           ? { background: "var(--line-soft)", cursor: "not-allowed" }
                           : qtyMismatch ? { borderColor: "var(--warn)" } : undefined}
                       />
-                      {l.sourceLineId && billPart
+                      {inherited(l) && billPart
                        && Number(l.qty) < Number(l.sourceQty) - 0.0001 && (
                         <span className="qtyleft">
                           {fmt(Number(l.sourceQty) - Number(l.qty))} left to bill
@@ -542,6 +569,10 @@ export function InvoiceForm({
                       )}
                     </td>
                     <td className="narrow">
+                      {/* The price on an order line is the agreed one and is
+                          changed at the order. On a receipt line it stays
+                          open: the supplier's bill is external truth, and a
+                          difference there is what variance exists for. */}
                       <input
                         type="number"
                         min="0"
@@ -549,6 +580,11 @@ export function InvoiceForm({
                         value={l.unitPrice}
                         onChange={(e) => setLine(l.key, { unitPrice: e.target.value })}
                         aria-label="Unit price"
+                        readOnly={!!l.orderLineId}
+                        title={l.orderLineId ? "Agreed on the order — change it there" : undefined}
+                        style={l.orderLineId
+                          ? { background: "var(--line-soft)", cursor: "not-allowed" }
+                          : undefined}
                       />
                     </td>
                     <td className="r">{fmt(amount(l))}</td>

@@ -332,6 +332,8 @@ export function SalesVoucher({
       orderLineId: r.order_line_id,
       orderId: r.order_id,
       orderNo: r.doc_no,
+      // What the order still has to be invoiced — the ceiling on this line.
+      sourceQty: String(r.outstanding),
     })));
     setReference(rows[0].doc_no);
   }
@@ -684,11 +686,13 @@ export function SalesVoucher({
       <div className="card">
         <div className="card-head">
           <h2>Items</h2>
-          {lines.some((l) => l.sourceLineId) && (
+          {lines.some((l) => l.sourceLineId || l.orderLineId) && (
             <label className="billpart">
               <input type="checkbox" checked={billPart}
                      onChange={(e) => billWholeDelivery(e.target.checked)} />
-              Bill only part of what went out
+              {lines.some((l) => l.orderLineId)
+                ? "Invoice part of the order"
+                : "Bill only part of what went out"}
             </label>
           )}
           <button type="button" className="ghost tiny" onClick={addLine}>Add line</button>
@@ -744,15 +748,23 @@ export function SalesVoucher({
                 return [
                   <tr key={l.key}>
                     <td style={{ minWidth: 240 }}>
-                      <ItemPicker
-                        mode="sales"
-                        items={items}
-                        categories={categories}
-                        uoms={uoms}
-                        value={l.itemId}
-                        onPick={(id) => pickItem(l.key, id)}
-                        onCreated={addItem}
-                      />
+                      {/* An order line's item is the order's: changing what is
+                          being sold starts there. */}
+                      {l.orderLineId ? (
+                        <span className="readout" title="On the order — change it there">
+                          {item ? `${item.code} · ${item.name}` : "—"}
+                        </span>
+                      ) : (
+                        <ItemPicker
+                          mode="sales"
+                          items={items}
+                          categories={categories}
+                          uoms={uoms}
+                          value={l.itemId}
+                          onPick={(id) => pickItem(l.key, id)}
+                          onCreated={addItem}
+                        />
+                      )}
                       {/* These are the goods an open order is waiting for. */}
                       <AlreadyAwaited
                         lines={awaited.filter((a) => a.item_id === l.itemId)}
@@ -803,8 +815,9 @@ export function SalesVoucher({
                           yours to set — it is your price list, not a fact
                           about the goods. */}
                       <input type="number" min="0" step="any" value={l.qty} aria-label="Quantity"
-                        max={l.sourceLineId && billPart ? l.sourceQty : undefined}
-                        readOnly={!!l.sourceLineId && !billPart}
+                        max={(l.sourceLineId || l.orderLineId) && billPart
+                          ? l.sourceQty : undefined}
+                        readOnly={!!(l.sourceLineId || l.orderLineId) && !billPart}
                         title={l.sourceLineId ? "Delivered quantity — billed as it went out" : undefined}
                         style={l.sourceLineId && !billPart
                           ? { background: "var(--line-soft)", cursor: "not-allowed" }
