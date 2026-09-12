@@ -416,6 +416,84 @@ async function sharedSourceLines(
   return out;
 }
 
+/** One side of a suspected double: goods waiting on a bill, or a bill waiting on goods. */
+export type GrirCollisionLine = {
+  partner_id: string;
+  side: "GOODS" | "BILL";
+  document_id: string;
+  doc_no: string;
+  doc_date: string;
+  item_id: string;
+  item_name: string;
+  uom_code: string;
+  qty: number;
+};
+
+/**
+ * Goods waiting on a bill and a bill waiting on goods, for the same items
+ * from the same supplier — which is usually one purchase entered twice.
+ *
+ * A purchase invoice can only name a goods receipt, never an order. So a bill
+ * that arrives before the goods is an orphan: nothing connects it to the
+ * order it pays for, the order still reads as owed the goods, and each door
+ * then produces a receipt of its own. Two receipts, twice the stock, two
+ * payables, and every document individually correct.
+ *
+ * The receive form already warns while an order is still owed goods. This is
+ * the state *after* that warning goes quiet — the order has just been
+ * satisfied, so nothing is outstanding on it, and what is left is a receipt
+ * holding a credit in GR/IR and a bill holding a debit for the same goods.
+ * The ledger cannot net them: GR/IR is matched by the link documents record
+ * about each other, and these two never named each other.
+ *
+ * Read from the clearing account, not from names or dates: a receipt awaiting
+ * a bill credits GR/IR, a bill awaiting goods debits it, and a pair that did
+ * find each other nets to zero and drops out of v_grir_balance by itself.
+ * Restricted to items appearing on both sides, because a supplier who is
+ * genuinely owed a bill for one thing while billing ahead for another is
+ * doing nothing wrong and must not be told they are.
+ */
+export async function getGrirCollisions(companyId: string) {
+  const rows = await sql`
+    with open_grir as (
+        select g.partner_id, g.document_id, d.doc_type, d.doc_no, d.doc_date
+          from v_grir_balance g
+          join document d on d.id = g.document_id
+         where g.company_id = ${companyId}
+           and d.doc_type in ('GOODS_RECEIPT', 'PURCHASE_INVOICE')
+           and g.partner_id is not null
+    ),
+    named as (
+        select o.partner_id, o.document_id, o.doc_type, o.doc_no,
+               to_char(o.doc_date, 'YYYY-MM-DD') as doc_date,
+               dl.item_id, i.name as item_name, u.code as uom_code,
+               sum(dl.base_qty) as qty
+          from open_grir o
+          join document_line dl on dl.document_id = o.document_id
+          join item i on i.id = dl.item_id
+          join uom u on u.id = i.base_uom_id
+         group by o.partner_id, o.document_id, o.doc_type, o.doc_no, o.doc_date,
+                  dl.item_id, i.name, u.code
+    ),
+    -- Only where the same item is on both sides. One of each is the whole
+    -- signal; a bill for paint and goods for cement are two purchases.
+    both_sides as (
+        select partner_id, item_id
+          from named
+         group by partner_id, item_id
+        having count(distinct doc_type) = 2
+    )
+    select n.partner_id,
+           case when n.doc_type = 'GOODS_RECEIPT' then 'GOODS' else 'BILL' end as side,
+           n.document_id, n.doc_no, n.doc_date,
+           n.item_id, n.item_name, n.uom_code, n.qty::float as qty
+      from named n
+      join both_sides b on b.partner_id = n.partner_id and b.item_id = n.item_id
+     order by n.partner_id, side, n.doc_date, n.doc_no`;
+
+  return rows as unknown as GrirCollisionLine[];
+}
+
 /**
  * Goods receipts that still have something to bill, with each line's
  * remaining quantity rather than its original one.
@@ -1315,6 +1393,10 @@ export type AwaitingLine = {
   item_name: string;
   uom_code: string;
   outstanding: number;
+  /** The order line itself, and the price agreed on it — what a bill raised
+   *  from this order should be filled with. */
+  order_line_id: string;
+  unit_price: number;
 };
 
 /**
@@ -1339,9 +1421,10 @@ export type AwaitingLine = {
  * dashboard and the receive form use, so this cannot disagree with them
  * about what is still owed.
  */
-export async function getUntouchedOpenOrders(
+async function ordersStillAwaited(
   companyId: string,
-  docType: "SALES_ORDER" | "PURCHASE_ORDER"
+  docType: "SALES_ORDER" | "PURCHASE_ORDER",
+  onlyUntouched: boolean
 ) {
   const rows = await sql`
     with touched as (
@@ -1370,24 +1453,73 @@ export async function getUntouchedOpenOrders(
            to_char(o.due_date, 'YYYY-MM-DD') as due_date,
            v.item_id, i.code as item_code, i.name as item_name,
            u.code as uom_code,
-           v.outstanding::float as outstanding
+           v.outstanding::float as outstanding,
+           ol.id as order_line_id,
+           ol.unit_price::float as unit_price
       from v_order_outstanding v
       join document o on o.id = v.order_id
       join item i on i.id = v.item_id
       join uom u on u.id = i.base_uom_id
+      -- The order's own line for this item, for the price it agreed. One
+      -- line per item on an order is the ordinary case; where an item is on
+      -- two lines at different prices this takes the first, and the reader
+      -- is billing from the order in front of them either way.
+      join lateral (
+            select dl.id, dl.unit_price
+              from document_line dl
+             where dl.document_id = v.order_id and dl.item_id = v.item_id
+             order by dl.line_no
+             limit 1
+      ) ol on true
      where v.company_id = ${companyId}
        and v.doc_type = ${docType}
        and v.outstanding > 0
        and not v.is_closed
-       -- Nothing arrived against any line of it, named or linked afterwards.
-       and not exists (
-             select 1 from v_order_outstanding f
-              where f.order_id = v.order_id and f.fulfilled > 0)
-       and v.order_id not in (
-             select order_id from touched where order_id is not null)
+       ${onlyUntouched
+      ? sql`-- Nothing arrived against any line of it, named or linked after.
+            and not exists (
+                  select 1 from v_order_outstanding f
+                   where f.order_id = v.order_id and f.fulfilled > 0)
+            and v.order_id not in (
+                  select order_id from touched where order_id is not null)`
+      : sql``}
      order by o.due_date nulls last, o.posting_date, o.doc_no, i.name`;
 
   return rows as unknown as AwaitingLine[];
+}
+
+/**
+ * For the form that would place another order: only orders nothing has
+ * happened to. See above for why a part-received one is left out.
+ */
+export async function getUntouchedOpenOrders(
+  companyId: string,
+  docType: "SALES_ORDER" | "PURCHASE_ORDER"
+) {
+  return ordersStillAwaited(companyId, docType, true);
+}
+
+/**
+ * For the form that would bill or ship without going through the order:
+ * every order with goods still owed, part-received ones included.
+ *
+ * A different question, so a different set. Placing a second order for goods
+ * already half arrived can be exactly right — the other half is late, and the
+ * order it belongs to is the one to chase. But billing outside the order, or
+ * shipping outside it, is how the same goods get recorded twice: the bill
+ * raises its own receipt, the order is still owed the goods, and both then
+ * look unfinished to the screen that reads them. That risk does not care
+ * whether some of the goods have already landed.
+ *
+ * Fully received orders are out — outstanding > 0 — because the answer there
+ * is to match the receipt waiting on a bill, which the form says already, and
+ * two hints for one situation is how a reader learns to skip both.
+ */
+export async function getOpenOrdersAwaitingGoods(
+  companyId: string,
+  docType: "SALES_ORDER" | "PURCHASE_ORDER"
+) {
+  return ordersStillAwaited(companyId, docType, false);
 }
 
 /**
@@ -2655,7 +2787,30 @@ export async function getTransactionOrigin(
     cursor = row.source_document_id as string | null;
   }
 
-  const orderInChain = chain.find((c) => c.doc_type === orderType) ?? null;
+  /**
+   * The order this document was raised from, where it was raised from one
+   * without a delivery or receipt in between.
+   *
+   * An invoice's source slot holds the goods it bills, so a bill raised
+   * straight from an order cannot put the order there — it names the order's
+   * lines on its own lines instead, which is what "fill from this order"
+   * writes and what amendInvoice and the correction cascade already read.
+   * Without this the card called such a bill a direct invoice, contradicting
+   * both of them about the same document.
+   */
+  const [fromOrderLines] = chain.some((c) => c.doc_type === orderType) ? [] : await sql`
+    select distinct o.id, o.doc_no, o.doc_type
+      from document_line il
+      join document_line ol on ol.id = il.source_line_id
+      join document o on o.id = fn_current_document(ol.document_id)
+     where il.document_id in (${versionsOf(documentId)})
+       and o.doc_type = ${orderType}
+     order by o.doc_no
+     limit 1`;
+
+  const orderInChain = chain.find((c) => c.doc_type === orderType)
+    ?? (fromOrderLines as { id: string; doc_no: string; doc_type: string } | undefined)
+    ?? null;
 
   /**
    * Orders the goods were allocated to after the event, reported as what they
@@ -2778,6 +2933,134 @@ export async function getAdvancesFor(companyId: string, documentId: string) {
        and partner_id = ${doc.partner_id}
        and doc_type = ${kind}
      order by doc_date, doc_no`;
+}
+
+/** One application of one advance: which invoice took it, and when. */
+export type AdvanceApplication = {
+  invoice_id: string;
+  invoice_no: string;
+  application_id: string | null;
+  application_no: string | null;
+  applied_on: string;
+  amount: number;
+};
+
+/** One advance, with what has become of it. */
+export type AdvanceRow = {
+  id: string;
+  doc_no: string;
+  doc_date: string;
+  partner_id: string;
+  partner_code: string;
+  partner_name: string;
+  branch: string | null;
+  taken: number;
+  applied: number;
+  remaining: number;
+  applications: AdvanceApplication[];
+};
+
+/**
+ * Every advance taken from a customer or paid to a supplier, and what became
+ * of each.
+ *
+ * v_partner_advance answers a different question — what is still available to
+ * apply — and so drops an advance the moment it is fully spent. That is right
+ * for the apply panel, which must not offer money that is gone, and wrong for
+ * anyone asking what happened to a deposit: the fully spent one is exactly
+ * the case where "when was it applied" is the whole question, and until now
+ * it left the screens entirely.
+ *
+ * What makes a receipt an advance is not a flag but where it posted: to the
+ * advances account rather than to the control account, because it relieved no
+ * invoice. So that is what this asks. A flag would be a second opinion about
+ * something the ledger already states, and the two would drift.
+ *
+ * Applications count only while both the application and the invoice stand,
+ * the same condition v_partner_advance and v_open_item apply — so a voided
+ * application puts the money back here too, and stops being listed under the
+ * advance it once spent.
+ */
+export async function getAdvanceLedger(
+  companyId: string,
+  side: "CUSTOMER" | "SUPPLIER"
+) {
+  const kind = side === "CUSTOMER" ? "CUSTOMER_RECEIPT" : "SUPPLIER_PAYMENT";
+  const role = side === "CUSTOMER" ? "CUSTOMER_ADVANCE" : "SUPPLIER_ADVANCE";
+
+  // Joined through system_account rather than fn_system_account, which raises
+  // when the role is not configured: a company set up before the advance
+  // accounts existed should see an empty list, not an error page.
+  const advances = sql`
+    select d.id
+      from document d
+     where d.company_id = ${companyId}
+       and d.doc_type = ${kind}
+       and d.status = 'POSTED'
+       -- Voiding a receipt reverses it: the original goes to REVERSED, which
+       -- the status test above drops, and a mirror document is posted for the
+       -- negative. That mirror is not an advance anybody holds, and counting
+       -- it would subtract returned money from the deposits still held.
+       and d.reverses_document_id is null
+       and exists (
+             select 1 from journal_line jl
+               join system_account sa
+                 on sa.account_id = jl.account_id
+                and sa.company_id = d.company_id
+                and sa.role = ${role}
+              where jl.journal_entry_id = d.journal_entry_id)`;
+
+  const rows = await sql`
+    select d.id, d.doc_no, to_char(d.doc_date, 'YYYY-MM-DD') as doc_date,
+           d.partner_id, p.code as partner_code, p.name as partner_name,
+           l.name as branch,
+           d.gross_total::float                                    as taken,
+           coalesce(a.applied, 0)::float                           as applied,
+           (d.gross_total - coalesce(a.applied, 0))::float         as remaining
+      from document d
+      join business_partner p on p.id = d.partner_id
+      left join location l on l.id = d.location_id
+      left join (
+            select pa.payment_id, sum(pa.amount) as applied
+              from payment_allocation pa
+              join document inv on inv.id = pa.invoice_id
+              left join document app on app.id = pa.applied_by_document_id
+             where inv.status = 'POSTED'
+               and (pa.applied_by_document_id is null or app.status = 'POSTED')
+             group by pa.payment_id
+      ) a on a.payment_id = d.id
+     where d.id in (${advances})
+     order by d.doc_date desc, d.doc_no desc`;
+
+  const applied = await sql`
+    select pa.payment_id,
+           pa.invoice_id, inv.doc_no as invoice_no,
+           pa.applied_by_document_id as application_id,
+           app.doc_no as application_no,
+           -- The application document's own date where there is one. An
+           -- allocation made at the moment the money was taken has no
+           -- application document and no date of its own but the payment's.
+           to_char(coalesce(app.doc_date, pa.created_at::date), 'YYYY-MM-DD') as applied_on,
+           pa.amount::float as amount
+      from payment_allocation pa
+      join document inv on inv.id = pa.invoice_id
+      left join document app on app.id = pa.applied_by_document_id
+     where pa.company_id = ${companyId}
+       and pa.payment_id in (${advances})
+       and inv.status = 'POSTED'
+       and (pa.applied_by_document_id is null or app.status = 'POSTED')
+     order by 6, app.doc_no, inv.doc_no`;
+
+  const byPayment = new Map<string, AdvanceApplication[]>();
+  for (const a of applied as unknown as (AdvanceApplication & { payment_id: string })[]) {
+    const list = byPayment.get(a.payment_id) ?? [];
+    list.push(a);
+    byPayment.set(a.payment_id, list);
+  }
+
+  return (rows as unknown as AdvanceRow[]).map((r) => ({
+    ...r, applications: byPayment.get(r.id) ?? [],
+  }));
 }
 
 /**

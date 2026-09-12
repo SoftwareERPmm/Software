@@ -554,6 +554,17 @@ button.tiny { padding: 0.16rem 0.5rem; font-size: var(--t-sm); }
   margin: var(--s2) 0 0; color: var(--muted);
   font-size: var(--t-md); line-height: var(--lh-base); white-space: normal;
 }
+/* Three consequences, read as three things rather than one paragraph — this
+   dialog is asked a question and the answer depends on all of them. */
+.confirm-list {
+  margin: var(--s2) 0 0; padding-left: 1.1rem;
+  color: var(--muted);
+  font-size: var(--t-md); line-height: var(--lh-base);
+  white-space: normal;
+  display: flex; flex-direction: column; gap: 0.4rem;
+}
+.confirm-list strong { color: var(--ink); }
+
 /* Cancel sits left of the destructive action, and is the button focus lands
    on first, so Enter on an unread dialog backs out rather than deletes. */
 .confirm-actions {
@@ -1448,12 +1459,24 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 }
 .awaiting-go a:hover { color: var(--ink); }
 .awaiting-go svg { vertical-align: -2px; }
+/* The order this voucher was filled from, marked in the list it came from —
+   so pressing the button leaves a trace rather than appearing to do nothing
+   but change some numbers further down the page. */
+.awaiting-used td { background: color-mix(in srgb, var(--brand) 7%, transparent); }
+.awaiting-done { color: var(--brand); white-space: nowrap; }
+/* The document number is the link now, so it reads as one. */
+.awaiting-table td:first-child a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.awaiting-table td:first-child a:hover { color: var(--ink); }
 
 .awaiting-foot { margin: 0.55rem 0 0; color: var(--muted); }
 
 /* The line-level version. Quiet — it sits under an item picker inside a row
    of inputs, and shouting there would make the form look broken rather than
    informed. */
+.awaiting-line a { text-decoration: underline; text-underline-offset: 2px; }
 .awaiting-line {
   display: block;
   margin-top: 0.25rem;
@@ -1901,3 +1924,24 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 }
 .docactions .page-sub { margin-left: 0.15rem; }
 .voidlock { flex-direction: column; align-items: flex-start; }
+
+/* What an advance was spent on, listed under the advance itself.
+   Quieter than the row above it and indented to it: these are not documents
+   in the list, they are what happened to one of them, and at the same weight
+   the table stops reading as a list of advances at all. */
+.adv-applied td {
+  color: var(--muted);
+  font-size: var(--t-sm);
+  border-bottom-color: transparent;
+  padding-top: 0.15rem;
+  padding-bottom: 0.15rem;
+}
+.adv-applied td:nth-child(2) { padding-left: 1.4rem; }
+.adv-applied a { text-decoration: underline; text-underline-offset: 2px; }
+.adv-applied a:hover { color: var(--ink); }
+.adv-mark { color: var(--line); margin-right: 0.35rem; }
+.adv-when { font-family: var(--mono); }
+/* The dashboard figure now leads somewhere, so it says so. */
+.kpi-note a { text-decoration: underline; text-underline-offset: 2px; }
+.kpi-note a:hover { color: var(--ink); }
+.adv-note { font-style: italic; }

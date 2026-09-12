@@ -5,6 +5,8 @@ import { useActionState, useEffect, useState } from "react";
 import type { ActionResult, PickerItem } from "@/lib/actions";
 import { ItemPicker } from "./item-picker";
 import { PartnerPicker } from "./partner-picker";
+import { MaybeSamePurchase } from "./same-purchase";
+import type { GrirCollisionLine } from "@/lib/queries";
 
 type Item = PickerItem;
 type Node = { id: string; code: string; segment: string; name: string; parent_id: string | null };
@@ -56,6 +58,7 @@ export function ReceiptForm({
   uoms,
   purchaseInvoices,
   openOrders,
+  collisions = {},
   initialInvoiceId,
 }: {
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
@@ -73,6 +76,9 @@ export function ReceiptForm({
    * received however much arrives — and then reads as overdue with the goods
    * on the shelf. The form cannot fix that afterwards; it can only ask now.
    */
+  /** Goods waiting on a bill and a bill waiting on goods, keyed by supplier.
+   *  See getGrirCollisions. */
+  collisions?: Record<string, GrirCollisionLine[]>;
   openOrders?: Record<string, {
     orderId: string; orderNo: string;
     lines: { itemId: string; itemCode: string; qty: number }[];
@@ -110,6 +116,14 @@ export function ReceiptForm({
   const byId = (id: string) => items.find((i) => i.id === id);
   const openInvoices = (purchaseInvoices ?? []).filter((d) => d.partner_id === partnerId);
   const waitingOrders = partnerId ? (openOrders?.[partnerId] ?? []) : [];
+
+  /**
+   * Halves of the same purchase, left over from a bill that came before the
+   * goods. Shown whatever is matched: matching this receipt to that bill is
+   * one of the ways the double happens, so suppressing it then would silence
+   * the warning in the case it was written for.
+   */
+  const sameTwice = partnerId ? (collisions?.[partnerId] ?? []) : [];
   const matchedPi = openInvoices.find((d) => d.id === matchedPiId) ?? null;
 
   function fillFrom(pi: OpenDoc) {
@@ -322,6 +336,8 @@ export function ReceiptForm({
           </div>
         </div>
       )}
+
+      <MaybeSamePurchase lines={sameTwice} />
 
       <div className="card">
         <div className="card-head">

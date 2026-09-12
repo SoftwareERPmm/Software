@@ -29,7 +29,9 @@ if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
   }
 }
 
-const { postGoodsReceipt, postPurchaseInvoice } = await import("../lib/posting.ts");
+const { postGoodsReceipt, postPurchaseInvoice, postPurchaseOrder } =
+  await import("../lib/posting.ts");
+const { getGrirCollisions, getOpenPurchaseOrders } = await import("../lib/queries.ts");
 
 const url = process.env.DATABASE_URL;
 const local = url.includes("localhost") || url.includes("127.0.0.1");
@@ -42,6 +44,7 @@ const check = (label, ok, detail = "") => {
   console.log(`  ${ok ? "PASS" : "FAIL"}  ${label}${detail ? `  ${detail}` : ""}`);
 };
 const n = (v) => Number(v ?? 0);
+const near = (a, b) => Math.abs(n(a) - n(b)) < 0.0001;
 
 // Signed: positive is a debit. GR/IR carries a credit balance while goods are
 // received and unbilled, so an outstanding liability reads as a positive
@@ -96,6 +99,24 @@ try {
   const PPV = await acct.role("PURCHASE_PRICE_VARIANCE");
   // Inventory is resolved per item, so ask for this item's own account.
   const INV = await acct.forItem("INVENTORY", item.id);
+
+  // A second item, so "a bill for something else" can be told apart from
+  // "a bill for these goods". Any stocked item that is not the first one will
+  // do — asked for that way round because the one this suite creates sorts
+  // ahead of the others by code, so on the second run it became the "first"
+  // item above and the two were the same row, which made that distinction
+  // untestable and the test wrong rather than the code.
+  let [item2] = await sql`
+    select id, code from item
+     where company_id = ${co.id} and is_stocked and is_active and id <> ${item.id}
+     order by code limit 1`;
+  if (!item2) {
+    const [grp] = await sql`select id from item_group where company_id = ${co.id} order by code limit 1`;
+    const [uom] = await sql`select id from uom where company_id = ${co.id} order by code limit 1`;
+    [item2] = await sql`
+      insert into item (company_id, item_group_id, serial, name, base_uom_id)
+      values (${co.id}, ${grp.id}, 'G02', 'GR/IR Second Item', ${uom.id}) returning id, code`;
+  }
 
   const today = new Date().toISOString().slice(0, 10);
   const base = { companyId: co.id, partnerId: supp.id, locationId: loc.id, docDate: today };
@@ -223,6 +244,82 @@ try {
   check("  still no variance", (await balance(PPV)) === 0, `${await balance(PPV)}`);
   check("  and all 130 units are carried at the billed price",
     (await balance(INV)) === 130000, `${await balance(INV)}`);
+
+  // ---- halves of one purchase that never found each other ----------------
+  //
+  // The failure this catches, in the order it happens:
+  //
+  //   an order is placed                      nothing unusual
+  //   the bill arrives before the goods       it can name no order, so it
+  //                                           waits for goods of its own
+  //   the goods arrive against the order      the order is satisfied, and the
+  //                                           "order still owed goods" warning
+  //                                           on the receive form goes quiet
+  //   the bill's goods are received too       200 units for a 100 order,
+  //                                           two payables, GR/IR clean
+  //
+  // After the last step nothing looks wrong — both halves cleared and every
+  // document is individually correct. The third step is the only moment this
+  // is visible, and what makes it visible is the clearing account: goods with
+  // no bill credit it, a bill with no goods debits it, and a pair that found
+  // each other nets to zero and disappears.
+
+  console.log("\n  a bill and an order that never met\n");
+
+  await sql.unsafe(`truncate table document_history, fulfilment_link, order_closure,
+    payment_allocation, stock_lot_adjustment, stock_lot_consumption, stock_lot,
+    stock_movement, document_line, document, journal_line, journal_entry
+    restart identity cascade`);
+  await sql`update number_series set next_value = 1`;
+
+  const collisions = async () => getGrirCollisions(co.id);
+  const sideOf = (rows, side) => rows.filter((r) => r.side === side);
+
+  const order = await postPurchaseOrder({ companyId: co.id, partnerId: supp.id,
+    locationId: loc.id, docDate: today, dueDate: today,
+    lines: [{ itemId: item.id, qty: 100, unitPrice: 1000 }] });
+  check("an order on its own is not a double", (await collisions()).length === 0);
+
+  const bill = await postPurchaseInvoice({ ...base, dueDate: null,
+    lines: [{ itemId: item.id, qty: 100, unitPrice: 1000 }] });
+  check("a bill waiting on goods is not one either — nothing has arrived yet",
+    (await collisions()).length === 0);
+
+  const [orderLine] = await sql`select id from document_line where document_id = ${order.id}`;
+  const arrived = await postGoodsReceipt({ ...base, sourceDocumentId: order.id,
+    lines: [{ itemId: item.id, qty: 100, unitCost: 1000, sourceLineId: orderLine.id }] });
+
+  // The old warning has nothing left to say at this point: the order it was
+  // watching is satisfied. That is precisely when the new one has to speak.
+  check("the order is no longer owed goods, so the receive form's old warning stops",
+    (await getOpenPurchaseOrders(co.id)).length === 0);
+
+  let coll = await collisions();
+  check("now it is a double waiting to happen", coll.length === 2, `${coll.length} rows`);
+  check("  the goods already here are named",
+    sideOf(coll, "GOODS").some((r) => r.doc_no === arrived.docNo && near(r.qty, 100)));
+  check("  and so is the bill still waiting for them",
+    sideOf(coll, "BILL").some((r) => r.doc_no === bill.docNo && near(r.qty, 100)));
+
+  // A bill for one thing and unbilled goods of another is ordinary trade.
+  const other = await postPurchaseInvoice({ ...base, dueDate: null,
+    lines: [{ itemId: item2.id, qty: 5, unitPrice: 100 }] });
+  check("a bill for a different item is not paired with these goods",
+    (await collisions()).every((r) => r.doc_no !== other.docNo),
+    (await collisions()).map((r) => `${r.side} ${r.doc_no} ${r.item_name}`).join(" · "));
+
+  // And receiving the bill's goods anyway is the mistake. Afterwards there is
+  // nothing to detect, which is the reason the warning has to come first.
+  await postGoodsReceipt({ ...base, sourceDocumentId: bill.id,
+    lines: [{ itemId: item.id, qty: 100, unitCost: 1000 }] });
+  check("once it has happened, the clearing account is clean again",
+    (await collisions()).length === 0,
+    (await collisions()).map((r) => `${r.side} ${r.doc_no} ${r.item_name}`).join(" · "));
+  check("  and the only trace is twice the goods",
+    n((await sql`select coalesce(sum(qty), 0) as q from stock_movement
+                  where item_id = ${item.id}`)[0].q) === 200,
+    `${n((await sql`select coalesce(sum(qty), 0) as q from stock_movement
+                     where item_id = ${item.id}`)[0].q)} units for a 100 order`);
 
   // ---- Invariants --------------------------------------------------------
 

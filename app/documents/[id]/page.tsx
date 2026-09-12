@@ -51,6 +51,8 @@ import {
   getDocumentPeople,
   getInvoiceProgress,
   getLinkableFulfilments,
+  getGrirCollisions,
+  getOpenPurchaseInvoices,
 } from "@/lib/queries";
 import {
   createDelivery, createGoodsReceipt, replaceConsignmentSettlement,
@@ -87,6 +89,17 @@ const PLURAL: Record<string, string> = {
   CUSTOMER_RECEIPT: "Customer receipts",
 };
 
+/** Where an arrow labelled for it leads back to. */
+const BACK_FROM: Record<string, string> = {
+  "/purchases/new": "New purchase invoice",
+  "/sales/new": "New sales voucher",
+  "/purchases/receive/new": "Receive goods",
+  "/purchases/orders/new": "New purchase order",
+  "/sales/orders/new": "New sales order",
+  "/sales/deliver/new": "New delivery",
+  "/finance/general-ledger": "General ledger",
+};
+
 export default async function DocumentPage({
   params, searchParams,
 }: {
@@ -98,8 +111,13 @@ export default async function DocumentPage({
   // another site is an open redirect wearing a breadcrumb.
   const { back } = await searchParams;
   const backHref = back && back.startsWith("/") && !back.startsWith("//") ? back : null;
-  const backLabel = backHref?.startsWith("/finance/general-ledger")
-    ? "General ledger" : backHref ? "Back" : null;
+  // Named, not just "Back": an arrow that says where it goes is the
+  // difference between a way out and a guess. A path this does not know
+  // still gets an arrow, labelled plainly.
+  const backLabel = backHref
+    ? (BACK_FROM[backHref.split("?")[0]]
+       ?? (backHref.startsWith("/finance/general-ledger") ? "General ledger" : "Back"))
+    : null;
   const { id } = await params;
   const doc = await getDocument(id);
   if (!doc) notFound();
@@ -110,6 +128,22 @@ export default async function DocumentPage({
     getDownstream(id),
     getChainDocuments(id),
   ]);
+
+  // Goods already in and a bill already waiting for them, from this order's
+  // supplier: shown on the receive form this page carries, since receiving
+  // against the order is exactly the move that would double them.
+  const collisions = doc.doc_type === "PURCHASE_ORDER"
+    ? (await getGrirCollisions(doc.company_id)).filter((r) => r.partner_id === doc.partner_id)
+    : [];
+
+  // Bills from this supplier still waiting on goods: asked before the first
+  // receipt, which is the one moment the collision notice cannot speak.
+  const billsAwaiting = doc.doc_type === "PURCHASE_ORDER"
+    ? (await getOpenPurchaseInvoices(doc.company_id) as unknown as Array<{
+        id: string; doc_no: string; doc_date: string; partner_id: string;
+        lines: { itemId: string; itemName: string; qty: number }[];
+      }>).filter((b) => b.partner_id === doc.partner_id)
+    : [];
 
   const chain = CHAINS[doc.doc_type] ?? [doc.doc_type];
   const totalDebit = journal.reduce((s: number, l: any) => s + Number(l.debit), 0);
@@ -594,6 +628,8 @@ export default async function DocumentPage({
               lines={orderLines}
               action={sales ? createDelivery : createGoodsReceipt}
               stockByLocation={sales ? stockByLocation : undefined}
+              collisions={sales ? [] : collisions}
+              openBills={billsAwaiting}
             />
           ) : null
         }
@@ -867,6 +903,8 @@ export default async function DocumentPage({
           lines={orderLines}
           action={doc.doc_type === "SALES_ORDER" ? createDelivery : createGoodsReceipt}
           stockByLocation={doc.doc_type === "SALES_ORDER" ? stockByLocation : undefined}
+          collisions={doc.doc_type === "PURCHASE_ORDER" ? collisions : []}
+          openBills={billsAwaiting}
         />
       )}
 

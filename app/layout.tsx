@@ -82,6 +82,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <NavLink href="/sales/returns" exact>Customer returns</NavLink>
               <NavLink href="/sales/discounts">Volume discounts</NavLink>
               <NavLink href="/receivables" exact>Receivables</NavLink>
+              <NavLink href="/receivables/advances">Customer advances</NavLink>
               <NavLink href="/receivables/receive">Receive payment</NavLink>
             </NavGroup>
 
@@ -91,6 +92,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <NavLink href="/purchases/invoices" exact>Purchase invoices</NavLink>
               <NavLink href="/purchases/returns" exact>Supplier returns</NavLink>
               <NavLink href="/payables" exact>Payables</NavLink>
+              <NavLink href="/payables/advances">Supplier advances</NavLink>
               <NavLink href="/payables/pay">Pay supplier</NavLink>
             </NavGroup>
 

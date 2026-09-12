@@ -1,5 +1,5 @@
 import { getFormData, createSalesInvoice } from "@/lib/actions";
-import { getOpenDeliveries, getOwnershipMap } from "@/lib/queries";
+import { getOpenDeliveries, getOwnershipMap, getOpenOrdersAwaitingGoods } from "@/lib/queries";
 import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { SalesVoucher } from "@/components/sales-voucher";
@@ -14,6 +14,7 @@ export default async function NewSalesInvoice({
   const [co] = await sql`select id from company order by created_at limit 1`;
   const categories = await allCategories(co.id);
   const deliveries = await getOpenDeliveries(co.id);
+  const awaiting = await getOpenOrdersAwaitingGoods(co.id, "SALES_ORDER");
   // Whose goods are on the shelf. A Take Now invoice moves stock, so the line
   // has to be able to say which pool it came out of.
   const ownership = await getOwnershipMap(co.id);
@@ -77,6 +78,7 @@ export default async function NewSalesInvoice({
         today={today}
         deliveries={deliveries as never}
         initialDeliveryId={delivery_id}
+        awaiting={awaiting}
       />
     </>
   );

@@ -149,7 +149,11 @@ export function OrderForm({
         </div>
       </div>
 
-      <AwaitingOrders lines={awaited} sales={isSales} />
+      <AwaitingOrders
+        lines={awaited}
+        sales={isSales}
+        backTo={isSales ? "/sales/orders/new" : "/purchases/orders/new"}
+      />
 
       <div className="card">
         <div className="card-head">
@@ -183,6 +187,7 @@ export function OrderForm({
                       <AlreadyAwaited
                         lines={awaited.filter((a) => a.item_id === l.itemId)}
                         sales={isSales}
+                        backTo={isSales ? "/sales/orders/new" : "/purchases/orders/new"}
                       />
                     </td>
                     <td className="narrow">

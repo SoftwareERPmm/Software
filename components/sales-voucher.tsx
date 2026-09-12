@@ -7,6 +7,8 @@ import { StockSourceDialog, poolsFor, type OwnershipSplit } from "./stock-source
 import { priceLines, type VolumeBand } from "@/lib/discount";
 import { ItemPicker } from "./item-picker";
 import { PartnerPicker } from "./partner-picker";
+import { AwaitingOrders, AlreadyAwaited } from "./awaiting-orders";
+import type { AwaitingLine } from "@/lib/queries";
 
 type Item = PickerItem;
 type Node = { id: string; code: string; segment: string; name: string; parent_id: string | null };
@@ -59,6 +61,12 @@ type Line = {
   sourceLineId?: string;
   /** What that delivery line still has unbilled — the ceiling on this line. */
   sourceQty?: string;
+  /**
+   * The order line this one bills, when the voucher was filled from an open
+   * sales order. Separate from sourceLineId, which means "prefilled from a
+   * delivery" and holds the quantity to what went out.
+   */
+  orderLineId?: string;
   /** The order's agreed price, when there is an order behind this line. */
   agreedPrice?: number | null;
   orderId?: string | null;
@@ -90,6 +98,7 @@ export function SalesVoucher({
   focReasons, openInvoices, nextInvoiceNo, today, categories, uoms,
   itemPrices, priceLevels, stockByLocation, deliveries, initialDeliveryId,
   ownership = [],
+  awaiting = [],
 }: {
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   customers: Customer[];
@@ -116,6 +125,8 @@ export function SalesVoucher({
   deliveries?: OpenDelivery[];
   /** Arrived via "Create sales invoice" on a specific delivery's own page — match it immediately. */
   initialDeliveryId?: string;
+  /** Orders to this customer with goods still owed. See getOpenOrdersAwaitingGoods. */
+  awaiting?: AwaitingLine[];
   /** Consigned stock on hand, per item, warehouse and consignor. Owned and
    *  consigned goods share a shelf and nothing about the shelf says which
    *  is which, so the line has to be told. */
@@ -148,6 +159,8 @@ export function SalesVoucher({
    */
   const [billPart, setBillPart] = useState(false);
   const [reference, setReference] = useState("");
+  /** Which open order this invoice was filled from, if any. */
+  const [fromOrderId, setFromOrderId] = useState<string | null>(null);
   // Set only by answering the dialog. It rides along as a hidden field, so
   // the posting engine is told a person confirmed rather than inferring it
   // from the fact that stock happened to be short.
@@ -209,6 +222,7 @@ export function SalesVoucher({
 
   function pickCustomer(id: string) {
     setCustomerId(id);
+    setFromOrderId(null);
     const c = customers.find((x) => x.id === id);
     if (!c) return;
 
@@ -232,6 +246,15 @@ export function SalesVoucher({
   const openDeliveries = (deliveries ?? []).filter((d) => d.partner_id === customerId);
 
   /**
+   * Sales orders from this customer still owed goods. Suppressed once a
+   * delivery is matched: that invoice bills goods that have already gone
+   * out, which is the correct path and not the mistake this warns about.
+   */
+  const awaited = !customerId || matchedDeliveryId
+    ? []
+    : (awaiting ?? []).filter((a) => a.partner_id === customerId);
+
+  /**
    * Our own number for the job this invoice belongs to — the sales order it
    * traces back to, or the delivery itself when it was raised without one.
    *
@@ -243,6 +266,7 @@ export function SalesVoucher({
   const referenceFor = (d: OpenDelivery) => d.source_no || d.doc_no;
 
   function matchDelivery(id: string) {
+    setFromOrderId(null);
     setMatchedDeliveryId(id);
     setBillPart(false);
     const d = (deliveries ?? []).find((x) => x.id === id);
@@ -283,6 +307,36 @@ export function SalesVoucher({
     if (d) setReference(referenceFor(d));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialDeliveryId]);
+
+  /**
+   * Fill this invoice from an open sales order: what is still owed on it, at
+   * the price agreed there. The order number goes in the reference field, the
+   * same place a delivery's does — an invoice names a delivery as its source
+   * and never an order, so the chain closes when the goods go out.
+   */
+  function fillFromOrder(orderId: string) {
+    const rows = awaited.filter((a) => a.order_id === orderId);
+    if (rows.length === 0) return;
+    setFromOrderId(orderId);
+    setBillPart(false);
+    setLines(rows.map((r, idx) => ({
+      key: idx + 1,
+      itemId: r.item_id,
+      qty: String(r.outstanding),
+      unitPrice: String(r.unit_price),
+      discountPct: "",
+      focQty: "",
+      focReasonId: "",
+      source: "OWNED" as const,
+      agreedPrice: r.unit_price,
+      orderLineId: r.order_line_id,
+      orderId: r.order_id,
+      orderNo: r.doc_no,
+      // What the order still has to be invoiced — the ceiling on this line.
+      sourceQty: String(r.outstanding),
+    })));
+    setReference(rows[0].doc_no);
+  }
 
   function billWholeDelivery(part: boolean) {
     setBillPart(part);
@@ -431,7 +485,11 @@ export function SalesVoucher({
           // Which delivery line this bills, so the engine can hold it to what
           // went out. Free lines carry no source: a giveaway is not part of
           // what the delivery is owed billing for.
-          ...(l.sourceLineId ? { sourceLineId: l.sourceLineId } : {}),
+          // Whichever this line came from — a delivery line, or the order
+          // line the voucher was filled from. Never both.
+          ...(l.sourceLineId || l.orderLineId
+            ? { sourceLineId: l.sourceLineId ?? l.orderLineId }
+            : {}),
           ...pool,
         };
         // Kept as two lines when both apply, because they are two different
@@ -613,14 +671,28 @@ export function SalesVoucher({
         </div>
       </div>
 
+      {/* An open order this invoice may belong to. Billing here sends goods of
+          its own, so the same order can ship twice — once from the voucher and
+          once when somebody delivers against the order it was raised for. */}
+      <AwaitingOrders
+        lines={awaited}
+        sales
+        purpose="bill"
+        backTo="/sales/new"
+        onUse={fillFromOrder}
+        usedOrderId={fromOrderId}
+      />
+
       <div className="card">
         <div className="card-head">
           <h2>Items</h2>
-          {lines.some((l) => l.sourceLineId) && (
+          {lines.some((l) => l.sourceLineId || l.orderLineId) && (
             <label className="billpart">
               <input type="checkbox" checked={billPart}
                      onChange={(e) => billWholeDelivery(e.target.checked)} />
-              Bill only part of what went out
+              {lines.some((l) => l.orderLineId)
+                ? "Invoice part of the order"
+                : "Bill only part of what went out"}
             </label>
           )}
           <button type="button" className="ghost tiny" onClick={addLine}>Add line</button>
@@ -676,14 +748,28 @@ export function SalesVoucher({
                 return [
                   <tr key={l.key}>
                     <td style={{ minWidth: 240 }}>
-                      <ItemPicker
-                        mode="sales"
-                        items={items}
-                        categories={categories}
-                        uoms={uoms}
-                        value={l.itemId}
-                        onPick={(id) => pickItem(l.key, id)}
-                        onCreated={addItem}
+                      {/* An order line's item is the order's: changing what is
+                          being sold starts there. */}
+                      {l.orderLineId ? (
+                        <span className="readout" title="On the order — change it there">
+                          {item ? `${item.code} · ${item.name}` : "—"}
+                        </span>
+                      ) : (
+                        <ItemPicker
+                          mode="sales"
+                          items={items}
+                          categories={categories}
+                          uoms={uoms}
+                          value={l.itemId}
+                          onPick={(id) => pickItem(l.key, id)}
+                          onCreated={addItem}
+                        />
+                      )}
+                      {/* These are the goods an open order is waiting for. */}
+                      <AlreadyAwaited
+                        lines={awaited.filter((a) => a.item_id === l.itemId)}
+                        sales
+                        backTo="/sales/new"
                       />
                     </td>
                     {!toDeliver && !matchedDeliveryId && anyConsigned && (
@@ -729,8 +815,9 @@ export function SalesVoucher({
                           yours to set — it is your price list, not a fact
                           about the goods. */}
                       <input type="number" min="0" step="any" value={l.qty} aria-label="Quantity"
-                        max={l.sourceLineId && billPart ? l.sourceQty : undefined}
-                        readOnly={!!l.sourceLineId && !billPart}
+                        max={(l.sourceLineId || l.orderLineId) && billPart
+                          ? l.sourceQty : undefined}
+                        readOnly={!!(l.sourceLineId || l.orderLineId) && !billPart}
                         title={l.sourceLineId ? "Delivered quantity — billed as it went out" : undefined}
                         style={l.sourceLineId && !billPart
                           ? { background: "var(--line-soft)", cursor: "not-allowed" }

@@ -1,5 +1,5 @@
 import { getFormData, createPurchaseInvoice } from "@/lib/actions";
-import { getOpenGoodsReceipts } from "@/lib/queries";
+import { getOpenGoodsReceipts, getOpenOrdersAwaitingGoods } from "@/lib/queries";
 import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { InvoiceForm } from "@/components/invoice-form";
@@ -14,6 +14,7 @@ export default async function NewPurchaseInvoice({
   const [co] = await sql`select id from company order by created_at limit 1`;
   const categories = await allCategories(co.id);
   const goodsReceipts = await getOpenGoodsReceipts(co.id);
+  const awaiting = await getOpenOrdersAwaitingGoods(co.id, "PURCHASE_ORDER");
   const today = new Date().toISOString().slice(0, 10);
 
   // Items are deliberately not required: a product can be created from the
@@ -61,6 +62,7 @@ export default async function NewPurchaseInvoice({
         cashAccounts={cashAccounts as never}
         goodsReceipts={goodsReceipts as never}
         initialGoodsReceiptId={goods_receipt_id}
+        awaiting={awaiting}
       />
     </>
   );

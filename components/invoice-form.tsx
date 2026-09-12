@@ -2,8 +2,10 @@
 
 import { useActionState, useEffect, useState } from "react";
 import type { ActionResult, PickerItem } from "@/lib/actions";
+import type { AwaitingLine } from "@/lib/queries";
 import { ItemPicker } from "./item-picker";
 import { PartnerPicker } from "./partner-picker";
+import { AwaitingOrders, AlreadyAwaited } from "./awaiting-orders";
 
 type Item = PickerItem;
 type Node = { id: string; code: string; segment: string; name: string; parent_id: string | null };
@@ -34,6 +36,13 @@ type OpenDoc = {
 type Line = {
   key: number; itemId: string; qty: string; unitPrice: string;
   sourceLineId?: string;
+  /**
+   * The order line this one bills, when the voucher was filled from an open
+   * order. Kept apart from sourceLineId, which means "prefilled from a goods
+   * receipt" and locks the quantity to what arrived: an order is a promise,
+   * and the supplier may well bill a different amount of it.
+   */
+  orderLineId?: string;
   /** What the source still has unbilled — the ceiling on this line. */
   sourceQty?: string;
 };
@@ -58,6 +67,7 @@ export function InvoiceForm({
   cashAccounts,
   goodsReceipts,
   initialGoodsReceiptId,
+  awaiting = [],
 }: {
   kind: "sales" | "purchase";
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
@@ -68,6 +78,8 @@ export function InvoiceForm({
   categories: Node[];
   uoms: { id: string; code: string; name: string }[];
   cashAccounts?: CashAccount[];
+  /** Orders to this partner with goods still owed. See getOpenOrdersAwaitingGoods. */
+  awaiting?: AwaitingLine[];
   /** Open (unmatched) goods receipts this invoice can match against — purchase only. */
   goodsReceipts?: OpenDoc[];
   /** Arrived via "Create purchase invoice" on a specific receipt's own page — match it immediately. */
@@ -108,11 +120,31 @@ export function InvoiceForm({
    */
   const [billPart, setBillPart] = useState(false);
   const [reference, setReference] = useState("");
+  /** Which open order this bill was filled from, if any. */
+  const [fromOrderId, setFromOrderId] = useState<string | null>(null);
 
   const isSales = kind === "sales";
   const byId = (id: string) => items.find((i) => i.id === id);
+
+  /**
+   * A line that came from somewhere else, and so is not this voucher's to
+   * change: a receipt line (what arrived, arrived) or an order line (the
+   * item, quantity and price were agreed there). Either way the way to
+   * change it is at the document it came from — enforced on the server too,
+   * in assertOrderTerms and assertSourceLines.
+   */
+  const inherited = (l: Line) => !!(l.sourceLineId || l.orderLineId);
   const openReceipts = (goodsReceipts ?? []).filter((d) => d.partner_id === partnerId);
   const matchedGr = openReceipts.find((d) => d.id === matchedGrId) ?? null;
+
+  /**
+   * Orders from this supplier still owed goods. Suppressed once a receipt is
+   * matched: that bill is answering goods already in the warehouse, which is
+   * the correct path and not the mistake this warns about.
+   */
+  const awaited = !partnerId || matchedGrId
+    ? []
+    : awaiting.filter((a) => a.partner_id === partnerId);
 
   /**
    * Our own number for the job this bill belongs to — the purchase order it
@@ -141,6 +173,38 @@ export function InvoiceForm({
         sourceQty: String(l.qty),
       }))
     );
+    setFromOrderId(null);
+  }
+
+  /**
+   * Fill this bill from an open order: the items still owed on it, the
+   * quantities still owed, and the price agreed on it.
+   *
+   * Copying the numbers, not claiming a link. The order number goes in the
+   * reference field, which is what that field is for — a bill can only name
+   * a goods receipt as its source, so the chain is closed later, when the
+   * goods arrive and the receipt is linked to the order it answered.
+   *
+   * Quantities are the outstanding ones rather than the ordered ones: a bill
+   * for what has already arrived on an earlier receipt would be billing it
+   * twice, which is the thing this whole notice exists to prevent.
+   */
+  function fillFromOrder(orderId: string) {
+    const rows = awaited.filter((a) => a.order_id === orderId);
+    if (rows.length === 0) return;
+    setFromOrderId(orderId);
+    setBillPart(false);
+    setLines(rows.map((r, idx) => ({
+      key: idx + 1,
+      itemId: r.item_id,
+      qty: String(r.outstanding),
+      unitPrice: String(r.unit_price),
+      orderLineId: r.order_line_id,
+      // What the order still has to be billed — the ceiling on this line,
+      // and the figure "Bill part" counts down from.
+      sourceQty: String(r.outstanding),
+    })));
+    setReference(rows[0].doc_no);
   }
 
   // Arrived from a specific receipt's own page — its supplier isn't chosen
@@ -196,6 +260,7 @@ export function InvoiceForm({
   function pickPartner(id: string) {
     setPartnerId(id);
     setMatchedGrId("");
+    setFromOrderId(null);
     const p = partners.find((x) => x.id === id);
     if (p && p.payment_terms_days > 0) setDueDate(addDays(docDate, p.payment_terms_days));
   }
@@ -216,7 +281,9 @@ export function InvoiceForm({
         itemId: l.itemId,
         qty: Number(l.qty),
         unitPrice: Number(l.unitPrice) || 0,
-        sourceLineId: l.sourceLineId,
+        // Whichever this line came from. A receipt line and an order line
+        // never both apply — matching a receipt replaces the lines.
+        sourceLineId: l.sourceLineId ?? l.orderLineId,
       }))
   );
 
@@ -347,17 +414,32 @@ export function InvoiceForm({
         </div>
       </div>
 
+      {/* An open order this bill may belong to. The dangerous path is the
+          quiet one: no receipt matched, "received now" left ticked, and the
+          voucher raises a receipt of its own while the order goes on waiting
+          for goods that have already arrived once. */}
+      <AwaitingOrders
+        lines={awaited}
+        sales={isSales}
+        purpose="bill"
+        backTo={isSales ? "/sales/new" : "/purchases/new"}
+        onUse={fillFromOrder}
+        usedOrderId={fromOrderId}
+      />
+
       <div className="card">
         <div className="card-head">
           <h2>Lines</h2>
-          {lines.some((l) => l.sourceLineId) && (
+          {lines.some(inherited) && (
             <label className="billpart">
               <input
                 type="checkbox"
                 checked={billPart}
                 onChange={(e) => billWholeReceipt(e.target.checked)}
               />
-              Bill only part of what arrived
+              {lines.some((l) => l.orderLineId)
+                ? "Bill part of the order"
+                : "Bill only part of what arrived"}
             </label>
           )}
           <button type="button" className="ghost tiny" onClick={addLine}>
@@ -366,9 +448,13 @@ export function InvoiceForm({
         </div>
         {billPart && (
           <p className="hint" style={{ padding: "0 1rem 0.5rem" }}>
-            Reduce a quantity to bill less than arrived. Whatever is left stays
-            on {matchedGr?.doc_no ?? "the receipt"}, waiting for the next bill —
-            it is not written off.
+            Reduce a quantity to bill less than{" "}
+            {lines.some((l) => l.orderLineId) ? "the order asked for" : "arrived"}.
+            Whatever is left stays on{" "}
+            {lines.some((l) => l.orderLineId)
+              ? (reference || "the order")
+              : (matchedGr?.doc_no ?? "the receipt")}
+            , waiting for the next bill — it is not written off.
           </p>
         )}
 
@@ -403,14 +489,30 @@ export function InvoiceForm({
                 return (
                   <tr key={l.key}>
                     <td style={{ minWidth: 240 }}>
-                      <ItemPicker
-                        mode={kind}
-                        items={items}
-                        categories={categories}
-                        uoms={uoms}
-                        value={l.itemId}
-                        onPick={(id) => pickItem(l.key, id)}
-                        onCreated={addItem}
+                      {/* An order line's item is not this voucher's to swap:
+                          changing what is being bought starts at the order. */}
+                      {l.orderLineId ? (
+                        <span className="readout" title="On the order — change it there">
+                          {item ? `${item.code} · ${item.name}` : "—"}
+                        </span>
+                      ) : (
+                        <ItemPicker
+                          mode={kind}
+                          items={items}
+                          categories={categories}
+                          uoms={uoms}
+                          value={l.itemId}
+                          onPick={(id) => pickItem(l.key, id)}
+                          onCreated={addItem}
+                        />
+                      )}
+                      {/* This line is the goods an open order is waiting for.
+                          The banner says the order exists; this says the bill
+                          being typed is for the same thing. */}
+                      <AlreadyAwaited
+                        lines={awaited.filter((a) => a.item_id === l.itemId)}
+                        sales={isSales}
+                        backTo={isSales ? "/sales/new" : "/purchases/new"}
                       />
                     </td>
                     <td className="r">
@@ -435,30 +537,31 @@ export function InvoiceForm({
                       </td>
                     )}
                     <td className="narrow">
-                      {/* What arrived, arrived. A line billing a receipt takes
-                          its quantity from that receipt and cannot be typed
-                          over: an invoice for 110 against 100 received is not
-                          a correction anybody meant to make, and the engine
-                          refuses it anyway. The price stays editable — the
-                          supplier's bill is external truth, and a difference
-                          there is what variance exists for. */}
+                      {/* What arrived, arrived, and what was agreed was
+                          agreed. A line billing a receipt takes its quantity
+                          from that receipt; a line filled from an order takes
+                          item, quantity and price from the order. Neither is
+                          typed over here — billing less is said deliberately,
+                          with "Bill part", and capped at what is left. */}
                       <input
                         type="number"
                         min="0"
                         step="any"
-                        max={l.sourceLineId && billPart ? l.sourceQty : undefined}
+                        max={inherited(l) && billPart ? l.sourceQty : undefined}
                         value={l.qty}
                         onChange={(e) => setLine(l.key, { qty: e.target.value })}
                         aria-label="Quantity"
-                        readOnly={!!l.sourceLineId && !billPart}
+                        readOnly={inherited(l) && !billPart}
                         title={l.sourceLineId && receivedLine
                           ? `${fmt(receivedLine.qty)} received on ${matchedGr?.doc_no}`
-                          : undefined}
-                        style={l.sourceLineId && !billPart
+                          : l.orderLineId
+                            ? `${fmt(Number(l.sourceQty ?? 0))} still to bill on the order`
+                            : undefined}
+                        style={inherited(l) && !billPart
                           ? { background: "var(--line-soft)", cursor: "not-allowed" }
                           : qtyMismatch ? { borderColor: "var(--warn)" } : undefined}
                       />
-                      {l.sourceLineId && billPart
+                      {inherited(l) && billPart
                        && Number(l.qty) < Number(l.sourceQty) - 0.0001 && (
                         <span className="qtyleft">
                           {fmt(Number(l.sourceQty) - Number(l.qty))} left to bill
@@ -466,6 +569,10 @@ export function InvoiceForm({
                       )}
                     </td>
                     <td className="narrow">
+                      {/* The price on an order line is the agreed one and is
+                          changed at the order. On a receipt line it stays
+                          open: the supplier's bill is external truth, and a
+                          difference there is what variance exists for. */}
                       <input
                         type="number"
                         min="0"
@@ -473,6 +580,11 @@ export function InvoiceForm({
                         value={l.unitPrice}
                         onChange={(e) => setLine(l.key, { unitPrice: e.target.value })}
                         aria-label="Unit price"
+                        readOnly={!!l.orderLineId}
+                        title={l.orderLineId ? "Agreed on the order — change it there" : undefined}
+                        style={l.orderLineId
+                          ? { background: "var(--line-soft)", cursor: "not-allowed" }
+                          : undefined}
                       />
                     </td>
                     <td className="r">{fmt(amount(l))}</td>

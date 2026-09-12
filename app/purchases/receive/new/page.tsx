@@ -1,5 +1,5 @@
 import { getFormData, createGoodsReceipt } from "@/lib/actions";
-import { getOpenPurchaseInvoices, getOpenPurchaseOrders } from "@/lib/queries";
+import { getOpenPurchaseInvoices, getOpenPurchaseOrders, getGrirCollisions } from "@/lib/queries";
 import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { ReceiptForm } from "@/components/receipt-form";
@@ -14,6 +14,13 @@ export default async function NewGoodsReceipt({
   const [co] = await sql`select id from company order by created_at limit 1`;
   const categories = await allCategories(co.id);
   const purchaseInvoices = await getOpenPurchaseInvoices(co.id);
+
+  // Goods waiting on a bill and a bill waiting on goods for the same items:
+  // halves of one purchase that never found each other. Keyed by supplier, so
+  // the form can say it the moment one is chosen.
+  const collisionRows = await getGrirCollisions(co.id);
+  const collisions: Record<string, typeof collisionRows> = {};
+  for (const r of collisionRows) (collisions[r.partner_id] ??= []).push(r);
 
   // Open order lines, per supplier, so the form can say "these goods look
   // like they answer PO20260902002" before someone records them as arriving
@@ -75,6 +82,7 @@ export default async function NewGoodsReceipt({
         today={today}
         purchaseInvoices={purchaseInvoices as never}
         openOrders={Object.fromEntries(ordersBySupplier)}
+        collisions={collisions}
         initialInvoiceId={match_invoice_id}
       />
     </>
