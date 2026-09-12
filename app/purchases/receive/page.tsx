@@ -3,7 +3,7 @@ import { PackageCheck, Clock, Boxes } from "lucide-react";
 import { money, shortDate } from "@/lib/db";
 import {
   getCompany, getOpenPurchaseOrders, getGoodsReceiptHistory, getGrirPositions,
-  getOpenGoodsReceipts, getGrirCollisions,
+  getOpenGoodsReceipts, getGrirCollisions, getOpenPurchaseInvoices,
 } from "@/lib/queries";
 import { createGoodsReceipt } from "@/lib/actions";
 import { FulfillOrderForm } from "@/components/fulfill-order-form";
@@ -39,13 +39,17 @@ export default async function Receive({
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
-  const [openLines, history, grir, stillToBill, collisionRows] = await Promise.all([
+  const [openLines, history, grir, stillToBill, collisionRows, openBills] = await Promise.all([
     getOpenPurchaseOrders(company.id),
     getGoodsReceiptHistory(company.id) as unknown as Promise<Receipt[]>,
     getGrirPositions(company.id),
     getOpenGoodsReceipts(company.id) as unknown as Promise<
       { id: string; lines: { qty: number; unitPrice: number }[] }[]>,
     getGrirCollisions(company.id),
+    getOpenPurchaseInvoices(company.id) as unknown as Promise<Array<{
+      id: string; doc_no: string; doc_date: string; partner_id: string;
+      lines: { itemId: string; itemName: string; qty: number }[];
+    }>>,
   ]);
 
   // Goods already in and a bill already waiting for them, per supplier: the
@@ -231,6 +235,7 @@ export default async function Receive({
             lines={o.lines}
             action={createGoodsReceipt}
             collisions={collisions.get(o.partnerId) ?? []}
+            openBills={openBills.filter((b) => b.partner_id === o.partnerId)}
           />
         ))
       )}

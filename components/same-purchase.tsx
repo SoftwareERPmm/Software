@@ -99,3 +99,83 @@ export function MaybeSamePurchase({ lines }: { lines: GrirCollisionLine[] }) {
     </div>
   );
 }
+
+
+/** One bill waiting for goods, as the fulfilment form needs to name it. */
+export type WaitingBill = {
+  id: string;
+  doc_no: string;
+  doc_date: string | Date;
+  lines: { itemId: string; itemName: string; qty: number }[];
+};
+
+/**
+ * A bill already waiting for the goods this order is about to receive.
+ *
+ * Said before the first receipt, which is the step the collision notice
+ * cannot reach: that one needs goods on one side and a bill on the other,
+ * and here there are no goods yet. What there is, is a bill that has been
+ * raised for these items and had nothing received against it — often the
+ * very bill this order was billed from.
+ *
+ * Receiving here is not wrong, but it is the more expensive of the two
+ * moves. Receiving against the bill clears what the supplier is owed and
+ * now closes this order too, because the receipt carries the allocation the
+ * bill was filled with. Receiving against the order closes the order and
+ * leaves the bill waiting for goods that have already arrived — which is
+ * where the second receipt, and the doubled stock, came from.
+ */
+export function BillAwaitsTheseGoods({
+  bills, orderNo, itemIds,
+}: { bills: WaitingBill[]; orderNo: string; itemIds: string[] }) {
+  const relevant = bills
+    .map((b) => ({ ...b, lines: b.lines.filter((l) => itemIds.includes(l.itemId)) }))
+    .filter((b) => b.lines.length > 0);
+  if (relevant.length === 0) return null;
+
+  const one = relevant.length === 1;
+
+  return (
+    <div className="awaiting">
+      <div className="awaiting-head">
+        <AlertCircle size={15} aria-hidden="true" />
+        <div>
+          <strong>
+            {one ? "A bill is" : `${relevant.length} bills are`} already waiting
+            for these goods.
+          </strong>
+          <span className="page-sub">
+            Receive against {one ? "it" : "one of them"} instead: that clears
+            what the supplier is owed, and {orderNo} closes itself when it
+            does. Receiving here closes {orderNo} and leaves{" "}
+            {one ? "the bill" : "them"} waiting for goods that have arrived.
+          </span>
+        </div>
+      </div>
+
+      <div className="tablewrap">
+        <table className="linetable awaiting-table">
+          <thead>
+            <tr><th>Bill</th><th>For</th><th>Raised</th><th /></tr>
+          </thead>
+          <tbody>
+            {relevant.map((b) => (
+              <tr key={b.id}>
+                <td>{b.doc_no}</td>
+                <td>
+                  {b.lines.map((l) => `${l.itemName} · ${qty(l.qty)}`).join(" · ")}
+                </td>
+                <td>{shortDate(b.doc_date as string)}</td>
+                <td className="awaiting-go">
+                  <Link href={`/purchases/receive/new?match_invoice_id=${b.id}`}>
+                    Receive against this bill
+                  </Link>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}

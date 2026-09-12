@@ -52,6 +52,7 @@ import {
   getInvoiceProgress,
   getLinkableFulfilments,
   getGrirCollisions,
+  getOpenPurchaseInvoices,
 } from "@/lib/queries";
 import {
   createDelivery, createGoodsReceipt, replaceConsignmentSettlement,
@@ -133,6 +134,15 @@ export default async function DocumentPage({
   // against the order is exactly the move that would double them.
   const collisions = doc.doc_type === "PURCHASE_ORDER"
     ? (await getGrirCollisions(doc.company_id)).filter((r) => r.partner_id === doc.partner_id)
+    : [];
+
+  // Bills from this supplier still waiting on goods: asked before the first
+  // receipt, which is the one moment the collision notice cannot speak.
+  const billsAwaiting = doc.doc_type === "PURCHASE_ORDER"
+    ? (await getOpenPurchaseInvoices(doc.company_id) as unknown as Array<{
+        id: string; doc_no: string; doc_date: string; partner_id: string;
+        lines: { itemId: string; itemName: string; qty: number }[];
+      }>).filter((b) => b.partner_id === doc.partner_id)
     : [];
 
   const chain = CHAINS[doc.doc_type] ?? [doc.doc_type];
@@ -618,6 +628,8 @@ export default async function DocumentPage({
               lines={orderLines}
               action={sales ? createDelivery : createGoodsReceipt}
               stockByLocation={sales ? stockByLocation : undefined}
+              collisions={sales ? [] : collisions}
+              openBills={billsAwaiting}
             />
           ) : null
         }
@@ -892,6 +904,7 @@ export default async function DocumentPage({
           action={doc.doc_type === "SALES_ORDER" ? createDelivery : createGoodsReceipt}
           stockByLocation={doc.doc_type === "SALES_ORDER" ? stockByLocation : undefined}
           collisions={doc.doc_type === "PURCHASE_ORDER" ? collisions : []}
+          openBills={billsAwaiting}
         />
       )}
 

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { MaybeSamePurchase } from "./same-purchase";
+import { MaybeSamePurchase, BillAwaitsTheseGoods, type WaitingBill } from "./same-purchase";
 import type { GrirCollisionLine } from "@/lib/queries";
 import { NegativeStockConfirm, type Shortfall } from "./negative-stock-confirm";
 import { useActionState, useEffect, useState } from "react";
@@ -36,6 +36,7 @@ export function FulfillOrderForm({
   stockByLocation,
   focReasons = [],
   collisions = [],
+  openBills = [],
 }: {
   kind: "sales" | "purchase";
   orderId: string;
@@ -53,6 +54,9 @@ export function FulfillOrderForm({
    *  supplier. See getGrirCollisions — purchase only, GR/IR being a purchase
    *  account. */
   collisions?: GrirCollisionLine[];
+  /** Bills from this partner still waiting on goods — purchase only. See
+   *  BillAwaitsTheseGoods for why this is asked before the first receipt. */
+  openBills?: WaitingBill[];
 }) {
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     action as never,
@@ -154,6 +158,11 @@ export function FulfillOrderForm({
           being made. */}
       {open && (
         <div style={{ padding: "0 1rem" }}>
+          <BillAwaitsTheseGoods
+            bills={openBills}
+            orderNo={orderNo}
+            itemIds={lines.map((l) => l.itemId)}
+          />
           <MaybeSamePurchase lines={collisions} />
         </div>
       )}
