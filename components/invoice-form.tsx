@@ -113,6 +113,8 @@ export function InvoiceForm({
    */
   const [billPart, setBillPart] = useState(false);
   const [reference, setReference] = useState("");
+  /** Which open order this bill was filled from, if any. */
+  const [fromOrderId, setFromOrderId] = useState<string | null>(null);
 
   const isSales = kind === "sales";
   const byId = (id: string) => items.find((i) => i.id === id);
@@ -155,6 +157,33 @@ export function InvoiceForm({
         sourceQty: String(l.qty),
       }))
     );
+  }
+
+  /**
+   * Fill this bill from an open order: the items still owed on it, the
+   * quantities still owed, and the price agreed on it.
+   *
+   * Copying the numbers, not claiming a link. The order number goes in the
+   * reference field, which is what that field is for — a bill can only name
+   * a goods receipt as its source, so the chain is closed later, when the
+   * goods arrive and the receipt is linked to the order it answered.
+   *
+   * Quantities are the outstanding ones rather than the ordered ones: a bill
+   * for what has already arrived on an earlier receipt would be billing it
+   * twice, which is the thing this whole notice exists to prevent.
+   */
+  function fillFromOrder(orderId: string) {
+    const rows = awaited.filter((a) => a.order_id === orderId);
+    if (rows.length === 0) return;
+    setFromOrderId(orderId);
+    setBillPart(false);
+    setLines(rows.map((r, idx) => ({
+      key: idx + 1,
+      itemId: r.item_id,
+      qty: String(r.outstanding),
+      unitPrice: String(r.unit_price),
+    })));
+    setReference(rows[0].doc_no);
   }
 
   // Arrived from a specific receipt's own page — its supplier isn't chosen
@@ -210,6 +239,7 @@ export function InvoiceForm({
   function pickPartner(id: string) {
     setPartnerId(id);
     setMatchedGrId("");
+    setFromOrderId(null);
     const p = partners.find((x) => x.id === id);
     if (p && p.payment_terms_days > 0) setDueDate(addDays(docDate, p.payment_terms_days));
   }
@@ -365,7 +395,14 @@ export function InvoiceForm({
           quiet one: no receipt matched, "received now" left ticked, and the
           voucher raises a receipt of its own while the order goes on waiting
           for goods that have already arrived once. */}
-      <AwaitingOrders lines={awaited} sales={isSales} purpose="bill" />
+      <AwaitingOrders
+        lines={awaited}
+        sales={isSales}
+        purpose="bill"
+        backTo={isSales ? "/sales/new" : "/purchases/new"}
+        onUse={fillFromOrder}
+        usedOrderId={fromOrderId}
+      />
 
       <div className="card">
         <div className="card-head">
@@ -438,6 +475,7 @@ export function InvoiceForm({
                       <AlreadyAwaited
                         lines={awaited.filter((a) => a.item_id === l.itemId)}
                         sales={isSales}
+                        backTo={isSales ? "/sales/new" : "/purchases/new"}
                       />
                     </td>
                     <td className="r">

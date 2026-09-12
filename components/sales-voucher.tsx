@@ -153,6 +153,8 @@ export function SalesVoucher({
    */
   const [billPart, setBillPart] = useState(false);
   const [reference, setReference] = useState("");
+  /** Which open order this invoice was filled from, if any. */
+  const [fromOrderId, setFromOrderId] = useState<string | null>(null);
   // Set only by answering the dialog. It rides along as a hidden field, so
   // the posting engine is told a person confirmed rather than inferring it
   // from the fact that stock happened to be short.
@@ -214,6 +216,7 @@ export function SalesVoucher({
 
   function pickCustomer(id: string) {
     setCustomerId(id);
+    setFromOrderId(null);
     const c = customers.find((x) => x.id === id);
     if (!c) return;
 
@@ -297,6 +300,31 @@ export function SalesVoucher({
     if (d) setReference(referenceFor(d));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialDeliveryId]);
+
+  /**
+   * Fill this invoice from an open sales order: what is still owed on it, at
+   * the price agreed there. The order number goes in the reference field, the
+   * same place a delivery's does — an invoice names a delivery as its source
+   * and never an order, so the chain closes when the goods go out.
+   */
+  function fillFromOrder(orderId: string) {
+    const rows = awaited.filter((a) => a.order_id === orderId);
+    if (rows.length === 0) return;
+    setFromOrderId(orderId);
+    setBillPart(false);
+    setLines(rows.map((r, idx) => ({
+      key: idx + 1,
+      itemId: r.item_id,
+      qty: String(r.outstanding),
+      unitPrice: String(r.unit_price),
+      discountPct: "",
+      focQty: "",
+      focReasonId: "",
+      source: "OWNED" as const,
+      agreedPrice: r.unit_price,
+    })));
+    setReference(rows[0].doc_no);
+  }
 
   function billWholeDelivery(part: boolean) {
     setBillPart(part);
@@ -630,7 +658,14 @@ export function SalesVoucher({
       {/* An open order this invoice may belong to. Billing here sends goods of
           its own, so the same order can ship twice — once from the voucher and
           once when somebody delivers against the order it was raised for. */}
-      <AwaitingOrders lines={awaited} sales purpose="bill" />
+      <AwaitingOrders
+        lines={awaited}
+        sales
+        purpose="bill"
+        backTo="/sales/new"
+        onUse={fillFromOrder}
+        usedOrderId={fromOrderId}
+      />
 
       <div className="card">
         <div className="card-head">
@@ -708,6 +743,7 @@ export function SalesVoucher({
                       <AlreadyAwaited
                         lines={awaited.filter((a) => a.item_id === l.itemId)}
                         sales
+                        backTo="/sales/new"
                       />
                     </td>
                     {!toDeliver && !matchedDeliveryId && anyConsigned && (

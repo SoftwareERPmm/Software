@@ -1393,6 +1393,10 @@ export type AwaitingLine = {
   item_name: string;
   uom_code: string;
   outstanding: number;
+  /** The order line itself, and the price agreed on it — what a bill raised
+   *  from this order should be filled with. */
+  order_line_id: string;
+  unit_price: number;
 };
 
 /**
@@ -1449,11 +1453,24 @@ async function ordersStillAwaited(
            to_char(o.due_date, 'YYYY-MM-DD') as due_date,
            v.item_id, i.code as item_code, i.name as item_name,
            u.code as uom_code,
-           v.outstanding::float as outstanding
+           v.outstanding::float as outstanding,
+           ol.id as order_line_id,
+           ol.unit_price::float as unit_price
       from v_order_outstanding v
       join document o on o.id = v.order_id
       join item i on i.id = v.item_id
       join uom u on u.id = i.base_uom_id
+      -- The order's own line for this item, for the price it agreed. One
+      -- line per item on an order is the ordinary case; where an item is on
+      -- two lines at different prices this takes the first, and the reader
+      -- is billing from the order in front of them either way.
+      join lateral (
+            select dl.id, dl.unit_price
+              from document_line dl
+             where dl.document_id = v.order_id and dl.item_id = v.item_id
+             order by dl.line_no
+             limit 1
+      ) ol on true
      where v.company_id = ${companyId}
        and v.doc_type = ${docType}
        and v.outstanding > 0

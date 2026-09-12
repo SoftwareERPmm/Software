@@ -1448,12 +1448,24 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 }
 .awaiting-go a:hover { color: var(--ink); }
 .awaiting-go svg { vertical-align: -2px; }
+/* The order this voucher was filled from, marked in the list it came from —
+   so pressing the button leaves a trace rather than appearing to do nothing
+   but change some numbers further down the page. */
+.awaiting-used td { background: color-mix(in srgb, var(--brand) 7%, transparent); }
+.awaiting-done { color: var(--brand); white-space: nowrap; }
+/* The document number is the link now, so it reads as one. */
+.awaiting-table td:first-child a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.awaiting-table td:first-child a:hover { color: var(--ink); }
 
 .awaiting-foot { margin: 0.55rem 0 0; color: var(--muted); }
 
 /* The line-level version. Quiet — it sits under an item picker inside a row
    of inputs, and shouting there would make the form look broken rather than
    informed. */
+.awaiting-line a { text-decoration: underline; text-underline-offset: 2px; }
 .awaiting-line {
   display: block;
   margin-top: 0.25rem;

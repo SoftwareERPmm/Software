@@ -1,5 +1,7 @@
+"use client";
+
 import Link from "next/link";
-import { AlertCircle, ArrowUpRight } from "lucide-react";
+import { AlertCircle } from "lucide-react";
 import { qty, shortDate } from "@/lib/format";
 import type { AwaitingLine } from "@/lib/queries";
 
@@ -24,10 +26,21 @@ import type { AwaitingLine } from "@/lib/queries";
  * why a part-received or already billed order is deliberately left out.
  */
 export function AwaitingOrders({
-  lines, sales, purpose = "order",
+  lines, sales, purpose = "order", backTo, onUse, usedOrderId,
 }: {
   lines: AwaitingLine[];
   sales: boolean;
+  /**
+   * Where the reader is, so the order they open can come back here. A
+   * document opened from a half-typed form has to lead back to that form —
+   * a new tab leaves two windows and no thread between them, and the list
+   * crumb leads somewhere they were not.
+   */
+  backTo?: string;
+  /** Fill the form from this order. Omitted on the form that places orders. */
+  onUse?: (orderId: string) => void;
+  /** Which order the form has already been filled from. */
+  usedOrderId?: string | null;
   /**
    * Which form is asking. Both show the same orders; what differs is what
    * the reader is about to do, and so what they should do instead.
@@ -54,6 +67,11 @@ export function AwaitingOrders({
   }
 
   const one = orders.length === 1;
+
+  // Same tab, with the way back. The document page already renders a back
+  // arrow for a `back` it can prove is a path inside this app.
+  const hrefFor = (id: string) =>
+    `/documents/${id}${backTo ? `?back=${encodeURIComponent(backTo)}` : ""}`;
 
   return (
     <div className="awaiting">
@@ -94,8 +112,10 @@ export function AwaitingOrders({
           </thead>
           <tbody>
             {orders.map((o) => (
-              <tr key={o.id}>
-                <td>{o.docNo}</td>
+              <tr key={o.id} className={o.id === usedOrderId ? "awaiting-used" : undefined}>
+                <td>
+                  <Link href={hrefFor(o.id)}>{o.docNo}</Link>
+                </td>
                 <td>
                   {/* Three is as much as a reminder can say without becoming
                       the document itself; the rest is one click away. */}
@@ -104,11 +124,14 @@ export function AwaitingOrders({
                 </td>
                 <td>{o.dueDate ? shortDate(o.dueDate) : "—"}</td>
                 <td className="awaiting-go">
-                  {/* A new tab, deliberately: checking the old order must not
-                      throw away the one being typed. */}
-                  <Link href={`/documents/${o.id}`} target="_blank">
-                    View order <ArrowUpRight size={12} aria-hidden="true" />
-                  </Link>
+                  {onUse && (o.id === usedOrderId ? (
+                    <span className="awaiting-done">Filled in below</span>
+                  ) : (
+                    <button type="button" className="ghost tiny"
+                            onClick={() => onUse(o.id)}>
+                      Fill from this order
+                    </button>
+                  ))}
                 </td>
               </tr>
             ))}
@@ -137,17 +160,25 @@ export function AwaitingOrders({
  * paragraph above it.
  */
 export function AlreadyAwaited({
-  lines, sales,
-}: { lines: AwaitingLine[]; sales: boolean }) {
+  lines, sales, backTo,
+}: { lines: AwaitingLine[]; sales: boolean; backTo?: string }) {
   if (lines.length === 0) return null;
 
   const total = lines.reduce((t, l) => t + l.outstanding, 0);
-  const where = [...new Set(lines.map((l) => l.doc_no))];
+  const where = [...new Map(lines.map((l) => [l.order_id, l.doc_no])).entries()];
 
   return (
     <span className="awaiting-line">
       {qty(total)} {lines[0].uom_code} already{" "}
-      {sales ? "promised" : "on order"} — {where.join(", ")}
+      {sales ? "promised" : "on order"} —{" "}
+      {where.map(([id, docNo], i) => (
+        <span key={id}>
+          {i > 0 && ", "}
+          <Link href={`/documents/${id}${backTo ? `?back=${encodeURIComponent(backTo)}` : ""}`}>
+            {docNo}
+          </Link>
+        </span>
+      ))}
     </span>
   );
 }

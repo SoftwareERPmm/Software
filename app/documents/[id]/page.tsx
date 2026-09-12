@@ -87,6 +87,17 @@ const PLURAL: Record<string, string> = {
   CUSTOMER_RECEIPT: "Customer receipts",
 };
 
+/** Where an arrow labelled for it leads back to. */
+const BACK_FROM: Record<string, string> = {
+  "/purchases/new": "New purchase invoice",
+  "/sales/new": "New sales voucher",
+  "/purchases/receive/new": "Receive goods",
+  "/purchases/orders/new": "New purchase order",
+  "/sales/orders/new": "New sales order",
+  "/sales/deliver/new": "New delivery",
+  "/finance/general-ledger": "General ledger",
+};
+
 export default async function DocumentPage({
   params, searchParams,
 }: {
@@ -98,8 +109,13 @@ export default async function DocumentPage({
   // another site is an open redirect wearing a breadcrumb.
   const { back } = await searchParams;
   const backHref = back && back.startsWith("/") && !back.startsWith("//") ? back : null;
-  const backLabel = backHref?.startsWith("/finance/general-ledger")
-    ? "General ledger" : backHref ? "Back" : null;
+  // Named, not just "Back": an arrow that says where it goes is the
+  // difference between a way out and a guess. A path this does not know
+  // still gets an arrow, labelled plainly.
+  const backLabel = backHref
+    ? (BACK_FROM[backHref.split("?")[0]]
+       ?? (backHref.startsWith("/finance/general-ledger") ? "General ledger" : "Back"))
+    : null;
   const { id } = await params;
   const doc = await getDocument(id);
   if (!doc) notFound();
