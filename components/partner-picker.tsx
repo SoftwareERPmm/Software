@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 export type PickerPartner = {
   id: string;
@@ -41,6 +42,34 @@ export function PartnerPicker({
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const box = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLUListElement>(null);
+
+  /**
+   * Where to draw the list, in viewport coordinates.
+   *
+   * It cannot be drawn inside the form. A card, a table wrapper or anything
+   * else with an overflow between here and the page clips an absolutely
+   * positioned child, so the list came out cut off — stuck inside the form
+   * rather than floating over it. ItemPicker solved this the same way before
+   * this existed: put the list in a portal at the body, and follow the input
+   * when the page scrolls or resizes.
+   */
+  const [rect, setRect] = useState<{ top: number; left: number; width: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!open || !box.current) return;
+    const update = () => {
+      const r = box.current!.getBoundingClientRect();
+      setRect({ top: r.bottom + 2, left: r.left, width: r.width });
+    };
+    update();
+    window.addEventListener("scroll", update, true);
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("scroll", update, true);
+      window.removeEventListener("resize", update);
+    };
+  }, [open]);
 
   const chosen = partners.find((p) => p.id === value) ?? null;
 
@@ -59,7 +88,12 @@ export function PartnerPicker({
   useEffect(() => {
     if (!open) return;
     const away = (e: MouseEvent) => {
-      if (box.current && !box.current.contains(e.target as globalThis.Node)) setOpen(false);
+      const t = e.target as globalThis.Node;
+      // The list is in a portal, so it is outside the box in the DOM —
+      // checking only the box would read every click on a row as "outside"
+      // and close it before anything was chosen.
+      if (box.current?.contains(t) || panel.current?.contains(t)) return;
+      setOpen(false);
     };
     document.addEventListener("mousedown", away);
     return () => document.removeEventListener("mousedown", away);
@@ -102,8 +136,14 @@ export function PartnerPicker({
         />
       )}
 
-      {open && (
-        <ul className="ppick-list" id={`${id}-list`} role="listbox">
+      {open && rect && createPortal(
+        <ul
+          ref={panel}
+          className="ppick-list"
+          id={`${id}-list`}
+          role="listbox"
+          style={{ position: "fixed", top: rect.top, left: rect.left, width: rect.width }}
+        >
           {matches.length === 0 ? (
             <li className="ppick-none">Nobody matches “{query}”</li>
           ) : (
@@ -121,7 +161,8 @@ export function PartnerPicker({
               </li>
             ))
           )}
-        </ul>
+        </ul>,
+        document.body,
       )}
     </div>
   );
