@@ -3,6 +3,7 @@
 import { useActionState, useEffect, useState } from "react";
 import type { ActionResult, PickerItem } from "@/lib/actions";
 import { ItemPicker } from "./item-picker";
+import { PartnerPicker } from "./partner-picker";
 
 type Item = PickerItem;
 type Node = { id: string; code: string; segment: string; name: string; parent_id: string | null };
@@ -266,20 +267,12 @@ export function InvoiceForm({
           <div className="row">
             <div className="field">
               <label htmlFor="partner_id">{isSales ? "Customer" : "Supplier"}</label>
-              <select
-                id="partner_id"
-                name="partner_id"
+              <PartnerPicker
+                partners={partners as never}
                 value={partnerId}
-                onChange={(e) => pickPartner(e.target.value)}
-                required
-              >
-                <option value="">Choose…</option>
-                {partners.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.code} · {p.name}
-                  </option>
-                ))}
-              </select>
+                placeholder={isSales ? "Type a customer…" : "Type a supplier…"}
+                onPick={pickPartner}
+              />
             </div>
 
             <div className="field">
