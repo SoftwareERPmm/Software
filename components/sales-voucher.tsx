@@ -7,6 +7,8 @@ import { StockSourceDialog, poolsFor, type OwnershipSplit } from "./stock-source
 import { priceLines, type VolumeBand } from "@/lib/discount";
 import { ItemPicker } from "./item-picker";
 import { PartnerPicker } from "./partner-picker";
+import { AwaitingOrders, AlreadyAwaited } from "./awaiting-orders";
+import type { AwaitingLine } from "@/lib/queries";
 
 type Item = PickerItem;
 type Node = { id: string; code: string; segment: string; name: string; parent_id: string | null };
@@ -90,6 +92,7 @@ export function SalesVoucher({
   focReasons, openInvoices, nextInvoiceNo, today, categories, uoms,
   itemPrices, priceLevels, stockByLocation, deliveries, initialDeliveryId,
   ownership = [],
+  awaiting = [],
 }: {
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   customers: Customer[];
@@ -116,6 +119,8 @@ export function SalesVoucher({
   deliveries?: OpenDelivery[];
   /** Arrived via "Create sales invoice" on a specific delivery's own page — match it immediately. */
   initialDeliveryId?: string;
+  /** Orders to this customer with goods still owed. See getOpenOrdersAwaitingGoods. */
+  awaiting?: AwaitingLine[];
   /** Consigned stock on hand, per item, warehouse and consignor. Owned and
    *  consigned goods share a shelf and nothing about the shelf says which
    *  is which, so the line has to be told. */
@@ -230,6 +235,15 @@ export function SalesVoucher({
   }
 
   const openDeliveries = (deliveries ?? []).filter((d) => d.partner_id === customerId);
+
+  /**
+   * Sales orders from this customer still owed goods. Suppressed once a
+   * delivery is matched: that invoice bills goods that have already gone
+   * out, which is the correct path and not the mistake this warns about.
+   */
+  const awaited = !customerId || matchedDeliveryId
+    ? []
+    : (awaiting ?? []).filter((a) => a.partner_id === customerId);
 
   /**
    * Our own number for the job this invoice belongs to — the sales order it
@@ -613,6 +627,11 @@ export function SalesVoucher({
         </div>
       </div>
 
+      {/* An open order this invoice may belong to. Billing here sends goods of
+          its own, so the same order can ship twice — once from the voucher and
+          once when somebody delivers against the order it was raised for. */}
+      <AwaitingOrders lines={awaited} sales purpose="bill" />
+
       <div className="card">
         <div className="card-head">
           <h2>Items</h2>
@@ -684,6 +703,11 @@ export function SalesVoucher({
                         value={l.itemId}
                         onPick={(id) => pickItem(l.key, id)}
                         onCreated={addItem}
+                      />
+                      {/* These are the goods an open order is waiting for. */}
+                      <AlreadyAwaited
+                        lines={awaited.filter((a) => a.item_id === l.itemId)}
+                        sales
                       />
                     </td>
                     {!toDeliver && !matchedDeliveryId && anyConsigned && (

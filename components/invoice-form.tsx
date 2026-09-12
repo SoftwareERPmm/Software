@@ -2,8 +2,10 @@
 
 import { useActionState, useEffect, useState } from "react";
 import type { ActionResult, PickerItem } from "@/lib/actions";
+import type { AwaitingLine } from "@/lib/queries";
 import { ItemPicker } from "./item-picker";
 import { PartnerPicker } from "./partner-picker";
+import { AwaitingOrders, AlreadyAwaited } from "./awaiting-orders";
 
 type Item = PickerItem;
 type Node = { id: string; code: string; segment: string; name: string; parent_id: string | null };
@@ -58,6 +60,7 @@ export function InvoiceForm({
   cashAccounts,
   goodsReceipts,
   initialGoodsReceiptId,
+  awaiting = [],
 }: {
   kind: "sales" | "purchase";
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
@@ -68,6 +71,8 @@ export function InvoiceForm({
   categories: Node[];
   uoms: { id: string; code: string; name: string }[];
   cashAccounts?: CashAccount[];
+  /** Orders to this partner with goods still owed. See getOpenOrdersAwaitingGoods. */
+  awaiting?: AwaitingLine[];
   /** Open (unmatched) goods receipts this invoice can match against — purchase only. */
   goodsReceipts?: OpenDoc[];
   /** Arrived via "Create purchase invoice" on a specific receipt's own page — match it immediately. */
@@ -113,6 +118,15 @@ export function InvoiceForm({
   const byId = (id: string) => items.find((i) => i.id === id);
   const openReceipts = (goodsReceipts ?? []).filter((d) => d.partner_id === partnerId);
   const matchedGr = openReceipts.find((d) => d.id === matchedGrId) ?? null;
+
+  /**
+   * Orders from this supplier still owed goods. Suppressed once a receipt is
+   * matched: that bill is answering goods already in the warehouse, which is
+   * the correct path and not the mistake this warns about.
+   */
+  const awaited = !partnerId || matchedGrId
+    ? []
+    : awaiting.filter((a) => a.partner_id === partnerId);
 
   /**
    * Our own number for the job this bill belongs to — the purchase order it
@@ -347,6 +361,12 @@ export function InvoiceForm({
         </div>
       </div>
 
+      {/* An open order this bill may belong to. The dangerous path is the
+          quiet one: no receipt matched, "received now" left ticked, and the
+          voucher raises a receipt of its own while the order goes on waiting
+          for goods that have already arrived once. */}
+      <AwaitingOrders lines={awaited} sales={isSales} purpose="bill" />
+
       <div className="card">
         <div className="card-head">
           <h2>Lines</h2>
@@ -411,6 +431,13 @@ export function InvoiceForm({
                         value={l.itemId}
                         onPick={(id) => pickItem(l.key, id)}
                         onCreated={addItem}
+                      />
+                      {/* This line is the goods an open order is waiting for.
+                          The banner says the order exists; this says the bill
+                          being typed is for the same thing. */}
+                      <AlreadyAwaited
+                        lines={awaited.filter((a) => a.item_id === l.itemId)}
+                        sales={isSales}
                       />
                     </td>
                     <td className="r">

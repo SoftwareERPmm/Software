@@ -98,6 +98,9 @@ try {
     P.postPurchaseOrder({ companyId: co.id, partnerId, locationId: loc.id,
       docDate: today, dueDate, lines });
   const awaiting = (type = "PURCHASE_ORDER") => Q.getUntouchedOpenOrders(co.id, type);
+  // The broader set the bill and delivery forms read: goods still owed,
+  // whether or not some have already arrived.
+  const owed = (type = "PURCHASE_ORDER") => Q.getOpenOrdersAwaitingGoods(co.id, type);
   const linesFor = (rows, docNo) => rows.filter((r) => r.doc_no === docNo);
   const orderCount = (rows) => new Set(rows.map((r) => r.doc_no)).size;
 
@@ -145,6 +148,16 @@ try {
   check("a part-received order drops out — it has a receipt to answer to",
     linesFor(rows, b.docNo).length === 0);
   check("and the untouched one is still there", linesFor(rows, a.docNo).length === 1);
+
+  // The bill form asks a different question. Billing outside the order is how
+  // the same purchase gets recorded twice — the voucher raises a receipt of
+  // its own — and that risk does not care whether some goods already landed.
+  let owing = await owed();
+  check("  but the bill form still sees it: goods are owed on it",
+    linesFor(owing, b.docNo).length === 1);
+  check("  showing what is left, not what was ordered",
+    near(linesFor(owing, b.docNo)[0]?.outstanding, 15),
+    `${linesFor(owing, b.docNo)[0]?.outstanding} of 20`);
 
   // ---- goods linked to it afterwards count as arrived ---------------------
   // A receipt raised without naming an order, said to answer it later. The
@@ -247,6 +260,46 @@ try {
   await sql`update document set status = 'DRAFT' where id = ${d.id}`;
   check("a draft order is not awaited — nobody has been asked for anything",
     linesFor(await awaiting(), d.docNo).length === 0);
+
+  // ---- what the bill and delivery forms are warned about -----------------
+  // The tester's case, exactly: an order placed, nothing received, and a bill
+  // raised straight against the supplier. Nothing links the two — a purchase
+  // invoice can only name a goods receipt — so both doors read "nothing has
+  // happened", each raises its own receipt, and 100 units arrive twice.
+
+  const f = await po(supp.id, [{ itemId: itemA.id, qty: 30, unitPrice: 1200 }]);
+  owing = await owed();
+  check("an untouched order is owed goods, so the bill form warns on it",
+    linesFor(owing, f.docNo).length === 1);
+
+  const [fLine] = await sql`select id from document_line where document_id = ${f.id}`;
+  await P.postGoodsReceipt({
+    companyId: co.id, partnerId: supp.id, locationId: loc.id, docDate: today,
+    sourceDocumentId: f.id,
+    lines: [{ itemId: itemA.id, qty: 30, unitCost: 1200, sourceLineId: fLine.id }],
+  });
+  check("once the goods are all in, it stops warning — the answer is the receipt",
+    linesFor(await owed(), f.docNo).length === 0);
+
+  const g = await po(supp.id, [{ itemId: itemB.id, qty: 8, unitPrice: 800 }]);
+  await P.closeOrderRemaining({ companyId: co.id, documentId: g.id,
+    reason: "supplier cannot supply" });
+  check("a closed order is owed nothing, so neither form warns",
+    linesFor(await owed(), g.docNo).length === 0
+    && linesFor(await awaiting(), g.docNo).length === 0);
+
+  const h = await po(supp.id, [{ itemId: itemB.id, qty: 9, unitPrice: 800 }]);
+  await sql`update document set status = 'DRAFT' where id = ${h.id}`;
+  check("a draft order is owed nothing either",
+    linesFor(await owed(), h.docNo).length === 0);
+
+  const so2 = await P.postSalesOrder({ companyId: co.id, partnerId: cust.id,
+    locationId: loc.id, docDate: today, dueDate: today,
+    lines: [{ itemId: itemA.id, qty: 3, unitPrice: 2000 }] });
+  check("the sales voucher gets the same warning about its own orders",
+    linesFor(await owed("SALES_ORDER"), so2.docNo).length === 1);
+  check("  and purchase orders stay out of it",
+    (await owed("SALES_ORDER")).every((r) => r.doc_no !== f.docNo));
 
   console.log(`\n  ${bad === 0 ? "All good." : `${bad} failed.`}\n`);
 } catch (e) {

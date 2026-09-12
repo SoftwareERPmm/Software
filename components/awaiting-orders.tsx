@@ -5,7 +5,8 @@ import type { AwaitingLine } from "@/lib/queries";
 
 /**
  * What this partner is already waiting for, said before the same thing is
- * ordered twice.
+ * recorded twice — on the form that would order it again, and on the one
+ * that would bill or ship it outside the order it belongs to.
  *
  * The duplicate order is not a careless mistake. It is made by someone doing
  * everything right on a blank form, who has no way of knowing that an order
@@ -23,8 +24,21 @@ import type { AwaitingLine } from "@/lib/queries";
  * why a part-received or already billed order is deliberately left out.
  */
 export function AwaitingOrders({
-  lines, sales,
-}: { lines: AwaitingLine[]; sales: boolean }) {
+  lines, sales, purpose = "order",
+}: {
+  lines: AwaitingLine[];
+  sales: boolean;
+  /**
+   * Which form is asking. Both show the same orders; what differs is what
+   * the reader is about to do, and so what they should do instead.
+   *
+   *   order  about to place another order    — may be duplicating the goods
+   *   bill   about to bill or ship outside it — may be duplicating the
+   *          whole transaction, because the voucher raises its own receipt
+   *          or delivery and the order is still owed the goods afterwards
+   */
+  purpose?: "order" | "bill";
+}) {
   if (lines.length === 0) return null;
 
   // One row per order, its items named on it — because "2 open orders" is the
@@ -52,8 +66,18 @@ export function AwaitingOrders({
             {sales ? "delivery" : "goods"}.
           </strong>
           <span className="page-sub">
-            Review {one ? "it" : "them"} before{" "}
-            {sales ? "promising" : "ordering"} the same goods again.
+            {purpose === "order"
+              ? <>Review {one ? "it" : "them"} before{" "}
+                  {sales ? "promising" : "ordering"} the same goods again.</>
+              : sales
+                ? <>If this invoice is for {one ? "it" : "one of them"}, deliver
+                    against the order first and bill that delivery. Invoicing
+                    here sends goods of its own, and the order is still owed
+                    what it ordered afterwards.</>
+                : <>If this bill is for {one ? "it" : "one of them"}, receive
+                    the goods against the order first and match this bill to
+                    that receipt. Billing here raises a receipt of its own,
+                    and the order is still owed the goods afterwards.</>}
           </span>
         </div>
       </div>
@@ -93,9 +117,12 @@ export function AwaitingOrders({
       </div>
 
       <p className="awaiting-foot">
-        Nothing has been {sales ? "delivered" : "received"}, invoiced or paid
-        against {one ? "this one" : "these"}. You can still{" "}
-        {sales ? "take" : "place"} a separate order below.
+        {purpose === "order"
+          ? <>Nothing has been {sales ? "delivered" : "received"}, invoiced or
+              paid against {one ? "this one" : "these"}. You can still{" "}
+              {sales ? "take" : "place"} a separate order below.</>
+          : <>Carry on below only if this is a separate{" "}
+              {sales ? "sale" : "purchase"} — nothing here is blocked.</>}
       </p>
     </div>
   );

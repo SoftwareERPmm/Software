@@ -1339,9 +1339,10 @@ export type AwaitingLine = {
  * dashboard and the receive form use, so this cannot disagree with them
  * about what is still owed.
  */
-export async function getUntouchedOpenOrders(
+async function ordersStillAwaited(
   companyId: string,
-  docType: "SALES_ORDER" | "PURCHASE_ORDER"
+  docType: "SALES_ORDER" | "PURCHASE_ORDER",
+  onlyUntouched: boolean
 ) {
   const rows = await sql`
     with touched as (
@@ -1379,15 +1380,51 @@ export async function getUntouchedOpenOrders(
        and v.doc_type = ${docType}
        and v.outstanding > 0
        and not v.is_closed
-       -- Nothing arrived against any line of it, named or linked afterwards.
-       and not exists (
-             select 1 from v_order_outstanding f
-              where f.order_id = v.order_id and f.fulfilled > 0)
-       and v.order_id not in (
-             select order_id from touched where order_id is not null)
+       ${onlyUntouched
+      ? sql`-- Nothing arrived against any line of it, named or linked after.
+            and not exists (
+                  select 1 from v_order_outstanding f
+                   where f.order_id = v.order_id and f.fulfilled > 0)
+            and v.order_id not in (
+                  select order_id from touched where order_id is not null)`
+      : sql``}
      order by o.due_date nulls last, o.posting_date, o.doc_no, i.name`;
 
   return rows as unknown as AwaitingLine[];
+}
+
+/**
+ * For the form that would place another order: only orders nothing has
+ * happened to. See above for why a part-received one is left out.
+ */
+export async function getUntouchedOpenOrders(
+  companyId: string,
+  docType: "SALES_ORDER" | "PURCHASE_ORDER"
+) {
+  return ordersStillAwaited(companyId, docType, true);
+}
+
+/**
+ * For the form that would bill or ship without going through the order:
+ * every order with goods still owed, part-received ones included.
+ *
+ * A different question, so a different set. Placing a second order for goods
+ * already half arrived can be exactly right — the other half is late, and the
+ * order it belongs to is the one to chase. But billing outside the order, or
+ * shipping outside it, is how the same goods get recorded twice: the bill
+ * raises its own receipt, the order is still owed the goods, and both then
+ * look unfinished to the screen that reads them. That risk does not care
+ * whether some of the goods have already landed.
+ *
+ * Fully received orders are out — outstanding > 0 — because the answer there
+ * is to match the receipt waiting on a bill, which the form says already, and
+ * two hints for one situation is how a reader learns to skip both.
+ */
+export async function getOpenOrdersAwaitingGoods(
+  companyId: string,
+  docType: "SALES_ORDER" | "PURCHASE_ORDER"
+) {
+  return ordersStillAwaited(companyId, docType, false);
 }
 
 /**
