@@ -3,6 +3,7 @@
 import { useActionState, useMemo, useState } from "react";
 import { money, qty as fmtQty } from "@/lib/format";
 import type { ActionResult } from "@/lib/actions";
+import { PartnerPicker } from "./partner-picker";
 
 type Batch = {
   item_id: string; item_code: string; item_name: string;
@@ -94,10 +95,12 @@ export function ConsignmentSaleForm({
         <div className="erp-fields">
           <div>
             <label style={{ display: "block", fontSize: "var(--erp-text-sm)", color: "var(--erp-fg-muted)" }}>Customer</label>
-            <select name="partner_id" value={partnerId} onChange={(e) => setPartnerId(e.target.value)} required>
-              <option value="">Choose a customer…</option>
-              {customers.map((c) => <option key={c.id} value={c.id}>{c.code} · {c.name}</option>)}
-            </select>
+            <PartnerPicker
+              partners={customers as never}
+              value={partnerId}
+              placeholder="Type a customer…"
+              onPick={setPartnerId}
+            />
           </div>
           <div>
             <label style={{ display: "block", fontSize: "var(--erp-text-sm)", color: "var(--erp-fg-muted)" }}>Warehouse</label>

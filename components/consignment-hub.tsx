@@ -4,6 +4,7 @@ import { useActionState, useState, useTransition } from "react";
 import Link from "next/link";
 import { money, qty } from "@/lib/format";
 import { createItemInline, type ActionResult } from "@/lib/actions";
+import { PartnerPicker } from "./partner-picker";
 
 type AgreementLine = {
   lineId: string; itemId: string; itemCode: string; itemName: string;
@@ -45,6 +46,7 @@ export function ConsignmentHub({
   const [lineState, lineAction] = useActionState<ActionResult | null, FormData>(
     addLineAction as never, null);
   const [newAgreementOpen, setNewAgreementOpen] = useState(false);
+  const [newAgreementPartner, setNewAgreementPartner] = useState("");
 
   // Items created from here are appended locally so the select can show the
   // new product straight away, without a round trip that would lose the
@@ -175,10 +177,13 @@ export function ConsignmentHub({
               <label style={{ display: "block", fontSize: "var(--erp-text-xs)", color: "var(--erp-fg-muted)" }}>
                 Consignor (supplier)
               </label>
-              <select name="partner_id" required disabled={suppliers.length === 0}>
-                <option value="">Choose…</option>
-                {suppliers.map((s) => <option key={s.id} value={s.id}>{s.code} · {s.name}</option>)}
-              </select>
+              <PartnerPicker
+                partners={suppliers as never}
+                value={newAgreementPartner}
+                placeholder="Type a supplier…"
+                disabled={suppliers.length === 0}
+                onPick={setNewAgreementPartner}
+              />
               {suppliers.length === 0 && (
                 <div style={{ fontSize: "var(--erp-text-xs)", color: "var(--warn)", marginTop: "0.25rem", maxWidth: 260 }}>
                   Every supplier already has an agreement. Add a supplier under{" "}

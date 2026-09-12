@@ -2,6 +2,7 @@
 
 import { useActionState, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
+import { PartnerPicker } from "./partner-picker";
 
 type AgreementLine = {
   lineId: string; itemId: string; itemCode: string; itemName: string;
@@ -90,15 +91,20 @@ export function ConsignmentReceiveForm({
             <label style={{ display: "block", fontSize: "var(--erp-text-sm)", color: "var(--erp-fg-muted)" }}>
               Consignor
             </label>
-            <select name="partner_id" value={agreement?.partnerId ?? ""} required
-                    onChange={(e) => {
-                      const ag = agreements.find((a) => a.partnerId === e.target.value);
-                      setAgreementId(ag?.id ?? "");
-                      setLines([]);
-                    }}>
-              <option value="">Choose a consignor…</option>
-              {agreements.map((a) => <option key={a.id} value={a.partnerId}>{a.partnerCode} · {a.partnerName}</option>)}
-            </select>
+            {/* Consignors, which are the suppliers who have an agreement —
+                a shorter list than every supplier, and still worth typing at. */}
+            <PartnerPicker
+              partners={agreements.map((a) => ({
+                id: a.partnerId, code: a.partnerCode, name: a.partnerName,
+              })) as never}
+              value={agreement?.partnerId ?? ""}
+              placeholder="Type a consignor…"
+              onPick={(id) => {
+                const ag = agreements.find((a) => a.partnerId === id);
+                setAgreementId(ag?.id ?? "");
+                setLines([]);
+              }}
+            />
             {agreements.length === 0 && (
               <div style={{ color: "var(--warn)", fontSize: "var(--erp-text-sm)", marginTop: "0.3rem" }}>
                 No consignment agreements exist yet — create one first.

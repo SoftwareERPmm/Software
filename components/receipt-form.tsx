@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useActionState, useEffect, useState } from "react";
 import type { ActionResult, PickerItem } from "@/lib/actions";
 import { ItemPicker } from "./item-picker";
+import { PartnerPicker } from "./partner-picker";
 
 type Item = PickerItem;
 type Node = { id: string; code: string; segment: string; name: string; parent_id: string | null };
@@ -253,19 +254,18 @@ export function ReceiptForm({
           <div className="row">
             <div className="field">
               <label htmlFor="partner_id">Supplier</label>
-              <select id="partner_id" name="partner_id" value={partnerId}
-                onChange={(e) => {
+              <PartnerPicker
+                partners={suppliers as never}
+                value={partnerId}
+                placeholder="Type a supplier…"
+                onPick={(id) => {
                   // Their invoice, and the lines it filled in, belong to the
                   // old supplier. Both go.
                   clearMatch(matchedPiId !== "");
                   setUnmatched(false);
-                  setPartnerId(e.target.value);
-                }} required>
-                <option value="">Choose…</option>
-                {suppliers.map((p) => (
-                  <option key={p.id} value={p.id}>{p.code} · {p.name}</option>
-                ))}
-              </select>
+                  setPartnerId(id);
+                }}
+              />
             </div>
 
             <div className="field">

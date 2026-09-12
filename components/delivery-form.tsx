@@ -5,6 +5,7 @@ import type { ActionResult, PickerItem } from "@/lib/actions";
 import { ItemPicker } from "./item-picker";
 import { NegativeStockConfirm, type Shortfall } from "./negative-stock-confirm";
 import { StockSourceDialog, poolsFor, type OwnershipSplit } from "./stock-source";
+import { PartnerPicker } from "./partner-picker";
 
 type Node = { id: string; code: string; segment: string; name: string; parent_id: string | null };
 type Uom = { id: string; code: string; name: string };
@@ -214,13 +215,12 @@ export function DeliveryForm({
           <div className="row">
             <div className="field">
               <label htmlFor="partner_id">Customer</label>
-              <select id="partner_id" name="partner_id" value={partnerId} required
-                      onChange={(e) => { setPartnerId(e.target.value); setOrderId(""); }}>
-                <option value="">Choose a customer…</option>
-                {customers.map((c) => (
-                  <option key={c.id} value={c.id}>{c.code} · {c.name}</option>
-                ))}
-              </select>
+              <PartnerPicker
+                partners={customers as never}
+                value={partnerId}
+                placeholder="Type a customer…"
+                onPick={(id) => { setPartnerId(id); setOrderId(""); }}
+              />
             </div>
             <div className="field">
               <label htmlFor="location_id">From warehouse</label>
