@@ -324,6 +324,79 @@ try {
     }
   }
 
+
+  // ---- the list of advances, and what became of each ----------------------
+  // v_partner_advance answers a different question — what is still available
+  // to apply — so it drops an advance the moment nothing is left of it. That
+  // is right for the panel offering money to spend, and wrong for anybody
+  // asking what happened to a deposit: the fully spent one is exactly where
+  // "when was it applied" is the whole question.
+
+  console.log("\n  the advances list\n");
+  {
+    const Q = await import("../lib/queries.ts");
+
+    const deposit = await P.postCustomerReceipt({
+      companyId: co.id, partnerId: cust.id, docDate: today,
+      cashAccountId: bank.id, locationId: loc.id, allocations: [], advance: 5000 });
+    const bill = await P.postSalesInvoice({
+      companyId: co.id, partnerId: cust.id, locationId: loc.id,
+      docDate: today, dueDate: today, toDeliver: true,
+      lines: [{ itemId: item.id, qty: 1, unitPrice: 5000 }] });
+    const app = await P.applyAdvance({ companyId: co.id, invoiceId: bill.id,
+      docDate: today, allocations: [{ paymentId: deposit.id, amount: 5000 }] });
+
+    const listed = async (side = "CUSTOMER") =>
+      (await Q.getAdvanceLedger(co.id, side)).find((r) => r.id === deposit.id);
+    let row = await listed();
+
+    check("a fully applied advance is still listed", !!row);
+    check("  stating what was taken", row && near(row.taken, 5000), `${row?.taken}`);
+    check("  and that none of it is left", row && near(row.remaining, 0), `${row?.remaining}`);
+    check("  which the apply panel's view no longer carries",
+      (await sql`select 1 from v_partner_advance where payment_id = ${deposit.id}`).length === 0);
+    check("  it names the invoice the money went to",
+      !!row?.applications.some((a) => a.invoice_id === bill.id && near(a.amount, 5000)));
+    check("  and the application that did it, with its date",
+      !!row?.applications.some((a) => a.application_no === app.docNo && a.applied_on === today),
+      row?.applications.map((a) => `${a.application_no} ${a.applied_on}`).join(" · "));
+
+    // An ordinary receipt settles an invoice on the spot. It posts to the
+    // control account, not the advances account, and is not an advance.
+    const openBill = await P.postSalesInvoice({
+      companyId: co.id, partnerId: cust.id, locationId: loc.id,
+      docDate: today, dueDate: today, toDeliver: true,
+      lines: [{ itemId: item.id, qty: 1, unitPrice: 4000 }] });
+    const plain = await P.postCustomerReceipt({
+      companyId: co.id, partnerId: cust.id, docDate: today, cashAccountId: bank.id,
+      allocations: [{ invoiceId: openBill.id, amount: 4000 }] });
+    check("an ordinary receipt is not listed as an advance",
+      !(await Q.getAdvanceLedger(co.id, "CUSTOMER")).some((r) => r.id === plain.id));
+
+    check("a customer's deposit is not on the supplier list", !(await listed("SUPPLIER")));
+
+    // Taking the application back puts the money back on account — and takes
+    // the application off the advance it once spent, rather than leaving a
+    // row that says the money went somewhere it no longer has.
+    await P.voidDocument({ documentId: app.id, reason: "applied to the wrong bill" });
+    row = await listed();
+    check("voiding the application puts what it spent back", near(row?.remaining, 5000),
+      `${row?.remaining}`);
+    check("  and stops listing it under the advance", row?.applications.length === 0,
+      `${row?.applications.length} still listed`);
+
+    // The two figures are read from the same allocations, so they cannot
+    // drift: the card is the sum of the list.
+    const kpis = await Q.getKpis(co.id);
+    const onAccount = (await Q.getAdvanceLedger(co.id, "CUSTOMER"))
+      .reduce((t, r) => t + r.remaining, 0);
+    check("the list and the dashboard agree on what is on account",
+      near(onAccount, n(kpis.advances.customer)),
+      `list ${onAccount} vs card ${n(kpis.advances.customer)}`);
+
+    await invariants("after listing advances");
+  }
+
   console.log(bad === 0
     ? "\n  money can arrive before the invoice does\n"
     : `\n  ${bad} FAILED\n`);

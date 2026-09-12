@@ -2780,6 +2780,134 @@ export async function getAdvancesFor(companyId: string, documentId: string) {
      order by doc_date, doc_no`;
 }
 
+/** One application of one advance: which invoice took it, and when. */
+export type AdvanceApplication = {
+  invoice_id: string;
+  invoice_no: string;
+  application_id: string | null;
+  application_no: string | null;
+  applied_on: string;
+  amount: number;
+};
+
+/** One advance, with what has become of it. */
+export type AdvanceRow = {
+  id: string;
+  doc_no: string;
+  doc_date: string;
+  partner_id: string;
+  partner_code: string;
+  partner_name: string;
+  branch: string | null;
+  taken: number;
+  applied: number;
+  remaining: number;
+  applications: AdvanceApplication[];
+};
+
+/**
+ * Every advance taken from a customer or paid to a supplier, and what became
+ * of each.
+ *
+ * v_partner_advance answers a different question — what is still available to
+ * apply — and so drops an advance the moment it is fully spent. That is right
+ * for the apply panel, which must not offer money that is gone, and wrong for
+ * anyone asking what happened to a deposit: the fully spent one is exactly
+ * the case where "when was it applied" is the whole question, and until now
+ * it left the screens entirely.
+ *
+ * What makes a receipt an advance is not a flag but where it posted: to the
+ * advances account rather than to the control account, because it relieved no
+ * invoice. So that is what this asks. A flag would be a second opinion about
+ * something the ledger already states, and the two would drift.
+ *
+ * Applications count only while both the application and the invoice stand,
+ * the same condition v_partner_advance and v_open_item apply — so a voided
+ * application puts the money back here too, and stops being listed under the
+ * advance it once spent.
+ */
+export async function getAdvanceLedger(
+  companyId: string,
+  side: "CUSTOMER" | "SUPPLIER"
+) {
+  const kind = side === "CUSTOMER" ? "CUSTOMER_RECEIPT" : "SUPPLIER_PAYMENT";
+  const role = side === "CUSTOMER" ? "CUSTOMER_ADVANCE" : "SUPPLIER_ADVANCE";
+
+  // Joined through system_account rather than fn_system_account, which raises
+  // when the role is not configured: a company set up before the advance
+  // accounts existed should see an empty list, not an error page.
+  const advances = sql`
+    select d.id
+      from document d
+     where d.company_id = ${companyId}
+       and d.doc_type = ${kind}
+       and d.status = 'POSTED'
+       -- Voiding a receipt reverses it: the original goes to REVERSED, which
+       -- the status test above drops, and a mirror document is posted for the
+       -- negative. That mirror is not an advance anybody holds, and counting
+       -- it would subtract returned money from the deposits still held.
+       and d.reverses_document_id is null
+       and exists (
+             select 1 from journal_line jl
+               join system_account sa
+                 on sa.account_id = jl.account_id
+                and sa.company_id = d.company_id
+                and sa.role = ${role}
+              where jl.journal_entry_id = d.journal_entry_id)`;
+
+  const rows = await sql`
+    select d.id, d.doc_no, to_char(d.doc_date, 'YYYY-MM-DD') as doc_date,
+           d.partner_id, p.code as partner_code, p.name as partner_name,
+           l.name as branch,
+           d.gross_total::float                                    as taken,
+           coalesce(a.applied, 0)::float                           as applied,
+           (d.gross_total - coalesce(a.applied, 0))::float         as remaining
+      from document d
+      join business_partner p on p.id = d.partner_id
+      left join location l on l.id = d.location_id
+      left join (
+            select pa.payment_id, sum(pa.amount) as applied
+              from payment_allocation pa
+              join document inv on inv.id = pa.invoice_id
+              left join document app on app.id = pa.applied_by_document_id
+             where inv.status = 'POSTED'
+               and (pa.applied_by_document_id is null or app.status = 'POSTED')
+             group by pa.payment_id
+      ) a on a.payment_id = d.id
+     where d.id in (${advances})
+     order by d.doc_date desc, d.doc_no desc`;
+
+  const applied = await sql`
+    select pa.payment_id,
+           pa.invoice_id, inv.doc_no as invoice_no,
+           pa.applied_by_document_id as application_id,
+           app.doc_no as application_no,
+           -- The application document's own date where there is one. An
+           -- allocation made at the moment the money was taken has no
+           -- application document and no date of its own but the payment's.
+           to_char(coalesce(app.doc_date, pa.created_at::date), 'YYYY-MM-DD') as applied_on,
+           pa.amount::float as amount
+      from payment_allocation pa
+      join document inv on inv.id = pa.invoice_id
+      left join document app on app.id = pa.applied_by_document_id
+     where pa.company_id = ${companyId}
+       and pa.payment_id in (${advances})
+       and inv.status = 'POSTED'
+       and (pa.applied_by_document_id is null or app.status = 'POSTED')
+     order by 6, app.doc_no, inv.doc_no`;
+
+  const byPayment = new Map<string, AdvanceApplication[]>();
+  for (const a of applied as unknown as (AdvanceApplication & { payment_id: string })[]) {
+    const list = byPayment.get(a.payment_id) ?? [];
+    list.push(a);
+    byPayment.set(a.payment_id, list);
+  }
+
+  return (rows as unknown as AdvanceRow[]).map((r) => ({
+    ...r, applications: byPayment.get(r.id) ?? [],
+  }));
+}
+
 /**
  * Every version of a document number, oldest first.
  *

@@ -147,12 +147,20 @@ export default async function Dashboard() {
             <span className="kpi-value">
               {money(Number(kpis.advances.customer) + Number(kpis.advances.supplier))}
             </span>
+            {/* Each half leads to its own list: the figure is the question,
+                and which deposits make it up is the answer. */}
             <span className="kpi-note">
-              {Number(kpis.advances.customer) > 0
-                && `${money(kpis.advances.customer)} from customers`}
+              {Number(kpis.advances.customer) > 0 && (
+                <Link href="/receivables/advances">
+                  {money(kpis.advances.customer)} from customers
+                </Link>
+              )}
               {Number(kpis.advances.customer) > 0 && Number(kpis.advances.supplier) > 0 && " · "}
-              {Number(kpis.advances.supplier) > 0
-                && `${money(kpis.advances.supplier)} paid ahead`}
+              {Number(kpis.advances.supplier) > 0 && (
+                <Link href="/payables/advances">
+                  {money(kpis.advances.supplier)} paid ahead
+                </Link>
+              )}
             </span>
           </div>
         )}

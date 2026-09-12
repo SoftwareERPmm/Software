@@ -1901,3 +1901,24 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 }
 .docactions .page-sub { margin-left: 0.15rem; }
 .voidlock { flex-direction: column; align-items: flex-start; }
+
+/* What an advance was spent on, listed under the advance itself.
+   Quieter than the row above it and indented to it: these are not documents
+   in the list, they are what happened to one of them, and at the same weight
+   the table stops reading as a list of advances at all. */
+.adv-applied td {
+  color: var(--muted);
+  font-size: var(--t-sm);
+  border-bottom-color: transparent;
+  padding-top: 0.15rem;
+  padding-bottom: 0.15rem;
+}
+.adv-applied td:nth-child(2) { padding-left: 1.4rem; }
+.adv-applied a { text-decoration: underline; text-underline-offset: 2px; }
+.adv-applied a:hover { color: var(--ink); }
+.adv-mark { color: var(--line); margin-right: 0.35rem; }
+.adv-when { font-family: var(--mono); }
+/* The dashboard figure now leads somewhere, so it says so. */
+.kpi-note a { text-decoration: underline; text-underline-offset: 2px; }
+.kpi-note a:hover { color: var(--ink); }
+.adv-note { font-style: italic; }
