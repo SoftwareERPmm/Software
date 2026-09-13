@@ -2005,6 +2005,11 @@ async function correctedLines(
         discountPct: was ? Number(was.discount_pct ?? 0) : 0,
         focReasonId: was ? ((was.foc_reason_id as string) ?? null) : null,
         sourceLineId: was ? ((was.source_line_id as string) ?? null) : null,
+        // Which line this one replaces. The form has always sent it and this
+        // has always thrown it away, leaving everything downstream to infer
+        // the pairing from the item or the position — wrong the moment one
+        // item sits on two lines, or a line is inserted.
+        supersedesLineId: was ? String(was.id) : null,
       };
     });
 }

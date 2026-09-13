@@ -794,6 +794,64 @@ try {
     }
   }
 
+
+  // ---- correcting an order with one item on two lines ---------------------
+  //
+  // The cascade priced by item, so the last line of an item overwrote the
+  // earlier ones: twenty at eleven hundred and thirty at twelve hundred
+  // re-priced both at twelve hundred and billed two thousand more than the
+  // corrected order agreed. A line is not its item, and which line replaced
+  // which is now recorded by the correction rather than inferred afterwards.
+
+  console.log("\n  correcting an order with one item on two lines\n");
+  {
+    const w = await po(supp.id, [
+      { itemId: itemA.id, qty: 20, unitPrice: 1000 },
+      { itemId: itemA.id, qty: 30, unitPrice: 1200 },
+    ]);
+    const wl = await sql`select id from document_line where document_id = ${w.id} order by line_no`;
+    const bill = await P.postPurchaseInvoice({
+      companyId: co.id, partnerId: supp.id, locationId: loc.id,
+      docDate: today, dueDate: today, reference: w.docNo,
+      lines: [{ itemId: itemA.id, qty: 20, unitPrice: 1000, sourceLineId: wl[0].id },
+              { itemId: itemA.id, qty: 30, unitPrice: 1200, sourceLineId: wl[1].id }],
+    });
+    check("both lines bill at their own agreed prices",
+      near(Number((await sql`select gross_total::float g from document
+                               where id = ${bill.id}`)[0].g), 56000));
+
+    // Corrected the way the form sends it: each line carrying the line it
+    // replaces.
+    await P.amendOrder({
+      companyId: co.id, documentId: w.id, reason: "first line renegotiated to 1,100",
+      order: { companyId: co.id, partnerId: supp.id, locationId: loc.id,
+        docDate: today, dueDate: today,
+        lines: [{ itemId: itemA.id, qty: 20, unitPrice: 1100, supersedesLineId: wl[0].id },
+                { itemId: itemA.id, qty: 30, unitPrice: 1200, supersedesLineId: wl[1].id }] },
+      cascade: true,
+    });
+
+    const after = await sql`
+      select dl.base_qty::float q, dl.unit_price::float p, d.gross_total::float g
+        from document_line dl join document d on d.id = dl.document_id
+       where d.doc_no = ${bill.docNo} and d.superseded_by_document_id is null
+       order by dl.line_no`;
+    check("the corrected order re-prices each line on its own",
+      near(after[0]?.p, 1100) && near(after[1]?.p, 1200),
+      after.map((l) => `${l.q} @ ${l.p}`).join(" · "));
+    check("  so the bill comes to what the corrected order agreed",
+      near(after[0]?.g, 58000), `${after[0]?.g}`);
+
+    // And the lineage is what says so, not the position or the item.
+    const [lineage] = await sql`
+      select count(*)::int n from document_line dl
+       join document d on d.id = dl.document_id
+       where d.doc_no = ${w.docNo} and d.superseded_by_document_id is null
+         and dl.supersedes_line_id is not null`;
+    check("  each corrected line records the line it replaced", lineage.n === 2,
+      `${lineage.n} of 2`);
+  }
+
   console.log(`\n  ${bad === 0 ? "All good." : `${bad} failed.`}\n`);
 } catch (e) {
   console.error("\n  ERROR", e.message, "\n");
