@@ -107,6 +107,10 @@ export type WaitingBill = {
   doc_no: string;
   doc_date: string | Date;
   lines: { itemId: string; itemName: string; qty: number }[];
+  /** Raised from this order, rather than merely from the same supplier for
+   *  the same item. Only a bill that names this order's lines carries the
+   *  allocation that closes it when the goods are received. */
+  linked?: boolean;
 };
 
 /**
@@ -134,6 +138,7 @@ export function BillAwaitsTheseGoods({
   if (relevant.length === 0) return null;
 
   const one = relevant.length === 1;
+  const anyLinked = relevant.some((b) => b.linked);
 
   return (
     <div className="awaiting">
@@ -145,10 +150,23 @@ export function BillAwaitsTheseGoods({
             for these goods.
           </strong>
           <span className="page-sub">
-            Receive against {one ? "it" : "one of them"} instead: that clears
-            what the supplier is owed, and {orderNo} closes itself when it
-            does. Receiving here closes {orderNo} and leaves{" "}
-            {one ? "the bill" : "them"} waiting for goods that have arrived.
+            {anyLinked ? (
+              <>
+                {one ? "It was" : "One of them was"} raised from {orderNo}, so
+                receiving against it clears what the supplier is owed and
+                closes {orderNo} with it. Receiving here closes {orderNo} and
+                leaves the bill waiting for goods that have arrived.
+              </>
+            ) : (
+              <>
+                {one ? "It is" : "They are"} for the same items from this
+                supplier, and may be the same purchase — check before
+                receiving here. Nothing ties{" "}
+                {one ? "it" : "them"} to {orderNo}, so receiving against{" "}
+                {one ? "it" : "one"} would clear the bill without closing this
+                order.
+              </>
+            )}
           </span>
         </div>
       </div>
@@ -165,7 +183,12 @@ export function BillAwaitsTheseGoods({
                 <td>
                   {b.lines.map((l) => `${l.itemName} · ${qty(l.qty)}`).join(" · ")}
                 </td>
-                <td>{shortDate(b.doc_date as string)}</td>
+                <td>
+                  {shortDate(b.doc_date as string)}
+                  {b.linked
+                    ? <span className="awaiting-why"> · from this order</span>
+                    : <span className="awaiting-why"> · not linked to this order</span>}
+                </td>
                 <td className="awaiting-go">
                   <Link href={`/purchases/receive/new?match_invoice_id=${b.id}`}>
                     Receive against this bill

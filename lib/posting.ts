@@ -86,7 +86,16 @@ export type SalesInvoiceInput = InvoiceInput & {
 };
 
 /** An order commits nothing — no stock movement, no ledger entry. */
-export type OrderLine = { itemId: string; qty: number; unitPrice?: number };
+export type OrderLine = {
+  itemId: string; qty: number; unitPrice?: number;
+  /**
+   * The line of the previous version this one replaces, where this posting is
+   * a correction. Set only by the correction path, which is the only place
+   * that knows it — everything downstream reads the recorded answer rather
+   * than inferring one from item or position.
+   */
+  supersedesLineId?: string | null;
+};
 export type OrderInput = {
   companyId: string;
   partnerId: string;
@@ -388,21 +397,89 @@ async function assertOrderTerms(
   const named = lines.filter((l) => l.sourceLineId);
   if (named.length === 0) return;
 
+  // Resolved to the version of the order standing now, and to the same line
+  // of it. A voucher names the line of the version it was raised against, and
+  // correcting an order posts a new version with new lines — checking against
+  // the version that has been replaced would hold a bill to figures nobody is
+  // asking for any more.
+  //
+  // The line, not merely the item. One item can sit on two lines of an order
+  // at two prices — twenty at a thousand and thirty at twelve hundred is an
+  // ordinary thing to agree — and resolving by item alone took the first of
+  // them, so a bill for the second was refused for quoting a price the order
+  // plainly agreed. Identity first, then position, and only then the item,
+  // and that last only where the item is on one line and cannot be mistaken.
   const rows = await tx`
-    select ol.id, ol.item_id, ol.base_qty as ordered, ol.unit_price,
-           o.doc_no, o.superseded_by_document_id is not null as superseded
+    select ol.id as named_line,
+           cur.id as current_line, cur.item_id, cur.base_qty as ordered, cur.unit_price,
+           live.doc_no
       from document_line ol
       join document o on o.id = ol.document_id
+      join document live on live.id = fn_current_document(o.id)
+      join lateral (
+            select dl.id, dl.item_id, dl.base_qty, dl.unit_price,
+                   case when dl.id = fn_current_line(ol.id) then 0
+                        when dl.id = ol.id then 1
+                        when dl.line_no = ol.line_no and dl.item_id = ol.item_id then 2
+                        else 3
+                   end as rank
+              from document_line dl
+             where dl.document_id = live.id
+               and (
+                 -- What the correction recorded, where it recorded anything.
+                 dl.id = fn_current_line(ol.id)
+                 -- Then the line itself, where the order still stands.
+                 or dl.id = ol.id
+                 -- Then, for orders corrected before lineage was kept, the
+                 -- line that stood in its position, and last the item where
+                 -- it is on one line and cannot be mistaken.
+                 or (dl.line_no = ol.line_no and dl.item_id = ol.item_id)
+                 or (dl.item_id = ol.item_id
+                     and 1 = (select count(*) from document_line x
+                               where x.document_id = live.id and x.item_id = ol.item_id))
+               )
+             order by rank, dl.line_no
+             limit 1
+      ) cur on true
      where ol.id = any(${named.map((l) => l.sourceLineId as string)})
        and o.company_id = ${companyId}
        and o.doc_type in ('PURCHASE_ORDER', 'SALES_ORDER')`;
   if (rows.length === 0) return;
 
-  const byLine = new Map((rows as any[]).map((r) => [r.id as string, r]));
+  const byNamed = new Map((rows as any[]).map((r) => [r.named_line as string, r]));
+
+  // Item and price are a property of each line; quantity is not. Two lines
+  // naming one order line are two halves of one claim on it, and checking
+  // them separately let each pass while together they billed more than the
+  // order asked for.
+  const wanted = new Map<string, number>();
+
+  // Which named lines belong to an order at all — the rest name a receipt or
+  // a delivery and are nothing to do with this guard.
+  const onAnOrder = new Set(
+    (await tx`
+      select ol.id from document_line ol
+        join document o on o.id = ol.document_id
+       where ol.id = any(${named.map((l) => l.sourceLineId as string)})
+         and o.company_id = ${companyId}
+         and o.doc_type in ('PURCHASE_ORDER', 'SALES_ORDER')` as unknown as { id: string }[])
+      .map((r) => r.id));
 
   for (const [i, l] of lines.entries()) {
-    const ol = l.sourceLineId ? byLine.get(l.sourceLineId) : undefined;
-    if (!ol || ol.superseded) continue;
+    if (!l.sourceLineId || !onAnOrder.has(l.sourceLineId)) continue;
+
+    const ol = byNamed.get(l.sourceLineId);
+    if (!ol) {
+      // It names a line of an order, and nothing on the version standing now
+      // answers to it — a line removed by a correction, or one whose position
+      // moved before corrections recorded what replaced what. Refused rather
+      // than posted unchecked: the whole point of naming an order line is
+      // that the order's terms apply, and they cannot be read.
+      throw new Error(
+        `Line ${i + 1} was raised from an order line that the order no longer has. `
+        + `Correct the order, or bill this line on its own.`
+      );
+    }
 
     if (ol.item_id !== l.itemId) {
       throw new Error(
@@ -419,19 +496,40 @@ async function assertOrderTerms(
       );
     }
 
+    wanted.set(ol.current_line as string,
+      round4((wanted.get(ol.current_line as string) ?? 0) + l.qty));
+  }
+
+  for (const [currentLine, qty] of wanted) {
+    const row = [...byNamed.values()].find((r) => r.current_line === currentLine);
+
+    // What every version of this order has already been billed for. An
+    // invoice raised before the order was corrected names the old version's
+    // line, and it has still been billed.
     const [billed] = await tx`
       select coalesce(sum(il.base_qty), 0) as v
         from document_line il
         join document inv on inv.id = il.document_id
-       where il.source_line_id = ${ol.id}
+        join document_line ol on ol.id = il.source_line_id
+        join document o on o.id = ol.document_id
+        join document_line cur on cur.id = ${currentLine}
+       where fn_current_document(o.id) = cur.document_id
+         and ol.item_id = cur.item_id
+         -- The same line, resolved the way the check above resolves it:
+         -- what the correction recorded, else the line itself, else the line
+         -- that stood in its position. Counting by item alone would charge
+         -- one line of an order with what another line of it was billed.
+         and (fn_current_line(ol.id) = cur.id
+              or ol.id = cur.id
+              or ol.line_no = cur.line_no)
          and inv.doc_type in ('PURCHASE_INVOICE', 'SALES_INVOICE')
          and inv.status = 'POSTED'
          and inv.superseded_by_document_id is null`;
-    const left = round4(Number(ol.ordered) - Number((billed as { v: string }).v));
+    const left = round4(Number(row.ordered) - Number((billed as { v: string }).v));
 
-    if (l.qty > left + 0.0001) {
+    if (qty > left + 0.0001) {
       throw new Error(
-        `Line ${i + 1}: ${ol.doc_no} has ${left} of that item left to bill, not ${l.qty}.`
+        `${row.doc_no} has ${left} of that item left to bill, not ${qty}.`
       );
     }
   }
@@ -1669,10 +1767,12 @@ async function postOrderIn(
       await tx`
         insert into document_line
           (company_id, document_id, line_no, item_id, location_id,
-           entered_qty, entered_uom_id, base_qty, unit_price, net_amount, tax_amount, gross_amount)
+           entered_qty, entered_uom_id, base_qty, unit_price, net_amount, tax_amount, gross_amount,
+           supersedes_line_id)
         values
           (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
-           ${line.qty}, ${item.base_uom_id}, ${line.qty}, ${line.unitPrice ?? 0}, ${net}, 0, ${net})`;
+           ${line.qty}, ${item.base_uom_id}, ${line.qty}, ${line.unitPrice ?? 0}, ${net}, 0, ${net},
+           ${line.supersedesLineId ?? null})`;
     }
 
     // Orders post nothing to the ledger — see docs/01-document-flow.md.
@@ -2602,14 +2702,45 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
   if (src?.doc_type === "PURCHASE_INVOICE") {
     const carried = await tx`
       select rl.id as fulfilment_line_id, rl.base_qty::float as qty,
-             ol.id as order_line_id, ol.item_id, o.id as order_id
+             cur.id as order_line_id, cur.item_id, live.id as order_id
         from document_line rl
         join document_line il on il.id = rl.source_line_id
         join document_line ol on ol.id = il.source_line_id
         join document o on o.id = ol.document_id
+        -- The version standing now, not the one the bill was raised against.
+        -- Correcting an order posts a new version and cancels the old, and a
+        -- bill keeps naming the lines it was raised from — looking only for a
+        -- POSTED order found nothing after any correction, and the goods
+        -- quietly stopped fulfilling anything.
+        join document live on live.id = fn_current_document(o.id)
+        -- The same line, resolved the way assertOrderTerms resolves it:
+        -- itself where the order still stands, else the line that took its
+        -- position, else the item where it is on one line only. An item on
+        -- two lines at two prices is ordinary, and allocating to the wrong
+        -- one would fulfil the wrong half of the order.
+        join lateral (
+              select dl.id, dl.item_id,
+                     case when dl.id = fn_current_line(ol.id) then 0
+                          when dl.id = ol.id then 1
+                          when dl.line_no = ol.line_no and dl.item_id = ol.item_id then 2
+                          else 3
+                     end as rank
+                from document_line dl
+               where dl.document_id = live.id
+                 and (
+                   dl.id = fn_current_line(ol.id)
+                   or dl.id = ol.id
+                   or (dl.line_no = ol.line_no and dl.item_id = ol.item_id)
+                   or (dl.item_id = ol.item_id
+                       and 1 = (select count(*) from document_line x
+                                 where x.document_id = live.id and x.item_id = ol.item_id))
+                 )
+               order by rank, dl.line_no
+               limit 1
+        ) cur on true
        where rl.document_id = ${doc.id}
          and o.doc_type = 'PURCHASE_ORDER'
-         and o.status = 'POSTED'
+         and live.status = 'POSTED'
        order by rl.line_no`;
 
     const links: { fulfilmentLineId: string; orderLineId: string; qty: number }[] = [];
@@ -5650,8 +5781,33 @@ export async function amendOrderIn(tx: TransactionSql, input: {
         tx, { ...input.order, amendOf: identity }, docType);
 
       if (input.cascade) {
-        const priceFor = new Map(
-          input.order.lines.map((l) => [l.itemId, Number(l.unitPrice ?? 0)]));
+        /**
+         * What each corrected line now costs, keyed by the line it replaces.
+         *
+         * Keyed by item, the last line of an item overwrote the earlier ones:
+         * an order of twenty at eleven hundred and thirty at twelve hundred
+         * re-priced both at twelve hundred and billed the supplier two
+         * thousand more than the corrected order agreed. A line is not its
+         * item.
+         */
+        const priceForLine = new Map(
+          input.order.lines
+            .filter((l) => l.supersedesLineId)
+            .map((l) => [l.supersedesLineId as string, Number(l.unitPrice ?? 0)]));
+
+        // Only where the item is on one line of the corrected order and
+        // cannot be mistaken for another. Used for an invoice line that names
+        // no order line at all — billed straight, with no receipt between —
+        // and for orders corrected before lineage was recorded.
+        const soleLineFor = new Map<string, number>();
+        for (const l of input.order.lines) {
+          soleLineFor.set(l.itemId,
+            (soleLineFor.get(l.itemId) ?? 0) + 1);
+        }
+        const priceForSoleItem = new Map(
+          input.order.lines
+            .filter((l) => soleLineFor.get(l.itemId) === 1)
+            .map((l) => [l.itemId, Number(l.unitPrice ?? 0)]));
 
         for (const inv of await invoicesBuiltOn(tx, input.documentId)) {
           // Everything the void rules refuse, this refuses — an invoice with
@@ -5667,7 +5823,7 @@ export async function amendOrderIn(tx: TransactionSql, input: {
           }
 
           const stored = await tx`
-            select dl.item_id, dl.base_qty as qty, dl.unit_price, dl.foc_reason_id,
+            select dl.id, dl.item_id, dl.base_qty as qty, dl.unit_price, dl.foc_reason_id,
                    dl.source_line_id, dl.discount_pct, dl.is_consignment,
                    d.location_id, d.partner_id, d.source_document_id,
                    d.doc_type, d.to_deliver, d.salesman_id, d.payment_type,
@@ -5681,15 +5837,39 @@ export async function amendOrderIn(tx: TransactionSql, input: {
           if (stored.length === 0) continue;
           const head = stored[0];
 
+          // Which order line each invoice line answers: the one it names, or
+          // the one named by the receipt or delivery it bills. Resolved once,
+          // in the database, rather than guessed per line.
+          const answers = new Map<string, string>();
+          for (const r of await tx`
+            select il.id,
+                   coalesce(
+                     case when ol.document_id = ${input.documentId} then ol.id end,
+                     case when up.document_id = ${input.documentId} then up.id end
+                   ) as order_line
+              from document_line il
+              left join document_line ol on ol.id = il.source_line_id
+              left join document_line up on up.id = ol.source_line_id
+             where il.document_id = ${inv.id}` as unknown as
+               { id: string; order_line: string | null }[]) {
+            if (r.order_line) answers.set(r.id, r.order_line);
+          }
+
+          const priceNow = (l: any): number => {
+            const orderLine = answers.get(l.id as string);
+            if (orderLine && priceForLine.has(orderLine)) return priceForLine.get(orderLine)!;
+            if (priceForSoleItem.has(l.item_id)) return priceForSoleItem.get(l.item_id)!;
+            // An invoice line the corrected order has nothing to say about —
+            // an item it never mentioned, or one of several lines of an item
+            // with no lineage to tell them apart. Left as it was rather than
+            // repriced from a guess.
+            return Number(l.unit_price);
+          };
+
           const lines = stored.map((l: any) => ({
             itemId: l.item_id as string,
             qty: Number(l.qty),
-            // The corrected price where this order has one for the item, and
-            // whatever the line already said where it does not — an invoice
-            // may carry lines the order never mentioned.
-            unitPrice: priceFor.has(l.item_id)
-              ? priceFor.get(l.item_id)!
-              : Number(l.unit_price),
+            unitPrice: priceNow(l),
             focReasonId: l.foc_reason_id as string | null,
             sourceLineId: l.source_line_id as string | null,
             // The discount was agreed separately from the price and is not

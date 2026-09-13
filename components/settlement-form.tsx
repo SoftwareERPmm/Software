@@ -50,6 +50,9 @@ export function SettlementForm({
     null
   );
 
+  /** See the hidden field below. */
+  const [attemptKey] = useState(() => crypto.randomUUID());
+
   const [partnerId, setPartnerId] = useState(initialPartnerId ?? "");
 
   /** What the invoice this screen was opened for still owes, if any. */
@@ -112,6 +115,11 @@ export function SettlementForm({
 
   return (
     <form action={formAction} className="form wide">
+      {/* One submission, one posting. Generated when this form mounts, so a
+          double-click or a resent request carries the same key and is handed
+          the document the first one posted; a new form is a new key. */}
+      <input type="hidden" name="idempotency_key" value={attemptKey} />
+
       {state && "error" in state && <div className="alert">{state.error}</div>}
 
       <input type="hidden" name="allocations" value={payload} />

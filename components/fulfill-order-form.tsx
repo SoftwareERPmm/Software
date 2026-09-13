@@ -62,6 +62,9 @@ export function FulfillOrderForm({
     action as never,
     null
   );
+
+  /** See the hidden field below. */
+  const [attemptKey] = useState(() => crypto.randomUUID());
   const [open, setOpen] = useState(false);
   // Free units per order line, and why. A delivery can carry a giveaway
   // alongside what was ordered — the goods leave either way, and the reason
@@ -170,6 +173,11 @@ export function FulfillOrderForm({
       {open && (
         <div className="card-body">
           <form action={formAction} className="form">
+      {/* One submission, one posting. Generated when this form mounts, so a
+          double-click or a resent request carries the same key and is handed
+          the document the first one posted; a new form is a new key. */}
+      <input type="hidden" name="idempotency_key" value={attemptKey} />
+
             {state && "error" in state && <div className="alert">{state.error}</div>}
             <input type="hidden" name="partner_id" value={partnerId} />
             <input type="hidden" name="location_id" value={locationId} />

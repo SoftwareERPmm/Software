@@ -4,6 +4,7 @@ import { money, shortDate } from "@/lib/db";
 import {
   getCompany, getOpenPurchaseOrders, getGoodsReceiptHistory, getGrirPositions,
   getOpenGoodsReceipts, getGrirCollisions, getOpenPurchaseInvoices,
+  getBillsRaisedFromOrders,
 } from "@/lib/queries";
 import { createGoodsReceipt } from "@/lib/actions";
 import { FulfillOrderForm } from "@/components/fulfill-order-form";
@@ -39,7 +40,8 @@ export default async function Receive({
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
-  const [openLines, history, grir, stillToBill, collisionRows, openBills] = await Promise.all([
+  const [openLines, history, grir, stillToBill, collisionRows, openBills, raisedFrom] =
+    await Promise.all([
     getOpenPurchaseOrders(company.id),
     getGoodsReceiptHistory(company.id) as unknown as Promise<Receipt[]>,
     getGrirPositions(company.id),
@@ -50,6 +52,7 @@ export default async function Receive({
       id: string; doc_no: string; doc_date: string; partner_id: string;
       lines: { itemId: string; itemName: string; qty: number }[];
     }>>,
+    getBillsRaisedFromOrders(company.id),
   ]);
 
   // Goods already in and a bill already waiting for them, per supplier: the
@@ -235,7 +238,13 @@ export default async function Receive({
             lines={o.lines}
             action={createGoodsReceipt}
             collisions={collisions.get(o.partnerId) ?? []}
-            openBills={openBills.filter((b) => b.partner_id === o.partnerId)}
+            openBills={openBills
+              .filter((b) => b.partner_id === o.partnerId)
+              .map((b) => ({
+                ...b,
+                linked: raisedFrom.some(
+                  (r) => r.bill_id === b.id && r.order_id === o.orderId),
+              }))}
           />
         ))
       )}
