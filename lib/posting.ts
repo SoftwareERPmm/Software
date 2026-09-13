@@ -340,6 +340,44 @@ async function requireSource(
  * a caller pointing at another document's line has made a mistake, and
  * quietly matching something else hides it.
  */
+/**
+ * An order that was given up does not quietly start receiving goods again.
+ *
+ * Closing says the rest is not expected. Letting a receipt or a delivery land
+ * against it anyway makes that statement meaningless the moment it is
+ * inconvenient: the order reads closed, the goods arrive, and the outstanding
+ * figure the closure set to nothing is contradicted by a document nobody was
+ * asked about. Worse, it is silent — the person receiving never learns the
+ * order was called off, and whoever called it off never learns it continued.
+ *
+ * So the way back in is Reopen, which is one click and, unlike a flag on this
+ * posting, records who expected the goods again and why. Reopening is
+ * refused in turn if the order has since been fulfilled in full, so this does
+ * not become a door into a commitment that no longer exists.
+ *
+ * Read under the lock the caller already holds on the order row, so a closure
+ * committing at the same moment is either wholly before this or wholly after
+ * it, never half-seen.
+ */
+async function assertOrderNotClosed(
+  tx: TransactionSql,
+  orderId: string,
+  docNo: string,
+  what: "goods" | "delivery"
+): Promise<void> {
+  const [latest] = await tx`
+    select is_open, reason from order_closure
+     where document_id = ${orderId}
+     order by closed_at desc limit 1`;
+  if (!latest || latest.is_open) return;
+
+  throw new Error(
+    `${docNo} was closed — "${latest.reason}" — so it is not expecting ` +
+    `${what === "goods" ? "any more goods" : "any more deliveries"}. ` +
+    `Reopen it first if the rest is coming after all.`
+  );
+}
+
 async function assertSourceLines(
   tx: TransactionSql,
   sourceId: string,
@@ -1868,6 +1906,9 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
       role: "document this delivery fulfils",
     });
     await assertSourceLines(tx, input.sourceDocumentId, input.lines);
+    if (src?.doc_type === "SALES_ORDER") {
+      await assertOrderNotClosed(tx, input.sourceDocumentId, src.doc_no as string, "delivery");
+    }
     if (src?.doc_type === "SALES_INVOICE") {
       await assertNotOverDelivered(tx, input.sourceDocumentId, input.lines);
     }
@@ -2703,6 +2744,9 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
       role: "document this receipt fulfils",
     });
     await assertSourceLines(tx, input.sourceDocumentId, input.lines);
+    if (src?.doc_type === "PURCHASE_ORDER") {
+      await assertOrderNotClosed(tx, input.sourceDocumentId, src.doc_no as string, "goods");
+    }
     if (src?.doc_type === "PURCHASE_INVOICE") {
       // Nothing to apportion any more. The lines were priced from this
       // invoice above, so what the goods are worth and what the invoice was
@@ -2921,6 +2965,11 @@ async function linkFulfilmentIn(
     if (order.status !== "POSTED") {
       throw new Error(`Line ${i + 1}: ${order.doc_no} is ${order.status} and cannot be fulfilled`);
     }
+    // Linking is the other way goods reach an order, and a closed order is
+    // no more expecting them by this route than by the other.
+    await assertOrderNotClosed(
+      tx, order.document_id as string, order.doc_no as string,
+      order.doc_type === "SALES_ORDER" ? "delivery" : "goods");
 
     const [got] = await tx`
       select dl.id, dl.item_id, dl.base_qty as qty,

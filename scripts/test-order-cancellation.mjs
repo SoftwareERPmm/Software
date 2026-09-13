@@ -127,26 +127,59 @@ try {
     `${stillThere.status} ${stillThere.doc_no}`);
   check("  and the reason is on the closure", cl.reason === "entered twice", cl.reason);
 
-  // ---- the snapshot is about that moment, not about now -------------------
+  // ---- a cancelled order is not quietly receiving goods -------------------
   //
-  // The case that decides whether the label can be derived at all. Goods
-  // arrive against a cancelled order — late, or linked by mistake, or the
-  // supplier shipped anyway. Today's fulfilment is now 40. The closure still
-  // has to say what it said: nothing had arrived when it was made.
+  // Closing says the rest is not expected. Goods landing against it anyway
+  // make that statement meaningless the moment it is inconvenient, and do it
+  // silently: the person receiving never learns the order was called off, and
+  // whoever called it off never learns it continued. The way back in is
+  // Reopen, which records who expected the goods again and why.
 
   console.log("\n  goods turn up against an order already cancelled\n");
 
+  const shutOut = await refused(() => P.postGoodsReceipt({ ...base,
+    sourceDocumentId: cancelled.id, lines: [{ itemId: item.id, qty: 40, unitCost: 500 }] }));
+  check("receiving against it is refused", !!shutOut, shutOut?.slice(0, 80));
+  check("  and the refusal says to reopen it",
+    !!shutOut && /reopen/i.test(shutOut));
+  check("  and names why it was closed",
+    !!shutOut && shutOut.includes("entered twice"));
+  check("  nothing arrived", (await stateOf(cancelled.id)).fulfilled === 0);
+
+  // Linking an existing receipt is the other way in, and it is shut too.
+  const loose = await P.postGoodsReceipt({ ...base,
+    lines: [{ itemId: item.id, qty: 40, unitCost: 500 }] });
+  const [looseLine] = await sql`select id from document_line where document_id = ${loose.id}`;
+  const [orderLine] = await sql`select id from document_line where document_id = ${cancelled.id}`;
+  const linkShut = await refused(() => P.linkFulfilmentToOrder({ companyId: co.id,
+    lines: [{ fulfilmentLineId: looseLine.id, orderLineId: orderLine.id, qty: 40 }],
+    reason: "these are the ones" }));
+  check("linking an existing receipt to it is refused too", !!linkShut,
+    linkShut?.slice(0, 80));
+
+  // ---- the snapshot is about that moment, not about now -------------------
+  //
+  // Reopened and then received against, which is the legitimate route. The
+  // closure that was made when nothing had arrived still has to say so:
+  // today's fulfilment has moved, and it is not where the label comes from.
+
+  console.log("\n  reopened, then received against\n");
+
+  await P.reopenOrder({ companyId: co.id, documentId: cancelled.id,
+    reason: "supplier shipped after all" });
   const lateGr = await P.postGoodsReceipt({ ...base, sourceDocumentId: cancelled.id,
     lines: [{ itemId: item.id, qty: 40, unitCost: 500 }] });
-  check("the receipt posts", !!lateGr.docNo, lateGr.docNo);
+  check("once reopened, the receipt posts", !!lateGr.docNo, lateGr.docNo);
 
   st = await stateOf(cancelled.id);
   check("  today's fulfilment has moved to 40", st.fulfilled === 40, `${st.fulfilled}`);
 
-  cl = await closureOf(cancelled.id);
-  check("  but the closure still reads CANCELLED", cl.kind === "CANCELLED", cl.kind);
-  check("  because its snapshot is still 0, not recomputed",
-    cl.fulfilledAtClosure === 0, `${cl.fulfilledAtClosure}`);
+  const [firstClosure] = await sql`
+    select fulfilled_at_closure from order_closure
+     where document_id = ${cancelled.id} and not is_open
+     order by closed_at limit 1`;
+  check("  but the cancellation's own snapshot is still 0, not recomputed",
+    n(firstClosure.fulfilled_at_closure) === 0, `${firstClosure.fulfilled_at_closure}`);
 
   // ---- partly fulfilled: only the remainder goes --------------------------
 
@@ -247,18 +280,113 @@ try {
   check("  and 100 is owed again", st.outstanding === 100 && st.isClosed === false,
     `${st.outstanding} closed=${st.isClosed}`);
 
-  // Fulfilled in full while it was closed: there is nothing left to expect,
-  // and reopening would show a commitment that no longer exists.
+  // Nothing left to expect: reopening would show a commitment that no longer
+  // exists. Reached by closing an order that was already fulfilled in full —
+  // goods can no longer arrive against a closed order, so this is now the way
+  // in rather than receiving after the fact.
   const overtaken = await fresh();
-  await P.closeOrderRemaining({ companyId: co.id, documentId: overtaken.id,
-    reason: "not expected" });
   await P.postGoodsReceipt({ ...base, sourceDocumentId: overtaken.id,
     lines: [{ itemId: item.id, qty: 100, unitCost: 500 }] });
+  await P.closeOrderRemaining({ companyId: co.id, documentId: overtaken.id,
+    reason: "tidying up a finished order" });
   const nothingLeft = await refused(() => P.reopenOrder({ companyId: co.id,
     documentId: overtaken.id, reason: "expect it again" }));
   check("an order fulfilled in full while closed refuses to reopen", !!nothingLeft,
     nothingLeft?.slice(0, 70));
   check("  and it stays closed", (await stateOf(overtaken.id)).isClosed === true);
+
+  // ---- receiving and closing at the same moment ---------------------------
+  //
+  // Whichever commits first has to decide the figures the other sees and
+  // records. Both take the order row — requireSource locks it for a receipt
+  // naming the order, closeOrderRemaining locks it before reading what is
+  // fulfilled — so the second one waits, and there is no window where the
+  // closure snapshots a quantity that a receipt is halfway through changing.
+  //
+  // Forced rather than hoped for: one transaction is held open on its own
+  // connection while the other runs, so the interleaving is the bad one every
+  // time instead of whenever the scheduler feels like it.
+
+  console.log("\n  receiving and closing at the same moment\n");
+
+  const other = postgres(url, { ssl: url.includes("localhost") ? false : "require",
+    prepare: !url.includes("-pooler."), onnotice: () => {}, max: 1 });
+  try {
+    // Warmed before the race. A cold pool spends a TLS handshake getting to
+    // Neon, which is long enough for the other side to take the lock first
+    // and turn a test of the engine into a test of connection latency.
+    await other`select 1`;
+    // Receipt first: it commits, and the closure that was waiting must
+    // snapshot 40 fulfilled and 60 given up — not the 0 and 100 that were
+    // true when it started trying.
+    const raceA = await fresh();
+    let release;
+    const held = new Promise((r) => { release = r; });
+    const receiptRunning = other.begin(async (tx) => {
+      // Taken explicitly and first, so the interleaving under test is the one
+      // intended rather than whichever side happened to get there.
+      await tx`select id from document where id = ${raceA.id} for update`;
+      await P.postGoodsReceipt({ ...base, sourceDocumentId: raceA.id,
+        lines: [{ itemId: item.id, qty: 40, unitCost: 500 }] }, tx);
+      await held;              // hold the lock on the order row
+      return "receipt committed";
+    });
+    await new Promise((r) => setTimeout(r, 600));
+
+    let closureDone = false;
+    const closing = P.closeOrderRemaining({ companyId: co.id, documentId: raceA.id,
+      reason: "called off mid-delivery" }).then((r) => { closureDone = true; return r; });
+    await new Promise((r) => setTimeout(r, 300));
+    check("the closure waits while the receipt holds the order", closureDone === false);
+
+    release();
+    await receiptRunning;
+    const closed = await closing;
+    check("  once the receipt commits, the closure records what it did",
+      closed.fulfilled === 40 && closed.outstanding === 60,
+      `${closed.fulfilled}/${closed.outstanding}`);
+    cl = await closureOf(raceA.id);
+    check("  so it reads as a remainder closure, not a cancellation",
+      cl.kind === "REMAINDER_CLOSED", cl.kind);
+    check("  and nothing is outstanding now", (await stateOf(raceA.id)).outstanding === 0);
+
+    // The other order: the closure commits first, and the receipt that was
+    // waiting is refused outright by the rule above rather than landing
+    // against an order that has just been given up.
+    const raceB = await fresh();
+    let release2;
+    const held2 = new Promise((r) => { release2 = r; });
+    await other`select 1`;
+    const closingFirst = other.begin(async (tx) => {
+      await tx`select id from document where id = ${raceB.id} for update`;
+      await tx`insert into order_closure
+        (company_id, document_id, reason, closed_by, is_open,
+         fulfilled_at_closure, outstanding_at_closure)
+        values (${co.id}, ${raceB.id}, 'called off first', null, false, 0, 100)`;
+      await held2;
+      return "closure committed";
+    });
+    await new Promise((r) => setTimeout(r, 300));
+
+    let receiptSettled = null;
+    const receiving = P.postGoodsReceipt({ ...base, sourceDocumentId: raceB.id,
+      lines: [{ itemId: item.id, qty: 40, unitCost: 500 }] })
+      .then(() => { receiptSettled = "posted"; })
+      .catch((e) => { receiptSettled = e.message; });
+    await new Promise((r) => setTimeout(r, 300));
+    check("the receipt waits while the closure holds the order", receiptSettled === null);
+
+    release2();
+    await closingFirst;
+    await receiving;
+    check("  once the closure commits, the receipt is refused",
+      typeof receiptSettled === "string" && receiptSettled !== "posted",
+      String(receiptSettled).slice(0, 70));
+    check("  and nothing arrived", (await stateOf(raceB.id)).fulfilled === 0,
+      `${(await stateOf(raceB.id)).fulfilled}`);
+  } finally {
+    await other.end();
+  }
 
   // ---- a closure made before the snapshot existed -------------------------
   //
