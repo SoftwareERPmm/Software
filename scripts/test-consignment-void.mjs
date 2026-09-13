@@ -56,18 +56,26 @@ try {
   if (!consignedItem) throw new Error("needs two stocked items");
   console.log(`\n  ${co.name}\n`);
 
-  // This suite truncates. It may only do that to the database .env names —
-  // the development one — never to a URL passed in on the command line, which
-  // is how the pilot tester's books or the real ones would be reached.
-  const envUrl = existsSync(join(root, ".env"))
-    ? (readFileSync(join(root, ".env"), "utf8").split("\n")
-        .map((l) => l.match(/^\s*DATABASE_URL\s*=\s*(.+?)\s*$/)).find(Boolean)?.[1]
-        ?? "").replace(/^["']|["']$/g, "")
-    : "";
-  if (!envUrl || new URL(url).host !== new URL(envUrl).host) {
+  /**
+   * This suite empties the transaction tables — before it runs and after. It
+   * does not put back what was there; nothing here could. So it will only do
+   * that to a database that says it is disposable.
+   *
+   * Matching the host in .env is not enough on its own: .env is a file, and a
+   * file can name the pilot tester's books as easily as the scratch one. What
+   * the project actually uses to tell these databases apart from the outside
+   * is the company name, which carries a marker on the development branch and
+   * does not on the tester's or the real one — the same thing CLAUDE.md tells
+   * a human to check before trusting a screen.
+   *
+   * Anything else needs saying out loud: ALLOW_DESTRUCTIVE_TESTS=1.
+   */
+  const disposable = /—\s*DEV\b|\bDEV\b/i.test(String(co.name));
+  if (!disposable && process.env.ALLOW_DESTRUCTIVE_TESTS !== "1") {
     throw new Error(
-      `This suite wipes the database it runs against, and will only do that to `
-      + `the one .env names. Target ${new URL(url).host}, .env ${envUrl ? new URL(envUrl).host : "(none)"}.`
+      `This suite empties the transaction tables of whatever it runs against, and `
+      + `"${co.name}" does not look like a disposable development database. `
+      + `Point .env at one, or set ALLOW_DESTRUCTIVE_TESTS=1 to say you mean it.`
     );
   }
 
@@ -239,7 +247,9 @@ try {
   check("through all of it, the consignor's goods stay drawn down by what sold",
     n(drawn.q) === 20, `${n(drawn.q)}`);
 
-  // Left as it was found. A consigned sale settles to the consignor with a
+  // Emptied again rather than restored — nothing here could put back what was
+  // there before, and saying "left as it was found" would be a nicer sentence
+  // than the truth. A consigned sale settles to the consignor with a
   // purchase invoice that credits payables and is no open item of its own, so
   // leaving them behind puts the payables control account out of step with
   // the purchase-invoice subledger for whatever suite runs next — which is

@@ -2068,29 +2068,40 @@ export async function correctOrder(
     // A retry of a confirmation that already went through is handed what it
     // did, before anything compares plans: by now the order is on its next
     // version, and that is this retry's own doing.
-    const done = await alreadyPosted(co, attemptKey(fd));
-    if (done) {
-      revalidatePath("/documents", "layout");
-      redirectWithToast(`/documents/${done.id}`, "Correction posted");
+    //
+    // Only the destination is decided here. Redirecting from inside this
+    // block would be caught by the catch below — a Next redirect is thrown,
+    // not returned — and the reader would be shown an error for a correction
+    // that had worked.
+    const replayed = await alreadyPosted(co, attemptKey(fd));
+
+    if (replayed) {
+      landOn = replayed.id;
+    } else {
+      // What the reader was shown, checked against what the correction
+      // actually does — inside the transaction that does it, so there is no
+      // window between the two and no second run of the whole thing.
+      const shown = str(fd, "fingerprint") || null;
+
+      // A correction is a posting too: a resent confirmation must not correct
+      // the same order twice, each version chaining onto the last.
+      //
+      // Read as `id`, which every answer carries. A duplicate is answered
+      // from the recorded attempt and has no replacementId of its own —
+      // destructuring that sent the reader to /documents/undefined, on the
+      // one path this was written to make reliable.
+      const posted = await postOnce(co, attemptKey(fd), async (tx) => {
+        const done = await amendOrder(
+          { companyId: co, documentId, reason, cascade: true, order, expect: shown }, tx);
+        return { ...done, id: done.replacementId, docNo: done.docNo ?? "" };
+      });
+
+      // The reader is sent to the version that now stands, not the one they
+      // were reading — which the correction has just retired. Landing back on
+      // v1 shows the old figure under a "Superseded" banner and reads as
+      // though the correction had not taken.
+      landOn = posted.id;
     }
-
-    // What the reader was shown, checked against what the correction actually
-    // does — inside the transaction that does it, so there is no window
-    // between the two and no second run of the whole thing.
-    const shown = str(fd, "fingerprint") || null;
-
-    // The reader is sent to the version that now stands, not the one they
-    // were reading — which the correction has just retired. Landing back on
-    // v1 shows the old figure under a "Superseded" banner and reads as though
-    // the correction had not taken.
-    // A correction is a posting too: a resent confirmation must not correct
-    // the same order twice, each version chaining onto the last.
-    const { replacementId } = await postOnce(co, attemptKey(fd), async (tx) => {
-      const done = await amendOrder(
-        { companyId: co, documentId, reason, cascade: true, order, expect: shown }, tx);
-      return { ...done, id: done.replacementId, docNo: done.docNo ?? "" };
-    });
-    landOn = replacementId;
   } catch (e) {
     // Not an error: the world moved, nothing was posted, and the reader gets
     // the revised plan to look at before deciding again.
@@ -2161,28 +2172,35 @@ export async function correctInvoice(
     // of the correction this retry is repeating. Left in the other order, a
     // resent confirmation is told it is out of date rather than handed what
     // it did.
-    const done = await alreadyPosted(co, attemptKey(fd));
-    if (done) {
-      revalidatePath("/documents", "layout");
-      redirectWithToast(`/documents/${done.id}`, "Correction posted");
-    }
+    //
+    // Only the destination is decided here: a Next redirect is thrown, not
+    // returned, so redirecting from inside this block would be caught below
+    // and shown to the reader as a failure of a correction that worked.
+    const replayed = await alreadyPosted(co, attemptKey(fd));
 
-    const shown = str(fd, "fingerprint");
-    if (shown) {
-      const now = await planInvoiceAmendment({
-        companyId: co, documentId, invoice: invoice as never, reason,
-      });
-      const fingerprint = amendmentFingerprint(now);
-      if (fingerprint !== shown) {
-        return { stale: true, plan: now, fingerprint };
+    if (replayed) {
+      landOn = replayed.id;
+    } else {
+      const shown = str(fd, "fingerprint");
+      if (shown) {
+        const now = await planInvoiceAmendment({
+          companyId: co, documentId, invoice: invoice as never, reason,
+        });
+        const fingerprint = amendmentFingerprint(now);
+        if (fingerprint !== shown) {
+          return { stale: true, plan: now, fingerprint };
+        }
       }
+
+      // Read as `id`: a duplicate is answered from the recorded attempt and
+      // carries no replacementId of its own.
+      const posted = await postOnce(co, attemptKey(fd), async (tx) => {
+        const done = await amendInvoice(
+          { companyId: co, documentId, reason, invoice: invoice as never }, tx);
+        return { ...done, id: done.replacementId, docNo: done.docNo ?? "" };
+      });
+      landOn = posted.id;
     }
-    const { replacementId } = await postOnce(co, attemptKey(fd), async (tx) => {
-      const done = await amendInvoice(
-        { companyId: co, documentId, reason, invoice: invoice as never }, tx);
-      return { ...done, id: done.replacementId, docNo: done.docNo ?? "" };
-    });
-    landOn = replacementId;
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }

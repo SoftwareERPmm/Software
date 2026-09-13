@@ -295,6 +295,70 @@ try {
     `v${live?.version} of ${versions.length} versions`);
   check("  and it says what the correction said", near(live?.g, 2200), `${live?.g}`);
 
+
+  // ---- what a replayed confirmation answers with --------------------------
+  //
+  // Two bugs lived on this path. A duplicate is answered from the recorded
+  // attempt and carries no replacementId, but the action destructured that —
+  // so a resent confirmation redirected to /documents/undefined, on the one
+  // path idempotency exists to make reliable. And the early answer redirected
+  // from inside the try, where a Next redirect — which is thrown, not
+  // returned — was caught and shown as a failure of a correction that had
+  // worked.
+
+  console.log("\n  what a replayed confirmation answers with\n");
+
+  const replayOrder = await P.postPurchaseOrder({
+    companyId: co.id, partnerId: supp.id, locationId: loc.id,
+    docDate: today, dueDate: today,
+    lines: [{ itemId: item.id, qty: 6, unitPrice: 700 }],
+  });
+  const [replayLine] = await sql`select id from document_line
+     where document_id = ${replayOrder.id}`;
+
+  const confirm = () => {
+    const fd = new FormData();
+    fd.set("document_id", replayOrder.id);
+    fd.set("reason", "price corrected to 750");
+    fd.set("idempotency_key", "replay-key");
+    fd.set("lines", JSON.stringify([
+      { lineId: replayLine.id, itemId: item.id, qty: 6, unitPrice: 750 },
+    ]));
+    return fd;
+  };
+
+  const A2 = await import("../lib/actions.ts");
+  const run = async (fd) => {
+    try { return { value: await A2.correctOrder(null, fd) }; }
+    catch (e) { return { thrown: e }; }
+  };
+
+  const firstGo = await run(confirm());
+  const replay = await run(confirm());
+
+  const [live2] = await sql`select id, version from document
+     where doc_no = ${replayOrder.docNo} and superseded_by_document_id is null`;
+
+  // The destination itself is not observable here — revalidatePath wants a
+  // request context this script does not have, and throws before the redirect
+  // is reached. What is observable is the answer the action builds it from,
+  // which is where the bug was: a duplicate carries no replacementId, so
+  // destructuring that produced /documents/undefined.
+  const replayedAnswer = await postOnce(co.id, "replay-key", async () => {
+    throw new Error("must not post again");
+  });
+  check("a replayed confirmation is answered with the corrected document's id",
+    replayedAnswer.id === live2.id, `${replayedAnswer.id} vs ${live2.id}`);
+  check("  and it is a real id, not undefined",
+    typeof replayedAnswer.id === "string" && replayedAnswer.id.length > 10,
+    String(replayedAnswer.id));
+  check("  said to be a repeat", replayedAnswer.repeated === true);
+
+  check("  and neither confirmation comes back an error",
+    !(firstGo.value && "error" in firstGo.value) && !(replay.value && "error" in replay.value),
+    [firstGo, replay].map((r) => (r.value && "error" in r.value) ? r.value.error.slice(0, 40) : "ok").join(" / "));
+  check("  with the order corrected once", n(live2.version) === 2, `v${live2.version}`);
+
   // ---- no key at all ------------------------------------------------------
   // Scripts, imports and the suites post directly. A missing key must never
   // become a silent refusal to post.
