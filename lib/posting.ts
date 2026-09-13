@@ -640,8 +640,31 @@ async function assertNotOverBilled(
        ${selfId ? tx`and d.id <> ${selfId}` : tx``}
      order by d.posting_date, d.doc_no, dl.line_no`;
 
+  /**
+   * And whatever went back to the supplier.
+   *
+   * Goods returned are not billable: the receipt brought them in, the return
+   * sent them out, and nobody asked for money in between. The bill-matching
+   * screen already leaves them out — but a screen is not enforcement, and the
+   * engine would post an invoice for a hundred units that were returned in
+   * full, because nothing here had ever heard of a return.
+   *
+   * Drawn down through the same matcher as a bill, so a part return leaves
+   * exactly the remainder billable.
+   */
+  const returned = billType === "PURCHASE_INVOICE"
+    ? await tx`
+        select dl.item_id, dl.base_qty as qty, dl.source_line_id
+          from document_line dl
+          join document d on d.id = dl.document_id
+         where d.doc_type = 'PURCHASE_RETURN' and d.status = 'POSTED'
+           and d.source_document_id = ${sourceId}
+         order by d.posting_date, d.doc_no, dl.line_no`
+    : [];
+
   const draw = grirMatcher(sourceLines as unknown as MatchableLine[]);
   for (const p of prior) draw(p.item_id, Number(p.qty), p.source_line_id);
+  for (const r of returned) draw(r.item_id, Number(r.qty), r.source_line_id);
 
   lines.forEach((line, i) => {
     const onSource = sourceLines.find((l: any) => l.item_id === line.itemId);
@@ -3981,6 +4004,8 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
     // Goods go back to the supplier they came from, against the receipt that
     // brought them in or the invoice that billed for them — the mirror of
     // the sales return above.
+    let againstReceipt = false;
+
     if (input.sourceDocumentId) {
       const source = await requireSource(tx, {
         id: input.sourceDocumentId,
@@ -3996,6 +4021,30 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
         returnType: "PURCHASE_RETURN",
         lines: input.lines,
       });
+
+      againstReceipt = source.doc_type === "GOODS_RECEIPT";
+
+      if (againstReceipt) {
+        // A receipt that has been billed is a different conversation. The
+        // supplier has asked for money, so what comes back is a credit
+        // against that bill — and taking it off the accrual instead would
+        // leave the invoice standing in full for goods that went back.
+        // Refused rather than guessed at: return against the bill.
+        const billed = await tx`
+          select d.doc_no from document d
+           where d.company_id = ${companyId}
+             and d.doc_type = 'PURCHASE_INVOICE'
+             and d.status = 'POSTED'
+             and d.source_document_id = ${input.sourceDocumentId}
+           limit 1`;
+        if (billed.length > 0) {
+          throw new Error(
+            `${source.doc_no} has already been billed by ${billed[0].doc_no}. `
+            + `Return against that bill instead, so the credit lands where the `
+            + `money was asked for.`
+          );
+        }
+      }
     }
 
     const [doc] = await tx`
@@ -4067,9 +4116,28 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
       }
     }
 
-    const ap = await tx`
-      select fn_resolve_control_account(${companyId}, 'AP_CONTROL', ${partnerId}) as a`;
-    journal.push({ accountId: ap[0].a, amount: netTotal, partnerId });
+    /**
+     * What the return gives back, and to whom.
+     *
+     * A return against a bill is a credit: the supplier was owed and is owed
+     * less, so payables come down. A return against a goods receipt that has
+     * never been billed is not — nobody has asked for money yet. What that
+     * receipt created was an accrual in the clearing account, goods held and
+     * not yet invoiced, and sending them back takes the accrual off again.
+     *
+     * Debiting payables for it was wrong in a way that reads as right: the
+     * books said a supplier who had never invoiced us now owed us fifty
+     * thousand, and the accrual for goods we no longer had stayed where it
+     * was. Goods delivered to us by mistake, returned the same day, left both.
+     */
+    if (againstReceipt) {
+      const grir = await tx`select fn_system_account(${companyId}, 'GRIR_CLEARING') as a`;
+      journal.push({ accountId: grir[0].a, amount: netTotal, partnerId });
+    } else {
+      const ap = await tx`
+        select fn_resolve_control_account(${companyId}, 'AP_CONTROL', ${partnerId}) as a`;
+      journal.push({ accountId: ap[0].a, amount: netTotal, partnerId });
+    }
 
     const entryId = await writeJournal(
       tx, companyId, docDate, "PURCHASE_RETURN", doc.id, `${docNo} purchase return`, journal, locationId

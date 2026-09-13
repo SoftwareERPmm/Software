@@ -68,6 +68,8 @@ export function ReturnForm({
   const isSales = kind === "sales";
   const byId = (id: string) => items.find((i) => i.id === id);
   const returnableDocs = (salesDocs ?? []).filter((d) => d.partner_id === partnerId);
+  const sourceIsReceipt =
+    returnableDocs.find((d) => d.id === sourceDocumentId)?.doc_type === "GOODS_RECEIPT";
 
   function setLine(key: number, patch: Partial<Line>) {
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
@@ -137,24 +139,45 @@ export function ReturnForm({
               </select>
             </div>
 
-            {isSales && (
+            {(
               <div className="field">
                 <label htmlFor="source_document_id">Return against</label>
                 <select id="source_document_id" name="source_document_id" value={sourceDocumentId}
                   onChange={(e) => setSourceDocumentId(e.target.value)} disabled={!partnerId}>
                   <option value="">
-                    {partnerId ? "Not on a specific invoice" : "Choose a customer first"}
+                    {!partnerId
+                      ? `Choose a ${isSales ? "customer" : "supplier"} first`
+                      : isSales
+                        ? "Not on a specific invoice"
+                        : "Not against a specific receipt or bill"}
                   </option>
                   {returnableDocs.map((d) => (
                     <option key={d.id} value={d.id}>
-                      {d.doc_no} · {d.doc_type === "DELIVERY" ? "delivery" : "invoice"} · {fmtDate(d.doc_date)}
+                      {d.doc_no} ·{" "}
+                      {d.doc_type === "DELIVERY" ? "delivery"
+                        : d.doc_type === "GOODS_RECEIPT" ? "goods receipt"
+                        : "invoice"} · {fmtDate(d.doc_date)}
                     </option>
                   ))}
                 </select>
                 <span className="page-sub">
-                  {sourceDocumentId
-                    ? "Returned stock is costed at what it actually sold for on this document."
-                    : "Leave blank to cost the return at current stock value."}
+                  {/* What is returned against decides what the return gives
+                      back, not only what it costs. A bill means the supplier
+                      owes a credit; a receipt they never billed means the
+                      accrual for goods we no longer have comes off instead. */}
+                  {!sourceDocumentId
+                    ? isSales
+                      ? "Leave blank to cost the return at current stock value."
+                      : "Leave blank to cost the return at current stock value — "
+                        + "choose the receipt these goods came in on where you can, "
+                        + "so the return takes back what that receipt put on."
+                    : isSales
+                      ? "Returned stock is costed at what it actually sold for on this document."
+                      : sourceIsReceipt
+                        ? "Goods go back and the accrual this receipt raised comes off with "
+                          + "them. Nothing is charged to the supplier: they have not billed "
+                          + "for these."
+                        : "The supplier is owed less by what goes back."}
                 </span>
               </div>
             )}

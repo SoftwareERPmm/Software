@@ -345,6 +345,26 @@ export async function getReturnableSales(companyId: string) {
 }
 
 /**
+ * Purchases a supplier return can be sent back against.
+ *
+ * The purchase-side mirror of getReturnableSales, and the thing that was
+ * missing: the engine has always accepted a goods receipt or a bill here, and
+ * the form never offered either, so every supplier return was raised against
+ * nothing. Which meant it could only guess at what the return gives back —
+ * and guessed payables, for suppliers who had never invoiced anything.
+ */
+export async function getReturnablePurchases(companyId: string) {
+  return sql`
+    select d.id, d.doc_type, d.doc_no, d.doc_date, d.partner_id
+      from document d
+     where d.company_id = ${companyId}
+       and d.doc_type in ('PURCHASE_INVOICE', 'GOODS_RECEIPT')
+       and d.status = 'POSTED'
+     order by d.doc_date desc, d.doc_no desc
+     limit 500`;
+}
+
+/**
  * Goods receipts a purchase invoice can match against — only the ones
  * still sitting unresolved in GR/IR clearing (v_grir_balance), each with
  * its own lines so the invoice form can pre-fill and compare quantities.
@@ -560,6 +580,27 @@ export async function getOpenGoodsReceipts(companyId: string, limit: number | nu
        and d.source_document_id = any(${ids})
      order by d.posting_date, d.doc_no, dl.line_no`;
 
+  /**
+   * And what went back. Goods returned to the supplier are not billable: the
+   * receipt brought them in and the return sent them out, and nothing in
+   * between asked for money.
+   *
+   * Counted the same way an invoice is, through the same matcher, so a
+   * partial return leaves exactly the remainder billable — and a receipt
+   * returned in full offers nothing at all, rather than continuing to offer
+   * goods that are back with the supplier.
+   */
+  const returned = await sql`
+    select d.source_document_id as receipt_id, dl.item_id,
+           dl.base_qty as qty, dl.source_line_id
+      from document_line dl
+      join document d on d.id = dl.document_id
+     where d.company_id = ${companyId}
+       and d.doc_type = 'PURCHASE_RETURN'
+       and d.status = 'POSTED'
+       and d.source_document_id = any(${ids})
+     order by d.posting_date, d.doc_no, dl.line_no`;
+
   // The other direction: a receipt matched to a bill that came first is
   // billed by that bill, for whatever it covers. What it covers is not
   // necessarily everything on the receipt — a mixed receipt brings in items
@@ -575,6 +616,14 @@ export async function getOpenGoodsReceipts(companyId: string, limit: number | nu
 
       for (const inv of invoiced.filter((i: any) => i.receipt_id === d.id)) {
         for (const t of draw(inv.item_id, Number(inv.qty), inv.source_line_id).taken) {
+          billed.set(t.lineId, (billed.get(t.lineId) ?? 0) + t.qty);
+        }
+      }
+
+      // Returned units draw the receipt down alongside billed ones: both are
+      // reasons a line has nothing left to invoice.
+      for (const ret of returned.filter((r: any) => r.receipt_id === d.id)) {
+        for (const t of draw(ret.item_id, Number(ret.qty), ret.source_line_id).taken) {
           billed.set(t.lineId, (billed.get(t.lineId) ?? 0) + t.qty);
         }
       }
