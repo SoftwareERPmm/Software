@@ -3018,29 +3018,99 @@ export async function closeOrderRemaining(input: {
       throw new Error(`${order.doc_no} is ${order.status}`);
     }
 
+    /**
+     * What had arrived, and what was being given up, at this moment.
+     *
+     * Recorded rather than derived later, because the difference between
+     * cancelling an order and closing its remainder is a fact about now and
+     * nothing else preserves it. Fulfilment keeps moving afterwards — a
+     * receipt is returned, a delivery reversed, the order itself corrected —
+     * so an order cancelled today with nothing received would read as a
+     * remainder closure the moment anything was linked to it, rewriting its
+     * own history. Read inside the same transaction that holds the order
+     * row, so the figure written is the one the confirmation showed.
+     */
+    const [snap] = await tx`
+      select coalesce(sum(fulfilled), 0)::float  as fulfilled,
+             coalesce(sum(outstanding), 0)::float as outstanding
+        from v_order_outstanding
+       where company_id = ${input.companyId} and order_id = ${input.documentId}`;
+
     await tx`
-      insert into order_closure (company_id, document_id, reason, closed_by, is_open)
+      insert into order_closure
+        (company_id, document_id, reason, closed_by, is_open,
+         fulfilled_at_closure, outstanding_at_closure)
       values (${input.companyId}, ${input.documentId}, ${input.reason.trim()},
-              ${input.closedBy ?? null}, false)`;
-    return { docNo: order.doc_no as string };
+              ${input.closedBy ?? null}, false,
+              ${Number(snap?.fulfilled ?? 0)}, ${Number(snap?.outstanding ?? 0)})`;
+    return {
+      docNo: order.doc_no as string,
+      fulfilled: Number(snap?.fulfilled ?? 0),
+      outstanding: Number(snap?.outstanding ?? 0),
+    };
   });
 }
 
-/** Undo a closure: the goods are expected after all. */
+/**
+ * Undo a closure: the goods are expected after all.
+ *
+ * Checked against the order as it stands now, not as it stood when it was
+ * closed. Things move while an order is shut: goods can be linked to it, it
+ * can be corrected, its own version can be superseded. Reopening it blind
+ * appends a row that says the rest is owed again without anyone having
+ * established that any of it still is — and an order reopened for nothing
+ * reads as outstanding on every report that counts open commitments.
+ */
 export async function reopenOrder(input: {
   companyId: string; documentId: string; reason: string; closedBy?: string | null;
 }) {
   if (!input.reason?.trim()) throw new Error("Say why it is expected again");
   return sql.begin(async (tx) => {
     const [order] = await tx`
-      select id, doc_no from document
+      select id, doc_no, doc_type, status from document
        where id = ${input.documentId} and company_id = ${input.companyId} for update`;
     if (!order) throw new Error("That order does not exist");
+    if (!["PURCHASE_ORDER", "SALES_ORDER"].includes(order.doc_type as string)) {
+      throw new Error(`${order.doc_no} is not an order`);
+    }
+    if (order.status !== "POSTED") {
+      throw new Error(`${order.doc_no} is ${order.status}`);
+    }
+
+    // Only a closed order can be reopened. Without this, clicking twice
+    // appends a second is_open row that changes nothing and leaves a history
+    // implying the order was closed again in between.
+    const [latest] = await tx`
+      select is_open from order_closure
+       where document_id = ${input.documentId}
+       order by closed_at desc limit 1`;
+    if (!latest || latest.is_open) {
+      throw new Error(`${order.doc_no} is not closed, so there is nothing to reopen`);
+    }
+
+    // What would actually be owed again. The view reports 0 for a closed
+    // order by definition, so this asks the underlying question instead:
+    // ordered less what has since been received or delivered.
+    const [state] = await tx`
+      select coalesce(sum(ordered), 0)::float    as ordered,
+             coalesce(sum(fulfilled), 0)::float  as fulfilled
+        from v_order_outstanding
+       where company_id = ${input.companyId} and order_id = ${input.documentId}`;
+    const wouldOwe = round4(Math.max(
+      Number(state?.ordered ?? 0) - Number(state?.fulfilled ?? 0), 0));
+    if (wouldOwe <= 0.0001) {
+      throw new Error(
+        `${order.doc_no} has been fulfilled in full since it was closed, so there `
+        + `is nothing left to expect. Reopening it would show a commitment that `
+        + `no longer exists.`
+      );
+    }
+
     await tx`
       insert into order_closure (company_id, document_id, reason, closed_by, is_open)
       values (${input.companyId}, ${input.documentId}, ${input.reason.trim()},
               ${input.closedBy ?? null}, true)`;
-    return { docNo: order.doc_no as string };
+    return { docNo: order.doc_no as string, outstanding: wouldOwe };
   });
 }
 

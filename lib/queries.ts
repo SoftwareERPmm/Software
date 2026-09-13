@@ -1840,11 +1840,146 @@ export async function getOrderOutstanding(companyId: string, documentId: string)
 /** Why an order was closed, and when — shown on the order itself. */
 export async function getOrderClosure(documentId: string) {
   const [r] = await sql`
-    select reason, closed_by, closed_at, is_open from order_closure
+    select reason, closed_by, closed_at, is_open,
+           fulfilled_at_closure, outstanding_at_closure
+      from order_closure
      where document_id = ${documentId} order by closed_at desc limit 1`;
-  return r ?? null;
+  if (!r) return null;
+
+  /**
+   * Which kind of closure this was, from what was true when it happened.
+   *
+   * Not from today's fulfilment: that keeps moving. A receipt gets returned,
+   * a delivery reversed, the order itself corrected — and an order cancelled
+   * with nothing received would start reading as a remainder closure the
+   * moment anything was linked to it, quietly rewriting its own history.
+   *
+   * Null means the closure predates the column, so nothing was recorded and
+   * nothing is claimed. Reading null as zero would label every closure made
+   * before then an outright cancellation, which is a confident statement
+   * drawn from missing data.
+   */
+  const snap = r.fulfilled_at_closure;
+  const kind: "CANCELLED" | "REMAINDER_CLOSED" | "UNKNOWN" =
+    snap === null || snap === undefined ? "UNKNOWN"
+      : Number(snap) <= 0.0001 ? "CANCELLED"
+        : "REMAINDER_CLOSED";
+
+  return {
+    reason: r.reason as string,
+    closed_by: (r.closed_by ?? null) as string | null,
+    closed_at: r.closed_at as Date,
+    is_open: !!r.is_open,
+    kind,
+    fulfilledAtClosure: snap === null || snap === undefined ? null : Number(snap),
+    outstandingAtClosure: r.outstanding_at_closure === null || r.outstanding_at_closure === undefined
+      ? null : Number(r.outstanding_at_closure),
+  };
 }
 
+/**
+ * What closing this order would give up, and what it would leave alone.
+ *
+ * The preview behind "Cancel order" and "Close remaining". Closing writes one
+ * row saying the rest is not expected; it moves no stock, cancels no invoice
+ * and refunds no payment, and it never should. But an order with a bill or a
+ * deposit against it is one where somebody has to deal with those separately,
+ * and the moment to say so is before the closure, not after — so they are
+ * listed here rather than left to be discovered.
+ */
+export async function getOrderCancellation(companyId: string, documentId: string) {
+  const [totals] = await sql`
+    select coalesce(sum(ordered), 0)::float     as ordered,
+           coalesce(sum(fulfilled), 0)::float   as fulfilled,
+           coalesce(sum(outstanding), 0)::float as outstanding,
+           bool_or(is_closed)                   as is_closed
+      from v_order_outstanding
+     where company_id = ${companyId} and order_id = ${documentId}`;
+
+  // Anything that names this order, in either direction, and whatever named
+  // those in turn — a payment is against the invoice, not the order, so an
+  // order with a paid bill shows the payment too or the preview understates
+  // what is entangled.
+  const documents = await sql`
+    with recursive direct as (
+      select d.id, d.doc_type, d.doc_no, d.doc_date, d.gross_total, d.status
+        from document d
+       where d.company_id = ${companyId}
+         and d.status = 'POSTED'
+         and fn_current_document(d.source_document_id) = fn_current_document(${documentId})
+      union
+      select d.id, d.doc_type, d.doc_no, d.doc_date, d.gross_total, d.status
+        from document d
+        join document_line dl on dl.document_id = d.id
+        join document_line ol on ol.id = dl.source_line_id
+       where d.company_id = ${companyId}
+         and d.status = 'POSTED'
+         and fn_current_document(ol.document_id) = fn_current_document(${documentId})
+      union
+      select d.id, d.doc_type, d.doc_no, d.doc_date, d.gross_total, d.status
+        from fulfilment_link fl
+        join document_line ol on ol.id = fl.order_line_id
+        join document_line dl on dl.id = fl.fulfilment_line_id
+        join document d on d.id = dl.document_id
+       where d.company_id = ${companyId}
+         and d.status = 'POSTED'
+         and fn_current_document(ol.document_id) = fn_current_document(${documentId})
+    ),
+    -- Everything hanging off those, however many steps away. An order's
+    -- goods receipt carries a bill, and the bill carries a payment: joining
+    -- only one step out found the bill and missed the money, which is the
+    -- half somebody most needs to see before giving the order up.
+    chain as (
+      select * from direct
+      union
+      select d.id, d.doc_type, d.doc_no, d.doc_date, d.gross_total, d.status
+        from document d
+        join chain c on fn_current_document(d.source_document_id) = c.id
+       where d.company_id = ${companyId} and d.status = 'POSTED'
+    ),
+    -- Payments attach to an invoice by allocation, not by source, so they
+    -- are reached separately once the chain has found the invoice.
+    paid as (
+      select pay.id, pay.doc_type, pay.doc_no, pay.doc_date, pay.gross_total, pay.status
+        from payment_allocation pa
+        join document pay on pay.id = pa.payment_id
+        join chain c on c.id = pa.invoice_id
+       where pay.company_id = ${companyId} and pay.status = 'POSTED'
+    )
+    select * from (
+      select * from chain
+      union
+      select * from paid
+    ) everything
+    order by doc_date, doc_no`;
+
+  const ordered = Number(totals?.ordered ?? 0);
+  const fulfilled = Number(totals?.fulfilled ?? 0);
+
+  return {
+    ordered,
+    fulfilled,
+    outstanding: Number(totals?.outstanding ?? 0),
+    // A closed order reports nothing outstanding — that is what closing it
+    // means, and the view says so. Reopening therefore has to ask a different
+    // question: what would be owed again afterwards. Ordered less fulfilled,
+    // which is what the closure gave up, brought up to date with anything
+    // that arrived while it was closed rather than the figure frozen at
+    // closure time.
+    reopensTo: Math.max(ordered - fulfilled, 0),
+    isClosed: !!totals?.is_closed,
+    documents,
+  };
+}
+
+/**
+ * The people side of a document: who raised it, who posted it, what is still
+ * owed on it and by whom, and what has happened to it since.
+ *
+ * One query rather than four, because every document screen shows all of it
+ * together in the same rail, and four round trips for one panel is three too
+ * many.
+ */
 export async function getDocumentPeople(documentId: string) {
   const [doc] = await sql`
     select d.id,
