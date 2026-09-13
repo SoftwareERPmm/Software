@@ -388,21 +388,40 @@ async function assertOrderTerms(
   const named = lines.filter((l) => l.sourceLineId);
   if (named.length === 0) return;
 
+  // Resolved to the version of the order standing now. A voucher names the
+  // line of the version it was raised against, and correcting an order posts
+  // a new version with new lines — checking against the version that has been
+  // replaced would hold a bill to figures nobody is asking for any more.
   const rows = await tx`
-    select ol.id, ol.item_id, ol.base_qty as ordered, ol.unit_price,
-           o.doc_no, o.superseded_by_document_id is not null as superseded
+    select ol.id as named_line,
+           cur.id as current_line, cur.item_id, cur.base_qty as ordered, cur.unit_price,
+           live.doc_no
       from document_line ol
       join document o on o.id = ol.document_id
+      join document live on live.id = fn_current_document(o.id)
+      join lateral (
+            select dl.id, dl.item_id, dl.base_qty, dl.unit_price
+              from document_line dl
+             where dl.document_id = live.id and dl.item_id = ol.item_id
+             order by dl.line_no
+             limit 1
+      ) cur on true
      where ol.id = any(${named.map((l) => l.sourceLineId as string)})
        and o.company_id = ${companyId}
        and o.doc_type in ('PURCHASE_ORDER', 'SALES_ORDER')`;
   if (rows.length === 0) return;
 
-  const byLine = new Map((rows as any[]).map((r) => [r.id as string, r]));
+  const byNamed = new Map((rows as any[]).map((r) => [r.named_line as string, r]));
+
+  // Item and price are a property of each line; quantity is not. Two lines
+  // naming one order line are two halves of one claim on it, and checking
+  // them separately let each pass while together they billed more than the
+  // order asked for.
+  const wanted = new Map<string, number>();
 
   for (const [i, l] of lines.entries()) {
-    const ol = l.sourceLineId ? byLine.get(l.sourceLineId) : undefined;
-    if (!ol || ol.superseded) continue;
+    const ol = l.sourceLineId ? byNamed.get(l.sourceLineId) : undefined;
+    if (!ol) continue;
 
     if (ol.item_id !== l.itemId) {
       throw new Error(
@@ -419,19 +438,33 @@ async function assertOrderTerms(
       );
     }
 
+    wanted.set(ol.current_line as string,
+      round4((wanted.get(ol.current_line as string) ?? 0) + l.qty));
+  }
+
+  for (const [currentLine, qty] of wanted) {
+    const row = [...byNamed.values()].find((r) => r.current_line === currentLine);
+
+    // What every version of this order has already been billed for. An
+    // invoice raised before the order was corrected names the old version's
+    // line, and it has still been billed.
     const [billed] = await tx`
       select coalesce(sum(il.base_qty), 0) as v
         from document_line il
         join document inv on inv.id = il.document_id
-       where il.source_line_id = ${ol.id}
+        join document_line ol on ol.id = il.source_line_id
+        join document o on o.id = ol.document_id
+       where fn_current_document(o.id) = (
+               select document_id from document_line where id = ${currentLine})
+         and ol.item_id = ${row.item_id}
          and inv.doc_type in ('PURCHASE_INVOICE', 'SALES_INVOICE')
          and inv.status = 'POSTED'
          and inv.superseded_by_document_id is null`;
-    const left = round4(Number(ol.ordered) - Number((billed as { v: string }).v));
+    const left = round4(Number(row.ordered) - Number((billed as { v: string }).v));
 
-    if (l.qty > left + 0.0001) {
+    if (qty > left + 0.0001) {
       throw new Error(
-        `Line ${i + 1}: ${ol.doc_no} has ${left} of that item left to bill, not ${l.qty}.`
+        `${row.doc_no} has ${left} of that item left to bill, not ${qty}.`
       );
     }
   }
@@ -2602,14 +2635,25 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
   if (src?.doc_type === "PURCHASE_INVOICE") {
     const carried = await tx`
       select rl.id as fulfilment_line_id, rl.base_qty::float as qty,
-             ol.id as order_line_id, ol.item_id, o.id as order_id
+             cur.id as order_line_id, cur.item_id, live.id as order_id
         from document_line rl
         join document_line il on il.id = rl.source_line_id
         join document_line ol on ol.id = il.source_line_id
         join document o on o.id = ol.document_id
+        -- The version standing now, not the one the bill was raised against.
+        -- Correcting an order posts a new version and cancels the old, and a
+        -- bill keeps naming the lines it was raised from — looking only for a
+        -- POSTED order found nothing after any correction, and the goods
+        -- quietly stopped fulfilling anything.
+        join document live on live.id = fn_current_document(o.id)
+        join lateral (
+              select dl.id, dl.item_id from document_line dl
+               where dl.document_id = live.id and dl.item_id = ol.item_id
+               order by dl.line_no limit 1
+        ) cur on true
        where rl.document_id = ${doc.id}
          and o.doc_type = 'PURCHASE_ORDER'
-         and o.status = 'POSTED'
+         and live.status = 'POSTED'
        order by rl.line_no`;
 
     const links: { fulfilmentLineId: string; orderLineId: string; qty: number }[] = [];

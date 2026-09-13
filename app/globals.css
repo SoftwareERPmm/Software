@@ -1472,6 +1472,8 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 .awaiting-table td:first-child a:hover { color: var(--ink); }
 
 .awaiting-foot { margin: 0.55rem 0 0; color: var(--muted); }
+/* Whether a row is this order's business or merely looks like it. */
+.awaiting-why { color: var(--muted); }
 
 /* The line-level version. Quiet — it sits under an item picker inside a row
    of inputs, and shouting there would make the form look broken rather than

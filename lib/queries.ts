@@ -681,6 +681,32 @@ export async function getOpenPurchaseInvoices(companyId: string, limit: number |
 }
 
 /**
+ * Which open bills were raised from which orders.
+ *
+ * A bill filled from an order names that order's lines, and that link is
+ * what makes "receive against the bill and the order closes itself" true —
+ * the receipt carries the allocation forward. A bill that merely happens to
+ * be for the same supplier and the same item promises nothing of the kind,
+ * and a screen that says otherwise is guessing on the reader's behalf.
+ *
+ * Resolved across versions, since a bill keeps naming the lines of the
+ * version of the order it was raised against.
+ */
+export async function getBillsRaisedFromOrders(companyId: string) {
+  const rows = await sql`
+    select distinct inv.id as bill_id, fn_current_document(o.id) as order_id
+      from document_line il
+      join document inv on inv.id = il.document_id
+      join document_line ol on ol.id = il.source_line_id
+      join document o on o.id = ol.document_id
+     where inv.company_id = ${companyId}
+       and inv.doc_type = 'PURCHASE_INVOICE'
+       and inv.status = 'POSTED'
+       and o.doc_type = 'PURCHASE_ORDER'`;
+  return rows as unknown as { bill_id: string; order_id: string }[];
+}
+
+/**
  * Deliveries no sales invoice has been written against yet — the sales-side
  * mirror of getOpenGoodsReceipts, for when stock left before the bill did.
  * Unlike a goods receipt, a delivery carries no price (it moves stock at

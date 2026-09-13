@@ -53,6 +53,7 @@ import {
   getLinkableFulfilments,
   getGrirCollisions,
   getOpenPurchaseInvoices,
+  getBillsRaisedFromOrders,
 } from "@/lib/queries";
 import {
   createDelivery, createGoodsReceipt, replaceConsignmentSettlement,
@@ -139,10 +140,21 @@ export default async function DocumentPage({
   // Bills from this supplier still waiting on goods: asked before the first
   // receipt, which is the one moment the collision notice cannot speak.
   const billsAwaiting = doc.doc_type === "PURCHASE_ORDER"
-    ? (await getOpenPurchaseInvoices(doc.company_id) as unknown as Array<{
-        id: string; doc_no: string; doc_date: string; partner_id: string;
-        lines: { itemId: string; itemName: string; qty: number }[];
-      }>).filter((b) => b.partner_id === doc.partner_id)
+    ? await (async () => {
+        const [open, raisedFrom] = await Promise.all([
+          getOpenPurchaseInvoices(doc.company_id) as unknown as Promise<Array<{
+            id: string; doc_no: string; doc_date: string; partner_id: string;
+            lines: { itemId: string; itemName: string; qty: number }[];
+          }>>,
+          getBillsRaisedFromOrders(doc.company_id),
+        ]);
+        return open
+          .filter((b) => b.partner_id === doc.partner_id)
+          .map((b) => ({
+            ...b,
+            linked: raisedFrom.some((r) => r.bill_id === b.id && r.order_id === doc.id),
+          }));
+      })()
     : [];
 
   const chain = CHAINS[doc.doc_type] ?? [doc.doc_type];
