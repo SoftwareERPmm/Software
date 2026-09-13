@@ -25,7 +25,7 @@ import {
   type InvoiceLine, type OrderLine, type FulfillmentLine, type Allocation, type VoucherLine,
   type AdjustmentLine, type ReturnLine, type TransferLine, type ConsignmentReceiptLine,
 } from "./posting";
-import { postOnce } from "./idempotency";
+import { postOnce, alreadyPosted } from "./idempotency";
 
 export type ActionResult = { error: string } | { ok: true };
 
@@ -1132,7 +1132,7 @@ export async function createSalesInvoice(_prev: unknown, fd: FormData): Promise<
     // (revenue only, a real delivery fulfils it later); or "take now"
     // (delivery and invoice post together). Matching and deferring are
     // mutually exclusive — the form only shows one at a time.
-    const result = await postOnce(co, attemptKey(fd), () =>
+    const result = await postOnce(co, attemptKey(fd), (tx) =>
       deliveryId
         ? postSalesInvoice({
             ...input, deliveryId,
@@ -1140,10 +1140,10 @@ export async function createSalesInvoice(_prev: unknown, fd: FormData): Promise<
             // shown when composing a new delivery, so leaving it empty here
             // must not wipe a fee entered when the goods went out.
             deliveryFee: fd.get("delivery_fee") === null ? undefined : deliveryFee,
-          })
+          }, tx)
         : toDeliver
-          ? postSalesInvoice(input)
-          : postSaleWithDelivery(input));
+          ? postSalesInvoice(input, tx)
+          : postSaleWithDelivery(input, tx));
 
     docId = result.id;
     toastMsg = `Invoice ${result.docNo} posted`;
@@ -1203,12 +1203,12 @@ export async function createPurchaseInvoice(_prev: unknown, fd: FormData): Promi
     // later). "Received now" and "match an existing receipt" are mutually
     // exclusive — the form only shows one at a time.
     const receivedNow = !goodsReceiptId && fd.get("received_now") !== null;
-    const result = await postOnce(co, attemptKey(fd), () =>
+    const result = await postOnce(co, attemptKey(fd), (tx) =>
       goodsReceiptId
-        ? postPurchaseInvoice({ ...input, goodsReceiptId })
+        ? postPurchaseInvoice({ ...input, goodsReceiptId }, tx)
         : receivedNow
-          ? postPurchaseWithReceipt(input)
-          : postPurchaseInvoice(input));
+          ? postPurchaseWithReceipt(input, tx)
+          : postPurchaseInvoice(input, tx));
 
     docId = result.id;
     toastMsg = `Invoice ${result.docNo} posted`;
@@ -1239,7 +1239,7 @@ export async function createSalesReturn(_prev: unknown, fd: FormData): Promise<A
     if (!str(fd, "partner_id")) return { error: "Choose a customer" };
     if (!str(fd, "location_id")) return { error: "Choose a warehouse" };
 
-    const result = await postOnce(co, attemptKey(fd), () => postSalesReturn({
+    const result = await postOnce(co, attemptKey(fd), (tx) => postSalesReturn({
       companyId: co,
       partnerId: str(fd, "partner_id"),
       locationId: str(fd, "location_id"),
@@ -1249,7 +1249,7 @@ export async function createSalesReturn(_prev: unknown, fd: FormData): Promise<A
       reference: str(fd, "reference") || null,
       sourceDocumentId: str(fd, "source_document_id") || null,
       lines,
-    }));
+    }, tx));
 
     docId = result.id;
     toastMsg = `Return ${result.docNo} posted`;
@@ -1278,7 +1278,7 @@ export async function createPurchaseReturn(_prev: unknown, fd: FormData): Promis
     if (!str(fd, "partner_id")) return { error: "Choose a supplier" };
     if (!str(fd, "location_id")) return { error: "Choose a warehouse" };
 
-    const result = await postOnce(co, attemptKey(fd), () => postPurchaseReturn({
+    const result = await postOnce(co, attemptKey(fd), (tx) => postPurchaseReturn({
       companyId: co,
       partnerId: str(fd, "partner_id"),
       locationId: str(fd, "location_id"),
@@ -1287,7 +1287,7 @@ export async function createPurchaseReturn(_prev: unknown, fd: FormData): Promis
       reference: str(fd, "reference") || null,
       sourceDocumentId: str(fd, "source_document_id") || null,
       lines,
-    }));
+    }, tx));
 
     docId = result.id;
     toastMsg = `Return ${result.docNo} posted`;
@@ -1378,7 +1378,7 @@ export async function createSalesOrder(_prev: unknown, fd: FormData): Promise<Ac
     if (!str(fd, "partner_id")) return { error: "Choose a customer" };
     if (!str(fd, "location_id")) return { error: "Choose a warehouse" };
 
-    const result = await postOnce(co, attemptKey(fd), () => postSalesOrder({
+    const result = await postOnce(co, attemptKey(fd), (tx) => postSalesOrder({
       companyId: co,
       partnerId: str(fd, "partner_id"),
       locationId: str(fd, "location_id"),
@@ -1387,7 +1387,7 @@ export async function createSalesOrder(_prev: unknown, fd: FormData): Promise<Ac
       memo: str(fd, "memo") || null,
       reference: str(fd, "reference") || null,
       lines,
-    }));
+    }, tx));
 
     docId = result.id;
     toastMsg = `Order ${result.docNo} saved`;
@@ -1413,7 +1413,7 @@ export async function createPurchaseOrder(_prev: unknown, fd: FormData): Promise
     if (!str(fd, "partner_id")) return { error: "Choose a supplier" };
     if (!str(fd, "location_id")) return { error: "Choose a warehouse" };
 
-    const result = await postOnce(co, attemptKey(fd), () => postPurchaseOrder({
+    const result = await postOnce(co, attemptKey(fd), (tx) => postPurchaseOrder({
       companyId: co,
       partnerId: str(fd, "partner_id"),
       locationId: str(fd, "location_id"),
@@ -1422,7 +1422,7 @@ export async function createPurchaseOrder(_prev: unknown, fd: FormData): Promise
       memo: str(fd, "memo") || null,
       reference: str(fd, "reference") || null,
       lines,
-    }));
+    }, tx));
 
     docId = result.id;
     toastMsg = `Order ${result.docNo} saved`;
@@ -1448,7 +1448,7 @@ export async function createDelivery(_prev: unknown, fd: FormData): Promise<Acti
     if (!str(fd, "partner_id")) return { error: "Choose a customer" };
     if (!str(fd, "location_id")) return { error: "Choose a warehouse" };
 
-    const delivery = await postDelivery({
+    const delivery = await postOnce(co, attemptKey(fd), (tx) => postDelivery({
       companyId: co,
       partnerId: str(fd, "partner_id"),
       locationId: str(fd, "location_id"),
@@ -1463,7 +1463,7 @@ export async function createDelivery(_prev: unknown, fd: FormData): Promise<Acti
       // cannot disagree about whether someone had to be asked.
       allowNegativeStock: fd.get("allow_negative_stock") !== null,
       lines,
-    });
+    }, tx));
 
     docId = delivery.id;
     toastMsg = `Delivery ${delivery.docNo} posted`;
@@ -1506,7 +1506,7 @@ export async function deliverPendingInvoice(_prev: unknown, fd: FormData): Promi
         : "That invoice no longer exists" };
     }
 
-    const result = await postOnce(co, attemptKey(fd), () => postDelivery({
+    const result = await postOnce(co, attemptKey(fd), (tx) => postDelivery({
       companyId: co,
       partnerId: invoice.partner_id,
       locationId: invoice.location_id,
@@ -1519,7 +1519,7 @@ export async function deliverPendingInvoice(_prev: unknown, fd: FormData): Promi
         itemId: l.itemId, qty: l.qty, focReasonId: l.focReasonId,
         sourceLineId: l.lineId,
       })),
-    }));
+    }, tx));
 
     docId = result.id;
     toastMsg = `Delivery ${result.docNo} posted`;
@@ -1546,7 +1546,7 @@ export async function createGoodsReceipt(_prev: unknown, fd: FormData): Promise<
     if (!str(fd, "partner_id")) return { error: "Choose a supplier" };
     if (!str(fd, "location_id")) return { error: "Choose a warehouse" };
 
-    const result = await postOnce(co, attemptKey(fd), () => postGoodsReceipt({
+    const result = await postOnce(co, attemptKey(fd), (tx) => postGoodsReceipt({
       companyId: co,
       partnerId: str(fd, "partner_id"),
       locationId: str(fd, "location_id"),
@@ -1556,7 +1556,7 @@ export async function createGoodsReceipt(_prev: unknown, fd: FormData): Promise<
       reference: str(fd, "reference") || null,
       sourceDocumentId: str(fd, "source_document_id") || null,
       lines,
-    }));
+    }, tx));
 
     docId = result.id;
     toastMsg = `Goods receipt ${result.docNo} posted`;
@@ -1630,8 +1630,8 @@ async function settle(
     advance,
   };
 
-  const result = await postOnce(co, attemptKey(fd), () =>
-    kind === "pay" ? postSupplierPayment(input) : postCustomerReceipt(input));
+  const result = await postOnce(co, attemptKey(fd), (tx) =>
+    kind === "pay" ? postSupplierPayment(input, tx) : postCustomerReceipt(input, tx));
 
   return { id: result.id, docNo: result.docNo };
 }
@@ -2065,6 +2065,15 @@ export async function correctOrder(
   try {
     const { documentId, order } = await orderCorrection(co, fd);
 
+    // A retry of a confirmation that already went through is handed what it
+    // did, before anything compares plans: by now the order is on its next
+    // version, and that is this retry's own doing.
+    const done = await alreadyPosted(co, attemptKey(fd));
+    if (done) {
+      revalidatePath("/documents", "layout");
+      redirectWithToast(`/documents/${done.id}`, "Correction posted");
+    }
+
     // What the reader was shown, checked against what the correction actually
     // does — inside the transaction that does it, so there is no window
     // between the two and no second run of the whole thing.
@@ -2074,8 +2083,12 @@ export async function correctOrder(
     // were reading — which the correction has just retired. Landing back on
     // v1 shows the old figure under a "Superseded" banner and reads as though
     // the correction had not taken.
-    const { replacementId } = await amendOrder({
-      companyId: co, documentId, reason, cascade: true, order, expect: shown,
+    // A correction is a posting too: a resent confirmation must not correct
+    // the same order twice, each version chaining onto the last.
+    const { replacementId } = await postOnce(co, attemptKey(fd), async (tx) => {
+      const done = await amendOrder(
+        { companyId: co, documentId, reason, cascade: true, order, expect: shown }, tx);
+      return { ...done, id: done.replacementId, docNo: done.docNo ?? "" };
     });
     landOn = replacementId;
   } catch (e) {
@@ -2142,6 +2155,18 @@ export async function correctInvoice(
 
     const { documentId, invoice } = await invoiceCorrection(co, fd);
 
+    // A retry of the confirmation that already went through. Asked before the
+    // staleness check, because that check compares what the reader was shown
+    // against what the document says now — and what it says now is the result
+    // of the correction this retry is repeating. Left in the other order, a
+    // resent confirmation is told it is out of date rather than handed what
+    // it did.
+    const done = await alreadyPosted(co, attemptKey(fd));
+    if (done) {
+      revalidatePath("/documents", "layout");
+      redirectWithToast(`/documents/${done.id}`, "Correction posted");
+    }
+
     const shown = str(fd, "fingerprint");
     if (shown) {
       const now = await planInvoiceAmendment({
@@ -2152,8 +2177,10 @@ export async function correctInvoice(
         return { stale: true, plan: now, fingerprint };
       }
     }
-    const { replacementId } = await amendInvoice({
-      companyId: co, documentId, reason, invoice: invoice as never,
+    const { replacementId } = await postOnce(co, attemptKey(fd), async (tx) => {
+      const done = await amendInvoice(
+        { companyId: co, documentId, reason, invoice: invoice as never }, tx);
+      return { ...done, id: done.replacementId, docNo: done.docNo ?? "" };
     });
     landOn = replacementId;
   } catch (e) {

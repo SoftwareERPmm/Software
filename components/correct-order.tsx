@@ -95,6 +95,13 @@ export function CorrectOrder({
   const [confirmState, confirmAction, confirming] =
     useActionState<ConfirmState | null, FormData>(confirm as never, null);
 
+  /**
+   * One correction per opening of this dialog. A resent confirmation — the
+   * button pressed twice, the request retried — must not correct the order a
+   * second time, chaining v3 onto v2 for no reason anybody asked for.
+   */
+  const [attemptKey] = useState(() => crypto.randomUUID());
+
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<"edit" | "review">("edit");
   const [reason, setReason] = useState("");
@@ -346,6 +353,7 @@ export function CorrectOrder({
 
             <form action={confirmAction} className="actions">
               <input type="hidden" name="document_id" value={documentId} />
+              <input type="hidden" name="idempotency_key" value={attemptKey} />
               <input type="hidden" name="lines" value={JSON.stringify(payload)} />
               <input type="hidden" name="reason" value={reason} />
               {/* What was shown, sent back so the server can tell whether it

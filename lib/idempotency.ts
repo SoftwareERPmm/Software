@@ -1,3 +1,4 @@
+import type { TransactionSql } from "postgres";
 import { sql } from "./db";
 
 /**
@@ -13,103 +14,106 @@ import { sql } from "./db";
  * must stay postable: a second delivery is a deliberate second transaction
  * and carries a key of its own.
  *
- * The claim is a row, so it works across restarts and across instances, and
- * the race is settled by the database rather than by hoping two requests do
- * not overlap:
+ * The claim and the posting commit together, in one transaction. That is the
+ * whole of the design, and the first version got it wrong: it posted, then
+ * recorded the result in a second statement, which leaves a window where the
+ * documents exist and nothing remembers making them. A failure in that window
+ * released the key and the retry posted everything again — the duplicate this
+ * exists to prevent, produced by the thing preventing it.
  *
- *   the first request to insert the key owns it and posts
- *   a second request carrying that key finds the claim and waits for it
- *   when the first commits, the second is handed the document it made
+ * Committing them together also disposes of stale claims. A claim only
+ * reaches the database if its posting did, so there is no such thing as a
+ * claim with no document, and nothing has to be timed out or taken over: a
+ * request that dies mid-posting rolls back and leaves no trace, and the
+ * retry is free to claim the key properly.
  *
- * A claim whose posting failed is left with no document, and the next attempt
- * carrying that key takes it over — a failure is not a posted document, and
- * refusing to let somebody try again would be worse than the duplicate.
+ * The race is settled by the unique index rather than by polling. Two
+ * requests carrying one key: the first inserts and holds the row; the second
+ * blocks on that insert for exactly as long as the first takes, then either
+ * finds it committed — and is handed the document it made — or finds it gone,
+ * because the first was refused, and posts in its place.
  */
-
-/** How long to wait for the request that owns a claim, before giving up on it. */
-const WAIT_MS = 15_000;
-const POLL_MS = 150;
-
-/**
- * A claim abandoned mid-flight — the process died between claiming and
- * posting. Long enough that a slow posting is never mistaken for a dead one.
- */
-const STALE_MS = 60_000;
 
 export type Posted = { id: string; docNo: string };
 
 export async function postOnce<T extends Posted>(
   companyId: string,
   key: string | null | undefined,
-  run: () => Promise<T>,
+  run: (tx: TransactionSql) => Promise<T>,
 ): Promise<T & { repeated?: true }> {
   // No key is the old behaviour, deliberately: scripts, imports and the test
   // suites post directly, and a missing key must never become a silent
   // refusal to post.
-  if (!key) return run();
+  if (!key) return sql.begin(run) as Promise<T>;
 
-  const claimed = await claim(companyId, key);
+  try {
+    return (await sql.begin(async (tx) => {
+      // Blocks here while another request holds this key, which is exactly as
+      // long as that request's transaction. Then either it committed — and
+      // this raises a unique violation, caught below — or it rolled back and
+      // its row is gone, leaving this one free to take the key.
+      await tx`
+        insert into posting_attempt (company_id, key)
+        values (${companyId}, ${key})`;
 
-  if (claimed === "ours") {
-    try {
-      const result = await run();
-      await sql`
+      const result = await run(tx);
+
+      await tx`
         update posting_attempt
            set document_id = ${result.id}, doc_no = ${result.docNo}, settled_at = now()
          where company_id = ${companyId} and key = ${key}`;
+
       return result;
-    } catch (e) {
-      // The claim goes back, or one failed attempt would block every retry of
-      // a posting that has not happened.
-      await sql`
-        delete from posting_attempt
-         where company_id = ${companyId} and key = ${key} and document_id is null`;
-      throw e;
-    }
-  }
+    })) as T;
+  } catch (e) {
+    if (!isDuplicateKey(e)) throw e;
 
-  // Somebody else owns it. Wait for what they posted.
-  const waited = await waitFor(companyId, key);
-  if (waited) return { ...(waited as T), repeated: true as const };
-
-  // They finished without posting anything — their posting was refused, and
-  // the claim was released. Take it from the top.
-  return postOnce(companyId, key, run);
-}
-
-async function claim(companyId: string, key: string): Promise<"ours" | "theirs"> {
-  const rows = await sql`
-    insert into posting_attempt (company_id, key)
-    values (${companyId}, ${key})
-    on conflict (company_id, key) do update
-       -- Taking over a claim nobody is coming back for. The where clause makes
-       -- this a no-op for a live claim, which leaves the row untouched and
-       -- returns nothing.
-       set claimed_at = now()
-     where posting_attempt.document_id is null
-       and posting_attempt.claimed_at < now() - interval '60 milliseconds' * ${STALE_MS / 60}
-    returning key`;
-  return rows.length > 0 ? "ours" : "theirs";
-}
-
-async function waitFor(companyId: string, key: string): Promise<Posted | null> {
-  const until = Date.now() + WAIT_MS;
-
-  for (;;) {
     const [row] = await sql`
       select document_id, doc_no from posting_attempt
        where company_id = ${companyId} and key = ${key}`;
 
-    if (!row) return null;                       // released after a refusal
-    if (row.document_id) {
-      return { id: row.document_id as string, docNo: (row.doc_no as string) ?? "" };
+    if (row?.document_id) {
+      return {
+        id: row.document_id as string,
+        docNo: (row.doc_no as string) ?? "",
+        repeated: true as const,
+      } as T & { repeated: true };
     }
-    if (Date.now() > until) {
-      throw new Error(
-        "That submission is still being posted. Wait a moment and check the "
-        + "document list before sending it again."
-      );
-    }
-    await new Promise((r) => setTimeout(r, POLL_MS));
+
+    // The row exists but names no document: another request is still inside
+    // its transaction and this one raced it to the index. Rare, and a second
+    // attempt resolves it — by then that request has either committed or gone.
+    throw new Error(
+      "That submission is already being posted. Wait a moment, then check the "
+      + "document list before sending it again."
+    );
   }
+}
+
+/** 23505: the unique index on (company_id, key) — somebody already has it. */
+function isDuplicateKey(e: unknown): boolean {
+  return typeof e === "object" && e !== null
+    && (e as { code?: string }).code === "23505";
+}
+
+/**
+ * What this key already posted, if anything.
+ *
+ * For the paths that check something before posting — a correction compares
+ * what the reader was shown against what the document says now, and rejects a
+ * plan made from figures that have since moved. On a retry those figures
+ * have moved: the first attempt moved them. Asked first, the retry is handed
+ * the correction that succeeded instead of being told it is out of date.
+ */
+export async function alreadyPosted(
+  companyId: string,
+  key: string | null | undefined,
+): Promise<Posted | null> {
+  if (!key) return null;
+  const [row] = await sql`
+    select document_id, doc_no from posting_attempt
+     where company_id = ${companyId} and key = ${key} and document_id is not null`;
+  return row
+    ? { id: row.document_id as string, docNo: (row.doc_no as string) ?? "" }
+    : null;
 }

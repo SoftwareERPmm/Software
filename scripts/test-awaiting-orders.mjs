@@ -852,6 +852,146 @@ try {
       `${lineage.n} of 2`);
   }
 
+
+  // ---- a second correction, and lines that move --------------------------
+  //
+  // A document keeps naming the version it was raised against. Correcting an
+  // order once is easy; correcting it twice found the invoices by the exact
+  // id being corrected, so on v2 becoming v3 a bill still pointing at v1 was
+  // not found at all — it kept the old price for ever while every screen said
+  // it had been corrected.
+
+  console.log("\n  a second correction\n");
+  {
+    const y = await po(supp.id, [{ itemId: itemA.id, qty: 10, unitPrice: 1000 }]);
+    const [y1] = await sql`select id from document_line where document_id = ${y.id}`;
+    const bill = await P.postPurchaseInvoice({
+      companyId: co.id, partnerId: supp.id, locationId: loc.id,
+      docDate: today, dueDate: today, reference: y.docNo,
+      lines: [{ itemId: itemA.id, qty: 10, unitPrice: 1000, sourceLineId: y1.id }],
+    });
+
+    const correctTo = async (price) => {
+      const [live] = await sql`select id from document where doc_no = ${y.docNo}
+         and superseded_by_document_id is null`;
+      const [ll] = await sql`select id from document_line where document_id = ${live.id}`;
+      await P.amendOrder({
+        companyId: co.id, documentId: live.id, reason: `to ${price}`,
+        order: { companyId: co.id, partnerId: supp.id, locationId: loc.id,
+          docDate: today, dueDate: today,
+          lines: [{ itemId: itemA.id, qty: 10, unitPrice: price, supersedesLineId: ll.id }] },
+        cascade: true,
+      });
+    };
+    const billNow = async () => Number((await sql`
+      select gross_total::float g from document
+       where doc_no = ${bill.docNo} and superseded_by_document_id is null`)[0].g);
+
+    await correctTo(1100);
+    check("the first correction reaches the bill", near(await billNow(), 11000),
+      `${await billNow()}`);
+
+    await correctTo(1200);
+    check("and so does the second, though the bill still names v1's line",
+      near(await billNow(), 12000), `${await billNow()}`);
+
+    await correctTo(1300);
+    check("  and the third", near(await billNow(), 13000), `${await billNow()}`);
+  }
+
+  // ---- two lines of one item, swapped ------------------------------------
+  // Position is only a fallback. Where a correction records what replaced
+  // what, that is what counts — otherwise swapping two lines of one item
+  // charges each with the other's billing.
+
+  console.log("\n  two lines of one item, swapped by a correction\n");
+  {
+    const z = await po(supp.id, [
+      { itemId: itemA.id, qty: 10, unitPrice: 1000 },
+      { itemId: itemA.id, qty: 20, unitPrice: 2000 },
+    ]);
+    const zl = await sql`select id from document_line where document_id = ${z.id} order by line_no`;
+
+    // The first line is billed in full.
+    await P.postPurchaseInvoice({
+      companyId: co.id, partnerId: supp.id, locationId: loc.id,
+      docDate: today, dueDate: today, reference: z.docNo,
+      lines: [{ itemId: itemA.id, qty: 10, unitPrice: 1000, sourceLineId: zl[0].id }],
+    });
+
+    // Then the order is corrected with the two lines in the other order, each
+    // saying which line it replaces.
+    await P.amendOrder({
+      companyId: co.id, documentId: z.id, reason: "lines reordered",
+      order: { companyId: co.id, partnerId: supp.id, locationId: loc.id,
+        docDate: today, dueDate: today,
+        lines: [{ itemId: itemA.id, qty: 20, unitPrice: 2000, supersedesLineId: zl[1].id },
+                { itemId: itemA.id, qty: 10, unitPrice: 1000, supersedesLineId: zl[0].id }] },
+      cascade: true,
+    });
+
+    const [live] = await sql`select id from document where doc_no = ${z.docNo}
+       and superseded_by_document_id is null`;
+    const ll = await sql`select id, line_no, base_qty::float q, unit_price::float p
+       from document_line where document_id = ${live.id} order by line_no`;
+
+    // The line that is now first is the one that was second, and it has never
+    // been billed — its full twenty is still available.
+    let stillBillable = null;
+    try {
+      await P.postPurchaseInvoice({
+        companyId: co.id, partnerId: supp.id, locationId: loc.id,
+        docDate: today, dueDate: today,
+        lines: [{ itemId: itemA.id, qty: 20, unitPrice: 2000, sourceLineId: ll[0].id }],
+      });
+      stillBillable = true;
+    } catch (e) { stillBillable = e.message; }
+    check("the swapped line is billed against its own history, not its position",
+      stillBillable === true,
+      typeof stillBillable === "string" ? stillBillable.slice(0, 70) : "");
+
+    // And the line that moved to second is the one already billed in full.
+    let alreadyDone = null;
+    try {
+      await P.postPurchaseInvoice({
+        companyId: co.id, partnerId: supp.id, locationId: loc.id,
+        docDate: today, dueDate: today,
+        lines: [{ itemId: itemA.id, qty: 1, unitPrice: 1000, sourceLineId: ll[1].id }],
+      });
+    } catch (e) { alreadyDone = e.message; }
+    check("  and the one already billed stays billed", !!alreadyDone,
+      alreadyDone?.slice(0, 70) ?? "posted again");
+  }
+
+  // ---- a line the correction removed --------------------------------------
+
+  console.log("\n  a line the correction removed\n");
+  {
+    const g = await po(supp.id, [
+      { itemId: itemA.id, qty: 5, unitPrice: 100 },
+      { itemId: itemB.id, qty: 5, unitPrice: 200 },
+    ]);
+    const gl = await sql`select id from document_line where document_id = ${g.id} order by line_no`;
+    await P.amendOrder({
+      companyId: co.id, documentId: g.id, reason: "second item dropped",
+      order: { companyId: co.id, partnerId: supp.id, locationId: loc.id,
+        docDate: today, dueDate: today,
+        lines: [{ itemId: itemA.id, qty: 5, unitPrice: 100, supersedesLineId: gl[0].id }] },
+      cascade: true,
+    });
+
+    let gone = null;
+    try {
+      await P.postPurchaseInvoice({
+        companyId: co.id, partnerId: supp.id, locationId: loc.id,
+        docDate: today, dueDate: today,
+        lines: [{ itemId: itemB.id, qty: 5, unitPrice: 200, sourceLineId: gl[1].id }],
+      });
+    } catch (e) { gone = e.message; }
+    check("billing a line the correction removed is refused, not ignored",
+      !!gone, gone?.slice(0, 70) ?? "posted");
+  }
+
   console.log(`\n  ${bad === 0 ? "All good." : `${bad} failed.`}\n`);
 } catch (e) {
   console.error("\n  ERROR", e.message, "\n");
