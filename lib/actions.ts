@@ -3580,11 +3580,19 @@ export async function voidDocumentAction(_prev: unknown, fd: FormData): Promise<
       select id from document where id = ${docId} and company_id = ${co}`;
     if (!owned) return { error: "That document no longer exists" };
 
-    const done = await voidDocument({
-      documentId: docId,
-      reason: str(fd, "reason") || null,
+    // A void is a posting: it writes a reversal document, a journal entry and,
+    // for a receipt, the stock coming back off the shelf. A resent
+    // confirmation must not do all of that twice.
+    const done = await postOnce(co, attemptKey(fd), async (tx) => {
+      const out = await voidDocument({
+        documentId: docId,
+        reason: str(fd, "reason") || null,
+      }, tx);
+      return { ...out, id: out.id, docNo: out.docNo };
     });
-    msg = `${done.docNo} voided — reversed by ${done.reversalNo}`;
+    msg = done.reversalNo
+      ? `${done.docNo} voided — reversed by ${done.reversalNo}`
+      : `${done.docNo} is already voided`;
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }

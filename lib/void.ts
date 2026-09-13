@@ -254,15 +254,69 @@ export async function planVoidIn(db: Db, documentId: string): Promise<VoidPlan> 
     });
   }
   if (mv && mv.n > 0 && mv.issues === 0) {
-    const remedy =
-      doc.doc_type === "GOODS_RECEIPT" ? "a purchase return"
-      : doc.doc_type === "STOCK_ADJUSTMENT" ? "an adjustment the other way"
-      : doc.doc_type === "STOCK_TRANSFER" ? "a transfer back"
-      : "a correcting stock document";
-    blockers.push({
-      reason: `This document received stock. Taking received stock back off the shelf is ` +
-              `not built yet — use ${remedy} instead.`,
-    });
+    /**
+     * Goods that never arrived are a different thing from goods sent back.
+     *
+     * A return records stock leaving the warehouse and the supplier owing a
+     * credit. For a receipt entered by mistake, or the same delivery entered
+     * twice, neither happened: nothing left, because nothing was ever there,
+     * and the supplier owes nothing because they were never billed. Telling
+     * somebody to raise a return for that asks them to record a fiction.
+     *
+     * So a goods receipt may be reversed — but only while every layer it
+     * created is exactly as it was created. Its own layers, not enough units
+     * of that item somewhere: a later purchase must not make an already-used
+     * receipt reversible, and the consumption check above is per lot for that
+     * reason. A transfer consumes the lot it moves, so it fails this too, as
+     * it should — the goods are somewhere else now.
+     *
+     * Everything else keeps its refusal. And where the layers are gone, what
+     * is in the way is named rather than answered with "use a return", which
+     * would not explain how thirty units that never arrived came to be sold.
+     */
+    const reversible = doc.doc_type === "GOODS_RECEIPT";
+
+    if (!reversible) {
+      const remedy =
+        doc.doc_type === "STOCK_ADJUSTMENT" ? "an adjustment the other way"
+        : doc.doc_type === "STOCK_TRANSFER" ? "a transfer back"
+        : "a correcting stock document";
+      blockers.push({
+        reason: `This document received stock. Taking received stock back off the shelf is `
+              + `not built yet — use ${remedy} instead.`,
+      });
+    } else {
+      // What has happened to this receipt's own layers since, named by the
+      // documents that did it.
+      const touched = await db`
+        select d.doc_no, d.doc_type, sum(c.qty)::float as qty
+          from stock_lot l
+          join stock_movement sm on sm.id = l.stock_movement_id
+          join stock_lot_consumption c on c.lot_id = l.id
+          join stock_movement out on out.id = c.stock_movement_id
+          join document d on d.id = out.document_id
+         where sm.document_id = ${documentId}
+         group by d.doc_no, d.doc_type
+         order by d.doc_no`;
+
+      for (const t of touched as unknown as
+           { doc_no: string; doc_type: string; qty: number }[]) {
+        blockers.push({
+          reason: `${t.doc_no} took ${t.qty} of what this receipt brought in. `
+                + `That has to be resolved before this receipt can be reversed — `
+                + `and if the goods really did arrive and go back, a return is what `
+                + `records it, not this.`,
+          docNo: t.doc_no,
+        });
+      }
+
+      if ((touched as unknown[]).length === 0) {
+        effects.push(
+          "The stock this receipt brought in comes back off the shelf, and its cost "
+          + "layers close with it."
+        );
+      }
+    }
   }
 
   // ---- where the reversal can land -----------------------------------------

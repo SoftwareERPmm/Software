@@ -5090,8 +5090,8 @@ export async function reconcileNegativeStock(input: {
 export async function voidDocument(input: {
   documentId: string;
   reason?: string | null;
-}) {
-  return sql.begin(async (tx) => voidDocumentIn(tx, input));
+}, tx?: TransactionSql) {
+  return inTransaction(tx, async (t) => voidDocumentIn(t, input));
 }
 
 /**
@@ -5244,6 +5244,54 @@ async function voidDocumentIn(
         values
           (${doc.company_id}, ${m.item_id}, ${m.location_id},
            ${plan.reversalDate}::date, 0, 0, ${-Number(m.total_cost)}, ${reversal.id})`;
+    }
+
+    /**
+     * Goods a reversed receipt brought in come back off the shelf.
+     *
+     * Reversing the journal alone would leave the ledger saying the goods are
+     * gone and the warehouse saying they are there — and the layers still
+     * open for the next sale to draw on. planVoidIn has already refused this
+     * unless every layer is exactly as it was created, so what is taken out
+     * here is what came in, at the cost it came in at.
+     *
+     * Done the way a delivery does it: a movement out, and a consumption row
+     * against each lot, so the lot closes through the same mechanism FIFO
+     * already reads. The lot itself is never edited — it is immutable by
+     * trigger, and rightly: what arrived did arrive, and the record of it
+     * stays.
+     */
+    if (doc.doc_type === "GOODS_RECEIPT") {
+      const lots = await tx`
+        select l.id, l.item_id, l.location_id, l.qty_received, l.unit_cost
+          from stock_lot l
+          join stock_movement sm on sm.id = l.stock_movement_id
+         where sm.document_id = ${doc.id}
+         order by l.created_at`;
+
+      for (const lot of lots as unknown as {
+        id: string; item_id: string; location_id: string;
+        qty_received: string; unit_cost: string;
+      }[]) {
+        const qty = Number(lot.qty_received);
+        const cost = round4(qty * Number(lot.unit_cost));
+
+        const [out] = await tx`
+          insert into stock_movement
+            (company_id, item_id, location_id, movement_date, qty, unit_cost,
+             total_cost, document_id)
+          values
+            (${doc.company_id}, ${lot.item_id}, ${lot.location_id},
+             ${plan.reversalDate}::date, ${-qty}, ${Number(lot.unit_cost)},
+             ${-cost}, ${reversal.id})
+          returning id`;
+
+        await tx`
+          insert into stock_lot_consumption
+            (company_id, lot_id, stock_movement_id, qty, unit_cost)
+          values
+            (${doc.company_id}, ${lot.id}, ${out.id}, ${qty}, ${Number(lot.unit_cost)})`;
+      }
     }
 
     await tx`

@@ -46,6 +46,9 @@ export function VoidDocument({
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     action as never, null
   );
+
+  /** One void per opening of this panel — see postOnce. */
+  const [attemptKey] = useState(() => crypto.randomUUID());
   const [open, setOpen] = useState(false);
 
   if (!canVoid) {
@@ -103,6 +106,7 @@ export function VoidDocument({
 
         <form action={formAction} className="form">
           <input type="hidden" name="id" value={documentId} />
+          <input type="hidden" name="idempotency_key" value={attemptKey} />
           <div className="field">
             <label htmlFor="reason">Why</label>
             <input id="reason" name="reason" type="text" autoFocus
