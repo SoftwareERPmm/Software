@@ -54,11 +54,13 @@ import {
   getGrirCollisions,
   getOpenPurchaseInvoices,
   getBillsRaisedFromOrders,
+  getReturnedAgainst,
 } from "@/lib/queries";
 import {
   createDelivery, createGoodsReceipt, replaceConsignmentSettlement,
 } from "@/lib/actions";
 import { FulfillOrderForm } from "@/components/fulfill-order-form";
+import { ReturnedBadge } from "@/components/returned-badge";
 import { ErpOrderForm, type OrderLine as ErpOrderLine } from "@/components/erp-order-form";
 import { ErpDocShell } from "@/components/erp-doc-shell";
 
@@ -215,11 +217,28 @@ export default async function DocumentPage({
   const versions = (await getDocumentVersions(
     doc.company_id, doc.doc_no)) as unknown as DocumentVersion[];
   const versionTrail = <VersionTrail versions={versions} currentId={doc.id} />;
+  // How much of a receipt has gone back to the supplier. Its posting status
+  // cannot say this — it posted, and the goods did arrive — so a receipt whose
+  // hundred units were all returned reads exactly like one whose goods are
+  // still on the shelf unless this is shown beside it.
+  const returned = doc.doc_type === "GOODS_RECEIPT"
+    ? await getReturnedAgainst(doc.id)
+    : null;
+
   const versionBadge = (
-    <VersionBadge
-      version={Number(doc.version ?? 1)}
-      superseded={!!doc.superseded_by_document_id}
-    />
+    <>
+      <VersionBadge
+        version={Number(doc.version ?? 1)}
+        superseded={!!doc.superseded_by_document_id}
+      />
+      {returned && (
+        <ReturnedBadge
+          received={returned.received}
+          returned={returned.returned}
+          state={returned.state}
+        />
+      )}
+    </>
   );
 
   const isPostedOrder = ["PURCHASE_ORDER", "SALES_ORDER"].includes(doc.doc_type)

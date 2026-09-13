@@ -345,6 +345,36 @@ export async function getReturnableSales(companyId: string) {
 }
 
 /**
+ * What has gone back to the supplier off this receipt.
+ *
+ * A receipt keeps its posting status when goods are returned — it did post,
+ * and the goods did arrive — so the fact that half of them went back is not
+ * visible in that status and has to be said separately. Read from the returns
+ * themselves rather than stored, like everything else here.
+ */
+export async function getReturnedAgainst(documentId: string) {
+  const [row] = await sql`
+    select
+      coalesce((select sum(dl.base_qty) from document_line dl
+                 where dl.document_id = ${documentId}), 0)::float as received,
+      coalesce((select sum(rl.base_qty)
+                  from document_line rl
+                  join document r on r.id = rl.document_id
+                 where r.doc_type = 'PURCHASE_RETURN'
+                   and r.status = 'POSTED'
+                   and r.source_document_id = ${documentId}), 0)::float as returned`;
+  const received = Number(row?.received ?? 0);
+  const returned = Number(row?.returned ?? 0);
+  return {
+    received,
+    returned,
+    state: returned <= 0.0001 ? "NONE"
+      : returned >= received - 0.0001 ? "ALL"
+        : "SOME" as "NONE" | "SOME" | "ALL",
+  };
+}
+
+/**
  * Purchases a supplier return can be sent back against.
  *
  * The purchase-side mirror of getReturnableSales, and the thing that was

@@ -139,6 +139,49 @@ try {
   check("  and now the supplier really is owed", near(await payables(), -30000),
     `${await payables()}`);
 
+
+  // ---- billing and returning at the same moment ---------------------------
+  //
+  // Both read what the receipt still has before either has committed, so the
+  // question is not which is refused but whether both can succeed. They
+  // cannot: each takes the receipt's row before deciding, so the second waits
+  // for the first and then sees what it did. Written as a forced interleaving
+  // rather than a hopeful Promise.all, which proves nothing when one happens
+  // to finish first.
+
+  console.log("\n  billing and returning at the same moment\n");
+
+  for (const [first, second] of [["bill", "return"], ["return", "bill"]]) {
+    await wipe();
+    await sql`update number_series set next_value = 1`;
+    const rec = await P.postGoodsReceipt({ ...base,
+      lines: [{ itemId: item.id, qty: 100, unitCost: 500 }] });
+    const [rl] = await sql`select id from document_line where document_id = ${rec.id}`;
+
+    const run = {
+      bill: (tx) => P.postPurchaseInvoice({ ...base, dueDate: today, goodsReceiptId: rec.id,
+        lines: [{ itemId: item.id, qty: 100, unitPrice: 500, sourceLineId: rl.id }] }, tx),
+      return: (tx) => P.postPurchaseReturn({ ...base, sourceDocumentId: rec.id,
+        lines: [{ itemId: item.id, qty: 100, unitPrice: 500, sourceLineId: rl.id }] }, tx),
+    };
+
+    let latecomer = null;
+    await sql.begin(async (tx) => {
+      await run[first](tx);                    // held open, not yet committed
+      latecomer = run[second](undefined);      // its own connection — must wait
+      await new Promise((r) => setTimeout(r, 400));
+    });
+
+    let refused = null;
+    try { await latecomer; } catch (e) { refused = e.message; }
+
+    const [docs] = await sql`select count(*)::int n from document
+       where company_id = ${co.id} and doc_type in ('PURCHASE_INVOICE', 'PURCHASE_RETURN')`;
+    check(`${first} first: the ${second} arriving mid-flight is refused`, !!refused,
+      refused?.slice(0, 58) ?? "it posted too");
+    check(`  and only one of them exists`, docs.n === 1, `${docs.n}`);
+  }
+
   // ---- a receipt that has already been billed ------------------------------
 
   console.log("\n  a receipt the supplier has already billed\n");
