@@ -388,10 +388,18 @@ async function assertOrderTerms(
   const named = lines.filter((l) => l.sourceLineId);
   if (named.length === 0) return;
 
-  // Resolved to the version of the order standing now. A voucher names the
-  // line of the version it was raised against, and correcting an order posts
-  // a new version with new lines — checking against the version that has been
-  // replaced would hold a bill to figures nobody is asking for any more.
+  // Resolved to the version of the order standing now, and to the same line
+  // of it. A voucher names the line of the version it was raised against, and
+  // correcting an order posts a new version with new lines — checking against
+  // the version that has been replaced would hold a bill to figures nobody is
+  // asking for any more.
+  //
+  // The line, not merely the item. One item can sit on two lines of an order
+  // at two prices — twenty at a thousand and thirty at twelve hundred is an
+  // ordinary thing to agree — and resolving by item alone took the first of
+  // them, so a bill for the second was refused for quoting a price the order
+  // plainly agreed. Identity first, then position, and only then the item,
+  // and that last only where the item is on one line and cannot be mistaken.
   const rows = await tx`
     select ol.id as named_line,
            cur.id as current_line, cur.item_id, cur.base_qty as ordered, cur.unit_price,
@@ -400,10 +408,21 @@ async function assertOrderTerms(
       join document o on o.id = ol.document_id
       join document live on live.id = fn_current_document(o.id)
       join lateral (
-            select dl.id, dl.item_id, dl.base_qty, dl.unit_price
+            select dl.id, dl.item_id, dl.base_qty, dl.unit_price,
+                   case when dl.id = ol.id then 0
+                        when dl.line_no = ol.line_no and dl.item_id = ol.item_id then 1
+                        else 2
+                   end as rank
               from document_line dl
-             where dl.document_id = live.id and dl.item_id = ol.item_id
-             order by dl.line_no
+             where dl.document_id = live.id
+               and (
+                 dl.id = ol.id
+                 or (dl.line_no = ol.line_no and dl.item_id = ol.item_id)
+                 or (dl.item_id = ol.item_id
+                     and 1 = (select count(*) from document_line x
+                               where x.document_id = live.id and x.item_id = ol.item_id))
+               )
+             order by rank, dl.line_no
              limit 1
       ) cur on true
      where ol.id = any(${named.map((l) => l.sourceLineId as string)})
@@ -454,9 +473,13 @@ async function assertOrderTerms(
         join document inv on inv.id = il.document_id
         join document_line ol on ol.id = il.source_line_id
         join document o on o.id = ol.document_id
-       where fn_current_document(o.id) = (
-               select document_id from document_line where id = ${currentLine})
-         and ol.item_id = ${row.item_id}
+        join document_line cur on cur.id = ${currentLine}
+       where fn_current_document(o.id) = cur.document_id
+         and ol.item_id = cur.item_id
+         -- The same line of whatever version named it: itself, or the line
+         -- that stood in its position. Counting by item alone would charge
+         -- one line of an order with what another line of it was billed.
+         and (ol.id = cur.id or ol.line_no = cur.line_no)
          and inv.doc_type in ('PURCHASE_INVOICE', 'SALES_INVOICE')
          and inv.status = 'POSTED'
          and inv.superseded_by_document_id is null`;
@@ -2646,10 +2669,28 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
         -- POSTED order found nothing after any correction, and the goods
         -- quietly stopped fulfilling anything.
         join document live on live.id = fn_current_document(o.id)
+        -- The same line, resolved the way assertOrderTerms resolves it:
+        -- itself where the order still stands, else the line that took its
+        -- position, else the item where it is on one line only. An item on
+        -- two lines at two prices is ordinary, and allocating to the wrong
+        -- one would fulfil the wrong half of the order.
         join lateral (
-              select dl.id, dl.item_id from document_line dl
-               where dl.document_id = live.id and dl.item_id = ol.item_id
-               order by dl.line_no limit 1
+              select dl.id, dl.item_id,
+                     case when dl.id = ol.id then 0
+                          when dl.line_no = ol.line_no and dl.item_id = ol.item_id then 1
+                          else 2
+                     end as rank
+                from document_line dl
+               where dl.document_id = live.id
+                 and (
+                   dl.id = ol.id
+                   or (dl.line_no = ol.line_no and dl.item_id = ol.item_id)
+                   or (dl.item_id = ol.item_id
+                       and 1 = (select count(*) from document_line x
+                                 where x.document_id = live.id and x.item_id = ol.item_id))
+                 )
+               order by rank, dl.line_no
+               limit 1
         ) cur on true
        where rl.document_id = ${doc.id}
          and o.doc_type = 'PURCHASE_ORDER'

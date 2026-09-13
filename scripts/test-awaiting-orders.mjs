@@ -721,6 +721,79 @@ try {
     check("  while 20 and 30 on one bill is allowed", !!ok);
   }
 
+
+  // ---- one item on two lines of one order ---------------------------------
+  //
+  // Twenty at a thousand and thirty at twelve hundred is an ordinary thing to
+  // agree. Resolving an order line by its item alone took the first line with
+  // that item, so a bill for the second was refused for quoting a price the
+  // order plainly agreed — and the allocation a receipt carries would have
+  // fulfilled the wrong half of the order. It needed no correction to happen:
+  // the resolution ran on every voucher.
+
+  console.log("\n  one item, two lines of one order\n");
+  {
+    const v = await po(supp.id, [
+      { itemId: itemA.id, qty: 20, unitPrice: 1000 },
+      { itemId: itemA.id, qty: 30, unitPrice: 1200 },
+    ]);
+    const vl = await sql`select id, line_no, unit_price from document_line
+       where document_id = ${v.id} order by line_no`;
+
+    let second = null, refusal = null;
+    try {
+      second = await P.postPurchaseInvoice({
+        companyId: co.id, partnerId: supp.id, locationId: loc.id,
+        docDate: today, dueDate: today, reference: v.docNo,
+        lines: [{ itemId: itemA.id, qty: 30, unitPrice: 1200, sourceLineId: vl[1].id }],
+      });
+    } catch (e) { refusal = e.message; }
+    check("a bill for the second line bills at the second line's price",
+      !!second, refusal?.slice(0, 76) ?? "");
+
+    // The first line is untouched by it, and still has its own twenty to bill
+    // at its own price.
+    let first = null, firstRefusal = null;
+    try {
+      first = await P.postPurchaseInvoice({
+        companyId: co.id, partnerId: supp.id, locationId: loc.id,
+        docDate: today, dueDate: today, reference: v.docNo,
+        lines: [{ itemId: itemA.id, qty: 20, unitPrice: 1000, sourceLineId: vl[0].id }],
+      });
+    } catch (e) { firstRefusal = e.message; }
+    check("  and the first line keeps its own twenty at its own price",
+      !!first, firstRefusal?.slice(0, 76) ?? "");
+
+    // What each line has left is its own business: billing the first line
+    // again is refused even though the other line was never billed.
+    let overFirst = null;
+    try {
+      await P.postPurchaseInvoice({
+        companyId: co.id, partnerId: supp.id, locationId: loc.id,
+        docDate: today, dueDate: today,
+        lines: [{ itemId: itemA.id, qty: 1, unitPrice: 1000, sourceLineId: vl[0].id }],
+      });
+    } catch (e) { overFirst = e.message; }
+    check("  each line is billed against its own remainder, not the item's",
+      !!overFirst, overFirst?.slice(0, 76) ?? "posted");
+
+    // And the goods received against the second line's bill answer that line.
+    if (second) {
+      const [sl] = await sql`select id from document_line where document_id = ${second.id}`;
+      await P.postGoodsReceipt({
+        companyId: co.id, partnerId: supp.id, locationId: loc.id, docDate: today,
+        sourceDocumentId: second.id,
+        lines: [{ itemId: itemA.id, qty: 30, unitCost: 1200, sourceLineId: sl.id }],
+      });
+      const [link] = await sql`
+        select k.order_line_id, l.line_no from fulfilment_link k
+        join document_line l on l.id = k.order_line_id
+        where l.document_id = ${v.id} order by k.created_at desc limit 1`;
+      check("  and the goods fulfil the line that was billed, not the first one",
+        link?.order_line_id === vl[1].id, `answered line ${link?.line_no}`);
+    }
+  }
+
   console.log(`\n  ${bad === 0 ? "All good." : `${bad} failed.`}\n`);
 } catch (e) {
   console.error("\n  ERROR", e.message, "\n");
