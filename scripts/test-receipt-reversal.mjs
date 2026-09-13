@@ -47,10 +47,32 @@ const near = (a, b) => Math.abs(n(a) - n(b)) < 0.01;
 
 try {
   const [co] = await sql`select id, name from company order by created_at limit 1`;
-  if (!/—\s*DEV\b|\bDEV\b/i.test(String(co.name)) && process.env.ALLOW_DESTRUCTIVE_TESTS !== "1") {
+  /**
+   * Two conditions, both required — not either one.
+   *
+   * The database has to look disposable: the company name carries a DEV
+   * marker on the development branch and does not on the tester's or the
+   * real books, which is the same thing CLAUDE.md tells a human to check
+   * before trusting a screen. AND the person running it has to have said so
+   * out loud, with ALLOW_DESTRUCTIVE_TESTS=1.
+   *
+   * Either alone is weaker than it looks. A name check alone empties
+   * whatever a stale .env happens to point at. An override alone lets one
+   * exported variable, set hours earlier for a different suite, turn a run
+   * against the wrong branch into a truncate. Requiring both means an
+   * accident has to happen twice, deliberately, to do any damage.
+   */
+  const disposable = /—\s*DEV\b|\bDEV\b/i.test(String(co.name));
+  const optedIn = process.env.ALLOW_DESTRUCTIVE_TESTS === "1";
+  if (!disposable || !optedIn) {
     throw new Error(
-      `This suite empties the transaction tables, and "${co.name}" does not look like a `
-      + `disposable development database. Set ALLOW_DESTRUCTIVE_TESTS=1 to say you mean it.`);
+      `This suite empties the transaction tables of whatever it runs against. `
+      + (!disposable
+        ? `"${co.name}" does not look like a disposable development database — `
+          + `point .env at one. `
+        : `"${co.name}" looks disposable. `)
+      + (!optedIn ? `Set ALLOW_DESTRUCTIVE_TESTS=1 to say you mean it.` : ``)
+    );
   }
   const [loc] = await sql`select id from location
      where company_id = ${co.id} and is_stock_location and is_active order by code limit 1`;

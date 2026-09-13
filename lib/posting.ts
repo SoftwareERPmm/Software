@@ -3017,6 +3017,7 @@ export async function closeOrderRemaining(input: {
     if (order.status !== "POSTED") {
       throw new Error(`${order.doc_no} is ${order.status}`);
     }
+
     await tx`
       insert into order_closure (company_id, document_id, reason, closed_by, is_open)
       values (${input.companyId}, ${input.documentId}, ${input.reason.trim()},
@@ -3210,13 +3211,37 @@ async function _postPurchaseInvoice(
            and d.id <> ${doc.id}
          order by d.posting_date, d.doc_no, dl.line_no`;
 
+      // And what went back to the supplier. A return takes specific receipt
+      // lines off the accrual — the first ten at 100, not ten averaged units
+      // — so a bill that replayed only earlier invoices drew those same lines
+      // a second time. Ten in at 100 and ten at 200, return the first ten and
+      // bill the rest at 200: the bill relieved 1,000 instead of 2,000 and
+      // left 1,000 in the clearing account with no goods and no bill behind
+      // it, for good. The quantity check has always replayed returns; the
+      // value did not, and the two answered to different arithmetic.
+      const returnedLines = await tx`
+        select dl.item_id, dl.base_qty as qty, dl.source_line_id
+          from document_line dl
+          join document d on d.id = dl.document_id
+         where d.company_id = ${companyId}
+           and d.doc_type = 'PURCHASE_RETURN'
+           and d.status = 'POSTED'
+           and d.source_document_id = ${input.goodsReceiptId}
+         order by d.posting_date, d.doc_no, dl.line_no`;
+
       const draw = grirMatcher(receiptLines as unknown as MatchableLine[]);
 
       // Replay what has already been billed, so this invoice sees only what
       // is genuinely left. Derived from the posted invoices rather than
-      // stored, same as every other figure here.
+      // stored, same as every other figure here. Bills first and then
+      // returns, the same order assertNotOverBilled replays them in, so the
+      // quantity it allows and the value relieved here come from one
+      // drawdown rather than two that have to be kept in step by hand.
       for (const prior of priorLines) {
         draw(prior.item_id, Number(prior.qty), prior.source_line_id);
+      }
+      for (const gone of returnedLines) {
+        draw(gone.item_id, Number(gone.qty), gone.source_line_id);
       }
 
       // Billing more than was received relieves only what is actually held
@@ -3999,12 +4024,29 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
       select fn_next_document_no(${companyId}, 'PURCHASE_RETURN', ${docDate}::date) as no`;
     const docNo = noRows[0].no;
 
-    const netTotal = round4(input.lines.reduce((s, l) => s + l.qty * l.unitPrice, 0));
-
     // Goods go back to the supplier they came from, against the receipt that
     // brought them in or the invoice that billed for them — the mirror of
     // the sales return above.
     let againstReceipt = false;
+
+    /**
+     * What each returned line is worth.
+     *
+     * Normally the price entered on the form. Not for a receipt-only return:
+     * that one has to clear an accrual of a known size, and the entered price
+     * is not it. A hundred units received at 500 accrued 50,000; returning
+     * all hundred at a typed 600 debited GR/IR 60,000 and left a 10,000 debit
+     * standing for goods that had gone back — an accrual balance that no
+     * quantity remained to explain, and that no later invoice would ever
+     * clear.
+     *
+     * So a receipt-only return is priced by the receipt. Any real difference
+     * between that rate and what the goods actually cost when they leave is
+     * still recognised, as Purchase Price Variance in the line loop below,
+     * which is where a valuation difference belongs — not folded into the
+     * clearing account where it reads as goods still awaiting a bill.
+     */
+    let lines: Array<ReturnLine & { clearValue?: number }> = input.lines;
 
     if (input.sourceDocumentId) {
       const source = await requireSource(tx, {
@@ -4030,12 +4072,32 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
         // against that bill — and taking it off the accrual instead would
         // leave the invoice standing in full for goods that went back.
         // Refused rather than guessed at: return against the bill.
+        //
+        // A receipt and its invoice are paired by source_document_id, but
+        // which one points at the other depends on which arrived first, and
+        // this used to look only one way. Receipt first, the invoice names
+        // the receipt. Bill first, the receipt names the invoice — and that
+        // receipt sailed through a guard that only ever asked the first
+        // question, took its goods off the accrual, and left the payable
+        // standing in full: precisely what the guard exists to prevent.
+        //
+        // Asked of current versions on both sides. A corrected invoice is a
+        // new document superseding the old one, and a bill that has been
+        // corrected has still been billed.
         const billed = await tx`
           select d.doc_no from document d
            where d.company_id = ${companyId}
              and d.doc_type = 'PURCHASE_INVOICE'
              and d.status = 'POSTED'
-             and d.source_document_id = ${input.sourceDocumentId}
+             and (
+               -- Receipt first: the invoice was raised from these goods.
+               fn_current_document(d.source_document_id)
+                 = fn_current_document(${input.sourceDocumentId})
+               -- Bill first: these goods were received against the invoice.
+               or d.id = fn_current_document(
+                    (select gr.source_document_id from document gr
+                      where gr.id = ${input.sourceDocumentId}))
+             )
            limit 1`;
         if (billed.length > 0) {
           throw new Error(
@@ -4044,8 +4106,56 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
             + `money was asked for.`
           );
         }
+
+        /**
+         * Priced by the receipt — through the same matcher that decides what
+         * is left to bill, not a second opinion about it.
+         *
+         * One average rate per item would clear a whole receipt correctly and
+         * still be wrong on a partial one. Ten units in at 100 and ten more
+         * at 200 average 150, so returning the first ten would take 1,500 off
+         * an accrual that only ever held 1,000 for them — while the matcher,
+         * which draws in line order, went on believing the 100s had gone and
+         * the 200s remained. Two rules for one drawdown, disagreeing.
+         *
+         * So there is one rule: grirMatcher, in line order, preferring a
+         * named line, with earlier returns drawn down first exactly as
+         * assertNotOverBilled replays them. Price and billable quantity come
+         * out of the same function, so they cannot drift apart. A receipt
+         * that has been billed never reaches here — the guard above refuses
+         * it — so returns are the only prior claim to replay.
+         */
+        const receiptLines = await tx`
+          select dl.id, dl.item_id, dl.base_qty as qty, dl.net_amount as net
+            from document_line dl
+           where dl.document_id = ${input.sourceDocumentId}
+           order by dl.line_no`;
+        const priorReturns = await tx`
+          select dl.item_id, dl.base_qty as qty, dl.source_line_id
+            from document_line dl
+            join document d on d.id = dl.document_id
+           where d.doc_type = 'PURCHASE_RETURN' and d.status = 'POSTED'
+             and d.source_document_id = ${input.sourceDocumentId}
+           order by d.posting_date, d.doc_no, dl.line_no`;
+
+        const draw = grirMatcher(receiptLines as unknown as MatchableLine[]);
+        for (const r of priorReturns) draw(r.item_id, Number(r.qty), r.source_line_id);
+
+        const carries = new Set(receiptLines.map((l: any) => l.item_id as string));
+        lines = input.lines.map((l) => {
+          if (!carries.has(l.itemId)) return l;
+          const got = draw(l.itemId, l.qty, null);
+          return {
+            ...l,
+            unitPrice: l.qty > 0 ? got.value / l.qty : 0,
+            clearValue: got.value,
+          };
+        });
       }
     }
+
+    const netTotal = round4(lines.reduce(
+      (s, l) => s + (l.clearValue ?? round4(l.qty * l.unitPrice)), 0));
 
     const [doc] = await tx`
       insert into document
@@ -4062,7 +4172,7 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
     const journal: JournalLine[] = [];
     let lineNo = 0;
 
-    for (const line of input.lines) {
+    for (const line of lines) {
       lineNo++;
 
       const [item] = await tx`
@@ -4070,7 +4180,10 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
       if (!item) throw new Error("Item not found");
       if (!item.is_stocked) throw new Error(`${item.code} (${item.name}) is not stocked and cannot be returned`);
 
-      const net = round4(line.qty * line.unitPrice);
+      // The value the matcher actually drew, where it drew one — not the
+      // rounded product of a rate it derived, which can differ by a fraction
+      // and leave that fraction sitting in the clearing account for good.
+      const net = round4(line.clearValue ?? round4(line.qty * line.unitPrice));
 
       const onHandRows = await tx`
         select fn_qty_on_hand(${companyId}, ${line.itemId}, ${locationId}) as on_hand`;

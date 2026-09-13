@@ -385,7 +385,20 @@ export async function getReturnedAgainst(documentId: string) {
  */
 export async function getReturnablePurchases(companyId: string) {
   return sql`
-    select d.id, d.doc_type, d.doc_no, d.doc_date, d.partner_id
+    select d.id, d.doc_type, d.doc_no, d.doc_date, d.partner_id,
+           -- What a receipt accrued, per item, quantity-weighted where an
+           -- item arrived on more than one line. A return against a receipt
+           -- clears an accrual of a known size, so the price is the
+           -- receipt's, not the returner's, and the form shows the figure it
+           -- is actually going to post rather than the item's next_cost.
+           -- Carried for invoices too, harmlessly: nothing reads it there.
+           (select coalesce(jsonb_object_agg(x.item_id, x.rate), '{}'::jsonb)
+              from (select dl.item_id,
+                           sum(dl.net_amount) / sum(dl.base_qty) as rate
+                      from document_line dl
+                     where dl.document_id = d.id
+                     group by dl.item_id
+                    having sum(dl.base_qty) > 0) x) as rates
       from document d
      where d.company_id = ${companyId}
        and d.doc_type in ('PURCHASE_INVOICE', 'GOODS_RECEIPT')
@@ -1832,14 +1845,6 @@ export async function getOrderClosure(documentId: string) {
   return r ?? null;
 }
 
-/**
- * The people side of a document: who raised it, who posted it, what is still
- * owed on it and by whom, and what has happened to it since.
- *
- * One query rather than four, because every document screen shows all of it
- * together in the same rail, and four round trips for one panel is three too
- * many.
- */
 export async function getDocumentPeople(documentId: string) {
   const [doc] = await sql`
     select d.id,

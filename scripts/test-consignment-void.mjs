@@ -71,11 +71,15 @@ try {
    * Anything else needs saying out loud: ALLOW_DESTRUCTIVE_TESTS=1.
    */
   const disposable = /—\s*DEV\b|\bDEV\b/i.test(String(co.name));
-  if (!disposable && process.env.ALLOW_DESTRUCTIVE_TESTS !== "1") {
+  const optedIn = process.env.ALLOW_DESTRUCTIVE_TESTS === "1";
+  if (!disposable || !optedIn) {
     throw new Error(
-      `This suite empties the transaction tables of whatever it runs against, and `
-      + `"${co.name}" does not look like a disposable development database. `
-      + `Point .env at one, or set ALLOW_DESTRUCTIVE_TESTS=1 to say you mean it.`
+      `This suite empties the transaction tables of whatever it runs against. `
+      + (!disposable
+        ? `"${co.name}" does not look like a disposable development database — `
+          + `point .env at one. `
+        : `"${co.name}" looks disposable. `)
+      + (!optedIn ? `Set ALLOW_DESTRUCTIVE_TESTS=1 to say you mean it.` : ``)
     );
   }
 
