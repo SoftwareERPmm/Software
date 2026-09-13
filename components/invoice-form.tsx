@@ -90,6 +90,9 @@ export function InvoiceForm({
     null
   );
 
+  /** See the hidden field below. */
+  const [attemptKey] = useState(() => crypto.randomUUID());
+
   const [items, setItems] = useState<Item[]>(initialItems);
   const addItem = (i: Item) => setItems((xs) => [...xs, i]);
 
@@ -325,6 +328,11 @@ export function InvoiceForm({
 
   return (
     <form action={formAction} className="form wide">
+      {/* One submission, one posting. Generated when this form mounts, so a
+          double-click or a resent request carries the same key and is handed
+          the document the first one posted; a new form is a new key. */}
+      <input type="hidden" name="idempotency_key" value={attemptKey} />
+
       {state && "error" in state && <div className="alert">{state.error}</div>}
 
       <input type="hidden" name="lines" value={payload} />

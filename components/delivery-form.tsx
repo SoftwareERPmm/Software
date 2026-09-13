@@ -69,6 +69,9 @@ export function DeliveryForm({
     action as never, null
   );
 
+  /** See the hidden field below. */
+  const [attemptKey] = useState(() => crypto.randomUUID());
+
   const [items, setItems] = useState(initialItems);
   const [partnerId, setPartnerId] = useState("");
   const [locationId, setLocationId] = useState(locations[0]?.id ?? "");
@@ -204,6 +207,11 @@ export function DeliveryForm({
 
   return (
     <form action={formAction} className="form">
+      {/* One submission, one posting. Generated when this form mounts, so a
+          double-click or a resent request carries the same key and is handed
+          the document the first one posted; a new form is a new key. */}
+      <input type="hidden" name="idempotency_key" value={attemptKey} />
+
       <input type="hidden" name="lines" value={payload} />
       <input type="hidden" name="source_document_id" value={orderId} />
       {negativeConfirmed && <input type="hidden" name="allow_negative_stock" value="true" />}

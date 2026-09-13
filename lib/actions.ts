@@ -25,6 +25,7 @@ import {
   type InvoiceLine, type OrderLine, type FulfillmentLine, type Allocation, type VoucherLine,
   type AdjustmentLine, type ReturnLine, type TransferLine, type ConsignmentReceiptLine,
 } from "./posting";
+import { postOnce } from "./idempotency";
 
 export type ActionResult = { error: string } | { ok: true };
 
@@ -1131,17 +1132,18 @@ export async function createSalesInvoice(_prev: unknown, fd: FormData): Promise<
     // (revenue only, a real delivery fulfils it later); or "take now"
     // (delivery and invoice post together). Matching and deferring are
     // mutually exclusive — the form only shows one at a time.
-    const result = deliveryId
-      ? await postSalesInvoice({
-          ...input, deliveryId,
-          // Blank means "whatever the delivery charged" — the field is only
-          // shown when composing a new delivery, so leaving it empty here
-          // must not wipe a fee entered when the goods went out.
-          deliveryFee: fd.get("delivery_fee") === null ? undefined : deliveryFee,
-        })
-      : toDeliver
-        ? await postSalesInvoice(input)
-        : await postSaleWithDelivery(input);
+    const result = await postOnce(co, attemptKey(fd), () =>
+      deliveryId
+        ? postSalesInvoice({
+            ...input, deliveryId,
+            // Blank means "whatever the delivery charged" — the field is only
+            // shown when composing a new delivery, so leaving it empty here
+            // must not wipe a fee entered when the goods went out.
+            deliveryFee: fd.get("delivery_fee") === null ? undefined : deliveryFee,
+          })
+        : toDeliver
+          ? postSalesInvoice(input)
+          : postSaleWithDelivery(input));
 
     docId = result.id;
     toastMsg = `Invoice ${result.docNo} posted`;
@@ -1201,11 +1203,12 @@ export async function createPurchaseInvoice(_prev: unknown, fd: FormData): Promi
     // later). "Received now" and "match an existing receipt" are mutually
     // exclusive — the form only shows one at a time.
     const receivedNow = !goodsReceiptId && fd.get("received_now") !== null;
-    const result = goodsReceiptId
-      ? await postPurchaseInvoice({ ...input, goodsReceiptId })
-      : receivedNow
-        ? await postPurchaseWithReceipt(input)
-        : await postPurchaseInvoice(input);
+    const result = await postOnce(co, attemptKey(fd), () =>
+      goodsReceiptId
+        ? postPurchaseInvoice({ ...input, goodsReceiptId })
+        : receivedNow
+          ? postPurchaseWithReceipt(input)
+          : postPurchaseInvoice(input));
 
     docId = result.id;
     toastMsg = `Invoice ${result.docNo} posted`;
@@ -1236,7 +1239,7 @@ export async function createSalesReturn(_prev: unknown, fd: FormData): Promise<A
     if (!str(fd, "partner_id")) return { error: "Choose a customer" };
     if (!str(fd, "location_id")) return { error: "Choose a warehouse" };
 
-    const result = await postSalesReturn({
+    const result = await postOnce(co, attemptKey(fd), () => postSalesReturn({
       companyId: co,
       partnerId: str(fd, "partner_id"),
       locationId: str(fd, "location_id"),
@@ -1246,7 +1249,7 @@ export async function createSalesReturn(_prev: unknown, fd: FormData): Promise<A
       reference: str(fd, "reference") || null,
       sourceDocumentId: str(fd, "source_document_id") || null,
       lines,
-    });
+    }));
 
     docId = result.id;
     toastMsg = `Return ${result.docNo} posted`;
@@ -1275,7 +1278,7 @@ export async function createPurchaseReturn(_prev: unknown, fd: FormData): Promis
     if (!str(fd, "partner_id")) return { error: "Choose a supplier" };
     if (!str(fd, "location_id")) return { error: "Choose a warehouse" };
 
-    const result = await postPurchaseReturn({
+    const result = await postOnce(co, attemptKey(fd), () => postPurchaseReturn({
       companyId: co,
       partnerId: str(fd, "partner_id"),
       locationId: str(fd, "location_id"),
@@ -1284,7 +1287,7 @@ export async function createPurchaseReturn(_prev: unknown, fd: FormData): Promis
       reference: str(fd, "reference") || null,
       sourceDocumentId: str(fd, "source_document_id") || null,
       lines,
-    });
+    }));
 
     docId = result.id;
     toastMsg = `Return ${result.docNo} posted`;
@@ -1375,7 +1378,7 @@ export async function createSalesOrder(_prev: unknown, fd: FormData): Promise<Ac
     if (!str(fd, "partner_id")) return { error: "Choose a customer" };
     if (!str(fd, "location_id")) return { error: "Choose a warehouse" };
 
-    const result = await postSalesOrder({
+    const result = await postOnce(co, attemptKey(fd), () => postSalesOrder({
       companyId: co,
       partnerId: str(fd, "partner_id"),
       locationId: str(fd, "location_id"),
@@ -1384,7 +1387,7 @@ export async function createSalesOrder(_prev: unknown, fd: FormData): Promise<Ac
       memo: str(fd, "memo") || null,
       reference: str(fd, "reference") || null,
       lines,
-    });
+    }));
 
     docId = result.id;
     toastMsg = `Order ${result.docNo} saved`;
@@ -1410,7 +1413,7 @@ export async function createPurchaseOrder(_prev: unknown, fd: FormData): Promise
     if (!str(fd, "partner_id")) return { error: "Choose a supplier" };
     if (!str(fd, "location_id")) return { error: "Choose a warehouse" };
 
-    const result = await postPurchaseOrder({
+    const result = await postOnce(co, attemptKey(fd), () => postPurchaseOrder({
       companyId: co,
       partnerId: str(fd, "partner_id"),
       locationId: str(fd, "location_id"),
@@ -1419,7 +1422,7 @@ export async function createPurchaseOrder(_prev: unknown, fd: FormData): Promise
       memo: str(fd, "memo") || null,
       reference: str(fd, "reference") || null,
       lines,
-    });
+    }));
 
     docId = result.id;
     toastMsg = `Order ${result.docNo} saved`;
@@ -1503,7 +1506,7 @@ export async function deliverPendingInvoice(_prev: unknown, fd: FormData): Promi
         : "That invoice no longer exists" };
     }
 
-    const result = await postDelivery({
+    const result = await postOnce(co, attemptKey(fd), () => postDelivery({
       companyId: co,
       partnerId: invoice.partner_id,
       locationId: invoice.location_id,
@@ -1516,7 +1519,7 @@ export async function deliverPendingInvoice(_prev: unknown, fd: FormData): Promi
         itemId: l.itemId, qty: l.qty, focReasonId: l.focReasonId,
         sourceLineId: l.lineId,
       })),
-    });
+    }));
 
     docId = result.id;
     toastMsg = `Delivery ${result.docNo} posted`;
@@ -1543,7 +1546,7 @@ export async function createGoodsReceipt(_prev: unknown, fd: FormData): Promise<
     if (!str(fd, "partner_id")) return { error: "Choose a supplier" };
     if (!str(fd, "location_id")) return { error: "Choose a warehouse" };
 
-    const result = await postGoodsReceipt({
+    const result = await postOnce(co, attemptKey(fd), () => postGoodsReceipt({
       companyId: co,
       partnerId: str(fd, "partner_id"),
       locationId: str(fd, "location_id"),
@@ -1553,7 +1556,7 @@ export async function createGoodsReceipt(_prev: unknown, fd: FormData): Promise<
       reference: str(fd, "reference") || null,
       sourceDocumentId: str(fd, "source_document_id") || null,
       lines,
-    });
+    }));
 
     docId = result.id;
     toastMsg = `Goods receipt ${result.docNo} posted`;
@@ -1627,9 +1630,8 @@ async function settle(
     advance,
   };
 
-  const result = kind === "pay"
-    ? await postSupplierPayment(input)
-    : await postCustomerReceipt(input);
+  const result = await postOnce(co, attemptKey(fd), () =>
+    kind === "pay" ? postSupplierPayment(input) : postCustomerReceipt(input));
 
   return { id: result.id, docNo: result.docNo };
 }
@@ -2012,6 +2014,18 @@ async function correctedLines(
         supersedesLineId: was ? String(was.id) : null,
       };
     });
+}
+
+/**
+ * The key this submission carries, if any.
+ *
+ * Generated by the form when it mounts, so a double-click, a browser
+ * resending a request it could not confirm, or a platform retry all carry the
+ * same one — and a deliberately new document is a new form and a new key.
+ */
+function attemptKey(fd: FormData): string | null {
+  const k = str(fd, "idempotency_key");
+  return k && k.length <= 100 ? k : null;
 }
 
 /** The edited lines, as the correction form sends them. */
