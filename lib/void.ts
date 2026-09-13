@@ -96,6 +96,48 @@ export async function planVoidIn(db: Db, documentId: string): Promise<VoidPlan> 
     blockers.push({ reason: `A ${doc.status.toLowerCase()} document cannot be voided.` });
   }
 
+  // ---- goods that are not ours --------------------------------------------
+  //
+  // Consigned stock is the consignor's until it sells, so a delivery drawing
+  // on it writes no stock movement and no journal line of its own — and
+  // nothing here releases what it drew from consignment_lot_consumption. The
+  // engine refused these anyway, but only at the last moment and by way of
+  // "has no entry to reverse", which the plan never knew about: the screen
+  // offered a Void button that failed when it was pressed.
+  //
+  // Refused here instead, in the words of the actual reason. This does not
+  // make consignment voidable — it makes the refusal honest and early.
+  const [consigned] = await db`
+    select count(*)::int as n from document_line
+     where document_id = ${documentId} and is_consignment`;
+  if (doc.doc_type === "CONSIGNMENT_RECEIPT" || Number(consigned.n) > 0) {
+    blockers.push({
+      reason: doc.doc_type === "CONSIGNMENT_RECEIPT"
+        ? "These are the consignor's goods, held rather than bought, so there is "
+          + "no purchase to reverse. Undoing a consignment receipt is not built yet."
+        : "This document moved consigned goods, which belong to the consignor "
+          + "until they sell. Releasing them again is not built yet — the "
+          + "consignor's stock would stay drawn down against a document that no "
+          + "longer exists.",
+    });
+  }
+
+  // ---- nothing to reverse --------------------------------------------------
+  // A void is a mirror-image journal entry, so a document that posted none
+  // has nothing to mirror. The engine has always refused these; the plan
+  // said they could go, which is how a refusal arrived after the button.
+  if (doc.status === "POSTED") {
+    const [entry] = await db`
+      select count(*)::int as n from journal_line
+       where journal_entry_id = ${doc.journal_entry_id}`;
+    if (Number(entry.n) === 0) {
+      blockers.push({
+        reason: `${doc.doc_no} posted nothing to the ledger, so there is no entry `
+          + `to reverse. Nothing about it can be undone by voiding.`,
+      });
+    }
+  }
+
   // ---- what has been built on top of it -----------------------------------
   // Anything naming this document as its source is downstream of it, and
   // undoing this one underneath it would leave that one explaining nothing.

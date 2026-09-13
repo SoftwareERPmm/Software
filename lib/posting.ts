@@ -5142,7 +5142,14 @@ async function voidDocumentIn(
         from journal_line where journal_entry_id = ${doc.journal_entry_id}
        order by line_no`;
     if (lines.length === 0) {
-      throw new Error(`${doc.doc_no} has no entry to reverse`);
+      // planVoidIn refuses this above, in words that say why. Kept as the
+      // last line of defence for a caller that reaches this function some
+      // other way, and deliberately the same sentence the plan uses, so the
+      // two can never tell a reader different things.
+      throw new Error(
+        `${doc.doc_no} posted nothing to the ledger, so there is no entry to `
+        + `reverse. Nothing about it can be undone by voiding.`
+      );
     }
 
     // The original's own direction, so a voided cash receipt is numbered on
