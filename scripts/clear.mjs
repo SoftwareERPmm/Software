@@ -90,7 +90,12 @@ const sql = postgres(url, { ssl: local ? false : "require", prepare: !pooled, on
 // it leaves a company that believes it has already opened its books, with
 // nothing to show for it and no way to open them again.
 const TXN = ["payment_allocation", "stock_movement", "document_line", "document",
-             "journal_line", "journal_entry", "opening_batch"];
+             "journal_line", "journal_entry", "opening_batch",
+             // The keys that say which submissions have already been posted.
+             // A key whose document has been wiped is a claim on nothing: left
+             // behind, it would hand a later submission a document that no
+             // longer exists.
+             "posting_attempt"];
 
 // Master data is DELETEd, not TRUNCATEd. TRUNCATE ... CASCADE is table-level:
 // truncating item_group would take every row of account_determination with it,

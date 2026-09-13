@@ -397,6 +397,22 @@ async function assertOrderTerms(
   const named = lines.filter((l) => l.sourceLineId);
   if (named.length === 0) return;
 
+  // Which named lines belong to an order at all — the rest name a receipt or
+  // a delivery and are nothing to do with this guard. Asked first, because a
+  // line that names an order and resolves to nothing has to be refused, and
+  // returning early on "nothing resolved" walked straight past that.
+  const onAnOrder = new Set(
+    (await tx`
+      select ol.id from document_line ol
+        join document o on o.id = ol.document_id
+       where ol.id = any(${named.map((l) => l.sourceLineId as string)})
+         and o.company_id = ${companyId}
+         and o.doc_type in ('PURCHASE_ORDER', 'SALES_ORDER')` as unknown as { id: string }[])
+      .map((r) => r.id));
+
+  if (onAnOrder.size === 0) return;
+
+
   // Resolved to the version of the order standing now, and to the same line
   // of it. A voucher names the line of the version it was raised against, and
   // correcting an order posts a new version with new lines — checking against
@@ -444,7 +460,6 @@ async function assertOrderTerms(
      where ol.id = any(${named.map((l) => l.sourceLineId as string)})
        and o.company_id = ${companyId}
        and o.doc_type in ('PURCHASE_ORDER', 'SALES_ORDER')`;
-  if (rows.length === 0) return;
 
   const byNamed = new Map((rows as any[]).map((r) => [r.named_line as string, r]));
 
@@ -453,17 +468,6 @@ async function assertOrderTerms(
   // them separately let each pass while together they billed more than the
   // order asked for.
   const wanted = new Map<string, number>();
-
-  // Which named lines belong to an order at all — the rest name a receipt or
-  // a delivery and are nothing to do with this guard.
-  const onAnOrder = new Set(
-    (await tx`
-      select ol.id from document_line ol
-        join document o on o.id = ol.document_id
-       where ol.id = any(${named.map((l) => l.sourceLineId as string)})
-         and o.company_id = ${companyId}
-         and o.doc_type in ('PURCHASE_ORDER', 'SALES_ORDER')` as unknown as { id: string }[])
-      .map((r) => r.id));
 
   for (const [i, l] of lines.entries()) {
     if (!l.sourceLineId || !onAnOrder.has(l.sourceLineId)) continue;
@@ -515,13 +519,18 @@ async function assertOrderTerms(
         join document_line cur on cur.id = ${currentLine}
        where fn_current_document(o.id) = cur.document_id
          and ol.item_id = cur.item_id
-         -- The same line, resolved the way the check above resolves it:
-         -- what the correction recorded, else the line itself, else the line
-         -- that stood in its position. Counting by item alone would charge
-         -- one line of an order with what another line of it was billed.
-         and (fn_current_line(ol.id) = cur.id
-              or ol.id = cur.id
-              or ol.line_no = cur.line_no)
+         -- The same line, resolved the way the check above resolves it —
+         -- and position only where there is no lineage to contradict it.
+         -- Offered as an alternative, a line whose correction says it became
+         -- one line still counted against whatever line now sits in its old
+         -- position, which is the wrong remainder when two lines of an item
+         -- swap places.
+         and (case
+                when exists (select 1 from document_line z
+                              where z.supersedes_line_id = ol.id)
+                  then fn_current_line(ol.id) = cur.id
+                else ol.id = cur.id or ol.line_no = cur.line_no
+              end)
          and inv.doc_type in ('PURCHASE_INVOICE', 'SALES_INVOICE')
          and inv.status = 'POSTED'
          and inv.superseded_by_document_id is null`;
@@ -533,6 +542,23 @@ async function assertOrderTerms(
       );
     }
   }
+}
+
+/**
+ * Run a posting in a transaction the caller already owns, or in one of its
+ * own where there is none.
+ *
+ * Idempotency needs the claim on a submission key and everything that
+ * submission posts to commit together: recording the result separately leaves
+ * a window where the documents exist and nothing remembers posting them, and
+ * a retry then posts them again. So every posting takes an optional
+ * transaction, and postOnce hands it the one holding its claim.
+ */
+function inTransaction<T>(
+  tx: TransactionSql | undefined,
+  run: (tx: TransactionSql) => Promise<T>,
+): Promise<T> {
+  return tx ? run(tx) : (sql.begin(run) as Promise<T>);
 }
 
 /**
@@ -1713,17 +1739,21 @@ async function writeJournal(
  * entry — it exists to be delivered against (and reported as "reserved"
  * demand on the stock position) until then.
  */
-export async function postSalesOrder(input: OrderInput) {
-  return postOrder(input, "SALES_ORDER");
+export async function postSalesOrder(input: OrderInput, tx?: TransactionSql) {
+  return postOrder(input, "SALES_ORDER", tx);
 }
 
 /** Purchase order: the purchase-side mirror of postSalesOrder. */
-export async function postPurchaseOrder(input: OrderInput) {
-  return postOrder(input, "PURCHASE_ORDER");
+export async function postPurchaseOrder(input: OrderInput, tx?: TransactionSql) {
+  return postOrder(input, "PURCHASE_ORDER", tx);
 }
 
-async function postOrder(input: OrderInput, docType: "SALES_ORDER" | "PURCHASE_ORDER") {
-  return sql.begin(async (tx) => postOrderIn(tx, input, docType));
+async function postOrder(
+  input: OrderInput,
+  docType: "SALES_ORDER" | "PURCHASE_ORDER",
+  outer?: TransactionSql,
+) {
+  return inTransaction(outer, async (tx) => postOrderIn(tx, input, docType));
 }
 
 async function postOrderIn(
@@ -1982,8 +2012,8 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
   return { id: doc.id as string, docNo: docNo as string };
 }
 
-export async function postDelivery(input: FulfillmentInput) {
-  return sql.begin((tx) => _postDelivery(tx, input));
+export async function postDelivery(input: FulfillmentInput, tx?: TransactionSql) {
+  return inTransaction(tx, (t) => _postDelivery(t, input));
 }
 
 /**
@@ -2432,8 +2462,8 @@ async function _postSalesInvoice(
   return { id: doc.id as string, docNo: docNo as string, receiptNo };
 }
 
-export async function postSalesInvoice(input: SalesInvoiceInput & { deliveryId?: string | null }) {
-  return sql.begin((tx) => _postSalesInvoice(tx, input));
+export async function postSalesInvoice(input: SalesInvoiceInput & { deliveryId?: string | null }, tx?: TransactionSql) {
+  return inTransaction(tx, (t) => _postSalesInvoice(t, input));
 }
 
 /**
@@ -2442,11 +2472,11 @@ export async function postSalesInvoice(input: SalesInvoiceInput & { deliveryId?:
  * documents that theory says are separate never exist independently of one
  * another for a counter sale — either both post or neither does.
  */
-export async function postSaleWithDelivery(input: SalesInvoiceInput) {
+export async function postSaleWithDelivery(input: SalesInvoiceInput, outer?: TransactionSql) {
   if (input.lines.length === 0) throw new Error("An invoice needs at least one line");
   assertLines(input.lines);
 
-  return sql.begin(async (tx) => {
+  return inTransaction(outer, async (tx) => {
     const itemIds = input.lines.map((l) => l.itemId);
     const flags = await tx`select id, is_stocked from item where id = any(${itemIds})`;
     const stocked = new Set(flags.filter((r: any) => r.is_stocked).map((r: any) => r.id));
@@ -2990,8 +3020,8 @@ export async function reopenOrder(input: {
   });
 }
 
-export async function postGoodsReceipt(input: FulfillmentInput) {
-  return sql.begin((tx) => _postGoodsReceipt(tx, input));
+export async function postGoodsReceipt(input: FulfillmentInput, tx?: TransactionSql) {
+  return inTransaction(tx, (t) => _postGoodsReceipt(t, input));
 }
 
 /**
@@ -3282,19 +3312,21 @@ async function _postPurchaseInvoice(
 }
 
 export async function postPurchaseInvoice(
-  input: InvoiceInput & { goodsReceiptId?: string | null; cashOut?: number; cashAccountId?: string | null }
+  input: InvoiceInput & { goodsReceiptId?: string | null; cashOut?: number; cashAccountId?: string | null },
+  tx?: TransactionSql,
 ) {
-  return sql.begin((tx) => _postPurchaseInvoice(tx, input));
+  return inTransaction(tx, (t) => _postPurchaseInvoice(t, input));
 }
 
 /** The purchase-side mirror of postSaleWithDelivery: receive it and bill it in one step. */
 export async function postPurchaseWithReceipt(
-  input: InvoiceInput & { cashOut?: number; cashAccountId?: string | null }
+  input: InvoiceInput & { cashOut?: number; cashAccountId?: string | null },
+  outer?: TransactionSql,
 ) {
   if (input.lines.length === 0) throw new Error("An invoice needs at least one line");
   assertLines(input.lines);
 
-  return sql.begin(async (tx) => {
+  return inTransaction(outer, async (tx) => {
     const itemIds = input.lines.map((l) => l.itemId);
     const flags = await tx`select id, is_stocked from item where id = any(${itemIds})`;
     const stocked = new Set(flags.filter((r: any) => r.is_stocked).map((r: any) => r.id));
@@ -3755,11 +3787,11 @@ export type ReturnInput = {
  *   Dr Inventory     / Cr Cost of Goods Sold  (stock returns, at today's cost)
  *   Dr Sales Returns / Cr Accounts Receivable (revenue reversed, at the line price)
  */
-export async function postSalesReturn(input: ReturnInput) {
+export async function postSalesReturn(input: ReturnInput, outer?: TransactionSql) {
   if (input.lines.length === 0) throw new Error("A return needs at least one line");
   assertLines(input.lines);
 
-  return sql.begin(async (tx) => {
+  return inTransaction(outer, async (tx) => {
     const { companyId, partnerId, locationId, docDate } = input;
     const receivedAt = input.receivedAt || docDate;
 
@@ -3929,11 +3961,11 @@ export async function postSalesReturn(input: ReturnInput) {
  * are allowed to differ — the same price-variance account a purchase
  * invoice uses absorbs the difference.
  */
-export async function postPurchaseReturn(input: ReturnInput) {
+export async function postPurchaseReturn(input: ReturnInput, outer?: TransactionSql) {
   if (input.lines.length === 0) throw new Error("A return needs at least one line");
   assertLines(input.lines);
 
-  return sql.begin(async (tx) => {
+  return inTransaction(outer, async (tx) => {
     const { companyId, partnerId, locationId, docDate } = input;
 
     const fyRows = await tx`select fn_fiscal_year_for(${companyId}, ${docDate}::date) as fy`;
@@ -4091,7 +4123,8 @@ export type SettlementInput = {
 
 async function postSettlement(
   input: SettlementInput,
-  kind: "SUPPLIER_PAYMENT" | "CUSTOMER_RECEIPT"
+  kind: "SUPPLIER_PAYMENT" | "CUSTOMER_RECEIPT",
+  outer?: TransactionSql,
 ) {
   // Checked before the filter, not by it. A negative allocation used to be
   // dropped silently here, so a payment carrying one posted for less than was
@@ -4128,7 +4161,7 @@ async function postSettlement(
   const isPayment = kind === "SUPPLIER_PAYMENT";
   const controlRole = isPayment ? "AP_CONTROL" : "AR_CONTROL";
 
-  return sql.begin(async (tx) => {
+  return inTransaction(outer, async (tx) => {
     const { companyId, partnerId, docDate } = input;
 
     const fyRows = await tx`select fn_fiscal_year_for(${companyId}, ${docDate}::date) as fy`;
@@ -4450,13 +4483,13 @@ export async function applyAdvance(input: {
 }
 
 /** Dr Accounts Payable / Cr Bank. */
-export async function postSupplierPayment(input: SettlementInput) {
-  return postSettlement(input, "SUPPLIER_PAYMENT");
+export async function postSupplierPayment(input: SettlementInput, tx?: TransactionSql) {
+  return postSettlement(input, "SUPPLIER_PAYMENT", tx);
 }
 
 /** Dr Bank / Cr Accounts Receivable. */
-export async function postCustomerReceipt(input: SettlementInput) {
-  return postSettlement(input, "CUSTOMER_RECEIPT");
+export async function postCustomerReceipt(input: SettlementInput, tx?: TransactionSql) {
+  return postSettlement(input, "CUSTOMER_RECEIPT", tx);
 }
 
 // =========================================================================
@@ -5267,8 +5300,8 @@ export type AmendInput<T> = {
   repost: (tx: TransactionSql, identity: AmendIdentity) => Promise<T & { id: string }>;
 };
 
-export async function amendDocument<T>(input: AmendInput<T>) {
-  return sql.begin(async (tx) => amendDocumentIn(tx, input));
+export async function amendDocument<T>(input: AmendInput<T>, outer?: TransactionSql) {
+  return inTransaction(outer, async (tx) => amendDocumentIn(tx, input));
 }
 
 /**
@@ -5391,19 +5424,26 @@ async function invoicesBuiltOn(tx: TransactionSql, orderId: string) {
       left join document src on src.id = inv.source_document_id
      where inv.status = 'POSTED'
        and inv.doc_type in ('SALES_INVOICE', 'PURCHASE_INVOICE')
+       -- Any version of this order, not the one id being corrected. A
+       -- document keeps naming the version it was raised against, so on a
+       -- second correction — v2 becoming v3 — an invoice still pointing at v1
+       -- was not found at all, and carried the old price for ever while every
+       -- screen said it had been corrected.
        and (
-         inv.source_document_id = ${orderId}
-         or src.source_document_id = ${orderId}
+         fn_current_document(inv.source_document_id) = fn_current_document(${orderId})
+         or fn_current_document(src.source_document_id) = fn_current_document(${orderId})
          or exists (
               select 1 from document_line il
                 join document_line ol on ol.id = il.source_line_id
-               where il.document_id = inv.id and ol.document_id = ${orderId})
+               where il.document_id = inv.id
+                 and fn_current_document(ol.document_id) = fn_current_document(${orderId}))
          or exists (
               select 1 from document_line il
                 join document_line fl on fl.id = il.source_line_id
                 join fulfilment_link k on k.fulfilment_line_id = fl.id
                 join document_line ol on ol.id = k.order_line_id
-               where il.document_id = inv.id and ol.document_id = ${orderId})
+               where il.document_id = inv.id
+                 and fn_current_document(ol.document_id) = fn_current_document(${orderId}))
        )
      order by inv.doc_no`;
 }
@@ -5711,8 +5751,8 @@ export async function amendOrder(input: {
   cascade?: boolean;
   /** What the reader was shown — see amendOrderIn. */
   expect?: string | null;
-}) {
-  return sql.begin((tx) => amendOrderIn(tx, input));
+}, tx?: TransactionSql) {
+  return inTransaction(tx, (t) => amendOrderIn(t, input));
 }
 
 /**
@@ -5842,14 +5882,39 @@ export async function amendOrderIn(tx: TransactionSql, input: {
           // in the database, rather than guessed per line.
           const answers = new Map<string, string>();
           for (const r of await tx`
-            select il.id,
-                   coalesce(
-                     case when ol.document_id = ${input.documentId} then ol.id end,
-                     case when up.document_id = ${input.documentId} then up.id end
-                   ) as order_line
+            select il.id, coalesce(direct.id, viaGoods.id) as order_line
               from document_line il
               left join document_line ol on ol.id = il.source_line_id
               left join document_line up on up.id = ol.source_line_id
+              -- The line of the version being corrected that this one grew
+              -- into. Not fn_current_line, which walks to the newest version
+              -- of all — by this point that is the replacement being written,
+              -- one step too far, and its ids are not what the correction's
+              -- prices are keyed by.
+              left join lateral (
+                    with recursive forward as (
+                        select dl.id, dl.document_id from document_line dl
+                         where dl.id = ol.id
+                        union all
+                        select nx.id, nx.document_id from document_line nx
+                          join forward f on nx.supersedes_line_id = f.id
+                    )
+                    select id from forward
+                     where document_id = ${input.documentId} limit 1
+              ) direct on true
+              -- And the same for an invoice that bills a receipt or delivery
+              -- which itself named the order line.
+              left join lateral (
+                    with recursive forward as (
+                        select dl.id, dl.document_id from document_line dl
+                         where dl.id = up.id
+                        union all
+                        select nx.id, nx.document_id from document_line nx
+                          join forward f on nx.supersedes_line_id = f.id
+                    )
+                    select id from forward
+                     where document_id = ${input.documentId} limit 1
+              ) viaGoods on true
              where il.document_id = ${inv.id}` as unknown as
                { id: string; order_line: string | null }[]) {
             if (r.order_line) answers.set(r.id, r.order_line);
@@ -6106,7 +6171,7 @@ export async function amendInvoice(input: {
     cashIn?: number;
     cashAccountId?: string | null;
   };
-}) {
+}, tx?: TransactionSql) {
   return amendDocument({
     companyId: input.companyId,
     documentId: input.documentId,
@@ -6142,7 +6207,7 @@ export async function amendInvoice(input: {
         ? _postSalesInvoice(tx, next)
         : _postPurchaseInvoice(tx, next);
     },
-  });
+  }, tx);
 }
 
 /**
