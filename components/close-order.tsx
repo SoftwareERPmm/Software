@@ -92,6 +92,15 @@ export function CloseOrder({
       <input type="hidden" name="document_id" value={documentId} />
       {isClosed && <input type="hidden" name="reopen" value="1" />}
 
+      {/* The figures this panel is promising, sent back with the decision.
+          They were read when the page rendered; the closure reads its own
+          fresh, and between the two a receipt can land. Without these the
+          confirmation could say "close 60" while the record says 20 was given
+          up, and nobody would learn the two disagreed. The engine compares
+          them and refuses rather than quietly recording something else. */}
+      <input type="hidden" name="saw_fulfilled" value={String(fulfilled)} />
+      <input type="hidden" name="saw_outstanding" value={String(atStake)} />
+
       <div className="card-head">
         <h2>{verb}</h2>
         <span className="page-sub">

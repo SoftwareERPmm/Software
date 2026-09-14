@@ -1813,10 +1813,17 @@ export async function closeOrderAction(_prev: unknown, fd: FormData): Promise<Ac
     const reason = str(fd, "reason");
     if (!documentId) return { error: "No order named" };
     if (!reason.trim()) return { error: "Say why the rest is not expected" };
+    // What the panel had on screen when the button was pressed. The engine
+    // checks its own reading against these and refuses if the order moved in
+    // between, so a confirmation never promises one thing and records another.
+    const saw = fd.get("saw_outstanding") === null ? null : {
+      fulfilled: num(fd, "saw_fulfilled"),
+      outstanding: num(fd, "saw_outstanding"),
+    };
     if (fd.get("reopen") !== null) {
-      await reopenOrder({ companyId: co, documentId, reason });
+      await reopenOrder({ companyId: co, documentId, reason, saw });
     } else {
-      await closeOrderRemaining({ companyId: co, documentId, reason });
+      await closeOrderRemaining({ companyId: co, documentId, reason, saw });
     }
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };

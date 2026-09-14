@@ -3047,11 +3047,42 @@ async function linkFulfilmentIn(
  * the overdue warning and leave the received quantity wrong — a report that
  * looks tidy and is false.
  */
+/**
+ * What the screen was showing when somebody pressed the button.
+ *
+ * The panel reads the order when the page renders; the closure reads it again
+ * inside its own transaction, and a receipt can land between the two. Without
+ * comparing them the confirmation could promise "close 60 remaining" while
+ * the record says 20 was given up and 80 had arrived — no ledger entry wrong,
+ * and the audit trail describing something nobody agreed to.
+ *
+ * So the decision carries the figures it was made on, and they have to still
+ * be true. Refused rather than reconciled: what changed might be exactly why
+ * somebody would not close it at all.
+ */
+function assertStillTrue(
+  saw: { fulfilled: number; outstanding: number } | null | undefined,
+  now: { fulfilled: number; outstanding: number },
+  docNo: string
+): void {
+  if (!saw) return;
+  const same = Math.abs(saw.fulfilled - now.fulfilled) < 0.0001
+    && Math.abs(saw.outstanding - now.outstanding) < 0.0001;
+  if (same) return;
+  throw new Error(
+    `${docNo} has changed since that was shown to you: it now stands at ` +
+    `${now.fulfilled} fulfilled and ${now.outstanding} remaining, not ` +
+    `${saw.fulfilled} and ${saw.outstanding}. Look at it again before deciding.`
+  );
+}
+
 export async function closeOrderRemaining(input: {
   companyId: string;
   documentId: string;
   reason: string;
   closedBy?: string | null;
+  /** What the screen showed when this was decided, if it came from one. */
+  saw?: { fulfilled: number; outstanding: number } | null;
 }) {
   if (!input.reason?.trim()) throw new Error("Say why the rest is not expected");
   return sql.begin(async (tx) => {
@@ -3085,6 +3116,11 @@ export async function closeOrderRemaining(input: {
         from v_order_outstanding
        where company_id = ${input.companyId} and order_id = ${input.documentId}`;
 
+    assertStillTrue(input.saw, {
+      fulfilled: Number(snap?.fulfilled ?? 0),
+      outstanding: Number(snap?.outstanding ?? 0),
+    }, order.doc_no as string);
+
     await tx`
       insert into order_closure
         (company_id, document_id, reason, closed_by, is_open,
@@ -3112,6 +3148,8 @@ export async function closeOrderRemaining(input: {
  */
 export async function reopenOrder(input: {
   companyId: string; documentId: string; reason: string; closedBy?: string | null;
+  /** What the screen showed when this was decided, if it came from one. */
+  saw?: { fulfilled: number; outstanding: number } | null;
 }) {
   if (!input.reason?.trim()) throw new Error("Say why it is expected again");
   return sql.begin(async (tx) => {
@@ -3154,6 +3192,13 @@ export async function reopenOrder(input: {
         + `no longer exists.`
       );
     }
+
+    // The reopen panel shows what would be owed again, so that is what it
+    // is compared against — not the order's outstanding, which reads 0 for
+    // as long as it stays closed.
+    assertStillTrue(input.saw, {
+      fulfilled: Number(state?.fulfilled ?? 0), outstanding: wouldOwe,
+    }, order.doc_no as string);
 
     await tx`
       insert into order_closure (company_id, document_id, reason, closed_by, is_open)

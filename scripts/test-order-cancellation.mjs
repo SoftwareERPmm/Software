@@ -388,6 +388,55 @@ try {
     await other.end();
   }
 
+  // ---- the confirmation cannot promise one thing and record another -------
+  //
+  // The panel reads the order when the page renders; the closure reads it
+  // again when it commits, and a receipt can land between the two. Recording
+  // the fresh figure is right — it is what actually happened — but doing it
+  // silently leaves a confirmation that said "close 60 remaining" beside a
+  // record saying 20 was given up, with nobody told the two disagreed.
+
+  console.log("\n  the order moves between showing and deciding\n");
+
+  const moved = await fresh();
+  // What a panel rendered a moment ago would have shown.
+  const asShown = { fulfilled: 0, outstanding: 100 };
+  await P.postGoodsReceipt({ ...base, sourceDocumentId: moved.id,
+    lines: [{ itemId: item.id, qty: 40, unitCost: 500 }] });
+
+  const stale = await refused(() => P.closeOrderRemaining({ companyId: co.id,
+    documentId: moved.id, reason: "close the rest", saw: asShown }));
+  check("closing on figures that have gone stale is refused", !!stale,
+    stale?.slice(0, 90));
+  check("  and the refusal says what it stands at now",
+    !!stale && stale.includes("40") && stale.includes("60"));
+  check("  nothing was closed", (await stateOf(moved.id)).isClosed === false);
+
+  // On the figures as they are now, it goes through.
+  const fine = await P.closeOrderRemaining({ companyId: co.id, documentId: moved.id,
+    reason: "close the rest", saw: { fulfilled: 40, outstanding: 60 } });
+  check("  on current figures it closes", fine.fulfilled === 40 && fine.outstanding === 60,
+    `${fine.fulfilled}/${fine.outstanding}`);
+
+  // Reopen is compared against what it would restore, not against the
+  // order's outstanding, which reads 0 while it stays closed.
+  const staleReopen = await refused(() => P.reopenOrder({ companyId: co.id,
+    documentId: moved.id, reason: "expect it again",
+    saw: { fulfilled: 0, outstanding: 100 } }));
+  check("reopening on stale figures is refused too", !!staleReopen,
+    staleReopen?.slice(0, 70));
+  const okReopen = await P.reopenOrder({ companyId: co.id, documentId: moved.id,
+    reason: "expect it again", saw: { fulfilled: 40, outstanding: 60 } });
+  check("  and goes through on current ones", okReopen.outstanding === 60,
+    `${okReopen.outstanding}`);
+
+  // A call with no screen behind it — a script, an import — is unaffected.
+  const headless = await fresh();
+  const quiet = await P.closeOrderRemaining({ companyId: co.id,
+    documentId: headless.id, reason: "no screen involved" });
+  check("a call with nothing shown to compare still works", quiet.outstanding === 100,
+    `${quiet.outstanding}`);
+
   // ---- a closure made before the snapshot existed -------------------------
   //
   // Null is not zero. Rows written before the column existed recorded nothing,
