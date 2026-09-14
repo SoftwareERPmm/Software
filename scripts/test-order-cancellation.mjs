@@ -642,7 +642,18 @@ try {
       .then(() => { second = "accepted"; })
       .catch((e) => { second = e.message; });
     await new Promise((r) => setTimeout(r, 400));
-    check("the second waits while the first holds the order", second === null);
+
+    // The evidence, not the inference. While that transaction is open its
+    // closure must be invisible to everyone else — if it had already
+    // committed, the second call would be refused instantly by the
+    // already-closed guard and this test would pass while proving nothing.
+    // That is exactly what it did while closeOrderRemaining quietly ignored
+    // the transaction it was handed and opened its own.
+    const seenOutside = await closureOf(contested.id);
+    check("the first closure is invisible outside its transaction",
+      seenOutside === null, seenOutside ? `leaked: ${seenOutside.reason}` : "");
+    check("  so the second is waiting on the row, not refused by the guard",
+      second === null, String(second).slice(0, 40));
 
     letGo();
     await firstClose;

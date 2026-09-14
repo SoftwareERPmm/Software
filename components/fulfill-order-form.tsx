@@ -169,7 +169,6 @@ export function FulfillOrderForm({
             bills={openBills}
             orderNo={orderNo}
             itemIds={lines.map((l) => l.itemId)}
-            remaining={lines.reduce((t, l) => t + Number(l.remainingQty || 0), 0)}
             unitWord={lines[0]?.uomCode ?? null}
           />
           <MaybeSamePurchase lines={collisions} />

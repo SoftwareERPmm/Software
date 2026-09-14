@@ -723,9 +723,16 @@ export async function getOpenPurchaseInvoices(companyId: string, limit: number |
 
   const lines = await sql`
     select dl.id, dl.document_id, dl.item_id, dl.base_qty as qty, dl.net_amount as net,
-           dl.unit_price, i.code as item_code, i.name as item_name
+           dl.unit_price, i.code as item_code, i.name as item_name,
+           -- The order line this bill line was raised from, so a receipt
+           -- matched to the bill can say which order line the goods answer.
+           -- Without it the receipt names the bill and nothing else, and the
+           -- order behind the bill stays at zero received.
+           case when o.doc_type = 'PURCHASE_ORDER' then dl.source_line_id end as order_line_id
       from document_line dl
       join item i on i.id = dl.item_id
+      left join document_line ol on ol.id = dl.source_line_id
+      left join document o on o.id = ol.document_id
      where dl.document_id = any(${ids})
      order by dl.line_no`;
 
@@ -763,6 +770,7 @@ export async function getOpenPurchaseInvoices(companyId: string, limit: number |
           itemName: l.item_name,
           qty: Math.round((Number(l.qty) - (arrived.get(l.id) ?? 0)) * 10000) / 10000,
           unitPrice: Number(l.unit_price),
+          orderLineId: (l.order_line_id ?? null) as string | null,
         }))
         .filter((l) => l.qty > 0);
 
@@ -1504,6 +1512,9 @@ export async function getOpenPurchaseOrders(companyId: string) {
     select o.id as order_id, o.doc_no as order_no, o.partner_id, p.name as partner_name,
            o.location_id,
            ol.id as line_id, ol.item_id, i.code as item_code, i.name as item_name,
+           -- The uom table was already joined and never read from. "40" means
+           -- nothing next to a bill awaiting goods; "40 CTN" means something.
+           u.code as uom_code,
            ol.unit_price as expected_price,
            ol.base_qty as ordered_qty,
            coalesce(r.received_qty, 0) as received_qty,

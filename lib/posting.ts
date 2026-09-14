@@ -3083,9 +3083,14 @@ export async function closeOrderRemaining(input: {
   closedBy?: string | null;
   /** What the screen showed when this was decided, if it came from one. */
   saw?: { fulfilled: number; outstanding: number } | null;
-}) {
+}, outer?: TransactionSql) {
   if (!input.reason?.trim()) throw new Error("Say why the rest is not expected");
-  return sql.begin(async (tx) => {
+  // Takes a caller's transaction like every other posting function here.
+  // Without it a caller that passed one had it silently ignored, and the work
+  // committed on its own connection the moment it finished — which made a
+  // concurrency test that held a transaction open around this call prove
+  // nothing at all: there was no transaction around it to hold.
+  return inTransaction(outer, async (tx) => {
     const [order] = await tx`
       select id, doc_no, doc_type, status from document
        where id = ${input.documentId} and company_id = ${input.companyId}
@@ -3176,9 +3181,9 @@ export async function reopenOrder(input: {
   companyId: string; documentId: string; reason: string; closedBy?: string | null;
   /** What the screen showed when this was decided, if it came from one. */
   saw?: { fulfilled: number; outstanding: number } | null;
-}) {
+}, outer?: TransactionSql) {
   if (!input.reason?.trim()) throw new Error("Say why it is expected again");
-  return sql.begin(async (tx) => {
+  return inTransaction(outer, async (tx) => {
     const [order] = await tx`
       select id, doc_no, doc_type, status from document
        where id = ${input.documentId} and company_id = ${input.companyId} for update`;

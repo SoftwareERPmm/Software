@@ -381,6 +381,7 @@ export default async function DocumentPage({
       .filter((r) => r.order_id === doc.id)
       .map((r) => ({
         lineId: r.line_id, itemId: r.item_id, itemCode: r.item_code, itemName: r.item_name,
+        uomCode: r.uom_code ?? undefined,
         remainingQty: Number(r.remaining_qty), expectedPrice: Number(r.expected_price ?? 0),
       }));
     if (doc.doc_type === "SALES_ORDER") {

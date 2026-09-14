@@ -24,19 +24,43 @@
 // same lock and both were told they had it. A guard that always says yes is
 // worse than none, because it is trusted.
 //
-// So the lock is a row, which every backend can see. The cost is that a run
-// killed outright leaves it behind, which is what STALE_AFTER is for: a lock
-// older than any suite could legitimately still be holding is taken over,
-// with a note that says so. The window is deliberately far longer than the
-// slowest suite — a stale lock costs one confusing wait, a window shorter
-// than a real run costs the collision this exists to prevent.
+// So the lock is a row, which every backend can see.
+//
+// The cost is that a run killed outright leaves it behind, and the first
+// attempt at covering that was a timer: a lock older than twenty minutes was
+// assumed dead and taken over. That is not evidence of death, it is evidence
+// of age. A suite that legitimately ran longer would have its lock taken by a
+// second runner, both would then be writing to the same database, and — worse
+// — when the first finished it would delete a lock it no longer owned,
+// letting a third in. The guard would have produced exactly the collision it
+// exists to prevent, while reporting that everything was fine.
+//
+// So liveness is proved rather than assumed. The holder writes a heartbeat
+// every few seconds; a lock is only taken over when that heartbeat has
+// stopped, which means the process really is gone. And every lock carries an
+// owner token: releasing deletes the row only if it is still yours, so a run
+// that overran and was superseded cannot clear somebody else's lock on its
+// way out.
 //
 // Refused rather than queued. Waiting behind a suite that empties the
 // database would start the second one against a half-built world, which is
 // the problem rather than the fix.
 
-/** Longer than the slowest suite by a wide margin. */
-const STALE_AFTER = "20 minutes";
+import { randomUUID } from "node:crypto";
+
+/** This process's claim, while it holds one. */
+let held = null;
+
+/**
+ * How long a heartbeat may go missing before the holder is presumed gone.
+ *
+ * This is not "how long a suite may run" — a suite may run all day as long as
+ * it keeps saying so. It is how long after a process dies before its lock can
+ * be taken, so it only has to outlast a slow round trip to Neon and a pause
+ * for garbage collection, not the slowest test in the repository.
+ */
+const HEARTBEAT_EVERY_MS = 5_000;
+const PRESUMED_DEAD = "90 seconds";
 
 async function ensureTable(sql) {
   // Created on demand rather than by migration: this is scaffolding for the
@@ -48,6 +72,10 @@ async function ensureTable(sql) {
       holder     text        not null,
       started_at timestamptz not null default now()
     )`;
+  // Added separately so a lock table created by an older version of this file
+  // gains them rather than being left without.
+  await sql`alter table test_run_lock add column if not exists owner text`;
+  await sql`alter table test_run_lock add column if not exists beat_at timestamptz`;
 }
 
 /**
@@ -63,15 +91,34 @@ async function ensureTable(sql) {
 export async function takeTestLock(sql, suiteName = "this suite") {
   await ensureTable(sql);
 
+  // Whose lock this is. Compared on release, so a run that overran and was
+  // superseded cannot delete the lock of whatever took over from it.
+  const owner = randomUUID();
+
   const [got] = await sql`
-    insert into test_run_lock (id, holder)
-    values (1, ${suiteName})
+    insert into test_run_lock (id, holder, owner, beat_at)
+    values (1, ${suiteName}, ${owner}, now())
     on conflict (id) do update
-       set holder = excluded.holder, started_at = now()
-     where test_run_lock.started_at < now() - ${STALE_AFTER}::interval
+       set holder = excluded.holder, owner = excluded.owner,
+           started_at = now(), beat_at = now()
+     -- Taken over only where the holder has stopped saying it is alive. A row
+     -- written before this column existed has no heartbeat and is treated as
+     -- dead, which is the only safe reading: nothing is maintaining it.
+     where test_run_lock.beat_at is null
+        or test_run_lock.beat_at < now() - ${PRESUMED_DEAD}::interval
     returning holder, started_at`;
 
   if (got) {
+    // Kept alive for as long as this process is. unref so it never holds the
+    // event loop open: a suite that has finished its work must still be able
+    // to exit.
+    const beat = setInterval(() => {
+      sql`update test_run_lock set beat_at = now()
+           where id = 1 and owner = ${owner}`.catch(() => {});
+    }, HEARTBEAT_EVERY_MS);
+    beat.unref?.();
+    held = { owner, beat };
+
     // A run that is killed never reaches its finally block, and the commonest
     // ways to kill one are ordinary: Ctrl-C, or piping the output into
     // something like `head`, which closes the pipe and sends SIGPIPE. Leaving
@@ -90,17 +137,21 @@ export async function takeTestLock(sql, suiteName = "this suite") {
     return;
   }
 
-  const [held] = await sql`
-    select holder, extract(epoch from (now() - started_at))::int as seconds
+  const [who] = await sql`
+    select holder,
+           extract(epoch from (now() - started_at))::int as seconds,
+           extract(epoch from (now() - beat_at))::int as quiet
       from test_run_lock where id = 1`;
 
   throw new Error(
-    `Another database test is running: ${held?.holder ?? "unknown"}`
-    + `${held?.seconds != null ? `, started ${held.seconds}s ago` : ""}. `
+    `Another database test is running: ${who?.holder ?? "unknown"}`
+    + `${who?.seconds != null ? `, started ${who.seconds}s ago` : ""}`
+    + `${who?.quiet != null ? ` (last alive ${who.quiet}s ago)` : ""}. `
     + `These suites share one database and empty it, so ${suiteName} would `
     + `wreck that run and its own. Wait for it to finish, or point .env at a `
-    + `database of your own. If nothing is really running, the lock clears `
-    + `itself after ${STALE_AFTER}.`
+    + `database of your own. A lock whose holder has stopped answering is `
+    + `taken over after ${PRESUMED_DEAD}; one still reporting in is not, `
+    + `however long it has been running.`
   );
 }
 
@@ -111,8 +162,15 @@ export async function takeTestLock(sql, suiteName = "this suite") {
  *   ./node_modules/.bin/tsx scripts/test-lock.mjs --unlock
  */
 export async function releaseTestLock(sql) {
+  if (held?.beat) clearInterval(held.beat);
+  const owner = held?.owner;
+  held = null;
+  // Only if it is still ours. A run that overran, was presumed dead and had
+  // its lock taken over must not delete the lock of whatever took over from
+  // it — that would let a third runner in behind both of them.
+  if (!owner) return;
   try {
-    await sql`delete from test_run_lock where id = 1`;
+    await sql`delete from test_run_lock where id = 1 and owner = ${owner}`;
   } catch {
     // Teardown must not turn a passing run into a failing one, and the
     // staleness rule covers a lock that outlives its holder anyway.
@@ -139,12 +197,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   try {
     await ensureTable(sql);
     const [held] = await sql`
-      select holder, extract(epoch from (now() - started_at))::int as seconds
+      select holder, extract(epoch from (now() - started_at))::int as seconds,
+             extract(epoch from (now() - beat_at))::int as quiet
         from test_run_lock where id = 1`;
     if (!held) console.log("  no test lock is held");
-    else console.log(`  held by ${held.holder}, started ${held.seconds}s ago`);
+    else console.log(`  held by ${held.holder}, started ${held.seconds}s ago,`
+      + ` last alive ${held.quiet ?? "never"}s ago`);
     if (process.argv.includes("--unlock") && held) {
-      await releaseTestLock(sql);
+      // By hand, so ownership is deliberately not checked — this is the
+      // escape hatch for a lock nothing is coming back to clear.
+      await sql`delete from test_run_lock where id = 1`;
       console.log("  released");
     }
   } finally {
