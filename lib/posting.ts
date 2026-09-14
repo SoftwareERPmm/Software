@@ -2766,9 +2766,44 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
     }
   }
 
-  // Goods that answer an order the document does not name — the invoice-first
-  // case, where source_document_id is already spoken for. Recorded here, with
-  // the same checks a link made afterwards goes through.
+  /**
+   * Goods that answer an order the document does not name — the invoice-first
+   * case, where source_document_id is already spoken for. Recorded here, with
+   * the same checks a link made afterwards goes through, plus one more.
+   *
+   * The caller says which order line each line answers, and a caller is not
+   * to be believed about that. linkFulfilmentIn checks the order is posted,
+   * open, for the same partner and the same item — all true of any number of
+   * unrelated orders from that supplier for that product. What it cannot know
+   * is whether this particular order line has anything to do with the bill
+   * these goods are being received against.
+   *
+   * So it is checked here, where the bill is known: the named order line must
+   * be one this bill was actually raised from. Anything else is a claim about
+   * a relationship that does not exist, and it is refused rather than
+   * recorded — a wrong fulfilment link closes the wrong order, and nothing
+   * downstream would ever reveal which.
+   */
+  const billId = input.sourceDocumentId;
+  if (src?.doc_type === "PURCHASE_INVOICE" && billId) {
+    const named = lines.map((l) => l.orderLineId).filter(Boolean) as string[];
+    if (named.length > 0) {
+      const belong = await tx`
+        select il.source_line_id as order_line_id
+          from document_line il
+         where il.document_id = ${billId}
+           and il.source_line_id = any(${named})`;
+      const allowed = new Set(belong.map((r: any) => r.order_line_id as string));
+      const stray = named.find((id) => !allowed.has(id));
+      if (stray) {
+        throw new Error(
+          `${src.doc_no} was not raised from that order line, so goods received `
+          + `against this bill cannot be said to answer it.`
+        );
+      }
+    }
+  }
+
   await linkNamedOrderLines(tx, companyId, doc.id as string, lines);
 
   const grir = await tx`select fn_system_account(${companyId}, 'GRIR_CLEARING') as a`;
@@ -2797,6 +2832,14 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
    * receipt for more than was ordered links only what was.
    */
   if (src?.doc_type === "PURCHASE_INVOICE") {
+    // Lines the caller allocated by hand are left alone here. Allocating them
+    // twice — once from the named order line, once from the bill's own trail
+    // to the same place — refused the second attempt with "0 of that item not
+    // already allocated", which reads as a defect in the goods rather than in
+    // the double booking.
+    const explicit = new Set(
+      lines.map((l) => l.orderLineId).filter(Boolean) as string[]);
+
     const carried = await tx`
       select rl.id as fulfilment_line_id, rl.base_qty::float as qty,
              cur.id as order_line_id, cur.item_id, live.id as order_id
@@ -2838,13 +2881,53 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
        where rl.document_id = ${doc.id}
          and o.doc_type = 'PURCHASE_ORDER'
          and live.status = 'POSTED'
+         ${explicit.size > 0
+           ? tx`and cur.id <> all(${[...explicit]}::uuid[])`
+           : tx``}
        order by rl.line_no`;
 
-    const links: { fulfilmentLineId: string; orderLineId: string; qty: number }[] = [];
-    for (const c of carried as unknown as {
+    const rows = carried as unknown as {
       fulfilment_line_id: string; qty: number;
       order_line_id: string; item_id: string; order_id: string;
-    }[]) {
+    }[];
+
+    /**
+     * A closed order is not receiving goods by this door either.
+     *
+     * The guard above catches a receipt that names the order. This one
+     * arrives naming the bill, and the allocation below would have answered
+     * a commitment somebody had already given up — silently, because nothing
+     * on this screen mentions the order at all. The refusal is the whole
+     * transaction: no receipt, no stock, no journal, no partial allocation to
+     * whichever orders happened to be open. A bill can cover several orders,
+     * and posting the open half while refusing the closed one would leave
+     * goods on the shelf that no document fully accounts for.
+     *
+     * Locked before it is read, and the lock is held for the rest of this
+     * transaction: a closure committing while this receipt is mid-flight
+     * either lands wholly before it — and is seen here — or waits behind it.
+     */
+    const seen = new Set<string>();
+    for (const c of rows) {
+      if (seen.has(c.order_id)) continue;
+      seen.add(c.order_id);
+      const [ord] = await tx`
+        select id, doc_no from document where id = ${c.order_id} for update`;
+      const [shut] = await tx`
+        select oc.is_open, oc.reason from order_closure oc
+         where fn_current_document(oc.document_id) = fn_current_document(${c.order_id})
+         order by oc.closed_at desc limit 1`;
+      if (shut && !shut.is_open) {
+        throw new Error(
+          `${ord?.doc_no ?? "That order"} was closed — "${shut.reason}" — and these `
+          + `goods would answer it. Reopen ${ord?.doc_no ?? "it"} before receiving `
+          + `against this bill.`
+        );
+      }
+    }
+
+    const links: { fulfilmentLineId: string; orderLineId: string; qty: number }[] = [];
+    for (const c of rows) {
       const [owed] = await tx`
         select coalesce(sum(outstanding), 0)::float as v from v_order_outstanding
          where order_id = ${c.order_id} and item_id = ${c.item_id}`;
