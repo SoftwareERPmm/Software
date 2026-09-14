@@ -127,7 +127,14 @@
   padding: 0.5rem 1rem; background: var(--erp-surface);
   border-bottom: 1px solid var(--erp-border);
 }
-.erp-actions { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+/* Actions now sit inside the sheet, under the quantities they act on,
+   rather than in the bar above it — so they need the sheet's own gutter and
+   room to breathe from the figures above and the notice below. */
+.erp-actions {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  padding: 0 1.25rem 1rem;
+}
+.erp-actionbar .erp-actions { padding: 0; }
 
 /* The chevron pipeline. The notch is what makes it read as direction rather
    than as a row of badges — a stepper with dots does not. */
@@ -265,6 +272,8 @@
   .erp-form { margin: 0; background: #fff; }
   .erp-sheet-page { border: 0; margin: 0; max-width: none; padding: 0; }
   .erp-actionbar { border: 0; padding-left: 0; }
+  /* A printed order is a record, not a console: nothing on it can be clicked,
+     and a row of buttons in ink is noise. */
   .erp-actions { display: none; }
   .erp-tr { break-inside: avoid; }
 }

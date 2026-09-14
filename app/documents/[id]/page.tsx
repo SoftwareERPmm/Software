@@ -679,6 +679,8 @@ export default async function DocumentPage({
               <CloseOrder
                 action={closeOrderAction}
                 documentId={doc.id}
+                docNo={doc.doc_no}
+                orderKind={sales ? "sales" : "purchase"}
                 isClosed={orderState.isClosed}
                 ordered={cancellation?.ordered ?? 0}
                 fulfilled={cancellation?.fulfilled ?? 0}
@@ -850,6 +852,8 @@ export default async function DocumentPage({
           <CloseOrder
             action={closeOrderAction}
             documentId={doc.id}
+            docNo={doc.doc_no}
+            orderKind={doc.doc_type === "SALES_ORDER" ? "sales" : "purchase"}
             isClosed={orderState.isClosed}
             ordered={cancellation?.ordered ?? 0}
             fulfilled={cancellation?.fulfilled ?? 0}

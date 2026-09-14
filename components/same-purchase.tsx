@@ -123,82 +123,124 @@ export type WaitingBill = {
  * very bill this order was billed from.
  *
  * Receiving here is not wrong, but it is the more expensive of the two
- * moves. Receiving against the bill clears what the supplier is owed and
- * now closes this order too, because the receipt carries the allocation the
+ * moves. Receiving against the bill matches the goods to that bill and
+ * closes this order with it, because the receipt carries the allocation the
  * bill was filled with. Receiving against the order closes the order and
  * leaves the bill waiting for goods that have already arrived — which is
  * where the second receipt, and the doubled stock, came from.
+ *
+ * Not "clears what the supplier is owed", which is what this said and is not
+ * what happens: receiving goods moves no money and settles no payable. The
+ * supplier is still owed exactly what they were owed a moment ago. Matching
+ * is a statement about which goods answer which bill, and a sentence that
+ * implies a payment is one a person can act on wrongly.
+ *
+ * One bill matters here and the rest are guesses. A bill raised from this
+ * order carries the allocation; the others merely come from the same
+ * supplier for the same item, and eight of those listed beside the one real
+ * answer bury it. The linked bill leads, with the action on it; the rest are
+ * behind a disclosure that says how many there are.
  */
 export function BillAwaitsTheseGoods({
-  bills, orderNo, itemIds,
-}: { bills: WaitingBill[]; orderNo: string; itemIds: string[] }) {
+  bills, orderNo, itemIds, remaining, unitWord,
+}: {
+  bills: WaitingBill[]; orderNo: string; itemIds: string[];
+  /** What this order is still expecting, for the headline and the button. */
+  remaining?: number;
+  unitWord?: string | null;
+}) {
   const relevant = bills
     .map((b) => ({ ...b, lines: b.lines.filter((l) => itemIds.includes(l.itemId)) }))
     .filter((b) => b.lines.length > 0);
   if (relevant.length === 0) return null;
 
-  const one = relevant.length === 1;
-  const anyLinked = relevant.some((b) => b.linked);
+  // The one raised from this order, if there is one. It is the only bill that
+  // carries the allocation that closes the order when the goods land.
+  const linked = relevant.find((b) => b.linked) ?? null;
+  const others = relevant.filter((b) => b !== linked);
+  const unit = unitWord ? ` ${unitWord}` : "";
+  const still = remaining && remaining > 0 ? `${qty(remaining)}${unit}` : null;
 
   return (
     <div className="awaiting">
-      <div className="awaiting-head">
-        <AlertCircle size={15} aria-hidden="true" />
-        <div>
-          <strong>
-            {one ? "A bill is" : `${relevant.length} bills are`} already waiting
-            for these goods.
-          </strong>
-          <span className="page-sub">
-            {anyLinked ? (
-              <>
-                {one ? "It was" : "One of them was"} raised from {orderNo}, so
-                receiving against it clears what the supplier is owed and
-                closes {orderNo} with it. Receiving here closes {orderNo} and
-                leaves the bill waiting for goods that have arrived.
-              </>
-            ) : (
-              <>
-                {one ? "It is" : "They are"} for the same items from this
-                supplier, and may be the same purchase — check before
-                receiving here. Nothing ties{" "}
-                {one ? "it" : "them"} to {orderNo}, so receiving against{" "}
-                {one ? "it" : "one"} would clear the bill without closing this
-                order.
-              </>
-            )}
-          </span>
+      {linked ? (
+        <>
+          <div className="awaiting-head">
+            <AlertCircle size={15} aria-hidden="true" />
+            <div>
+              <strong>
+                {still ? `${still} still expected` : "Still expected"}
+                {" · "}
+                Already billed on {linked.doc_no}
+              </strong>
+              <span className="page-sub">
+                When these goods arrive, receive them against this bill to
+                update both the bill and this order. Receiving here instead
+                closes {orderNo} and leaves {linked.doc_no} waiting for goods
+                that have already arrived.
+              </span>
+            </div>
+          </div>
+          <div className="awaiting-act">
+            <Link className="btn" href={`/purchases/receive/new?match_invoice_id=${linked.id}`}>
+              {still ? `Receive ${still} against bill` : "Receive against this bill"}
+            </Link>
+          </div>
+        </>
+      ) : (
+        <div className="awaiting-head">
+          <AlertCircle size={15} aria-hidden="true" />
+          <div>
+            <strong>
+              {others.length === 1 ? "A bill is" : `${others.length} bills are`} already
+              waiting for these goods.
+            </strong>
+            <span className="page-sub">
+              {others.length === 1 ? "It is" : "They are"} for the same items from
+              this supplier and may be the same purchase — check before receiving
+              here. Nothing ties {others.length === 1 ? "it" : "them"} to {orderNo},
+              so receiving against {others.length === 1 ? "it" : "one"} would match
+              those goods to that bill without closing this order.
+            </span>
+          </div>
         </div>
-      </div>
+      )}
 
-      <div className="tablewrap">
-        <table className="linetable awaiting-table">
-          <thead>
-            <tr><th>Bill</th><th>For</th><th>Raised</th><th /></tr>
-          </thead>
-          <tbody>
-            {relevant.map((b) => (
-              <tr key={b.id}>
-                <td>{b.doc_no}</td>
-                <td>
-                  {b.lines.map((l) => `${l.itemName} · ${qty(l.qty)}`).join(" · ")}
-                </td>
-                <td>
-                  {shortDate(b.doc_date as string)}
-                  {b.linked
-                    ? <span className="awaiting-why"> · from this order</span>
-                    : <span className="awaiting-why"> · not linked to this order</span>}
-                </td>
-                <td className="awaiting-go">
-                  <Link href={`/purchases/receive/new?match_invoice_id=${b.id}`}>
-                    Receive against this bill
-                  </Link>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {others.length > 0 && (
+        <details className="awaiting-others">
+          <summary>
+            {linked
+              ? `Other possible bills from this supplier: View ${others.length}`
+              : `All ${others.length}`}
+          </summary>
+          <div className="tablewrap">
+            <table className="linetable awaiting-table">
+              <thead>
+                <tr><th>Bill</th><th>For</th><th>Raised</th><th /></tr>
+              </thead>
+              <tbody>
+                {others.map((b) => (
+                  <tr key={b.id}>
+                    <td>{b.doc_no}</td>
+                    <td>
+                      {b.lines.map((l) => `${l.itemName} · ${qty(l.qty)}`).join(" · ")}
+                    </td>
+                    <td>
+                      {shortDate(b.doc_date as string)}
+                      <span className="awaiting-why"> · not linked to this order</span>
+                    </td>
+                    <td className="awaiting-go">
+                      <Link href={`/purchases/receive/new?match_invoice_id=${b.id}`}>
+                        Receive against this bill
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
     </div>
   );
 }

@@ -148,8 +148,12 @@ export function FulfillOrderForm({
         </h2>
         <span className="actions">
           <span className="page-sub">{lines.length} line{lines.length === 1 ? "" : "s"} open</span>
+          {/* "Cancel" here meant "put this form away", three inches from a
+              "Close remaining" that abandons the rest of the order — two
+              words for two unrelated acts, one of them irreversible. This one
+              only hides a form, so it says so. */}
           <button type="button" className="ghost tiny" onClick={() => setOpen((v) => !v)}>
-            {open ? "Cancel" : kind === "sales" ? "Deliver" : "Receive"}
+            {open ? "Hide this form" : kind === "sales" ? "Deliver" : "Receive"}
           </button>
         </span>
       </div>
@@ -165,6 +169,8 @@ export function FulfillOrderForm({
             bills={openBills}
             orderNo={orderNo}
             itemIds={lines.map((l) => l.itemId)}
+            remaining={lines.reduce((t, l) => t + Number(l.remainingQty || 0), 0)}
+            unitWord={lines[0]?.uomCode ?? null}
           />
           <MaybeSamePurchase lines={collisions} />
         </div>

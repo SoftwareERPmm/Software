@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useActionState } from "react";
 import Link from "next/link";
-import { CircleSlash, RotateCcw, XCircle } from "lucide-react";
+import { CircleSlash, RotateCcw, XCircle, X, AlertCircle } from "lucide-react";
 import type { ActionResult } from "@/lib/actions";
 
 type Linked = {
@@ -29,25 +29,35 @@ const typeName = (t: string) =>
  * confirm, and what the confirmation promises.
  *
  * Neither one touches anything else. Closing moves no stock, cancels no
- * invoice and refunds no payment — those stay exactly where they are, and
- * have to be dealt with on their own terms. That is precisely why the bills,
- * receipts and payments already standing against this order are listed before
- * the reason box rather than after the fact: the person clicking needs to see
- * what this does not resolve.
+ * invoice and refunds no payment — those stay exactly where they are and have
+ * to be dealt with on their own terms. That is why the bills, receipts and
+ * payments already standing against this order are listed before the reason
+ * box rather than discovered afterwards.
  *
  * Not the same statement as "the goods arrived", and still kept apart from
  * it. Linking a receipt says these goods answered this order, and the
  * received quantity goes up. Closing says whatever is outstanding never will
- * arrive, and the received quantity stays exactly where it is. Using this one
- * where the other was meant silences the overdue warning and leaves the
- * order's received quantity wrong — a report that looks tidy and is false.
+ * arrive, and the received quantity stays exactly where it is.
+ *
+ * In a drawer rather than inline. This grew from a reason box into figures, a
+ * consequence, a document list and a reason, and unfolding all that in the
+ * middle of the page pushed the order itself out of sight — the very thing
+ * being reviewed. Against the right edge it sits beside the order, which is
+ * what reviewing before confirming needs. <dialog> does the rest: focus trap,
+ * Esc, inert background.
+ *
+ * Red on the trigger as well as the confirmation, because they are the same
+ * act. A quiet button that opens a red one asks the reader to discover the
+ * weight of the thing halfway through doing it.
  */
 export function CloseOrder({
-  action, documentId, isClosed, ordered, fulfilled, outstanding, reopensTo,
-  documents, unitWord,
+  action, documentId, docNo, orderKind, isClosed,
+  ordered, fulfilled, outstanding, reopensTo, documents, unitWord,
 }: {
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   documentId: string;
+  docNo: string;
+  orderKind: "purchase" | "sales";
   isClosed: boolean;
   ordered: number;
   fulfilled: number;
@@ -61,6 +71,21 @@ export function CloseOrder({
     action as never, null,
   );
   const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    if (open && !d.open) d.showModal();
+    if (!open && d.open) d.close();
+  }, [open]);
+
+  // Once it has posted, the drawer goes: the page behind it has already been
+  // revalidated, so leaving it open would show figures that are no longer true
+  // beside a button offering to act on them again.
+  useEffect(() => {
+    if (state && "ok" in state && state.ok) setOpen(false);
+  }, [state]);
 
   if (!isClosed && outstanding <= 0.0001) return null;
 
@@ -69,120 +94,156 @@ export function CloseOrder({
   // remainder can be given up.
   const cancelling = !isClosed && fulfilled <= 0.0001;
   const unit = unitWord ? ` ${unitWord}` : "";
-  // What is at stake. For a closed order that is what reopening restores:
-  // its outstanding reads 0 by definition while it stays closed, so showing
-  // that figure would offer to reopen an order for nothing.
+  // What is at stake. For a closed order that is what reopening restores: its
+  // outstanding reads 0 by definition while it stays closed, so showing that
+  // figure would offer to reopen an order for nothing.
   const atStake = isClosed ? reopensTo : outstanding;
+  const noun = orderKind === "sales" ? "sales order" : "purchase order";
+  const movedWord = orderKind === "sales" ? "Delivered" : "Received";
 
   const verb = isClosed ? "Reopen" : cancelling ? "Cancel order" : "Close remaining";
   const Icon = isClosed ? RotateCcw : cancelling ? XCircle : CircleSlash;
-
-  if (!open) {
-    return (
-      <div className="docactions">
-        <button type="button" className="btn ghost" onClick={() => setOpen(true)}>
-          <Icon size={14} aria-hidden="true" /> {verb}
-        </button>
-      </div>
-    );
-  }
+  const title = isClosed ? `Reopen ${noun}`
+    : cancelling ? `Cancel ${noun}`
+      : "Close the remainder";
 
   return (
-    <form action={formAction} className="card" style={{ marginBottom: "1rem" }}>
-      <input type="hidden" name="document_id" value={documentId} />
-      {isClosed && <input type="hidden" name="reopen" value="1" />}
+    <>
+      <button
+        type="button"
+        className={`btn ghost${isClosed ? "" : " danger"}`}
+        onClick={() => setOpen(true)}
+      >
+        <Icon size={14} aria-hidden="true" /> {verb}
+      </button>
 
-      {/* The figures this panel is promising, sent back with the decision.
-          They were read when the page rendered; the closure reads its own
-          fresh, and between the two a receipt can land. Without these the
-          confirmation could say "close 60" while the record says 20 was given
-          up, and nobody would learn the two disagreed. The engine compares
-          them and refuses rather than quietly recording something else. */}
-      <input type="hidden" name="saw_fulfilled" value={String(fulfilled)} />
-      <input type="hidden" name="saw_outstanding" value={String(atStake)} />
+      <dialog
+        ref={ref}
+        className="drawer"
+        onCancel={(e) => { e.preventDefault(); setOpen(false); }}
+        onClick={(e) => { if (e.target === ref.current) setOpen(false); }}
+      >
+        <form action={formAction} className="drawer-panel">
+          <input type="hidden" name="document_id" value={documentId} />
+          {isClosed && <input type="hidden" name="reopen" value="1" />}
+          {/* The figures this drawer is promising, sent back with the
+              decision. They were read when the page rendered; the closure
+              reads its own fresh, and between the two a receipt can land.
+              Without these the confirmation could say "close 60" while the
+              record says 20 was given up, and nobody would learn the two
+              disagreed. The engine compares them and refuses. */}
+          <input type="hidden" name="saw_fulfilled" value={String(fulfilled)} />
+          <input type="hidden" name="saw_outstanding" value={String(atStake)} />
 
-      <div className="card-head">
-        <h2>{verb}</h2>
-        <span className="page-sub">
-          {isClosed
-            ? "The outstanding quantity goes back to being owed. Check it against "
-              + "what has happened since — quantities and linked documents may have "
-              + "moved while this was closed."
-            : cancelling
-              ? "Nothing has been received or delivered against this order, so the "
-                + "whole commitment is given up. The order itself is kept."
-              : "Says the outstanding goods are not coming. It does not say they "
-                + "arrived — if they did, link the receipt instead, or the order "
-                + "will read as never received."}
-        </span>
-      </div>
-
-      {state && "error" in state && <div className="alert">{state.error}</div>}
-
-      <div className="card-body">
-        {/* The figures being confirmed, and what they become. Shown as one
-            line each rather than a table: there are three numbers and a
-            person is deciding on them, not studying them. */}
-        <div className="closure-preview">
-          <div className="closure-now">
-            <strong>{qty(ordered)}{unit} ordered</strong>
-            <span> · {qty(fulfilled)} fulfilled</span>
-            <span> · {qty(atStake)} remaining</span>
-          </div>
-          <div className="closure-then">
-            {isClosed
-              ? <>After: <strong>{qty(fulfilled)} fulfilled · {qty(atStake)} outstanding again</strong></>
-              : cancelling
-                ? <>After: <strong>0 fulfilled · {qty(atStake)} cancelled · 0 outstanding</strong></>
-                : <>After: <strong>{qty(fulfilled)} fulfilled · {qty(atStake)} closed · 0 outstanding</strong></>}
-          </div>
-        </div>
-
-        {documents.length > 0 && (
-          <div className="closure-linked">
-            <div className="closure-linked-head">
-              {isClosed ? "Standing against this order now" : "This does not touch"}
+          <div className="drawer-head">
+            <div>
+              <h2>{title}</h2>
+              <span className="drawer-doc">{docNo}</span>
             </div>
-            <ul>
-              {documents.map((d) => (
-                <li key={d.id}>
-                  <Link href={`/documents/${d.id}`}>{d.doc_no}</Link>
-                  <span className="muted"> · {typeName(d.doc_type)} · {shortDate(d.doc_date)}</span>
-                  {Number(d.gross_total ?? 0) !== 0 && (
-                    <span className="muted"> · {money(d.gross_total)}</span>
-                  )}
-                </li>
-              ))}
-            </ul>
-            <div className="closure-linked-note">
+            <button type="button" className="drawer-x" onClick={() => setOpen(false)}
+                    aria-label="Close">
+              <X size={18} aria-hidden="true" />
+            </button>
+          </div>
+
+          <div className="drawer-body">
+            <p className="drawer-lead">
               {isClosed
-                ? "Check these still say what you expect before expecting the rest again."
-                : "Stock stays where it is, bills stay owed and payments stay made. "
-                  + "Resolve any of these separately — with a return, a credit or a refund."}
+                ? "Put the remaining quantity back to being expected. Check it "
+                  + "against what has happened since — quantities and linked "
+                  + "documents may have moved while this was closed."
+                : cancelling
+                  ? "Cancel the remaining commitment. The order stays in history."
+                  : "Say the outstanding goods are not coming. What has already "
+                    + "arrived stays exactly as it is."}
+            </p>
+
+            <h3 className="drawer-section">Review quantities</h3>
+            <div className="drawer-figures">
+              <div className="drawer-figure">
+                <span className="k">Ordered</span>
+                <span className="v">{qty(ordered)}{unit}</span>
+              </div>
+              <div className="drawer-figure">
+                <span className="k">{movedWord}</span>
+                <span className="v">{qty(fulfilled)}{unit}</span>
+              </div>
+              <div className="drawer-figure">
+                <span className="k">
+                  {isClosed ? "To reopen" : cancelling ? "To cancel" : "To close"}
+                </span>
+                <span className="v">{qty(atStake)}{unit}</span>
+              </div>
             </div>
+
+            <div className="drawer-after">
+              <AlertCircle size={15} aria-hidden="true" />
+              <span>
+                {isClosed
+                  ? `After reopening: ${qty(atStake)}${unit} outstanding again`
+                  : `After ${cancelling ? "cancellation" : "closing"}: 0${unit} outstanding`}
+              </span>
+            </div>
+
+            <h3 className="drawer-section">Linked documents</h3>
+            <div className="drawer-linked">
+              {documents.length === 0 ? (
+                <p className="drawer-none">No receipts, invoices or payments linked.</p>
+              ) : (
+                <>
+                  <ul>
+                    {documents.map((d) => (
+                      <li key={d.id}>
+                        <Link href={`/documents/${d.id}`}>{d.doc_no}</Link>
+                        <span className="muted">
+                          {" · "}{typeName(d.doc_type)}{" · "}{shortDate(d.doc_date)}
+                        </span>
+                        {Number(d.gross_total ?? 0) !== 0 && (
+                          <span className="muted"> · {money(d.gross_total)}</span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="drawer-note">
+                    {isClosed
+                      ? "Check these still say what you expect before expecting the rest again."
+                      : "These stay as they are. Resolve any of them separately — with a "
+                        + "return, a credit or a refund."}
+                  </p>
+                </>
+              )}
+            </div>
+
+            {state && "error" in state && <div className="alert">{state.error}</div>}
+
+            <div className="field">
+              {/* The asterisk comes from the label style for a required
+                  field; adding one here printed "Reason * *". */}
+              <label htmlFor="close_reason">Reason</label>
+              <textarea id="close_reason" name="reason" required rows={3}
+                        placeholder={isClosed
+                          ? "e.g. supplier confirmed the balance will ship"
+                          : cancelling
+                            ? "e.g. order entered twice"
+                            : "e.g. customer cancelled the remainder"} />
+            </div>
+
+            <p className="drawer-note">No stock or money moves.</p>
           </div>
-        )}
 
-        <div className="field">
-          <label htmlFor="close_reason">Reason</label>
-          <input id="close_reason" name="reason" type="text" required
-                 placeholder={isClosed
-                   ? "e.g. supplier confirmed the balance will ship"
-                   : cancelling
-                     ? "e.g. entered twice"
-                     : "e.g. customer cancelled the remainder"} />
-        </div>
-      </div>
-
-      <div className="actions">
-        <button type="submit" disabled={pending}>
-          {pending ? "Saving…"
-            : isClosed ? `Reopen for ${qty(atStake)}${unit}`
-              : cancelling ? `Cancel all ${qty(atStake)}${unit}`
-                : `Close remaining ${qty(atStake)}${unit}`}
-        </button>
-        <button type="button" className="ghost" onClick={() => setOpen(false)}>Back</button>
-      </div>
-    </form>
+          <div className="drawer-foot">
+            <button type="button" className="btn ghost" onClick={() => setOpen(false)}>
+              {isClosed ? "Keep closed" : "Keep order"}
+            </button>
+            <button type="submit" className={`btn${isClosed ? "" : " danger"}`} disabled={pending}>
+              {pending ? "Saving…"
+                : isClosed ? `Reopen for ${qty(atStake)}${unit}`
+                  : cancelling ? "Cancel order"
+                    : `Close remaining ${qty(atStake)}${unit}`}
+            </button>
+          </div>
+        </form>
+      </dialog>
+    </>
   );
 }

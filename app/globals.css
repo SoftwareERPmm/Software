@@ -1998,3 +1998,109 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
   font-size: 0.85rem;
   color: var(--muted);
 }
+
+/* The bill already waiting for an order's goods. One bill is the answer and
+   the rest are guesses from the same supplier, so the answer gets the notice
+   and the action, and the guesses go behind a count. Eight rows of maybe
+   beside one row of yes buries the yes. */
+.awaiting-act {
+  padding: 0 0 0.85rem 2.1rem;
+}
+.awaiting-others {
+  border-top: 1px solid var(--line);
+  padding-top: 0.5rem;
+}
+.awaiting-others > summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--muted);
+  padding: 0.15rem 0;
+  list-style-position: inside;
+}
+.awaiting-others > summary:hover { color: var(--ink); }
+.awaiting-others[open] > summary { margin-bottom: 0.4rem; }
+
+/* A drawer, not a centred box.
+   Same <dialog> underneath — focus trap, Esc, inert background, all free —
+   pushed to the right edge and given the full height. A decision with figures,
+   a document list and a reason to type is too tall for a centred card: it
+   either scrolls in the middle of the screen or covers the document it is
+   about. Against the edge it can be read beside the order it concerns, which
+   is the point of reviewing before confirming. */
+dialog.drawer {
+  max-width: none;
+  width: min(31rem, 100%);
+  height: 100%;
+  max-height: 100%;
+  margin: 0 0 0 auto;
+}
+dialog.drawer .drawer-panel {
+  background: var(--surface);
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  box-shadow: -24px 0 60px rgb(0 0 0 / 0.22);
+}
+.drawer-head {
+  display: flex; align-items: flex-start; gap: var(--s3);
+  padding: var(--s4) var(--s4) var(--s3);
+  border-bottom: 1px solid var(--line);
+}
+.drawer-head h2 { margin: 0; font-size: var(--t-lg); font-weight: 600; letter-spacing: var(--track-tight); }
+.drawer-head .drawer-doc { display: block; color: var(--muted); font-size: var(--t-md); margin-top: 2px; }
+.drawer-x {
+  margin-left: auto; background: none; border: 0; cursor: pointer;
+  color: var(--muted); padding: 2px; line-height: 0;
+}
+.drawer-x:hover { color: var(--ink); }
+/* The only part that scrolls, so the decision buttons never leave the screen. */
+.drawer-body { flex: 1; overflow-y: auto; padding: var(--s4); }
+.drawer-lead { margin: 0 0 var(--s4); color: var(--muted); line-height: var(--lh-base); }
+.drawer-section { font-size: var(--t-md); font-weight: 600; margin: 0 0 var(--s2); }
+.drawer-figures { margin: 0 0 var(--s3); }
+.drawer-figure {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 0.3rem 0; border-bottom: 1px solid var(--line);
+}
+.drawer-figure:last-child { border-bottom: 0; }
+.drawer-figure .k { color: var(--muted); }
+.drawer-figure .v { font-variant-numeric: tabular-nums; }
+/* What it becomes, which is the figure being agreed to rather than reported. */
+.drawer-after {
+  display: flex; align-items: center; gap: var(--s2);
+  padding: 0.6rem 0.75rem; margin-bottom: var(--s4);
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+  background: color-mix(in srgb, var(--warn) 9%, transparent);
+  border-radius: var(--r-md);
+  color: color-mix(in srgb, var(--warn) 80%, var(--ink));
+}
+.drawer-linked { margin: 0 0 var(--s4); }
+.drawer-linked ul { margin: 0; padding-left: 1.1rem; }
+.drawer-linked li { margin-bottom: 0.2rem; }
+.drawer-none { color: var(--muted); margin: 0; }
+.drawer-note { color: var(--muted); font-size: var(--t-sm); margin: var(--s3) 0 0; }
+.drawer-foot {
+  display: flex; gap: var(--s2); justify-content: flex-end;
+  padding: var(--s3) var(--s4);
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+.drawer-foot .btn { min-width: 8rem; justify-content: center; }
+/* Irreversible, and coloured like it — on the trigger as well as the
+   confirmation, so the two read as the same act. */
+.btn.danger {
+  background: var(--bad);
+  border-color: var(--bad);
+  color: #fff;
+}
+.btn.danger:hover { background: color-mix(in srgb, var(--bad) 88%, #000); }
+.btn.ghost.danger {
+  background: transparent;
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 45%, transparent);
+}
+.btn.ghost.danger:hover { background: color-mix(in srgb, var(--bad) 8%, transparent); }

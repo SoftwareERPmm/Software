@@ -1137,6 +1137,23 @@ export async function getRelatedDocuments(documentId: string): Promise<RelatedDo
          order by d.posting_date, d.doc_no`)
     : [];
 
+  /**
+   * What was built on this one.
+   *
+   * An order is answered three ways, and this panel used to see only the
+   * first: a receipt raised straight from the order, a receipt whose lines
+   * name the order's lines, and a receipt linked to it afterwards. The other
+   * two are how goods reach an order that was billed first — the receipt is
+   * raised against the bill, and the order is reached through the lines — so
+   * a page could say "30 of 50 received" in its own heading and "Goods
+   * receipt: None" a few inches below, about the same thirty cartons. Two
+   * queries answering the same question differently, which reads as the page
+   * being broken rather than as a link being missing.
+   *
+   * The same three routes v_order_outstanding counts, so the panel and the
+   * figure above it now agree by construction rather than by coincidence.
+   */
+  const isOrder = doc.doc_type === "SALES_ORDER" || doc.doc_type === "PURCHASE_ORDER";
   const children = shape(await sql`
     select d.id, d.doc_type, d.doc_no, to_char(d.doc_date,'YYYY-MM-DD') as doc_date,
            d.status, d.gross_total,
@@ -1144,7 +1161,25 @@ export async function getRelatedDocuments(documentId: string): Promise<RelatedDo
                       where dl.document_id = d.id), 0) as qty
       from document d
      where d.company_id = ${doc.company_id}
-       and d.source_document_id in (${versionsOf(documentId)})
+       and d.id in (
+         select c.id from document c
+          where c.source_document_id in (${versionsOf(documentId)})
+         ${isOrder ? sql`
+         union
+         -- Lines that name one of this order's lines: how a receipt raised
+         -- against a bill still says which order it answers.
+         select dl.document_id
+           from document_line dl
+           join document_line ol on ol.id = dl.source_line_id
+          where ol.document_id in (${versionsOf(documentId)})
+         union
+         -- Linked to the order afterwards, from the receipt or from here.
+         select fdl.document_id
+           from fulfilment_link fl
+           join document_line ol on ol.id = fl.order_line_id
+           join document_line fdl on fdl.id = fl.fulfilment_line_id
+          where ol.document_id in (${versionsOf(documentId)})` : sql``}
+       )
      order by d.doc_date, d.doc_no`);
 
   // Money applied to this invoice, or the invoices this payment was applied
