@@ -54,11 +54,14 @@ import {
   getGrirCollisions,
   getOpenPurchaseInvoices,
   getBillsRaisedFromOrders,
+  getReturnedAgainst,
+  getOrderCancellation,
 } from "@/lib/queries";
 import {
   createDelivery, createGoodsReceipt, replaceConsignmentSettlement,
 } from "@/lib/actions";
 import { FulfillOrderForm } from "@/components/fulfill-order-form";
+import { ReturnedBadge } from "@/components/returned-badge";
 import { ErpOrderForm, type OrderLine as ErpOrderLine } from "@/components/erp-order-form";
 import { ErpDocShell } from "@/components/erp-doc-shell";
 
@@ -215,11 +218,28 @@ export default async function DocumentPage({
   const versions = (await getDocumentVersions(
     doc.company_id, doc.doc_no)) as unknown as DocumentVersion[];
   const versionTrail = <VersionTrail versions={versions} currentId={doc.id} />;
+  // How much of a receipt has gone back to the supplier. Its posting status
+  // cannot say this — it posted, and the goods did arrive — so a receipt whose
+  // hundred units were all returned reads exactly like one whose goods are
+  // still on the shelf unless this is shown beside it.
+  const returned = doc.doc_type === "GOODS_RECEIPT"
+    ? await getReturnedAgainst(doc.id)
+    : null;
+
   const versionBadge = (
-    <VersionBadge
-      version={Number(doc.version ?? 1)}
-      superseded={!!doc.superseded_by_document_id}
-    />
+    <>
+      <VersionBadge
+        version={Number(doc.version ?? 1)}
+        superseded={!!doc.superseded_by_document_id}
+      />
+      {returned && (
+        <ReturnedBadge
+          received={returned.received}
+          returned={returned.returned}
+          state={returned.state}
+        />
+      )}
+    </>
   );
 
   const isPostedOrder = ["PURCHASE_ORDER", "SALES_ORDER"].includes(doc.doc_type)
@@ -236,6 +256,12 @@ export default async function DocumentPage({
     ? await getOrderOutstanding(doc.company_id, doc.id)
     : { outstanding: 0, isClosed: false };
   const closure = isPostedOrder ? await getOrderClosure(doc.id) : null;
+  // What closing or reopening would be deciding about, and what it leaves
+  // alone — read here so the confirmation shows the same figures the engine
+  // will record.
+  const cancellation = isPostedOrder
+    ? await getOrderCancellation(doc.company_id, doc.id)
+    : null;
 
   // Goods already recorded that could answer this order — offered here,
   // where somebody is standing when they notice the order is short.
@@ -629,21 +655,40 @@ export default async function DocumentPage({
           optional: OPTIONAL_STAGE.has(step),
         }))}
         actions={
-          isOpenOrder && orderLines.length > 0 ? (
-            <FulfillOrderForm
-              kind={sales ? "sales" : "purchase"}
-              orderId={doc.id}
-              orderNo={doc.doc_no}
-              partnerName={doc.partner_name}
-              partnerId={doc.partner_id}
-              locationId={doc.location_id}
-              lines={orderLines}
-              action={sales ? createDelivery : createGoodsReceipt}
-              stockByLocation={sales ? stockByLocation : undefined}
-              collisions={sales ? [] : collisions}
-              openBills={billsAwaiting}
-            />
-          ) : null
+          <>
+            {isOpenOrder && orderLines.length > 0 && (
+              <FulfillOrderForm
+                kind={sales ? "sales" : "purchase"}
+                orderId={doc.id}
+                orderNo={doc.doc_no}
+                partnerName={doc.partner_name}
+                partnerId={doc.partner_id}
+                locationId={doc.location_id}
+                lines={orderLines}
+                action={sales ? createDelivery : createGoodsReceipt}
+                stockByLocation={sales ? stockByLocation : undefined}
+                collisions={sales ? [] : collisions}
+                openBills={billsAwaiting}
+              />
+            )}
+            {/* Giving the order up, or asking for it back. This lived only on
+                the render path below, which an order never reaches — it
+                returns into ErpOrderForm above — so closing and reopening
+                have had no button on the screen that owns them. */}
+            {isPostedOrder && (
+              <CloseOrder
+                action={closeOrderAction}
+                documentId={doc.id}
+                isClosed={orderState.isClosed}
+                ordered={cancellation?.ordered ?? 0}
+                fulfilled={cancellation?.fulfilled ?? 0}
+                outstanding={orderState.outstanding}
+                reopensTo={cancellation?.reopensTo ?? 0}
+                documents={(cancellation?.documents ?? []) as never}
+                unitWord={(orderProgress[0] as any)?.uom_code as string | undefined}
+              />
+            )}
+          </>
         }
       />
     );
@@ -806,7 +851,12 @@ export default async function DocumentPage({
             action={closeOrderAction}
             documentId={doc.id}
             isClosed={orderState.isClosed}
+            ordered={cancellation?.ordered ?? 0}
+            fulfilled={cancellation?.fulfilled ?? 0}
             outstanding={orderState.outstanding}
+            reopensTo={cancellation?.reopensTo ?? 0}
+            documents={(cancellation?.documents ?? []) as never}
+            unitWord={unitWord}
           />
         </>
       )}

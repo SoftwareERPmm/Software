@@ -256,17 +256,53 @@ try {
     check("which clears it once more", (await owed()) === 0, String(await owed()));
 
     // The control account and the subledger must agree throughout — that is
-    // the invariant this whole feature turns on.
-    const [ap] = await sql`
-      select coalesce(sum(jl.base_amount), 0) bal
-        from journal_line jl join account a on a.id = jl.account_id
-       where jl.company_id = ${co.id} and a.is_control and a.account_type = 'LIABILITY'`;
-    const [sub] = await sql`
-      select coalesce(sum(outstanding), 0) o from v_open_item
-       where company_id = ${co.id} and doc_type = 'PURCHASE_INVOICE'`;
-    check("AP control agrees with the payables subledger",
-      Math.abs(Math.abs(n(ap.bal)) - n(sub.o)) < 0.0001,
-      `control ${Math.abs(n(ap.bal))} vs subledger ${n(sub.o)}`);
+    // the invariant this whole feature turns on. Asked twice, because the
+    // two questions are genuinely different and one company-wide figure
+    // conflates them.
+    //
+    // Signed, not absolute. Positive is debit here, so a liability carries a
+    // credit balance and the control account must equal the NEGATED
+    // subledger. Comparing Math.abs() of both sides — which this check used
+    // to do — accepts payables sitting the wrong way round as readily as the
+    // right way, and a sign error on the control account is exactly the kind
+    // of fault worth catching.
+    const apFor = async (partnerId) => {
+      const [r] = await sql`
+        select coalesce(sum(jl.base_amount), 0) bal
+          from journal_line jl join account a on a.id = jl.account_id
+         where jl.company_id = ${co.id} and a.is_control and a.account_type = 'LIABILITY'
+           ${partnerId ? sql`and jl.partner_id = ${partnerId}` : sql``}`;
+      return n(r.bal);
+    };
+    const subFor = async (partnerId) => {
+      const [r] = await sql`
+        select coalesce(sum(outstanding), 0) o from v_open_item
+         where company_id = ${co.id} and doc_type = 'PURCHASE_INVOICE'
+           ${partnerId ? sql`and partner_id = ${partnerId}` : sql``}`;
+      return n(r.o);
+    };
+
+    // First scoped to this suite's own supplier, so a failure names its
+    // cause: these documents, posted by this file. This file truncates
+    // nothing, so the company-wide form alone could break on something an
+    // unrelated suite left behind — and a break read that way once got
+    // attributed to a consignment defect that did not exist.
+    const mineAp = await apFor(supplier.id);
+    const mineSub = await subFor(supplier.id);
+    check("AP control agrees with the payables subledger, for this suite's supplier",
+      Math.abs(mineAp + mineSub) < 0.0001,
+      `control ${mineAp} vs subledger ${mineSub}, expected control = -subledger`);
+
+    // Then company-wide, and kept. Valid documents an earlier suite left
+    // behind are still valid documents: they must reconcile too, and residue
+    // is no excuse for them not to. This is also the only form that catches
+    // a control line posted with no partner_id on it at all, which the
+    // scoped check above would silently skip.
+    const allAp = await apFor(null);
+    const allSub = await subFor(null);
+    check("and company-wide, including whatever earlier suites left behind",
+      Math.abs(allAp + allSub) < 0.0001,
+      `control ${allAp} vs subledger ${allSub}, expected control = -subledger`);
   }
 
   // ---- editing: void, repost, link ----------------------------------------

@@ -340,6 +340,44 @@ async function requireSource(
  * a caller pointing at another document's line has made a mistake, and
  * quietly matching something else hides it.
  */
+/**
+ * An order that was given up does not quietly start receiving goods again.
+ *
+ * Closing says the rest is not expected. Letting a receipt or a delivery land
+ * against it anyway makes that statement meaningless the moment it is
+ * inconvenient: the order reads closed, the goods arrive, and the outstanding
+ * figure the closure set to nothing is contradicted by a document nobody was
+ * asked about. Worse, it is silent — the person receiving never learns the
+ * order was called off, and whoever called it off never learns it continued.
+ *
+ * So the way back in is Reopen, which is one click and, unlike a flag on this
+ * posting, records who expected the goods again and why. Reopening is
+ * refused in turn if the order has since been fulfilled in full, so this does
+ * not become a door into a commitment that no longer exists.
+ *
+ * Read under the lock the caller already holds on the order row, so a closure
+ * committing at the same moment is either wholly before this or wholly after
+ * it, never half-seen.
+ */
+async function assertOrderNotClosed(
+  tx: TransactionSql,
+  orderId: string,
+  docNo: string,
+  what: "goods" | "delivery"
+): Promise<void> {
+  const [latest] = await tx`
+    select is_open, reason from order_closure
+     where document_id = ${orderId}
+     order by closed_at desc limit 1`;
+  if (!latest || latest.is_open) return;
+
+  throw new Error(
+    `${docNo} was closed — "${latest.reason}" — so it is not expecting ` +
+    `${what === "goods" ? "any more goods" : "any more deliveries"}. ` +
+    `Reopen it first if the rest is coming after all.`
+  );
+}
+
 async function assertSourceLines(
   tx: TransactionSql,
   sourceId: string,
@@ -640,8 +678,31 @@ async function assertNotOverBilled(
        ${selfId ? tx`and d.id <> ${selfId}` : tx``}
      order by d.posting_date, d.doc_no, dl.line_no`;
 
+  /**
+   * And whatever went back to the supplier.
+   *
+   * Goods returned are not billable: the receipt brought them in, the return
+   * sent them out, and nobody asked for money in between. The bill-matching
+   * screen already leaves them out — but a screen is not enforcement, and the
+   * engine would post an invoice for a hundred units that were returned in
+   * full, because nothing here had ever heard of a return.
+   *
+   * Drawn down through the same matcher as a bill, so a part return leaves
+   * exactly the remainder billable.
+   */
+  const returned = billType === "PURCHASE_INVOICE"
+    ? await tx`
+        select dl.item_id, dl.base_qty as qty, dl.source_line_id
+          from document_line dl
+          join document d on d.id = dl.document_id
+         where d.doc_type = 'PURCHASE_RETURN' and d.status = 'POSTED'
+           and d.source_document_id = ${sourceId}
+         order by d.posting_date, d.doc_no, dl.line_no`
+    : [];
+
   const draw = grirMatcher(sourceLines as unknown as MatchableLine[]);
   for (const p of prior) draw(p.item_id, Number(p.qty), p.source_line_id);
+  for (const r of returned) draw(r.item_id, Number(r.qty), r.source_line_id);
 
   lines.forEach((line, i) => {
     const onSource = sourceLines.find((l: any) => l.item_id === line.itemId);
@@ -1845,6 +1906,9 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
       role: "document this delivery fulfils",
     });
     await assertSourceLines(tx, input.sourceDocumentId, input.lines);
+    if (src?.doc_type === "SALES_ORDER") {
+      await assertOrderNotClosed(tx, input.sourceDocumentId, src.doc_no as string, "delivery");
+    }
     if (src?.doc_type === "SALES_INVOICE") {
       await assertNotOverDelivered(tx, input.sourceDocumentId, input.lines);
     }
@@ -2680,6 +2744,9 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
       role: "document this receipt fulfils",
     });
     await assertSourceLines(tx, input.sourceDocumentId, input.lines);
+    if (src?.doc_type === "PURCHASE_ORDER") {
+      await assertOrderNotClosed(tx, input.sourceDocumentId, src.doc_no as string, "goods");
+    }
     if (src?.doc_type === "PURCHASE_INVOICE") {
       // Nothing to apportion any more. The lines were priced from this
       // invoice above, so what the goods are worth and what the invoice was
@@ -2898,6 +2965,11 @@ async function linkFulfilmentIn(
     if (order.status !== "POSTED") {
       throw new Error(`Line ${i + 1}: ${order.doc_no} is ${order.status} and cannot be fulfilled`);
     }
+    // Linking is the other way goods reach an order, and a closed order is
+    // no more expecting them by this route than by the other.
+    await assertOrderNotClosed(
+      tx, order.document_id as string, order.doc_no as string,
+      order.doc_type === "SALES_ORDER" ? "delivery" : "goods");
 
     const [got] = await tx`
       select dl.id, dl.item_id, dl.base_qty as qty,
@@ -2975,11 +3047,42 @@ async function linkFulfilmentIn(
  * the overdue warning and leave the received quantity wrong — a report that
  * looks tidy and is false.
  */
+/**
+ * What the screen was showing when somebody pressed the button.
+ *
+ * The panel reads the order when the page renders; the closure reads it again
+ * inside its own transaction, and a receipt can land between the two. Without
+ * comparing them the confirmation could promise "close 60 remaining" while
+ * the record says 20 was given up and 80 had arrived — no ledger entry wrong,
+ * and the audit trail describing something nobody agreed to.
+ *
+ * So the decision carries the figures it was made on, and they have to still
+ * be true. Refused rather than reconciled: what changed might be exactly why
+ * somebody would not close it at all.
+ */
+function assertStillTrue(
+  saw: { fulfilled: number; outstanding: number } | null | undefined,
+  now: { fulfilled: number; outstanding: number },
+  docNo: string
+): void {
+  if (!saw) return;
+  const same = Math.abs(saw.fulfilled - now.fulfilled) < 0.0001
+    && Math.abs(saw.outstanding - now.outstanding) < 0.0001;
+  if (same) return;
+  throw new Error(
+    `${docNo} has changed since that was shown to you: it now stands at ` +
+    `${now.fulfilled} fulfilled and ${now.outstanding} remaining, not ` +
+    `${saw.fulfilled} and ${saw.outstanding}. Look at it again before deciding.`
+  );
+}
+
 export async function closeOrderRemaining(input: {
   companyId: string;
   documentId: string;
   reason: string;
   closedBy?: string | null;
+  /** What the screen showed when this was decided, if it came from one. */
+  saw?: { fulfilled: number; outstanding: number } | null;
 }) {
   if (!input.reason?.trim()) throw new Error("Say why the rest is not expected");
   return sql.begin(async (tx) => {
@@ -2994,29 +3097,114 @@ export async function closeOrderRemaining(input: {
     if (order.status !== "POSTED") {
       throw new Error(`${order.doc_no} is ${order.status}`);
     }
+
+    /**
+     * What had arrived, and what was being given up, at this moment.
+     *
+     * Recorded rather than derived later, because the difference between
+     * cancelling an order and closing its remainder is a fact about now and
+     * nothing else preserves it. Fulfilment keeps moving afterwards — a
+     * receipt is returned, a delivery reversed, the order itself corrected —
+     * so an order cancelled today with nothing received would read as a
+     * remainder closure the moment anything was linked to it, rewriting its
+     * own history. Read inside the same transaction that holds the order
+     * row, so the figure written is the one the confirmation showed.
+     */
+    const [snap] = await tx`
+      select coalesce(sum(fulfilled), 0)::float  as fulfilled,
+             coalesce(sum(outstanding), 0)::float as outstanding
+        from v_order_outstanding
+       where company_id = ${input.companyId} and order_id = ${input.documentId}`;
+
+    assertStillTrue(input.saw, {
+      fulfilled: Number(snap?.fulfilled ?? 0),
+      outstanding: Number(snap?.outstanding ?? 0),
+    }, order.doc_no as string);
+
     await tx`
-      insert into order_closure (company_id, document_id, reason, closed_by, is_open)
+      insert into order_closure
+        (company_id, document_id, reason, closed_by, is_open,
+         fulfilled_at_closure, outstanding_at_closure)
       values (${input.companyId}, ${input.documentId}, ${input.reason.trim()},
-              ${input.closedBy ?? null}, false)`;
-    return { docNo: order.doc_no as string };
+              ${input.closedBy ?? null}, false,
+              ${Number(snap?.fulfilled ?? 0)}, ${Number(snap?.outstanding ?? 0)})`;
+    return {
+      docNo: order.doc_no as string,
+      fulfilled: Number(snap?.fulfilled ?? 0),
+      outstanding: Number(snap?.outstanding ?? 0),
+    };
   });
 }
 
-/** Undo a closure: the goods are expected after all. */
+/**
+ * Undo a closure: the goods are expected after all.
+ *
+ * Checked against the order as it stands now, not as it stood when it was
+ * closed. Things move while an order is shut: goods can be linked to it, it
+ * can be corrected, its own version can be superseded. Reopening it blind
+ * appends a row that says the rest is owed again without anyone having
+ * established that any of it still is — and an order reopened for nothing
+ * reads as outstanding on every report that counts open commitments.
+ */
 export async function reopenOrder(input: {
   companyId: string; documentId: string; reason: string; closedBy?: string | null;
+  /** What the screen showed when this was decided, if it came from one. */
+  saw?: { fulfilled: number; outstanding: number } | null;
 }) {
   if (!input.reason?.trim()) throw new Error("Say why it is expected again");
   return sql.begin(async (tx) => {
     const [order] = await tx`
-      select id, doc_no from document
+      select id, doc_no, doc_type, status from document
        where id = ${input.documentId} and company_id = ${input.companyId} for update`;
     if (!order) throw new Error("That order does not exist");
+    if (!["PURCHASE_ORDER", "SALES_ORDER"].includes(order.doc_type as string)) {
+      throw new Error(`${order.doc_no} is not an order`);
+    }
+    if (order.status !== "POSTED") {
+      throw new Error(`${order.doc_no} is ${order.status}`);
+    }
+
+    // Only a closed order can be reopened. Without this, clicking twice
+    // appends a second is_open row that changes nothing and leaves a history
+    // implying the order was closed again in between.
+    const [latest] = await tx`
+      select is_open from order_closure
+       where document_id = ${input.documentId}
+       order by closed_at desc limit 1`;
+    if (!latest || latest.is_open) {
+      throw new Error(`${order.doc_no} is not closed, so there is nothing to reopen`);
+    }
+
+    // What would actually be owed again. The view reports 0 for a closed
+    // order by definition, so this asks the underlying question instead:
+    // ordered less what has since been received or delivered.
+    const [state] = await tx`
+      select coalesce(sum(ordered), 0)::float    as ordered,
+             coalesce(sum(fulfilled), 0)::float  as fulfilled
+        from v_order_outstanding
+       where company_id = ${input.companyId} and order_id = ${input.documentId}`;
+    const wouldOwe = round4(Math.max(
+      Number(state?.ordered ?? 0) - Number(state?.fulfilled ?? 0), 0));
+    if (wouldOwe <= 0.0001) {
+      throw new Error(
+        `${order.doc_no} has been fulfilled in full since it was closed, so there `
+        + `is nothing left to expect. Reopening it would show a commitment that `
+        + `no longer exists.`
+      );
+    }
+
+    // The reopen panel shows what would be owed again, so that is what it
+    // is compared against — not the order's outstanding, which reads 0 for
+    // as long as it stays closed.
+    assertStillTrue(input.saw, {
+      fulfilled: Number(state?.fulfilled ?? 0), outstanding: wouldOwe,
+    }, order.doc_no as string);
+
     await tx`
       insert into order_closure (company_id, document_id, reason, closed_by, is_open)
       values (${input.companyId}, ${input.documentId}, ${input.reason.trim()},
               ${input.closedBy ?? null}, true)`;
-    return { docNo: order.doc_no as string };
+    return { docNo: order.doc_no as string, outstanding: wouldOwe };
   });
 }
 
@@ -3187,13 +3375,37 @@ async function _postPurchaseInvoice(
            and d.id <> ${doc.id}
          order by d.posting_date, d.doc_no, dl.line_no`;
 
+      // And what went back to the supplier. A return takes specific receipt
+      // lines off the accrual — the first ten at 100, not ten averaged units
+      // — so a bill that replayed only earlier invoices drew those same lines
+      // a second time. Ten in at 100 and ten at 200, return the first ten and
+      // bill the rest at 200: the bill relieved 1,000 instead of 2,000 and
+      // left 1,000 in the clearing account with no goods and no bill behind
+      // it, for good. The quantity check has always replayed returns; the
+      // value did not, and the two answered to different arithmetic.
+      const returnedLines = await tx`
+        select dl.item_id, dl.base_qty as qty, dl.source_line_id
+          from document_line dl
+          join document d on d.id = dl.document_id
+         where d.company_id = ${companyId}
+           and d.doc_type = 'PURCHASE_RETURN'
+           and d.status = 'POSTED'
+           and d.source_document_id = ${input.goodsReceiptId}
+         order by d.posting_date, d.doc_no, dl.line_no`;
+
       const draw = grirMatcher(receiptLines as unknown as MatchableLine[]);
 
       // Replay what has already been billed, so this invoice sees only what
       // is genuinely left. Derived from the posted invoices rather than
-      // stored, same as every other figure here.
+      // stored, same as every other figure here. Bills first and then
+      // returns, the same order assertNotOverBilled replays them in, so the
+      // quantity it allows and the value relieved here come from one
+      // drawdown rather than two that have to be kept in step by hand.
       for (const prior of priorLines) {
         draw(prior.item_id, Number(prior.qty), prior.source_line_id);
+      }
+      for (const gone of returnedLines) {
+        draw(gone.item_id, Number(gone.qty), gone.source_line_id);
       }
 
       // Billing more than was received relieves only what is actually held
@@ -3976,11 +4188,30 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
       select fn_next_document_no(${companyId}, 'PURCHASE_RETURN', ${docDate}::date) as no`;
     const docNo = noRows[0].no;
 
-    const netTotal = round4(input.lines.reduce((s, l) => s + l.qty * l.unitPrice, 0));
-
     // Goods go back to the supplier they came from, against the receipt that
     // brought them in or the invoice that billed for them — the mirror of
     // the sales return above.
+    let againstReceipt = false;
+
+    /**
+     * What each returned line is worth.
+     *
+     * Normally the price entered on the form. Not for a receipt-only return:
+     * that one has to clear an accrual of a known size, and the entered price
+     * is not it. A hundred units received at 500 accrued 50,000; returning
+     * all hundred at a typed 600 debited GR/IR 60,000 and left a 10,000 debit
+     * standing for goods that had gone back — an accrual balance that no
+     * quantity remained to explain, and that no later invoice would ever
+     * clear.
+     *
+     * So a receipt-only return is priced by the receipt. Any real difference
+     * between that rate and what the goods actually cost when they leave is
+     * still recognised, as Purchase Price Variance in the line loop below,
+     * which is where a valuation difference belongs — not folded into the
+     * clearing account where it reads as goods still awaiting a bill.
+     */
+    let lines: Array<ReturnLine & { clearValue?: number }> = input.lines;
+
     if (input.sourceDocumentId) {
       const source = await requireSource(tx, {
         id: input.sourceDocumentId,
@@ -3996,7 +4227,99 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
         returnType: "PURCHASE_RETURN",
         lines: input.lines,
       });
+
+      againstReceipt = source.doc_type === "GOODS_RECEIPT";
+
+      if (againstReceipt) {
+        // A receipt that has been billed is a different conversation. The
+        // supplier has asked for money, so what comes back is a credit
+        // against that bill — and taking it off the accrual instead would
+        // leave the invoice standing in full for goods that went back.
+        // Refused rather than guessed at: return against the bill.
+        //
+        // A receipt and its invoice are paired by source_document_id, but
+        // which one points at the other depends on which arrived first, and
+        // this used to look only one way. Receipt first, the invoice names
+        // the receipt. Bill first, the receipt names the invoice — and that
+        // receipt sailed through a guard that only ever asked the first
+        // question, took its goods off the accrual, and left the payable
+        // standing in full: precisely what the guard exists to prevent.
+        //
+        // Asked of current versions on both sides. A corrected invoice is a
+        // new document superseding the old one, and a bill that has been
+        // corrected has still been billed.
+        const billed = await tx`
+          select d.doc_no from document d
+           where d.company_id = ${companyId}
+             and d.doc_type = 'PURCHASE_INVOICE'
+             and d.status = 'POSTED'
+             and (
+               -- Receipt first: the invoice was raised from these goods.
+               fn_current_document(d.source_document_id)
+                 = fn_current_document(${input.sourceDocumentId})
+               -- Bill first: these goods were received against the invoice.
+               or d.id = fn_current_document(
+                    (select gr.source_document_id from document gr
+                      where gr.id = ${input.sourceDocumentId}))
+             )
+           limit 1`;
+        if (billed.length > 0) {
+          throw new Error(
+            `${source.doc_no} has already been billed by ${billed[0].doc_no}. `
+            + `Return against that bill instead, so the credit lands where the `
+            + `money was asked for.`
+          );
+        }
+
+        /**
+         * Priced by the receipt — through the same matcher that decides what
+         * is left to bill, not a second opinion about it.
+         *
+         * One average rate per item would clear a whole receipt correctly and
+         * still be wrong on a partial one. Ten units in at 100 and ten more
+         * at 200 average 150, so returning the first ten would take 1,500 off
+         * an accrual that only ever held 1,000 for them — while the matcher,
+         * which draws in line order, went on believing the 100s had gone and
+         * the 200s remained. Two rules for one drawdown, disagreeing.
+         *
+         * So there is one rule: grirMatcher, in line order, preferring a
+         * named line, with earlier returns drawn down first exactly as
+         * assertNotOverBilled replays them. Price and billable quantity come
+         * out of the same function, so they cannot drift apart. A receipt
+         * that has been billed never reaches here — the guard above refuses
+         * it — so returns are the only prior claim to replay.
+         */
+        const receiptLines = await tx`
+          select dl.id, dl.item_id, dl.base_qty as qty, dl.net_amount as net
+            from document_line dl
+           where dl.document_id = ${input.sourceDocumentId}
+           order by dl.line_no`;
+        const priorReturns = await tx`
+          select dl.item_id, dl.base_qty as qty, dl.source_line_id
+            from document_line dl
+            join document d on d.id = dl.document_id
+           where d.doc_type = 'PURCHASE_RETURN' and d.status = 'POSTED'
+             and d.source_document_id = ${input.sourceDocumentId}
+           order by d.posting_date, d.doc_no, dl.line_no`;
+
+        const draw = grirMatcher(receiptLines as unknown as MatchableLine[]);
+        for (const r of priorReturns) draw(r.item_id, Number(r.qty), r.source_line_id);
+
+        const carries = new Set(receiptLines.map((l: any) => l.item_id as string));
+        lines = input.lines.map((l) => {
+          if (!carries.has(l.itemId)) return l;
+          const got = draw(l.itemId, l.qty, null);
+          return {
+            ...l,
+            unitPrice: l.qty > 0 ? got.value / l.qty : 0,
+            clearValue: got.value,
+          };
+        });
+      }
     }
+
+    const netTotal = round4(lines.reduce(
+      (s, l) => s + (l.clearValue ?? round4(l.qty * l.unitPrice)), 0));
 
     const [doc] = await tx`
       insert into document
@@ -4013,7 +4336,7 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
     const journal: JournalLine[] = [];
     let lineNo = 0;
 
-    for (const line of input.lines) {
+    for (const line of lines) {
       lineNo++;
 
       const [item] = await tx`
@@ -4021,7 +4344,10 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
       if (!item) throw new Error("Item not found");
       if (!item.is_stocked) throw new Error(`${item.code} (${item.name}) is not stocked and cannot be returned`);
 
-      const net = round4(line.qty * line.unitPrice);
+      // The value the matcher actually drew, where it drew one — not the
+      // rounded product of a rate it derived, which can differ by a fraction
+      // and leave that fraction sitting in the clearing account for good.
+      const net = round4(line.clearValue ?? round4(line.qty * line.unitPrice));
 
       const onHandRows = await tx`
         select fn_qty_on_hand(${companyId}, ${line.itemId}, ${locationId}) as on_hand`;
@@ -4067,9 +4393,28 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
       }
     }
 
-    const ap = await tx`
-      select fn_resolve_control_account(${companyId}, 'AP_CONTROL', ${partnerId}) as a`;
-    journal.push({ accountId: ap[0].a, amount: netTotal, partnerId });
+    /**
+     * What the return gives back, and to whom.
+     *
+     * A return against a bill is a credit: the supplier was owed and is owed
+     * less, so payables come down. A return against a goods receipt that has
+     * never been billed is not — nobody has asked for money yet. What that
+     * receipt created was an accrual in the clearing account, goods held and
+     * not yet invoiced, and sending them back takes the accrual off again.
+     *
+     * Debiting payables for it was wrong in a way that reads as right: the
+     * books said a supplier who had never invoiced us now owed us fifty
+     * thousand, and the accrual for goods we no longer had stayed where it
+     * was. Goods delivered to us by mistake, returned the same day, left both.
+     */
+    if (againstReceipt) {
+      const grir = await tx`select fn_system_account(${companyId}, 'GRIR_CLEARING') as a`;
+      journal.push({ accountId: grir[0].a, amount: netTotal, partnerId });
+    } else {
+      const ap = await tx`
+        select fn_resolve_control_account(${companyId}, 'AP_CONTROL', ${partnerId}) as a`;
+      journal.push({ accountId: ap[0].a, amount: netTotal, partnerId });
+    }
 
     const entryId = await writeJournal(
       tx, companyId, docDate, "PURCHASE_RETURN", doc.id, `${docNo} purchase return`, journal, locationId
@@ -5090,8 +5435,8 @@ export async function reconcileNegativeStock(input: {
 export async function voidDocument(input: {
   documentId: string;
   reason?: string | null;
-}) {
-  return sql.begin(async (tx) => voidDocumentIn(tx, input));
+}, tx?: TransactionSql) {
+  return inTransaction(tx, async (t) => voidDocumentIn(t, input));
 }
 
 /**
@@ -5142,7 +5487,14 @@ async function voidDocumentIn(
         from journal_line where journal_entry_id = ${doc.journal_entry_id}
        order by line_no`;
     if (lines.length === 0) {
-      throw new Error(`${doc.doc_no} has no entry to reverse`);
+      // planVoidIn refuses this above, in words that say why. Kept as the
+      // last line of defence for a caller that reaches this function some
+      // other way, and deliberately the same sentence the plan uses, so the
+      // two can never tell a reader different things.
+      throw new Error(
+        `${doc.doc_no} posted nothing to the ledger, so there is no entry to `
+        + `reverse. Nothing about it can be undone by voiding.`
+      );
     }
 
     // The original's own direction, so a voided cash receipt is numbered on
@@ -5237,6 +5589,54 @@ async function voidDocumentIn(
         values
           (${doc.company_id}, ${m.item_id}, ${m.location_id},
            ${plan.reversalDate}::date, 0, 0, ${-Number(m.total_cost)}, ${reversal.id})`;
+    }
+
+    /**
+     * Goods a reversed receipt brought in come back off the shelf.
+     *
+     * Reversing the journal alone would leave the ledger saying the goods are
+     * gone and the warehouse saying they are there — and the layers still
+     * open for the next sale to draw on. planVoidIn has already refused this
+     * unless every layer is exactly as it was created, so what is taken out
+     * here is what came in, at the cost it came in at.
+     *
+     * Done the way a delivery does it: a movement out, and a consumption row
+     * against each lot, so the lot closes through the same mechanism FIFO
+     * already reads. The lot itself is never edited — it is immutable by
+     * trigger, and rightly: what arrived did arrive, and the record of it
+     * stays.
+     */
+    if (doc.doc_type === "GOODS_RECEIPT") {
+      const lots = await tx`
+        select l.id, l.item_id, l.location_id, l.qty_received, l.unit_cost
+          from stock_lot l
+          join stock_movement sm on sm.id = l.stock_movement_id
+         where sm.document_id = ${doc.id}
+         order by l.created_at`;
+
+      for (const lot of lots as unknown as {
+        id: string; item_id: string; location_id: string;
+        qty_received: string; unit_cost: string;
+      }[]) {
+        const qty = Number(lot.qty_received);
+        const cost = round4(qty * Number(lot.unit_cost));
+
+        const [out] = await tx`
+          insert into stock_movement
+            (company_id, item_id, location_id, movement_date, qty, unit_cost,
+             total_cost, document_id)
+          values
+            (${doc.company_id}, ${lot.item_id}, ${lot.location_id},
+             ${plan.reversalDate}::date, ${-qty}, ${Number(lot.unit_cost)},
+             ${-cost}, ${reversal.id})
+          returning id`;
+
+        await tx`
+          insert into stock_lot_consumption
+            (company_id, lot_id, stock_movement_id, qty, unit_cost)
+          values
+            (${doc.company_id}, ${lot.id}, ${out.id}, ${qty}, ${Number(lot.unit_cost)})`;
+      }
     }
 
     await tx`

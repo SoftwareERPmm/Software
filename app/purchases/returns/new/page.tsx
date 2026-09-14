@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getFormData, createPurchaseReturn } from "@/lib/actions";
 import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
+import { getReturnablePurchases } from "@/lib/queries";
 import { ReturnForm } from "@/components/return-form";
 
 export default async function NewPurchaseReturn() {
@@ -9,6 +10,7 @@ export default async function NewPurchaseReturn() {
   const [co] = await sql`select id from company order by created_at limit 1`;
   const categories = await allCategories(co.id);
   const today = new Date().toISOString().slice(0, 10);
+  const returnable = await getReturnablePurchases(co.id);
 
   if (d.suppliers.length === 0 || categories.length === 0 || d.locations.length === 0) {
     return (
@@ -46,6 +48,7 @@ export default async function NewPurchaseReturn() {
         categories={categories}
         uoms={d.uoms as never}
         today={today}
+        salesDocs={returnable as never}
       />
     </>
   );

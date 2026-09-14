@@ -10,7 +10,8 @@ type Node = { id: string; code: string; segment: string; name: string; parent_id
 type Partner = { id: string; code: string; name: string };
 type Location = { id: string; code: string; name: string };
 type Line = { key: number; itemId: string; qty: string; unitPrice: string };
-type SalesDoc = { id: string; doc_type: string; doc_no: string; doc_date: Date | string; partner_id: string };
+type SalesDoc = { id: string; doc_type: string; doc_no: string; doc_date: Date | string;
+  partner_id: string; rates?: Record<string, number> };
 
 const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 0 });
 // postgres.js sends `date` columns over as Date objects, not strings.
@@ -68,6 +69,21 @@ export function ReturnForm({
   const isSales = kind === "sales";
   const byId = (id: string) => items.find((i) => i.id === id);
   const returnableDocs = (salesDocs ?? []).filter((d) => d.partner_id === partnerId);
+  const sourceDoc = returnableDocs.find((d) => d.id === sourceDocumentId);
+  const sourceIsReceipt = sourceDoc?.doc_type === "GOODS_RECEIPT";
+
+  /**
+   * A return against a receipt is priced by that receipt, because what it
+   * has to do is clear an accrual of a known size — return a hundred units
+   * that arrived at 500 and 50,000 comes off, whatever anyone types. The
+   * engine derives it either way; showing something else here would be the
+   * screen promising a figure the engine will not post.
+   */
+  const receiptRate = (itemId: string): number | null => {
+    if (!sourceIsReceipt) return null;
+    const r = sourceDoc?.rates?.[itemId];
+    return r === undefined || r === null ? null : Number(r);
+  };
 
   function setLine(key: number, patch: Partial<Line>) {
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
@@ -75,9 +91,26 @@ export function ReturnForm({
 
   function pickItem(key: number, itemId: string) {
     const item = byId(itemId);
+    const fromReceipt = receiptRate(itemId);
+    if (fromReceipt !== null) {
+      setLine(key, { itemId, unitPrice: String(fromReceipt) });
+      return;
+    }
     const price = !item ? "" : isSales ? item.sale_price : item.next_cost;
     setLine(key, { itemId, unitPrice: Number(price) > 0 ? String(Number(price)) : "" });
   }
+
+  // Switching the source re-prices what is already on the form. Picking the
+  // receipt after the lines were entered is the ordinary way round, and
+  // leaving yesterday's next_cost sitting in a locked field would be worse
+  // than leaving it editable.
+  useEffect(() => {
+    setLines((ls) => ls.map((l) => {
+      const fromReceipt = l.itemId ? receiptRate(l.itemId) : null;
+      return fromReceipt === null ? l : { ...l, unitPrice: String(fromReceipt) };
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceDocumentId]);
 
   const addLine = () =>
     setLines((ls) => [...ls, { key: Math.max(0, ...ls.map((l) => l.key)) + 1, itemId: "", qty: "", unitPrice: "" }]);
@@ -137,24 +170,45 @@ export function ReturnForm({
               </select>
             </div>
 
-            {isSales && (
+            {(
               <div className="field">
                 <label htmlFor="source_document_id">Return against</label>
                 <select id="source_document_id" name="source_document_id" value={sourceDocumentId}
                   onChange={(e) => setSourceDocumentId(e.target.value)} disabled={!partnerId}>
                   <option value="">
-                    {partnerId ? "Not on a specific invoice" : "Choose a customer first"}
+                    {!partnerId
+                      ? `Choose a ${isSales ? "customer" : "supplier"} first`
+                      : isSales
+                        ? "Not on a specific invoice"
+                        : "Not against a specific receipt or bill"}
                   </option>
                   {returnableDocs.map((d) => (
                     <option key={d.id} value={d.id}>
-                      {d.doc_no} · {d.doc_type === "DELIVERY" ? "delivery" : "invoice"} · {fmtDate(d.doc_date)}
+                      {d.doc_no} ·{" "}
+                      {d.doc_type === "DELIVERY" ? "delivery"
+                        : d.doc_type === "GOODS_RECEIPT" ? "goods receipt"
+                        : "invoice"} · {fmtDate(d.doc_date)}
                     </option>
                   ))}
                 </select>
                 <span className="page-sub">
-                  {sourceDocumentId
-                    ? "Returned stock is costed at what it actually sold for on this document."
-                    : "Leave blank to cost the return at current stock value."}
+                  {/* What is returned against decides what the return gives
+                      back, not only what it costs. A bill means the supplier
+                      owes a credit; a receipt they never billed means the
+                      accrual for goods we no longer have comes off instead. */}
+                  {!sourceDocumentId
+                    ? isSales
+                      ? "Leave blank to cost the return at current stock value."
+                      : "Leave blank to cost the return at current stock value — "
+                        + "choose the receipt these goods came in on where you can, "
+                        + "so the return takes back what that receipt put on."
+                    : isSales
+                      ? "Returned stock is costed at what it actually sold for on this document."
+                      : sourceIsReceipt
+                        ? "Goods go back and the accrual this receipt raised comes off with "
+                          + "them. Nothing is charged to the supplier: they have not billed "
+                          + "for these."
+                        : "The supplier is owed less by what goes back."}
                 </span>
               </div>
             )}
@@ -238,6 +292,10 @@ export function ReturnForm({
                     <td className="narrow">
                       <input type="number" min="0" step="any" value={l.unitPrice}
                         onChange={(e) => setLine(l.key, { unitPrice: e.target.value })}
+                        readOnly={l.itemId ? receiptRate(l.itemId) !== null : false}
+                        title={l.itemId && receiptRate(l.itemId) !== null
+                          ? "Priced by the receipt being returned, so the accrual clears exactly"
+                          : undefined}
                         aria-label="Unit price" />
                     </td>
                     <td className="r">{fmt(amount(l))}</td>
