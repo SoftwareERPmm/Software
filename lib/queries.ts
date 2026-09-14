@@ -709,6 +709,118 @@ export async function getOpenGoodsReceipts(companyId: string, limit: number | nu
  * quantities when the same mistake was found there; this is the same fix on
  * the side that did not get it.
  */
+/**
+ * Everything the receiving screen needs about one supplier bill.
+ *
+ * Receiving against a bill is the invoice-first half of a purchase, and the
+ * screen for it has to answer three separate questions without conflating
+ * them: what this bill still awaits, which order it was raised from, and what
+ * posting a given quantity would do to each.
+ *
+ * The first two are relationships that already exist and are read here. The
+ * third is a calculation and belongs to the caller, because an existing link
+ * does not license a promise: a bill linked to an order does not mean every
+ * carton now arriving answers that order. What travels from here is the
+ * order line each bill line was raised from, and that line's own ordered and
+ * fulfilled figures — the inputs the posting rules work from — not a
+ * conclusion about them.
+ *
+ * Received-so-far comes off grirMatcher, the same drawdown the ledger settles
+ * with, rather than from an assumption that quantities line up in order.
+ */
+export async function getBillReceiptContext(companyId: string, invoiceId: string) {
+  const [bill] = await sql`
+    select d.id, d.doc_no, d.doc_date, d.partner_id, d.location_id,
+           p.code as partner_code, p.name as partner_name
+      from document d
+      join business_partner p on p.id = d.partner_id
+     where d.id = ${invoiceId} and d.company_id = ${companyId}
+       and d.doc_type = 'PURCHASE_INVOICE' and d.status = 'POSTED'`;
+  if (!bill) return null;
+
+  const own = await sql`
+    select dl.id, dl.item_id, dl.base_qty as qty, dl.net_amount as net,
+           dl.unit_price, dl.source_line_id,
+           i.code as item_code, i.name as item_name, u.code as uom_code
+      from document_line dl
+      join item i on i.id = dl.item_id
+      join uom u on u.id = i.base_uom_id
+     where dl.document_id = ${invoiceId}
+     order by dl.line_no`;
+
+  const received = await sql`
+    select dl.item_id, dl.base_qty as qty, dl.source_line_id
+      from document_line dl
+      join document d on d.id = dl.document_id
+     where d.company_id = ${companyId}
+       and d.doc_type = 'GOODS_RECEIPT'
+       and d.status = 'POSTED'
+       and d.source_document_id = ${invoiceId}
+     order by d.posting_date, d.doc_no, dl.line_no`;
+
+  const draw = grirMatcher(own as unknown as MatchableLine[]);
+  const arrived = new Map<string, number>();
+  for (const r of received) {
+    for (const t of draw(r.item_id, Number(r.qty), r.source_line_id).taken) {
+      arrived.set(t.lineId, (arrived.get(t.lineId) ?? 0) + t.qty);
+    }
+  }
+
+  // The order line each bill line was raised from, and where that order line
+  // stands now. Null where the bill names no order — a direct bill, which is
+  // ordinary and must not be dressed up as a fulfilment.
+  const orderLineIds = own.map((l: any) => l.source_line_id).filter(Boolean);
+  const orderLines = orderLineIds.length === 0 ? [] : await sql`
+    select ol.id as order_line_id, ol.item_id,
+           fn_current_document(o.id) as order_id, o.doc_no as order_no,
+           v.ordered, v.fulfilled, v.outstanding
+      from document_line ol
+      join document o on o.id = ol.document_id
+      left join v_order_outstanding v
+             on v.order_id = fn_current_document(o.id) and v.item_id = ol.item_id
+     where ol.id = any(${orderLineIds})
+       and o.doc_type = 'PURCHASE_ORDER'`;
+  const byOrderLine = new Map(orderLines.map((r: any) => [r.order_line_id, r]));
+
+  const lines = own.map((l: any) => {
+    const got = arrived.get(l.id) ?? 0;
+    const ol = l.source_line_id ? byOrderLine.get(l.source_line_id) : null;
+    return {
+      lineId: l.id as string,
+      itemId: l.item_id as string,
+      itemCode: l.item_code as string,
+      itemName: l.item_name as string,
+      uomCode: (l.uom_code ?? null) as string | null,
+      billedQty: Number(l.qty),
+      receivedQty: round4ish(got),
+      remainingQty: round4ish(Number(l.qty) - got),
+      unitPrice: Number(l.unit_price),
+      orderLineId: (l.source_line_id ?? null) as string | null,
+      orderId: (ol?.order_id ?? null) as string | null,
+      orderNo: (ol?.order_no ?? null) as string | null,
+      orderOrdered: ol ? Number(ol.ordered ?? 0) : null,
+      orderFulfilled: ol ? Number(ol.fulfilled ?? 0) : null,
+      orderRemaining: ol ? Number(ol.outstanding ?? 0) : null,
+    };
+  });
+
+  return {
+    id: bill.id as string,
+    docNo: bill.doc_no as string,
+    docDate: String(bill.doc_date),
+    partnerId: bill.partner_id as string,
+    partnerCode: bill.partner_code as string,
+    partnerName: bill.partner_name as string,
+    locationId: (bill.location_id ?? null) as string | null,
+    lines,
+  };
+}
+
+/** Four decimal places, the schema's own precision. */
+function round4ish(n: number) {
+  return Math.round(n * 10000) / 10000;
+}
+
 export async function getOpenPurchaseInvoices(companyId: string, limit: number | null = 200) {
   const docs = await sql`
     select d.id, d.doc_no, d.doc_date, d.partner_id, d.location_id
@@ -1162,6 +1274,56 @@ export async function getRelatedDocuments(documentId: string): Promise<RelatedDo
    * figure above it now agree by construction rather than by coincidence.
    */
   const isOrder = doc.doc_type === "SALES_ORDER" || doc.doc_type === "PURCHASE_ORDER";
+
+  /**
+   * The orders this document answers, looked at from the other end.
+   *
+   * A receipt raised from a bill names the bill, and the order it fulfils is
+   * reached another way entirely — so the panel said "Purchase order: None"
+   * on a receipt that had just fulfilled twenty units of one. A bill whose
+   * lines were raised from an order has the same blind spot: the document
+   * carries no link, only its lines do.
+   *
+   * Both routes are asked, and both are verified links rather than
+   * resemblances — a line naming an order line, or a fulfilment_link written
+   * when the goods were allocated. Nothing here matches on supplier and item.
+   *
+   * Deduplicated by document. A receipt line can be reached through its own
+   * source line and through a fulfilment_link at the same time, and finding a
+   * document twice does not make it two documents. Quantities are not summed
+   * here at all: this answers "what is this joined to", and how much of it
+   * was allocated is a different question with a different answer.
+   */
+  const answeredOrders = isOrder ? [] : shape(await sql`
+    select d.id, d.doc_type, d.doc_no, to_char(d.doc_date,'YYYY-MM-DD') as doc_date,
+           d.status, d.gross_total,
+           coalesce((select sum(dl.base_qty) from document_line dl
+                      where dl.document_id = d.id), 0) as qty
+      from document d
+     where d.company_id = ${doc.company_id}
+       and d.doc_type in ('PURCHASE_ORDER', 'SALES_ORDER')
+       and d.id in (
+         select fn_current_document(ol.document_id)
+           from document_line dl
+           join document_line ol on ol.id = dl.source_line_id
+           join document o on o.id = ol.document_id
+          where dl.document_id = ${documentId}
+            and o.doc_type in ('PURCHASE_ORDER', 'SALES_ORDER')
+         union
+         select fn_current_document(ol.document_id)
+           from fulfilment_link fl
+           join document_line fdl on fdl.id = fl.fulfilment_line_id
+           join document_line ol on ol.id = fl.order_line_id
+          where fdl.document_id = ${documentId}
+       )
+     order by d.doc_date, d.doc_no`);
+
+  /** One document, however many relationships led to it. */
+  const merge = (...groups: RelatedDoc[][]) => {
+    const seen = new Map<string, RelatedDoc>();
+    for (const g of groups) for (const d of g) if (!seen.has(d.id)) seen.set(d.id, d);
+    return [...seen.values()];
+  };
   const children = shape(await sql`
     select d.id, d.doc_type, d.doc_no, to_char(d.doc_date,'YYYY-MM-DD') as doc_date,
            d.status, d.gross_total,
@@ -1227,7 +1389,8 @@ export async function getRelatedDocuments(documentId: string): Promise<RelatedDo
   if (doc.doc_type === "SALES_INVOICE" || doc.doc_type === "PURCHASE_INVOICE") {
     const orderType = sales ? "SALES_ORDER" : "PURCHASE_ORDER";
     const moveType = sales ? "DELIVERY" : "GOODS_RECEIPT";
-    source.push(group(REL_LABEL[orderType], byType(parent, orderType)));
+    source.push(group(REL_LABEL[orderType],
+      merge(byType(parent, orderType), byType(answeredOrders, orderType))));
     source.push(group(REL_LABEL[moveType], byType(parent, moveType)));
     downstream.push(group(sales ? "Payments" : "Payments made", settlements));
     downstream.push(group(REL_LABEL[sales ? "SALES_RETURN" : "PURCHASE_RETURN"],
@@ -1247,7 +1410,8 @@ export async function getRelatedDocuments(documentId: string): Promise<RelatedDo
   } else if (doc.doc_type === "DELIVERY" || doc.doc_type === "GOODS_RECEIPT") {
     const orderType = sales ? "SALES_ORDER" : "PURCHASE_ORDER";
     const invType = sales ? "SALES_INVOICE" : "PURCHASE_INVOICE";
-    source.push(group(REL_LABEL[orderType], byType(parent, orderType)));
+    source.push(group(REL_LABEL[orderType],
+      merge(byType(parent, orderType), byType(answeredOrders, orderType))));
     source.push(group(REL_LABEL[invType], byType(parent, invType)));
     downstream.push(group(REL_LABEL[invType], byType(children, invType)));
     downstream.push(group(REL_LABEL[sales ? "SALES_RETURN" : "PURCHASE_RETURN"],

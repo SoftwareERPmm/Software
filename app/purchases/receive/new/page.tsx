@@ -1,5 +1,10 @@
 import { getFormData, createGoodsReceipt } from "@/lib/actions";
-import { getOpenPurchaseInvoices, getOpenPurchaseOrders, getGrirCollisions } from "@/lib/queries";
+import {
+  getOpenPurchaseInvoices, getOpenPurchaseOrders, getGrirCollisions,
+  getBillReceiptContext, getRelatedDocuments,
+} from "@/lib/queries";
+import { ReceiveAgainstBill } from "@/components/receive-against-bill";
+import { RelatedDocumentsPanel } from "@/components/related-documents";
 import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { ReceiptForm } from "@/components/receipt-form";
@@ -12,6 +17,35 @@ export default async function NewGoodsReceipt({
   const { match_invoice_id } = await searchParams;
   const d = await getFormData();
   const [co] = await sql`select id from company order by created_at limit 1`;
+
+  /**
+   * A bill was chosen before this page opened, so the page is about that
+   * bill: what it still awaits, the order behind it, and what receiving a
+   * given quantity would do to each. The general form below is for goods
+   * that arrived with nothing waiting for them, and asking "which invoice?"
+   * as its first question when the answer is already known was the source of
+   * most of what made this screen hard to read.
+   */
+  if (match_invoice_id) {
+    const bill = await getBillReceiptContext(co.id, match_invoice_id);
+    if (bill) {
+      const related = await getRelatedDocuments(bill.id);
+      const orderId = bill.lines.find((l) => l.orderId)?.orderId ?? null;
+      const now = new Date().toTimeString().slice(0, 5);
+      return (
+        <ReceiveAgainstBill
+          action={createGoodsReceipt}
+          bill={bill as never}
+          locations={d.locations as never}
+          today={new Date().toISOString().slice(0, 10)}
+          now={now}
+          related={<RelatedDocumentsPanel related={related} />}
+          backHref={orderId ? `/documents/${orderId}` : `/documents/${bill.id}`}
+          backLabel={orderId ? "Back to order" : "Back to bill"}
+        />
+      );
+    }
+  }
   const categories = await allCategories(co.id);
   const purchaseInvoices = await getOpenPurchaseInvoices(co.id);
 

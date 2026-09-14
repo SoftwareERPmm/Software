@@ -2104,3 +2104,63 @@ dialog.drawer .drawer-panel {
   border-color: color-mix(in srgb, var(--bad) 45%, transparent);
 }
 .btn.ghost.danger:hover { background: color-mix(in srgb, var(--bad) 8%, transparent); }
+
+/* Receiving against a bill that arrived first. Cards in the order the
+   questions are asked: what this is about, when and where, what turned up,
+   then what posting it would do. */
+.rcv { display: block; }
+.rcv-card {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  margin-bottom: var(--s3);
+  overflow: hidden;
+}
+.rcv-card-head {
+  padding: 0.55rem 1rem;
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--line) 22%, transparent);
+}
+/* The chosen bill leads, with a green edge: it is the subject, not a field. */
+.rcv-against { border-left: 3px solid var(--ok, var(--brand)); }
+.rcv-against-body {
+  display: flex; flex-wrap: wrap; gap: 2.5rem;
+  padding: 0.85rem 1rem; align-items: flex-start;
+}
+.rcv-k { color: var(--muted); font-size: var(--t-sm); margin-bottom: 2px; }
+.rcv-change { margin-left: auto; color: var(--brand); }
+.rcv-fields {
+  display: grid; gap: 1rem; padding: 0.85rem 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+}
+.rcv-table th.r, .rcv-table td.r { text-align: right; }
+.rcv-qty { display: inline-flex; align-items: center; gap: 0; }
+.rcv-qty input { width: 5.5rem; text-align: right; }
+.rcv-uom {
+  padding: 0 0.4rem; color: var(--muted);
+  border: 1px solid var(--line); border-left: 0;
+  align-self: stretch; display: flex; align-items: center;
+}
+.rcv-locked {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  color: var(--muted); border: 1px solid var(--line);
+  border-radius: var(--r-sm); padding: 0.15rem 0.45rem;
+  background: color-mix(in srgb, var(--line) 18%, transparent);
+}
+.rcv-foot {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 0.6rem 1rem; border-top: 1px solid var(--line);
+}
+.rcv-preview { width: 100%; border-collapse: collapse; }
+.rcv-preview th {
+  text-align: left; font-weight: 400; color: var(--ink);
+  padding: 0.45rem 1rem; border-bottom: 1px solid var(--line); width: 40%;
+}
+.rcv-preview td { padding: 0.45rem 1rem; border-bottom: 1px solid var(--line); }
+.rcv-preview tr:last-child th, .rcv-preview tr:last-child td { border-bottom: 0; }
+.rcv-actions {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding-top: 0.5rem; flex-wrap: wrap;
+}
+.rcv-actions .muted { margin-right: auto; }
