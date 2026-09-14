@@ -2785,20 +2785,104 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
    * downstream would ever reveal which.
    */
   const billId = input.sourceDocumentId;
-  if (src?.doc_type === "PURCHASE_INVOICE" && billId) {
-    const named = lines.map((l) => l.orderLineId).filter(Boolean) as string[];
-    if (named.length > 0) {
-      const belong = await tx`
-        select il.source_line_id as order_line_id
-          from document_line il
-         where il.document_id = ${billId}
-           and il.source_line_id = any(${named})`;
-      const allowed = new Set(belong.map((r: any) => r.order_line_id as string));
-      const stray = named.find((id) => !allowed.has(id));
-      if (stray) {
+  const explicitLines = lines
+    .map((l, i) => ({ orderLineId: l.orderLineId ?? null, i }))
+    .filter((l): l is { orderLineId: string; i: number } => !!l.orderLineId);
+
+  if (explicitLines.length > 0) {
+    /**
+     * An explicit claim is checked against the line it is made on, not
+     * against the document it appears in.
+     *
+     * Asking whether any line of the bill was raised from that order line is
+     * too weak by exactly the case that matters: one bill can carry the same
+     * item from two different orders, and a caller could receive against the
+     * line billed from A while allocating the goods to B. Both order lines
+     * pass a bill-wide membership test, and the wrong order closes.
+     *
+     * So the chain is followed line by line — this receipt line, the bill
+     * line it names, the order line that bill line was raised from — and the
+     * claim has to match it. Resolved through fn_current_line, because a
+     * corrected order supersedes its lines and the bill goes on naming the
+     * ones it was raised against.
+     */
+    if (src?.doc_type === "PURCHASE_INVOICE" && billId) {
+      for (const { orderLineId, i } of explicitLines) {
+        const billLineId = lines[i].sourceLineId;
+
+        /**
+         * Checked where there is something to check it against.
+         *
+         * A line that names the bill line it answers is making a claim about
+         * the bill's own structure, and that claim has to hold: one bill can
+         * carry the same item from two orders, and receiving against the line
+         * billed from A while allocating to B passes any test that only asks
+         * whether B appears somewhere on the bill. The whole chain is
+         * followed — receipt line, bill line, the order line that bill line
+         * was raised from — through fn_current_line, since a corrected order
+         * supersedes its lines while the bill goes on naming the originals.
+         *
+         * A line that names no bill line is making no such claim, and must
+         * not be held to one. Goods can answer an order while clearing a bill
+         * that has nothing to do with it — a direct bill, priced separately
+         * from the order the goods were ordered on. Demanding the bill be
+         * raised from that order refused a flow that has always been
+         * supported, which is how this was first written and what the
+         * fulfilment suite caught.
+         */
+        if (!billLineId) continue;
+
+        const [ok] = await tx`
+          select 1 as yes
+            from document_line il
+           where il.id = ${billLineId}
+             and il.document_id = ${billId}
+             and il.source_line_id is not null
+             and fn_current_line(il.source_line_id)
+                 = fn_current_line(${orderLineId as string})`;
+        if (!ok) {
+          throw new Error(
+            `Line ${i + 1}: that line of ${src.doc_no} was not raised from the `
+            + `order line these goods are being allocated to, so they cannot be `
+            + `said to answer it.`
+          );
+        }
+      }
+    }
+
+    /**
+     * And the two ways of recording fulfilment must not both count the same
+     * goods.
+     *
+     * v_order_outstanding adds them: a receipt line whose own source_line_id
+     * names an order line is counted there, and a fulfilment_link row for
+     * that line is counted again. One receipt for twenty then reads as forty
+     * received — measured, not feared: 20 arrived and the order said 40.
+     *
+     * The named route needs nothing from the caller, so where it already
+     * applies an explicit claim is not extra information, it is a second
+     * copy of the same one. Refused rather than silently dropped: a caller
+     * that thought it was allocating somewhere else should hear so.
+     */
+    if (src?.doc_type === "PURCHASE_ORDER") {
+      throw new Error(
+        `These goods already name ${src.doc_no} as the order they answer, so they `
+        + `cannot also be allocated to an order line by hand — the same quantity `
+        + `would be counted twice.`
+      );
+    }
+    for (const { i } of explicitLines) {
+      const namedLineId = lines[i].sourceLineId;
+      if (!namedLineId) continue;
+      const [alsoNamed] = await tx`
+        select 1 as yes
+          from document_line ol
+          join document o on o.id = ol.document_id
+         where ol.id = ${namedLineId} and o.doc_type = 'PURCHASE_ORDER'`;
+      if (alsoNamed) {
         throw new Error(
-          `${src.doc_no} was not raised from that order line, so goods received `
-          + `against this bill cannot be said to answer it.`
+          `Line ${i + 1}: these goods already name an order line as their source, `
+          + `so allocating them to one by hand would count the same quantity twice.`
         );
       }
     }
@@ -2832,13 +2916,25 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
    * receipt for more than was ordered links only what was.
    */
   if (src?.doc_type === "PURCHASE_INVOICE") {
-    // Lines the caller allocated by hand are left alone here. Allocating them
-    // twice — once from the named order line, once from the bill's own trail
-    // to the same place — refused the second attempt with "0 of that item not
-    // already allocated", which reads as a defect in the goods rather than in
-    // the double booking.
-    const explicit = new Set(
-      lines.map((l) => l.orderLineId).filter(Boolean) as string[]);
+    /**
+     * Receipt lines the caller allocated by hand are left alone here.
+     *
+     * Keyed by receipt line, not by order line. Excluding every line that
+     * mentions a given order line is too broad by one case that is perfectly
+     * ordinary: two receipt lines answering the same order line, one claimed
+     * explicitly and one left to the bill's own trail. Excluding by order
+     * line silenced the second as well — stock went up by twenty while the
+     * order was credited with ten, and nothing said so.
+     *
+     * Read back from what was actually written a moment ago rather than
+     * recomputed from the input, so the two cannot disagree.
+     */
+    const alreadyAllocated = await tx`
+      select distinct fl.fulfilment_line_id
+        from fulfilment_link fl
+        join document_line dl on dl.id = fl.fulfilment_line_id
+       where dl.document_id = ${doc.id}`;
+    const claimed = alreadyAllocated.map((r: any) => r.fulfilment_line_id as string);
 
     const carried = await tx`
       select rl.id as fulfilment_line_id, rl.base_qty::float as qty,
@@ -2881,8 +2977,8 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
        where rl.document_id = ${doc.id}
          and o.doc_type = 'PURCHASE_ORDER'
          and live.status = 'POSTED'
-         ${explicit.size > 0
-           ? tx`and cur.id <> all(${[...explicit]}::uuid[])`
+         ${claimed.length > 0
+           ? tx`and rl.id <> all(${claimed}::uuid[])`
            : tx``}
        order by rl.line_no`;
 

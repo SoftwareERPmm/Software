@@ -398,6 +398,123 @@ try {
     check("  with all 70 physically on the shelf", onShelf === 70, `${onShelf}`);
   }
 
+  // ---- the two ways of counting must not count the same goods twice -------
+
+  console.log("\n  one receipt, two routes to the same order line\n");
+  {
+    await wipe();
+    await sql`update number_series set next_value = 1`;
+    const po = await P.postPurchaseOrder({ ...base, dueDate: today,
+      lines: [{ itemId: item.id, qty: 100, unitPrice: 1000 }] });
+    const [ol] = await sql`select id from document_line where document_id = ${po.id}`;
+
+    // v_order_outstanding adds the two routes together. A line that names the
+    // order AND claims it explicitly was counted twice: 20 arrived and the
+    // order read 40 received.
+    let err = null;
+    try {
+      await P.postGoodsReceipt({ ...base, sourceDocumentId: po.id,
+        lines: [{ itemId: item.id, qty: 20, unitCost: 1000,
+                  sourceLineId: ol.id, orderLineId: ol.id }] });
+    } catch (e) { err = e.message; }
+    check("naming the order and claiming it by hand is refused", err !== null,
+      String(err).slice(0, 70));
+    check("  and nothing was counted at all",
+      (await orderState(po.id)).fulfilled === 0);
+
+    // Receiving against it the ordinary way still works, counted once.
+    const r2 = await ran(() => {
+      const fd = new FormData();
+      fd.set("partner_id", supp.id); fd.set("location_id", loc.id);
+      fd.set("doc_date", today); fd.set("source_document_id", po.id);
+      fd.set("idempotency_key", crypto.randomUUID());
+      fd.set("lines", JSON.stringify([
+        { itemId: item.id, qty: 20, unitCost: 1000, sourceLineId: ol.id }]));
+      return A.createGoodsReceipt(null, fd);
+    });
+    check("  the ordinary route posts", r2.ok, String(r2.error).slice(0, 60));
+    check("  and 20 is counted once, not twice",
+      (await orderState(po.id)).fulfilled === 20,
+      `${(await orderState(po.id)).fulfilled}`);
+  }
+
+  // ---- two receipt lines, one claimed by hand and one left to the bill -----
+
+  console.log("\n  two lines on one receipt, answering the same order line\n");
+  {
+    const { po, ol, bill } = await setup({ ordered: 100, billed: 100, already: 0 });
+    const bls = await sql`select id from document_line where document_id = ${bill.id}
+      order by line_no`;
+    // One bill line, two receipt lines of 10 each against it: the first
+    // claimed explicitly, the second left to the automatic trail.
+    let err = null;
+    try {
+      await P.postGoodsReceipt({ ...base, sourceDocumentId: bill.id,
+        lines: [
+          { itemId: item.id, qty: 10, unitCost: 1000,
+            sourceLineId: bls[0].id, orderLineId: ol.id },
+          { itemId: item.id, qty: 10, unitCost: 1000, sourceLineId: bls[0].id },
+        ] });
+    } catch (e) { err = e.message; }
+    check("both lines post", err === null, String(err).slice(0, 70));
+
+    const st = await orderState(po.id);
+    check("  the order is credited with all 20, not just the claimed 10",
+      st.fulfilled === 20, `${st.fulfilled}`);
+    const onShelf = n((await sql`select coalesce(sum(qty), 0)::float q from stock_movement
+      where company_id = ${co.id} and item_id = ${item.id}`)[0].q);
+    check("  and stock and fulfilment agree", onShelf === 20 && st.fulfilled === 20,
+      `stock ${onShelf}, fulfilled ${st.fulfilled}`);
+  }
+
+  // ---- one bill, the same item from two orders ----------------------------
+
+  console.log("\n  one bill carrying the same item from two orders\n");
+  {
+    await wipe();
+    await sql`update number_series set next_value = 1`;
+    const poA = await P.postPurchaseOrder({ ...base, dueDate: today,
+      lines: [{ itemId: item.id, qty: 40, unitPrice: 1000 }] });
+    const poB = await P.postPurchaseOrder({ ...base, dueDate: today,
+      lines: [{ itemId: item.id, qty: 60, unitPrice: 1000 }] });
+    const [olA] = await sql`select id from document_line where document_id = ${poA.id}`;
+    const [olB] = await sql`select id from document_line where document_id = ${poB.id}`;
+    const bill = await P.postPurchaseInvoice({ ...base, dueDate: today,
+      lines: [
+        { itemId: item.id, qty: 40, unitPrice: 1000, sourceLineId: olA.id },
+        { itemId: item.id, qty: 60, unitPrice: 1000, sourceLineId: olB.id },
+      ] });
+    const bls = await sql`select id from document_line where document_id = ${bill.id}
+      order by line_no`;
+
+    // Receiving against the line billed from A while claiming B. Both order
+    // lines are on this bill, so a bill-wide membership test lets it through.
+    let err = null;
+    try {
+      await P.postGoodsReceipt({ ...base, sourceDocumentId: bill.id,
+        lines: [{ itemId: item.id, qty: 10, unitCost: 1000,
+                  sourceLineId: bls[0].id, orderLineId: olB.id }] });
+    } catch (e) { err = e.message; }
+    check("claiming the other order's line is refused", err !== null,
+      String(err).slice(0, 80));
+    check("  neither order moved",
+      (await orderState(poA.id)).fulfilled === 0
+      && (await orderState(poB.id)).fulfilled === 0);
+
+    // The honest claim is accepted.
+    let ok = null;
+    try {
+      await P.postGoodsReceipt({ ...base, sourceDocumentId: bill.id,
+        lines: [{ itemId: item.id, qty: 10, unitCost: 1000,
+                  sourceLineId: bls[0].id, orderLineId: olA.id }] });
+    } catch (e) { ok = e.message; }
+    check("  claiming its own order's line posts", ok === null, String(ok).slice(0, 70));
+    check("  and only that order takes the 10",
+      (await orderState(poA.id)).fulfilled === 10
+      && (await orderState(poB.id)).fulfilled === 0,
+      `${(await orderState(poA.id)).fulfilled}/${(await orderState(poB.id)).fulfilled}`);
+  }
+
   // ---- a bill covering two orders, one of them closed ---------------------
 
   console.log("\n  one bill, two orders, one of them closed\n");
