@@ -14,6 +14,8 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { takeTestLock, releaseTestLock } from "./test-lock.mjs";
+
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
   for (const line of readFileSync(join(root, ".env"), "utf8").split("\n")) {
@@ -146,6 +148,11 @@ console.log("\n  nothing configured\n");
 console.log("\n  posted, and the invoice remembers why\n");
 {
   const { sql } = await import("../lib/db.ts");
+  // One suite at a time: these share a database and empty it, so a second
+  // runner is refused rather than left to collide. Taken here rather than at
+  // the top because everything above this line is pure arithmetic that
+  // touches nothing. See scripts/test-lock.mjs.
+  await takeTestLock(sql, "test-discounts.mjs");
   const { postSaleWithDelivery, postGoodsReceipt } = await import("../lib/posting.ts");
   const [co] = await sql`select id from company order by created_at limit 1`;
   const stamp = Date.now().toString().slice(-6);
@@ -332,6 +339,7 @@ console.log("\n  free of charge, which is not a discount\n");
     select coalesce(sum(base_amount), 0) t from journal_line where company_id = ${co.id}`;
   check("trial balance nets to zero", Math.abs(n(tb.t)) < 0.0001, String(n(tb.t)));
 
+  await releaseTestLock(sql);
   await sql.end();
 }
 

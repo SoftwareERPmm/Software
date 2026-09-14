@@ -14,6 +14,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 
+import { takeTestLock, releaseTestLock } from "./test-lock.mjs";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 if (!process.env.DATABASE_URL) {
   // Anchored and read line by line — .env can carry more than one
@@ -36,6 +37,10 @@ const local = url.includes("127.0.0.1") || url.includes("localhost");
 const sql = postgres(url, { ssl: local ? false : "require",
   prepare: !url.includes("-pooler."), onnotice: () => {}, max: 1 });
 
+
+// One suite at a time: these share a database and empty it, so a second
+// runner is refused rather than left to collide. See scripts/test-lock.mjs.
+await takeTestLock(sql, "test-setup.mjs");
 let bad = 0;
 const check = (l, ok, d = "") => { if (!ok) bad++; console.log(`  ${ok ? "PASS" : "FAIL"}  ${l}${d ? "  " + d : ""}`); };
 

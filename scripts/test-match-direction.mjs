@@ -16,6 +16,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 
+import { takeTestLock, releaseTestLock } from "./test-lock.mjs";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
   for (const line of readFileSync(join(root, ".env"), "utf8").split("\n")) {
@@ -25,6 +26,10 @@ if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
 }
 
 const { sql } = await import("../lib/db.ts");
+
+// One suite at a time: these share a database and empty it, so a second
+// runner is refused rather than left to collide. See scripts/test-lock.mjs.
+await takeTestLock(sql, "test-match-direction.mjs");
 const { getMatchStatus } = await import("../lib/queries.ts");
 const { postGoodsReceipt, postPurchaseInvoice } = await import("../lib/posting.ts");
 
@@ -148,6 +153,7 @@ try {
 
   console.log(`\n  ${failures === 0 ? "match direction is symmetric on both sides" : failures + " FAILED"}\n`);
 } finally {
+  await releaseTestLock(sql);
   await sql.end();
 }
 process.exit(failures === 0 ? 0 : 1);
