@@ -1839,11 +1839,17 @@ export async function getOrderOutstanding(companyId: string, documentId: string)
 
 /** Why an order was closed, and when — shown on the order itself. */
 export async function getOrderClosure(documentId: string) {
+  // Matched along the version chain, not on one exact id. Correcting an
+  // order posts a new document under the same number, and a closure made
+  // against the version before it still closes this one — the same rule
+  // v_order_outstanding applies, and it has to be the same or the banner and
+  // the figure beside it disagree.
   const [r] = await sql`
-    select reason, closed_by, closed_at, is_open,
-           fulfilled_at_closure, outstanding_at_closure
-      from order_closure
-     where document_id = ${documentId} order by closed_at desc limit 1`;
+    select oc.reason, oc.closed_by, oc.closed_at, oc.is_open,
+           oc.fulfilled_at_closure, oc.outstanding_at_closure
+      from order_closure oc
+     where fn_current_document(oc.document_id) = fn_current_document(${documentId})
+     order by oc.closed_at desc limit 1`;
   if (!r) return null;
 
   /**

@@ -366,9 +366,9 @@ async function assertOrderNotClosed(
   what: "goods" | "delivery"
 ): Promise<void> {
   const [latest] = await tx`
-    select is_open, reason from order_closure
-     where document_id = ${orderId}
-     order by closed_at desc limit 1`;
+    select oc.is_open, oc.reason from order_closure oc
+     where fn_current_document(oc.document_id) = fn_current_document(${orderId})
+     order by oc.closed_at desc limit 1`;
   if (!latest || latest.is_open) return;
 
   throw new Error(
@@ -3099,6 +3099,25 @@ export async function closeOrderRemaining(input: {
     }
 
     /**
+     * Already closed, and nothing to close.
+     *
+     * The screen hides the action in both cases, which is not the same as it
+     * being impossible: a script, an import or a replayed submission reaches
+     * this function directly, and without these a second closure appends a
+     * row recording that nothing was given up — an audit trail saying an
+     * order was called off twice, the second time for zero. The optional
+     * preview snapshot catches it only when there is a screen behind the
+     * call, which is exactly the case that did not need catching.
+     */
+    const [standing] = await tx`
+      select oc.is_open from order_closure oc
+       where fn_current_document(oc.document_id) = fn_current_document(${input.documentId})
+       order by oc.closed_at desc limit 1`;
+    if (standing && !standing.is_open) {
+      throw new Error(`${order.doc_no} is already closed`);
+    }
+
+    /**
      * What had arrived, and what was being given up, at this moment.
      *
      * Recorded rather than derived later, because the difference between
@@ -3115,6 +3134,13 @@ export async function closeOrderRemaining(input: {
              coalesce(sum(outstanding), 0)::float as outstanding
         from v_order_outstanding
        where company_id = ${input.companyId} and order_id = ${input.documentId}`;
+
+    if (Number(snap?.outstanding ?? 0) <= 0.0001) {
+      throw new Error(
+        `${order.doc_no} has nothing outstanding, so there is nothing to close. ` +
+        `Everything it asked for has already arrived.`
+      );
+    }
 
     assertStillTrue(input.saw, {
       fulfilled: Number(snap?.fulfilled ?? 0),
@@ -3168,9 +3194,9 @@ export async function reopenOrder(input: {
     // appends a second is_open row that changes nothing and leaves a history
     // implying the order was closed again in between.
     const [latest] = await tx`
-      select is_open from order_closure
-       where document_id = ${input.documentId}
-       order by closed_at desc limit 1`;
+      select oc.is_open from order_closure oc
+       where fn_current_document(oc.document_id) = fn_current_document(${input.documentId})
+       order by oc.closed_at desc limit 1`;
     if (!latest || latest.is_open) {
       throw new Error(`${order.doc_no} is not closed, so there is nothing to reopen`);
     }

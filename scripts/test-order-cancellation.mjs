@@ -23,6 +23,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 
+import { takeTestLock, releaseTestLock } from "./test-lock.mjs";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
   for (const line of readFileSync(join(root, ".env"), "utf8").split("\n")) {
@@ -34,6 +35,10 @@ const url = process.env.DATABASE_URL;
 const sql = postgres(url, { ssl: url.includes("localhost") ? false : "require",
   prepare: !url.includes("-pooler."), onnotice: () => {}, max: 1 });
 
+
+// One suite at a time: these share a database and empty it, so a second
+// runner is refused rather than left to collide. See scripts/test-lock.mjs.
+await takeTestLock(sql, "test-order-cancellation.mjs");
 const P = await import("../lib/posting.ts");
 const Q = await import("../lib/queries.ts");
 
@@ -281,14 +286,20 @@ try {
     `${st.outstanding} closed=${st.isClosed}`);
 
   // Nothing left to expect: reopening would show a commitment that no longer
-  // exists. Reached by closing an order that was already fulfilled in full —
-  // goods can no longer arrive against a closed order, so this is now the way
-  // in rather than receiving after the fact.
+  // exists. No route through the engine reaches this any more — goods cannot
+  // arrive against a closed order, and an order with nothing outstanding
+  // cannot be closed — so the closure row is written directly, standing in
+  // for one made before either guard existed. The check is kept because a
+  // defence that is only unreachable today is not the same as one that is
+  // unnecessary.
   const overtaken = await fresh();
   await P.postGoodsReceipt({ ...base, sourceDocumentId: overtaken.id,
     lines: [{ itemId: item.id, qty: 100, unitCost: 500 }] });
-  await P.closeOrderRemaining({ companyId: co.id, documentId: overtaken.id,
-    reason: "tidying up a finished order" });
+  await sql`insert into order_closure
+    (company_id, document_id, reason, closed_by, is_open,
+     fulfilled_at_closure, outstanding_at_closure)
+    values (${co.id}, ${overtaken.id}, 'closed before the guards existed',
+            null, false, 0, 100)`;
   const nothingLeft = await refused(() => P.reopenOrder({ companyId: co.id,
     documentId: overtaken.id, reason: "expect it again" }));
   check("an order fulfilled in full while closed refuses to reopen", !!nothingLeft,
@@ -437,6 +448,257 @@ try {
   check("a call with nothing shown to compare still works", quiet.outstanding === 100,
     `${quiet.outstanding}`);
 
+  // ---- correcting a closed order does not reopen it -----------------------
+  //
+  // Correcting an order does not edit it: the version is cancelled and the
+  // next is posted under the same number, with a new id. A closure naming the
+  // old id then named a version that was no longer live, and the live one had
+  // no closure at all — so fixing a price on a cancelled order quietly
+  // restored the commitment. Nobody reopened it and nobody was told.
+
+  console.log("\n  a closed order, then corrected\n");
+
+  const corrected = await fresh();
+  await P.postGoodsReceipt({ ...base, sourceDocumentId: corrected.id,
+    lines: [{ itemId: item.id, qty: 40, unitCost: 500 }] });
+  await P.closeOrderRemaining({ companyId: co.id, documentId: corrected.id,
+    reason: "customer cancelled the remainder" });
+
+  const [oldLine] = await sql`select id, item_id, base_qty from document_line
+    where document_id = ${corrected.id}`;
+  const amended = await P.amendDocument({ companyId: co.id, documentId: corrected.id,
+    reason: "the price was wrong",
+    repost: (tx, amendOf) => P.postPurchaseOrder({ ...base, dueDate: today, amendOf,
+      lines: [{ itemId: oldLine.item_id, qty: Number(oldLine.base_qty), unitPrice: 600,
+                supersedesLineId: oldLine.id }] }, tx) });
+  const v2 = amended.replacementId ?? amended.id;
+  check("the correction posts a new version", v2 !== corrected.id, String(v2).slice(0, 8));
+
+  st = await stateOf(co.id ? v2 : v2);
+  check("  the new version is still closed", st.isClosed === true);
+  check("  and still owes nothing", st.outstanding === 0, `${st.outstanding}`);
+  cl = await closureOf(v2);
+  check("  the closure carries across, reason and all",
+    !!cl && cl.reason === "customer cancelled the remainder", cl?.reason);
+  check("  reading as the remainder closure it was", cl?.kind === "REMAINDER_CLOSED", cl?.kind);
+  check("  on the snapshot taken against the version it was made on",
+    cl?.fulfilledAtClosure === 40 && cl?.outstandingAtClosure === 60,
+    `${cl?.fulfilledAtClosure}/${cl?.outstandingAtClosure}`);
+
+  const stillShut = await refused(() => P.postGoodsReceipt({ ...base,
+    sourceDocumentId: v2, lines: [{ itemId: item.id, qty: 10, unitCost: 600 }] }));
+  check("  and it is still not receiving goods", !!stillShut, stillShut?.slice(0, 60));
+
+  // Reopening the corrected version works, and lifts the closure made
+  // against the one before it.
+  const lifted = await P.reopenOrder({ companyId: co.id, documentId: v2,
+    reason: "supplier can supply after all" });
+  check("  reopening the new version lifts it", lifted.outstanding === 60,
+    `${lifted.outstanding}`);
+  check("  and it is open again", (await stateOf(v2)).isClosed === false);
+
+  // ---- closing what cannot be closed --------------------------------------
+  //
+  // The screen hides both of these, which is not the same as impossible: a
+  // script, an import or a replayed submission calls the function directly.
+
+  console.log("\n  closing what cannot be closed\n");
+
+  const once = await fresh();
+  await P.closeOrderRemaining({ companyId: co.id, documentId: once.id, reason: "called off" });
+  const twice = await refused(() => P.closeOrderRemaining({ companyId: co.id,
+    documentId: once.id, reason: "called off again" }));
+  check("an order already closed refuses to close again", !!twice, twice?.slice(0, 60));
+  const rows = n((await sql`select count(*)::int c from order_closure
+    where document_id = ${once.id}`)[0].c);
+  check("  and only one closure was written", rows === 1, `${rows}`);
+
+  const complete = await fresh();
+  await P.postGoodsReceipt({ ...base, sourceDocumentId: complete.id,
+    lines: [{ itemId: item.id, qty: 100, unitCost: 500 }] });
+  const nothingToClose = await refused(() => P.closeOrderRemaining({ companyId: co.id,
+    documentId: complete.id, reason: "tidying up" }));
+  check("an order with nothing outstanding refuses too", !!nothingToClose,
+    nothingToClose?.slice(0, 70));
+  check("  and stays open, because there is nothing to close",
+    (await stateOf(complete.id)).isClosed === false);
+
+  // ---- the whole chain, not just the next link ----------------------------
+  //
+  // One correction was the reported case; a second is where a fix that only
+  // looked one step back would give up. And a closure written against v3 has
+  // to outrank one written against v1, because the chain is a history, not a
+  // set.
+
+  console.log("\n  closed, then corrected twice\n");
+
+  const chain = await fresh();
+  await P.postGoodsReceipt({ ...base, sourceDocumentId: chain.id,
+    lines: [{ itemId: item.id, qty: 40, unitCost: 500 }] });
+  await P.closeOrderRemaining({ companyId: co.id, documentId: chain.id,
+    reason: "customer cancelled the remainder" });
+
+  const nextVersion = async (id, price) => {
+    const [l] = await sql`select id, item_id, base_qty from document_line where document_id = ${id}`;
+    const done = await P.amendDocument({ companyId: co.id, documentId: id,
+      reason: `price to ${price}`,
+      repost: (tx, amendOf) => P.postPurchaseOrder({ ...base, dueDate: today, amendOf,
+        lines: [{ itemId: l.item_id, qty: Number(l.base_qty), unitPrice: price,
+                  supersedesLineId: l.id }] }, tx) });
+    return done.replacementId ?? done.id;
+  };
+
+  const v2b = await nextVersion(chain.id, 600);
+  const v3 = await nextVersion(v2b, 700);
+  check("three versions, all distinct",
+    v3 !== v2b && v2b !== chain.id, `${String(chain.id).slice(0,8)} → ${String(v2b).slice(0,8)} → ${String(v3).slice(0,8)}`);
+
+  st = await stateOf(v3);
+  check("  v3 is still closed two corrections later", st.isClosed === true);
+  check("  and still owes nothing", st.outstanding === 0, `${st.outstanding}`);
+  cl = await closureOf(v3);
+  check("  with the original reason intact",
+    cl?.reason === "customer cancelled the remainder", cl?.reason);
+  check("  and the snapshot taken against v1",
+    cl?.fulfilledAtClosure === 40 && cl?.outstandingAtClosure === 60,
+    `${cl?.fulfilledAtClosure}/${cl?.outstandingAtClosure}`);
+
+  const reopenedV3 = await P.reopenOrder({ companyId: co.id, documentId: v3,
+    reason: "supplier can supply the remainder" });
+  check("reopening v3 restores what is genuinely left", reopenedV3.outstanding === 60,
+    `${reopenedV3.outstanding}`);
+  st = await stateOf(v3);
+  check("  and v3 owes 60 again", st.outstanding === 60 && st.isClosed === false,
+    `${st.outstanding} closed=${st.isClosed}`);
+
+  const closedAgain = await P.closeOrderRemaining({ companyId: co.id, documentId: v3,
+    reason: "called off for good" });
+  check("closing v3 again is allowed once it is open", closedAgain.outstanding === 60,
+    `${closedAgain.outstanding}`);
+  cl = await closureOf(v3);
+  check("  and the latest word across the chain wins",
+    cl?.reason === "called off for good", cl?.reason);
+  check("  v3 is closed", (await stateOf(v3)).isClosed === true);
+
+  // ---- a sales order too --------------------------------------------------
+
+  console.log("\n  the same on the sales side\n");
+
+  const [cust] = await sql`select id from business_partner
+     where company_id = ${co.id} and is_customer order by code limit 1`;
+  await wipe();
+  await sql`update number_series set next_value = 1`;
+  // Stock to deliver from, so a refusal below is about the closure and not
+  // about an empty shelf.
+  await P.postGoodsReceipt({ ...base, lines: [{ itemId: item.id, qty: 200, unitCost: 500 }] });
+  const so = await P.postSalesOrder({ companyId: co.id, partnerId: cust.id,
+    locationId: loc.id, docDate: today, dueDate: today,
+    lines: [{ itemId: item.id, qty: 100, unitPrice: 900 }] });
+  // postDelivery, not postSaleWithDelivery: the voucher creates its own
+  // delivery for a counter sale and never names the order, so it is the wrong
+  // door. Delivering against an order is what the Fulfil form posts.
+  await P.postDelivery({ companyId: co.id, partnerId: cust.id, locationId: loc.id,
+    docDate: today, sourceDocumentId: so.id,
+    lines: [{ itemId: item.id, qty: 40, unitPrice: 900 }] });
+  st = await stateOf(so.id);
+  check("a sales order with 40 delivered has 60 remaining",
+    st.fulfilled === 40 && st.outstanding === 60, `${st.fulfilled}/${st.outstanding}`);
+
+  await P.closeOrderRemaining({ companyId: co.id, documentId: so.id,
+    reason: "customer cancelled the remainder" });
+  const soShut = await refused(() => P.postDelivery({ companyId: co.id,
+    partnerId: cust.id, locationId: loc.id, docDate: today,
+    sourceDocumentId: so.id, lines: [{ itemId: item.id, qty: 10, unitPrice: 900 }] }));
+  check("  delivering against it once closed is refused", !!soShut, soShut?.slice(0, 70));
+  check("  and it says deliveries, not goods",
+    !!soShut && /deliveries/.test(soShut));
+  check("  nothing left", (await stateOf(so.id)).fulfilled === 40);
+
+  // ---- two people closing it at the same moment ---------------------------
+
+  console.log("\n  two people closing it at once\n");
+
+  const contested = await fresh();
+  await P.postGoodsReceipt({ ...base, sourceDocumentId: contested.id,
+    lines: [{ itemId: item.id, qty: 40, unitCost: 500 }] });
+
+  const rival = postgres(url, { ssl: url.includes("localhost") ? false : "require",
+    prepare: !url.includes("-pooler."), onnotice: () => {}, max: 1 });
+  try {
+    await rival`select 1`;
+    let letGo;
+    const holding = new Promise((r) => { letGo = r; });
+    const firstClose = rival.begin(async (tx) => {
+      await P.closeOrderRemaining({ companyId: co.id, documentId: contested.id,
+        reason: "first to press it" }, tx);
+      await holding;
+      return "committed";
+    });
+    await new Promise((r) => setTimeout(r, 600));
+
+    let second = null;
+    const racing = P.closeOrderRemaining({ companyId: co.id, documentId: contested.id,
+      reason: "second to press it" })
+      .then(() => { second = "accepted"; })
+      .catch((e) => { second = e.message; });
+    await new Promise((r) => setTimeout(r, 400));
+    check("the second waits while the first holds the order", second === null);
+
+    letGo();
+    await firstClose;
+    await racing;
+    check("  and is refused once the first commits",
+      typeof second === "string" && second !== "accepted", String(second).slice(0, 50));
+    const written = n((await sql`select count(*)::int c from order_closure
+      where document_id = ${contested.id}`)[0].c);
+    check("  exactly one closure was recorded", written === 1, `${written}`);
+    cl = await closureOf(contested.id);
+    check("  and it is the first one", cl?.reason === "first to press it", cl?.reason);
+  } finally {
+    await rival.end();
+  }
+
+  // ---- a closed order with a bill on it, corrected ------------------------
+  //
+  // Correcting at the order is how a wrong price reaches the invoice raised
+  // through it. That has to keep working on a closed order — the forty that
+  // arrived were still billed, and billed wrongly — without the correction
+  // itself reopening the sixty that were called off.
+
+  console.log("\n  correcting the price of a closed order that has been billed\n");
+
+  const billed = await fresh();
+  const bgr = await P.postGoodsReceipt({ ...base, sourceDocumentId: billed.id,
+    lines: [{ itemId: item.id, qty: 40, unitCost: 500 }] });
+  const binv = await P.postPurchaseInvoice({ ...base, dueDate: today, goodsReceiptId: bgr.id,
+    lines: [{ itemId: item.id, qty: 40, unitPrice: 500 }] });
+  await P.closeOrderRemaining({ companyId: co.id, documentId: billed.id,
+    reason: "supplier discontinued the line" });
+
+  const [bline] = await sql`select id, item_id, base_qty from document_line
+    where document_id = ${billed.id}`;
+  const cascaded = await P.amendOrder({ companyId: co.id, documentId: billed.id,
+    reason: "agreed price was 550", cascade: true,
+    order: { companyId: co.id, partnerId: supp.id, locationId: loc.id, docDate: today,
+      dueDate: today,
+      lines: [{ itemId: bline.item_id, qty: Number(bline.base_qty), unitPrice: 550,
+                supersedesLineId: bline.id }] } });
+  const billedV2 = cascaded.replacementId;
+  check("the correction posts", !!billedV2, String(billedV2).slice(0, 8));
+
+  const [invNow] = await sql`select fn_current_document(${binv.id}) as id`;
+  const [invDoc] = await sql`select doc_no, gross_total, status from document where id = ${invNow.id}`;
+  check("  the invoice was carried along to the new price",
+    near(invDoc.gross_total, 40 * 550), `${n(invDoc.gross_total)}`);
+  check("  and is the version that stands now", invDoc.status === "POSTED", invDoc.status);
+
+  st = await stateOf(billedV2);
+  check("  and the order is still closed", st.isClosed === true);
+  check("  still owing nothing", st.outstanding === 0, `${st.outstanding}`);
+  cl = await closureOf(billedV2);
+  check("  on the reason it was closed for",
+    cl?.reason === "supplier discontinued the line", cl?.reason);
+
   // ---- a closure made before the snapshot existed -------------------------
   //
   // Null is not zero. Rows written before the column existed recorded nothing,
@@ -465,5 +727,6 @@ try {
   console.error("\n  error:", e.message, "\n");
   process.exitCode = 1;
 } finally {
+  await releaseTestLock(sql);
   await sql.end();
 }
