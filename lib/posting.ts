@@ -1133,16 +1133,25 @@ async function lastKnownCost(
  */
 async function recordNegativeStock(
   tx: TransactionSql, companyId: string, documentId: string,
-  itemId: string, locationId: string, plan: FifoPlan
+  itemId: string, locationId: string, plan: FifoPlan,
+  /**
+   * Where the provisional cost was charged, so the real one can follow it
+   * when a receipt settles this. Null where nothing was expensed — a
+   * transfer, whose goods are at the destination rather than gone.
+   */
+  expenseAccountId?: string | null,
+  /** For a transfer, the warehouse the goods went to. */
+  toLocationId?: string | null,
 ) {
   if (plan.uncoveredQty <= 0.0001) return;
   await tx`
     insert into negative_stock
       (company_id, item_id, location_id, document_id, qty, provisional_unit_cost,
-       price_source, price_source_no)
+       price_source, price_source_no, expense_account_id, to_location_id)
     values (${companyId}, ${itemId}, ${locationId}, ${documentId},
             ${plan.uncoveredQty}, ${plan.provisionalUnitCost},
-            ${plan.priceSource}, ${plan.priceSourceNo})`;
+            ${plan.priceSource}, ${plan.priceSourceNo},
+            ${expenseAccountId ?? null}, ${toLocationId ?? null})`;
 }
 
 /**
@@ -1162,7 +1171,10 @@ async function settleNegativeStock(
   tx: TransactionSql, companyId: string, documentId: string,
   itemId: string, locationId: string, qty: number, actualUnitCost: number,
   stockMovementId: string
-): Promise<{ covered: number; variance: number }> {
+): Promise<{
+  covered: number; variance: number;
+  byAccount: { accountId: string | null; toLocationId: string | null; amount: number }[];
+}> {
   // The lock goes first, on its own: Postgres refuses FOR UPDATE on a query
   // that groups, so the aggregate below cannot carry it. Same shape, and the
   // same reason, as planFifoConsumption above — without it two receipts could
@@ -1176,21 +1188,36 @@ async function settleNegativeStock(
 
   const open = await tx`
     select ns.id, ns.qty, ns.provisional_unit_cost,
+           ns.expense_account_id, ns.to_location_id,
            ns.qty - coalesce(sum(s.qty), 0) as outstanding
       from negative_stock ns
       left join negative_stock_settlement s on s.negative_stock_id = ns.id
      where ns.company_id = ${companyId} and ns.item_id = ${itemId}
        and ns.location_id = ${locationId}
-     group by ns.id, ns.qty, ns.provisional_unit_cost, ns.created_at
+     group by ns.id, ns.qty, ns.provisional_unit_cost, ns.created_at,
+              ns.expense_account_id, ns.to_location_id
     having ns.qty - coalesce(sum(s.qty), 0) > 0.0001
      order by ns.created_at`;
 
   let left = round4(qty);
   let covered = 0;
   let variance = 0;
+  /**
+   * The difference, split by where the provisional cost went.
+   *
+   * One receipt can settle several shortages, and they need not have been
+   * charged to the same place: a giveaway went to its free-of-charge account,
+   * an ordinary sale to cost of sales as it resolved then, and a transfer
+   * expensed nothing at all because its goods are at the destination. Summing
+   * them into one figure and posting it to today's cost of sales was wrong
+   * three ways at once.
+   */
+  const byAccount: { accountId: string | null; toLocationId: string | null;
+                     amount: number }[] = [];
 
   for (const ns of open as unknown as {
     id: string; provisional_unit_cost: string; outstanding: string;
+    expense_account_id: string | null; to_location_id: string | null;
   }[]) {
     if (left <= 0.0001) break;
     const take = Math.min(round4(Number(ns.outstanding)), left);
@@ -1205,12 +1232,20 @@ async function settleNegativeStock(
     // Charged out at the provisional figure, actually cost this. The
     // difference is the same kind of thing as a purchase price variance and
     // goes to the same place.
-    variance += take * (actualUnitCost - Number(ns.provisional_unit_cost));
+    const diff = round4(take * (actualUnitCost - Number(ns.provisional_unit_cost)));
+    variance += diff;
+    if (Math.abs(diff) > 0.0001) {
+      const where = byAccount.find((b) =>
+        b.accountId === ns.expense_account_id && b.toLocationId === ns.to_location_id);
+      if (where) where.amount = round4(where.amount + diff);
+      else byAccount.push({ accountId: ns.expense_account_id,
+                            toLocationId: ns.to_location_id, amount: diff });
+    }
     covered = round4(covered + take);
     left = round4(left - take);
   }
 
-  return { covered, variance: round4(variance) };
+  return { covered, variance: round4(variance), byAccount };
 }
 
 /** Writes the consumption rows a plan decided on, against the movement it belongs to. */
@@ -1926,6 +1961,31 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
     if (src?.doc_type === "SALES_ORDER") {
       await assertOrderNotClosed(tx, input.sourceDocumentId, src.doc_no as string, "delivery");
     }
+    /**
+     * A free-of-charge reason has to be the one the invoice line carries.
+     *
+     * The reason decides which expense account the goods are charged to, so a
+     * caller free to name any of them could book a sale as breakage, or
+     * breakage as a sale. The screen reads it off the invoice; the engine
+     * checks it is the same one rather than trusting what came back.
+     */
+    if (src?.doc_type === "SALES_INVOICE") {
+      for (const [i, line] of input.lines.entries()) {
+        if (!line.focReasonId || !line.sourceLineId) continue;
+        const [ok] = await tx`
+          select 1 as yes from document_line
+           where id = ${line.sourceLineId}
+             and document_id = ${input.sourceDocumentId}
+             and foc_reason_id = ${line.focReasonId}`;
+        if (!ok) {
+          throw new Error(
+            `Line ${i + 1}: that is not the free-of-charge reason `
+            + `${src.doc_no} gives for these units, so the goods would be `
+            + `charged to an account the invoice never named.`
+          );
+        }
+      }
+    }
     if (src?.doc_type === "SALES_INVOICE") {
       await assertNotOverDelivered(tx, input.sourceDocumentId, input.lines);
     }
@@ -2089,7 +2149,11 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
     // Whatever no layer covered goes on the reconciliation worklist, with the
     // cost it was charged out at, so the receipt that eventually arrives can
     // true it up rather than leaving an unexplained negative balance.
-    await recordNegativeStock(tx, companyId, doc.id, line.itemId, locationId, plan);
+    await recordNegativeStock(tx, companyId, doc.id, line.itemId, locationId, plan,
+      // The same account this line's cost was actually charged to, free-of-
+      // charge reason and all, so a later receipt corrects the figure where
+      // it was made rather than wherever cost of sales resolves by then.
+      expenseAccountId);
 
     const inventory = await tx`
       select fn_resolve_account_for_item(${companyId}, 'INVENTORY', ${line.itemId}) as a`;
@@ -2709,6 +2773,10 @@ export async function postSaleWithDelivery(input: SalesInvoiceInput, outer?: Tra
         // confirmation given on the voucher has to reach the half that
         // actually moves the stock.
         allowNegativeStock: input.allowNegativeStock,
+        // The reason travels with the confirmation. Forwarding one without
+        // the other left this route unable to post a shortage at all: the
+        // delivery it creates asks for a reason the invoice never handed it.
+        negativeStockReason: input.negativeStockReason,
         lines: toDeliver.map((l) => ({
           itemId: l.itemId, qty: l.qty, focReasonId: l.focReasonId,
           // The invoice's choice of pool travels to the delivery it creates,
@@ -2841,7 +2909,7 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
     // the shelf, so no layer is made for them — a lot created and instantly
     // consumed would be a fiction with a date on it. Only the remainder
     // becomes stock.
-    const { covered, variance } = await settleNegativeStock(
+    const { covered, variance, byAccount } = await settleNegativeStock(
       tx, companyId, doc.id, line.itemId, locationId, line.qty, unitCost, movement.id
     );
     const toShelf = round4(line.qty - covered);
@@ -2874,19 +2942,169 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
      * already here — or in this case already gone — turning out to be worth
      * something different from what was first thought.
      */
-    if (Math.abs(variance) > 0.0001) {
-      const cogs = await tx`
-        select fn_resolve_account_for_item(${companyId}, 'COGS', ${line.itemId}) as a`;
-      journal.push({ accountId: cogs[0].a, amount: variance, locationId });
-      journal.push({ accountId: inventory[0].a, amount: -variance, locationId });
+    for (const part of byAccount) {
+      if (Math.abs(part.amount) > 0.0001) {
+        if (part.toLocationId) {
+          /**
+           * A transfer's shortage, and this cannot be settled correctly yet.
+           *
+           * The goods are at the destination, and the transfer built a FIFO
+           * lot there at the provisional cost. Correcting the inventory
+           * account and the stock ledger without revaluing that lot leaves
+           * the two disagreeing: the account says the goods cost 700 and the
+           * lot still says 400, so selling them charges 400 and the
+           * difference never reaches cost of sales at all.
+           *
+           * Doing it properly means revaluing the destination lot and
+           * splitting the difference the way adjustReceiptCost already does —
+           * what is still on the shelf, what has been sold, and what has been
+           * transferred on again, recursively. Until that is built, this
+           * refuses rather than posting something that looks settled and is
+           * not. A comment does not protect the books.
+           */
+          const [ns] = await tx`
+            select d.doc_no, l.code as dest
+              from negative_stock n
+              join document d on d.id = n.document_id
+              left join location l on l.id = n.to_location_id
+             where n.company_id = ${companyId} and n.item_id = ${line.itemId}
+               and n.to_location_id = ${part.toLocationId}
+             order by n.created_at limit 1`;
+          /**
+           * No workaround is offered, because there is not one.
+           *
+           * Reconciling from Inventory → Negative stock clears the shortage at
+           * the source, at the provisional cost, and never touches the lot at
+           * the destination — so it would make this refusal stop firing while
+           * leaving those goods costed at the old figure for good. Sending
+           * somebody down that path would undo the protection rather than
+           * work around it.
+           */
+          throw new Error(
+            `${item.code} (${item.name}) was moved short by ${ns?.doc_no ?? "a transfer"}`
+            + `${ns?.dest ? ` to ${ns.dest}` : ""}, and these goods cost ${unitCost} rather `
+            + `than the figure that transfer used. Correcting the cost of stock `
+            + `moved short between warehouses is not supported yet, so this `
+            + `receipt is refused rather than posted half-settled.`
+          );
+        }
 
-      await tx`
-        insert into stock_movement
-          (company_id, item_id, location_id, movement_date, qty,
-           unit_cost, total_cost, document_id)
-        values
-          (${companyId}, ${line.itemId}, ${locationId}, ${docDate}::date,
-           0, 0, ${-variance}, ${doc.id})`;
+        /**
+         * An issue. The units are gone, so the difference is the cost of that
+         * sale arriving late — and it goes to the account the sale actually
+         * charged, not to whatever cost of sales resolves to now. A giveaway
+         * charged to its free-of-charge reason is corrected there; an item
+         * regrouped since the sale is corrected on the account that carried
+         * the original figure, rather than split across two.
+         *
+         * Falling back to today's cost of sales only where nothing was
+         * recorded — shortages written before that was kept.
+         */
+        /**
+         * Where the original charge went. Recorded since 0069; recovered for
+         * shortages written before that from the consumption rows of the
+         * document that issued them, which have carried the expense account
+         * all along.
+         *
+         * Not defaulted to today's cost of sales. That is the quiet version
+         * of the bug this whole change is about: a giveaway or a regrouped
+         * item would be corrected on an account it was never charged to, and
+         * nothing would say so. Where it cannot be established, the receipt
+         * is refused and the shortage is reconciled deliberately instead.
+         */
+        let account = part.accountId;
+        if (!account) {
+          /**
+           * Recovered only where it can be tied to the line that made it.
+           *
+           * Asking the document was not enough. One delivery can sell an item
+           * on one line and give the same item away on another, charged to
+           * different accounts, and a shortage records only the item and the
+           * document — not which line it came off. Worse, the evidence is
+           * uneven: the sold line leaves a consumption row naming cost of
+           * sales, and a giveaway that was entirely short leaves none at all.
+           * A query that found exactly one account would find COGS and say it
+           * had established the giveaway's, which is precisely the mistake
+           * this is meant to prevent.
+           *
+           * So the document must carry exactly one line for this item. Then
+           * the line itself says where its cost went: its free-of-charge
+           * reason's account, or the consumption that line actually wrote.
+           * Anything less certain is refused.
+           */
+          const lines = await tx`
+            select dl.id, dl.foc_reason_id
+              from negative_stock n
+              join document_line dl on dl.document_id = n.document_id
+                                   and dl.item_id = n.item_id
+             where n.company_id = ${companyId} and n.item_id = ${line.itemId}
+               and n.location_id = ${locationId}
+               and n.expense_account_id is null
+               and n.to_location_id is null`;
+          if (lines.length === 1) {
+            /**
+             * From what the document posted, not from what the mapping says
+             * today.
+             *
+             * A free-of-charge reason points at an account, and that pointer
+             * can be changed. Reading it now would answer "where would this
+             * go if it happened today", which is a different question from
+             * "where did it go" — and on a correction to a two-year-old
+             * giveaway those are exactly the two answers that differ.
+             *
+             * The delivery's own journal holds the fact: it debited the
+             * expense account and credited inventory for the same value,
+             * covered units and uncovered alike. So the entry is asked for
+             * its debits, inventory set aside, and the answer has to be a
+             * single account — a document that charged two different ones
+             * cannot say which of them this item's shortage belonged to.
+             */
+            const debits = await tx`
+              select distinct jl.account_id
+                from negative_stock n
+                join document d on d.id = n.document_id
+                join journal_line jl on jl.journal_entry_id = d.journal_entry_id
+                left join account_determination ad
+                       on ad.account_id = jl.account_id
+                      and ad.company_id = jl.company_id
+                      and ad.role = 'INVENTORY'
+               where n.company_id = ${companyId} and n.item_id = ${line.itemId}
+                 and n.location_id = ${locationId}
+                 and n.expense_account_id is null
+                 and n.to_location_id is null
+                 and jl.base_amount > 0
+                 and ad.account_id is null`;
+            if (debits.length === 1) account = debits[0].account_id as string;
+          }
+        }
+        if (!account) {
+          const [ns] = await tx`
+            select d.doc_no from negative_stock n
+              join document d on d.id = n.document_id
+             where n.company_id = ${companyId} and n.item_id = ${line.itemId}
+               and n.location_id = ${locationId}
+             order by n.created_at limit 1`;
+          throw new Error(
+            `${item.code} (${item.name}) went out short on `
+            + `${ns?.doc_no ?? "an earlier document"}, and which account its cost `
+            + `was charged to cannot be established — it predates that being `
+            + `kept, and what remains does not say plainly enough. Guessing `
+            + `would correct it on an account it may never have touched, so `
+            + `this receipt is refused.`
+          );
+        }
+
+        journal.push({ accountId: account, amount: part.amount, locationId });
+        journal.push({ accountId: inventory[0].a, amount: -part.amount, locationId });
+
+        await tx`
+          insert into stock_movement
+            (company_id, item_id, location_id, movement_date, qty,
+             unit_cost, total_cost, document_id)
+          values
+            (${companyId}, ${line.itemId}, ${locationId}, ${docDate}::date,
+             0, 0, ${-part.amount}, ${doc.id})`;
+      }
     }
   }
 
@@ -4246,11 +4464,21 @@ export async function postStockTransfer(input: TransferInput) {
       insert into document
         (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
          location_id, to_location_id, currency, exchange_rate, status,
-         net_total, tax_total, gross_total, memo, posted_at, reference)
+         net_total, tax_total, gross_total, memo, posted_at, reference,
+         -- A transfer can go short like anything else that moves stock out,
+         -- and it asked for a confirmation and a reason without keeping
+         -- either. The shortage posted and the record of who agreed to it,
+         -- and why, went nowhere.
+         negative_stock_confirmed, negative_stock_confirmed_at,
+         negative_stock_reason)
       values
         (${companyId}, 'STOCK_TRANSFER', ${docNo}, ${fiscalYear}, ${docDate}::date,
          ${docDate}::date, ${fromLocationId}, ${toLocationId}, 'MMK', 1, 'POSTED',
-         0, 0, 0, ${input.memo ?? null}, now(), ${input.reference ?? null})
+         0, 0, 0, ${input.memo ?? null}, now(), ${input.reference ?? null},
+         ${input.allowNegativeStock === true},
+         ${input.allowNegativeStock === true ? new Date().toISOString() : null},
+         ${input.allowNegativeStock === true
+           ? (input.negativeStockReason?.trim() || null) : null})
       returning id`;
 
     const journal: JournalLine[] = [];
@@ -4326,7 +4554,11 @@ export async function postStockTransfer(input: TransferInput) {
       // The source warehouse goes negative exactly as it would on a delivery,
       // so the shortfall lands on the same worklist and is reconciled the
       // same way.
-      await recordNegativeStock(tx, companyId, doc.id, line.itemId, fromLocationId, plan);
+      // A transfer expenses nothing: the goods are at the destination. Null
+      // account, and the warehouse they went to, so the real cost can be put
+      // on that shelf rather than charged out.
+      await recordNegativeStock(tx, companyId, doc.id, line.itemId, fromLocationId, plan,
+        null, toLocationId);
 
       const [inMovement] = await tx`
         insert into stock_movement
@@ -5769,6 +6001,49 @@ export async function reconcileNegativeStock(input: {
       having ns.qty - coalesce(sum(s.qty), 0) > 0.0001`;
 
     if (rows.length === 0) throw new Error("Those shortfalls have already been reconciled");
+
+    /**
+     * A transfer's shortage cannot be reconciled here either.
+     *
+     * This brings the source warehouse back up at the provisional cost, which
+     * is right for goods that left the company and wrong for goods that only
+     * moved: those are at the destination, in a lot built at that same
+     * provisional figure. Clearing the shortage here would settle it without
+     * anyone ever establishing what the goods really cost, and the receipt
+     * that would have raised the question finds nothing left to refuse.
+     *
+     * The receipt path already refuses these. Guarding only there would leave
+     * this as the way round it — the protection has to hold wherever the
+     * shortage can be settled.
+     *
+     * The whole batch, not the supported part of it. A reconciliation that
+     * quietly dropped one line would report success while leaving the thing
+     * it was asked to clear outstanding, and somebody would have to notice.
+     */
+    const moved = await tx`
+      select n.id, i.code as item_code, i.name as item_name,
+             d.doc_no, l.code as dest
+        from negative_stock n
+        join item i on i.id = n.item_id
+        join document d on d.id = n.document_id
+        left join location l on l.id = n.to_location_id
+       where n.company_id = ${companyId} and n.id in ${tx(negativeStockIds)}
+         and n.to_location_id is not null`;
+    if (moved.length > 0) {
+      const one = moved[0] as unknown as {
+        item_code: string; item_name: string; doc_no: string; dest: string | null;
+      };
+      throw new Error(
+        `${one.item_code} (${one.item_name}) was moved short by ${one.doc_no}`
+        + `${one.dest ? ` to ${one.dest}` : ""}, and those goods are at the `
+        + `destination rather than gone. Reconciling here would clear the `
+        + `shortage at the figure the transfer guessed, leaving that stock `
+        + `costed at it for good. Correcting the cost of stock moved short `
+        + `between warehouses is not supported yet`
+        + `${moved.length > 1 ? `, and ${moved.length} of the selected lines are like this` : ""}`
+        + `. Nothing has been reconciled.`
+      );
+    }
 
     // One adjustment per location: a stock adjustment belongs to a warehouse,
     // and lumping two warehouses into one document would post movements at a

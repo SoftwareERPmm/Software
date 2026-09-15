@@ -86,6 +86,10 @@ export function StockTransferForm({
   const sameLocation = fromLocationId && toLocationId && fromLocationId === toLocationId;
 
   const [negativeConfirmed, setNegativeConfirmed] = useState(false);
+  // The engine requires a reason alongside the confirmation. Confirming
+  // without one used to post; now it is refused, and a form that offered the
+  // confirmation and not the reason could not complete the move at all.
+  const [negativeReason, setNegativeReason] = useState("");
   const [askNegative, setAskNegative] = useState(false);
 
   const shortages = lines.filter((l) => {
@@ -217,9 +221,22 @@ export function StockTransferForm({
           it.{" "}
           <button type="button" className="ghost tiny"
                   onClick={() => setNegativeConfirmed(false)}>Undo</button>
+          {/* Required by the engine, so it is asked here rather than refused
+              after the fact. A confirmation without a reason records that
+              somebody clicked, not what they knew. */}
+          <div className="field" style={{ marginTop: "0.5rem" }}>
+            <label htmlFor="neg_reason">Why the books are short</label>
+            <input id="neg_reason" type="text" required
+                   placeholder="e.g. supplier delivery not yet entered"
+                   value={negativeReason}
+                   onChange={(e) => setNegativeReason(e.target.value)} />
+          </div>
         </div>
       )}
 
+      {negativeConfirmed && (
+        <input type="hidden" name="negative_stock_reason" value={negativeReason} />
+      )}
       {negativeConfirmed && (
         <input type="hidden" name="allow_negative_stock" value="true" />
       )}
@@ -254,6 +271,7 @@ export function StockTransferForm({
               : undefined
           }
           disabled={
+            (shortages.length > 0 && negativeConfirmed && !negativeReason.trim()) ||
             pending || Boolean(sameLocation) ||
             lines.every((l) => !l.itemId || Number(l.qty) <= 0)
           }

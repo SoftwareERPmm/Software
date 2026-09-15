@@ -18,6 +18,7 @@ type InvoiceLine = {
   remainingQty: number;
   unitPrice: number;
   isFree: boolean;
+  focReasonId: string | null;
   consigned: boolean;
   onHand: number;
   orderLineId: string | null;
@@ -94,35 +95,54 @@ export function DeliverAgainstInvoice({
   const totals = useMemo(() => {
     let going = 0;
     let charged = 0;
+    let unallocated = 0;
+    const short: InvoiceLine[] = [];
+
+    /**
+     * Allocation is worked out per order line and only then summarised.
+     *
+     * Keeping one running total per order was wrong in a way that only shows
+     * with more than one item on it: the total was subtracted from every
+     * line's own remaining quantity, so a second item was judged against a
+     * limit the first had already spent. Ten of A and twenty of B, all
+     * outstanding, came out as twenty allocated and ten answering nothing,
+     * against an order the summary reported as ten units long — it had kept
+     * the first line's figures and thrown the rest away.
+     */
+    const perOrderLine = new Map<string, number>();
     const orders = new Map<string, {
       orderNo: string; orderId: string;
       fulfilled: number; ordered: number; allocating: number;
     }>();
-    let unallocated = 0;
-    const short: InvoiceLine[] = [];
 
     for (const l of invoice.lines) {
       const q = entered(l);
       if (q <= 0) continue;
       going += q;
       charged += q * l.unitPrice;
-      // Consigned lines draw their own pool, which on-hand here does not
-      // measure, so they are not judged short by it.
       if (!l.consigned && q > l.onHand) short.push(l);
 
-      if (!l.orderId || !l.orderNo || l.orderRemaining === null) {
+      if (!l.orderId || !l.orderNo || !l.orderLineId || l.orderRemaining === null) {
         unallocated += q;
         continue;
       }
-      const seen = orders.get(l.orderId) ?? {
-        orderNo: l.orderNo, orderId: l.orderId,
-        fulfilled: l.orderFulfilled ?? 0, ordered: l.orderOrdered ?? 0, allocating: 0,
-      };
-      const left = Math.max((l.orderRemaining ?? 0) - seen.allocating, 0);
+      // What this order line can still take, less what earlier invoice lines
+      // answering the same order line have already claimed from it.
+      const claimed = perOrderLine.get(l.orderLineId) ?? 0;
+      const left = Math.max((l.orderRemaining ?? 0) - claimed, 0);
       const takes = Math.min(q, left);
-      seen.allocating += takes;
-      orders.set(l.orderId, seen);
+      perOrderLine.set(l.orderLineId, claimed + takes);
       unallocated += q - takes;
+
+      // Summarised per order, adding every line's own figures rather than
+      // keeping whichever came first.
+      const seen = orders.get(l.orderId) ?? {
+        orderNo: l.orderNo, orderId: l.orderId, fulfilled: 0, ordered: 0, allocating: 0,
+      };
+      seen.allocating += takes;
+      seen.fulfilled += l.orderFulfilled ?? 0;
+      seen.ordered += l.orderOrdered ?? 0;
+      orders.set(l.orderId, seen);
     }
 
     return {
@@ -148,6 +168,10 @@ export function DeliverAgainstInvoice({
         qty: entered(l),
         sourceLineId: l.lineId,
         source: l.consigned ? "CONSIGNMENT" : "OWNED",
+        // The reason the units are free travels with them. Without it the
+        // engine books ordinary cost of sales for a giveaway, on an invoice
+        // line that charges nothing.
+        focReasonId: l.focReasonId,
       }))
   );
 

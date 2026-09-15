@@ -456,6 +456,159 @@ try {
       `${d.negative_stock_confirmed}/${d.negative_stock_reason}`);
   }
 
+  // ---- a shortage a transfer made ----------------------------------------
+  //
+  // A transfer can go short too, and its goods are not gone: they are at the
+  // destination, in a FIFO lot built at the provisional cost. Correcting the
+  // inventory account without revaluing that lot leaves the two disagreeing,
+  // and selling those goods afterwards charges the old figure. Until the lot
+  // can be revalued, the receipt refuses rather than posting half a
+  // settlement.
+
+  console.log("\n  goods moved short between warehouses\n");
+  {
+    await wipe();
+    await sql`update number_series set next_value = 1`;
+    const locs = await sql`select id, code from location
+       where company_id = ${co.id} and is_stock_location and is_active order by code limit 2`;
+    if (locs.length < 2) {
+      check("two warehouses are needed for this case", false, "only one configured");
+    } else {
+      const [from, to] = locs;
+      await P.postGoodsReceipt({ companyId: co.id, partnerId: supp.id,
+        locationId: from.id, docDate: today,
+        lines: [{ itemId: item.id, qty: 5, unitCost: 400 }] });
+      await P.postStockTransfer({ companyId: co.id, docDate: today,
+        fromLocationId: from.id, toLocationId: to.id,
+        allowNegativeStock: true, negativeStockReason: "counted, paperwork pending",
+        lines: [{ itemId: item.id, qty: 25 }] });
+
+      const [tr] = await sql`select negative_stock_confirmed, negative_stock_confirmed_at,
+                                    negative_stock_reason
+        from document where company_id = ${co.id} and doc_type = 'STOCK_TRANSFER'
+        order by doc_no desc limit 1`;
+      check("the transfer records its confirmation", tr.negative_stock_confirmed === true
+        && tr.negative_stock_confirmed_at !== null);
+      check("  and the reason it was given",
+        tr.negative_stock_reason === "counted, paperwork pending",
+        String(tr.negative_stock_reason));
+
+      const [ns] = await sql`select expense_account_id, to_location_id
+        from negative_stock where company_id = ${co.id} order by created_at desc limit 1`;
+      check("  the shortage knows nothing was expensed", ns.expense_account_id === null);
+      check("  and where the goods went", ns.to_location_id === to.id);
+
+      const refusal = await refused(() => P.postGoodsReceipt({ companyId: co.id,
+        partnerId: supp.id, locationId: from.id, docDate: today,
+        lines: [{ itemId: item.id, qty: 20, unitCost: 700 }] }));
+      check("a receipt that would settle it is refused", refusal !== null,
+        String(refusal).slice(0, 80));
+      check("  naming the destination", !!refusal && refusal.includes(to.code));
+      // No workaround is suggested, because reconciling from Negative stock
+      // clears the shortage at the source and leaves the destination lot at
+      // the old cost — it would silence this refusal rather than answer it.
+      check("  and it points nowhere unsafe",
+        !!refusal && !/Negative stock|Reconcile/i.test(refusal),
+        refusal?.slice(0, 60));
+      const receipts = n((await sql`select count(*)::int c from document
+        where company_id = ${co.id} and doc_type = 'GOODS_RECEIPT'`)[0].c);
+      check("  and nothing was posted — one receipt, not two", receipts === 1, `${receipts}`);
+
+      /**
+       * And the other door is shut too. Reconciling from Negative stock would
+       * clear the shortage at the provisional figure and leave the
+       * destination costed at it, which is how the receipt-side refusal would
+       * be got round rather than answered.
+       */
+      const pending = await sql`select id from negative_stock
+        where company_id = ${co.id} and to_location_id = ${to.id}`;
+      const before = await sql`select
+          (select count(*)::int from document where company_id = ${co.id}) as docs,
+          (select count(*)::int from negative_stock_settlement where company_id = ${co.id}) as settled,
+          (select coalesce(sum(total_cost), 0)::float from stock_movement
+            where company_id = ${co.id}) as stock,
+          (select count(*)::int from journal_entry where company_id = ${co.id}) as entries`;
+      const stopped = await refused(() => P.reconcileNegativeStock({ companyId: co.id,
+        negativeStockIds: pending.map((r) => r.id), docDate: today }));
+      check("reconciling it is refused as well", stopped !== null, String(stopped).slice(0, 80));
+      check("  saying it is not supported rather than offering a way round",
+        !!stopped && /not supported/i.test(stopped));
+      const after = await sql`select
+          (select count(*)::int from document where company_id = ${co.id}) as docs,
+          (select count(*)::int from negative_stock_settlement where company_id = ${co.id}) as settled,
+          (select coalesce(sum(total_cost), 0)::float from stock_movement
+            where company_id = ${co.id}) as stock,
+          (select count(*)::int from journal_entry where company_id = ${co.id}) as entries`;
+      check("  and nothing moved: documents, settlements, stock value, journals",
+        before[0].docs === after[0].docs && before[0].settled === after[0].settled
+        && Math.abs(n(before[0].stock) - n(after[0].stock)) < 0.005
+        && before[0].entries === after[0].entries,
+        `${before[0].docs}/${before[0].settled}/${n(before[0].stock)}/${before[0].entries}`
+        + ` -> ${after[0].docs}/${after[0].settled}/${n(after[0].stock)}/${after[0].entries}`);
+
+      // An ordinary shortage still reconciles, so the guard has not simply
+      // closed the feature.
+      await P.postDelivery({ companyId: co.id, partnerId: cust.id, locationId: to.id,
+        docDate: today, allowNegativeStock: true, negativeStockReason: "count pending",
+        lines: [{ itemId: item.id, qty: 40, unitPrice: 900 }] });
+      const ordinary = await sql`select id from negative_stock
+        where company_id = ${co.id} and to_location_id is null`;
+      const went = await refused(() => P.reconcileNegativeStock({ companyId: co.id,
+        negativeStockIds: ordinary.map((r) => r.id), docDate: today }));
+      check("an ordinary shortage still reconciles", went === null, String(went).slice(0, 70));
+    }
+  }
+
+  // ---- a giveaway costs what it costs, on its own account -----------------
+
+  console.log("\n  free goods keep their own reason\n");
+  {
+    await wipe();
+    await sql`update number_series set next_value = 1`;
+    const [reason] = await sql`select id, code from foc_reason
+       where company_id = ${co.id} order by code limit 1`;
+    if (!reason) {
+      check("a free-of-charge reason is configured", false, "none");
+    } else {
+      await P.postGoodsReceipt({ ...base, partnerId: supp.id,
+        lines: [{ itemId: item.id, qty: 10, unitCost: 400 }] });
+      // An invoice cannot be free of charge from end to end — that is a
+      // delivery, and the engine says so. A giveaway rides along with
+      // something sold, which is how it actually happens.
+      const inv = await P.postSalesInvoice({ ...base, partnerId: cust.id, dueDate: today,
+        toDeliver: true,
+        lines: [
+          { itemId: item.id, qty: 3, unitPrice: 900 },
+          { itemId: item.id, qty: 5, unitPrice: 0, focReasonId: reason.id },
+        ] });
+      const ils = await sql`select id, foc_reason_id from document_line
+        where document_id = ${inv.id} order by line_no`;
+      const il = ils.find((l) => l.foc_reason_id) ?? ils[0];
+
+      // The reason must be the one the invoice gives, not one the caller picks.
+      const wrong = await sql`select id from foc_reason where company_id = ${co.id}
+        and id <> ${reason.id} limit 1`;
+      if (wrong.length > 0) {
+        const bad = await refused(() => P.postDelivery({ ...base, partnerId: cust.id,
+          sourceDocumentId: inv.id,
+          lines: [{ itemId: item.id, qty: 5, sourceLineId: il.id, focReasonId: wrong[0].id }] }));
+        check("a reason the invoice did not give is refused", bad !== null,
+          String(bad).slice(0, 70));
+      }
+
+      const ok = await refused(() => P.postDelivery({ ...base, partnerId: cust.id,
+        sourceDocumentId: inv.id,
+        lines: [{ itemId: item.id, qty: 5, sourceLineId: il.id, focReasonId: reason.id }] }));
+      check("the invoice's own reason posts", ok === null, String(ok).slice(0, 70));
+
+      const [acct] = await sql`select account_id from foc_reason where id = ${reason.id}`;
+      const charged = n((await sql`select coalesce(sum(jl.base_amount), 0)::float v
+        from journal_line jl where jl.account_id = ${acct.account_id}
+          and jl.company_id = ${co.id}`)[0].v);
+      check("  and the cost goes to that reason's account", charged > 0, `${charged}`);
+    }
+  }
+
   // ---- the legacy exemption, and what may not claim it --------------------
   //
   // Confirmations made before a reason was asked for cannot be given one now

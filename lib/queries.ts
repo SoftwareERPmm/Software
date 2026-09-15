@@ -2465,6 +2465,11 @@ export async function getInvoiceDeliveryContext(companyId: string, invoiceId: st
       // cost: the cost is drawn FIFO at posting from the lots on the shelf.
       unitPrice: Number(l.unit_price),
       isFree: !!l.foc_reason_id,
+      // Which reason makes it free. The screen said "free of charge" and sent
+      // nothing, so the engine charged ordinary cost of sales instead of the
+      // expense account that reason resolves to — a giveaway booked as a sale
+      // with no revenue against it.
+      focReasonId: (l.foc_reason_id ?? null) as string | null,
       // Held rather than owned, and drawn from its own pool.
       consigned: !!l.is_consignment,
       onHand: stock.get(l.item_id as string) ?? 0,
