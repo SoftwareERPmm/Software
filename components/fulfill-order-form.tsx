@@ -37,6 +37,7 @@ export function FulfillOrderForm({
   focReasons = [],
   collisions = [],
   openBills = [],
+  defaultOpen = false,
 }: {
   kind: "sales" | "purchase";
   orderId: string;
@@ -57,6 +58,10 @@ export function FulfillOrderForm({
   /** Bills from this partner still waiting on goods — purchase only. See
    *  BillAwaitsTheseGoods for why this is asked before the first receipt. */
   openBills?: WaitingBill[];
+  /** Open on arrival. Set when the page was reached by asking for this one
+   *  order — the reader has already chosen; making them press Receive again
+   *  is a click that decides nothing. */
+  defaultOpen?: boolean;
 }) {
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     action as never,
@@ -65,7 +70,7 @@ export function FulfillOrderForm({
 
   /** See the hidden field below. */
   const [attemptKey] = useState(() => crypto.randomUUID());
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   // Free units per order line, and why. A delivery can carry a giveaway
   // alongside what was ordered — the goods leave either way, and the reason
   // is what decides whether the cost is a sale or an expense.
@@ -141,6 +146,11 @@ export function FulfillOrderForm({
 
   return (
     <div className="card">
+      {/* On a page opened for this one order the heading above already names
+          the order, the partner and what is outstanding, and there is nothing
+          to collapse the form back to — so the row that says all three again
+          is dropped rather than repeated. */}
+      {!defaultOpen && (
       <div className="card-head">
         <h2>
           <Link href={`/documents/${orderId}`} style={{ color: "var(--brand)" }}>{orderNo}</Link>
@@ -157,6 +167,7 @@ export function FulfillOrderForm({
           </button>
         </span>
       </div>
+      )}
 
       {/* Only once the form is open. Receiving against the order is the right
           thing to do most of the time; it is wrong only when a bill for these

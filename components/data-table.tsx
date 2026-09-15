@@ -9,10 +9,20 @@ export type Column = {
   align?: "r";
 };
 
+/** One dropdown above the table: pick a value and only rows carrying it stay. */
+export type Filter = {
+  key: string;
+  /** What the "everything" option says — "All warehouses", "All statuses". */
+  allLabel: string;
+  options: { value: string; label: string }[];
+};
+
 export type DataRow = {
   key: string;
   /** Combined lowercase-searchable text for this row. */
   searchText: string;
+  /** Value per filter key, matched against the dropdown selection. */
+  facet?: Record<string, string>;
   /** Sort value per sortable column key. */
   sort?: Record<string, string | number>;
   /** This row as flat cells, for Export. Plain data rather than a formatter
@@ -45,10 +55,15 @@ export function DataTable({
   footer,
   csvHeader,
   csvFilename,
+  filters = [],
 }: {
   rows: DataRow[];
   columns: Column[];
   searchPlaceholder?: string;
+  /** Narrowing by a column's value, beside the search box. A filter whose
+   *  options are all one value is not offered — a dropdown with nothing to
+   *  choose is furniture. */
+  filters?: Filter[];
   defaultSort?: { key: string; dir: "asc" | "desc" };
   emptyLabel?: string;
   /** Column titles for the exported file. Export appears only when this and
@@ -60,11 +75,16 @@ export function DataTable({
 }) {
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<{ key: string; dir: "asc" | "desc" } | null>(defaultSort ?? null);
+  const [picked, setPicked] = useState<Record<string, string>>({});
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    return needle ? rows.filter((r) => r.searchText.toLowerCase().includes(needle)) : rows;
-  }, [rows, q]);
+    const chosen = Object.entries(picked).filter(([, v]) => v);
+    return rows.filter((r) => {
+      if (needle && !r.searchText.toLowerCase().includes(needle)) return false;
+      return chosen.every(([k, v]) => r.facet?.[k] === v);
+    });
+  }, [rows, q, picked]);
 
   const sorted = useMemo(() => {
     if (!sort) return filtered;
@@ -124,6 +144,22 @@ export function DataTable({
           aria-label="Search"
           style={{ maxWidth: 320 }}
         />
+        {filters
+          .filter((f) => f.options.length > 1)
+          .map((f) => (
+            <select
+              key={f.key}
+              aria-label={f.allLabel}
+              value={picked[f.key] ?? ""}
+              onChange={(e) => setPicked((p) => ({ ...p, [f.key]: e.target.value }))}
+              style={{ width: "auto" }}
+            >
+              <option value="">{f.allLabel}</option>
+              {f.options.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          ))}
         {canExport && (
           <button type="button" className="ghost" onClick={exportCsv} disabled={sorted.length === 0}>
             Export {sorted.length !== rows.length ? `${sorted.length} of ${rows.length}` : ""}

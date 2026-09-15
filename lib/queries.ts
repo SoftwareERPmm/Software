@@ -1638,7 +1638,8 @@ export async function getOrderList(
 export async function getOpenSalesOrders(companyId: string) {
   return sql`
     select o.id as order_id, o.doc_no as order_no, o.partner_id, p.name as partner_name,
-           o.location_id,
+           o.location_id, o.due_date,
+           l.code as location_code, l.name as location_name,
            ol.id as line_id, ol.item_id, i.code as item_code, i.name as item_name,
            u.code as uom_code,
            ol.base_qty as ordered_qty,
@@ -1649,6 +1650,7 @@ export async function getOpenSalesOrders(companyId: string) {
       join item i on i.id = ol.item_id
       join uom u on u.id = i.base_uom_id
       join business_partner p on p.id = o.partner_id
+      left join location l on l.id = o.location_id
       left join (
         select dl.source_line_id, sum(dl.base_qty) as delivered_qty
           from document_line dl join document dd on dd.id = dl.document_id
@@ -1674,7 +1676,8 @@ export async function getOpenSalesOrders(companyId: string) {
 export async function getOpenPurchaseOrders(companyId: string) {
   return sql`
     select o.id as order_id, o.doc_no as order_no, o.partner_id, p.name as partner_name,
-           o.location_id,
+           o.location_id, o.due_date,
+           l.code as location_code, l.name as location_name,
            ol.id as line_id, ol.item_id, i.code as item_code, i.name as item_name,
            -- The uom table was already joined and never read from. "40" means
            -- nothing next to a bill awaiting goods; "40 CTN" means something.
@@ -1688,6 +1691,7 @@ export async function getOpenPurchaseOrders(companyId: string) {
       join item i on i.id = ol.item_id
       join uom u on u.id = i.base_uom_id
       join business_partner p on p.id = o.partner_id
+      left join location l on l.id = o.location_id
       left join (
         select dl.source_line_id, sum(dl.base_qty) as received_qty
           from document_line dl join document dd on dd.id = dl.document_id
@@ -1879,6 +1883,38 @@ export async function getGoodsReceiptHistory(companyId: string) {
       left join v_grir_balance g
              on g.document_id = d.id and g.company_id = d.company_id
      where d.company_id = ${companyId} and d.doc_type = 'GOODS_RECEIPT'
+     order by d.doc_date desc, d.doc_no desc
+     limit 300`;
+}
+
+/**
+ * Deliveries already posted, for the worklist that offers new ones.
+ *
+ * The mirror of getGoodsReceiptHistory, and deliberately the same shape: the
+ * two screens ask the same question of opposite sides of the business, and a
+ * delivery worklist that could only show what is outstanding left "did we
+ * already send this?" unanswerable without leaving the page.
+ *
+ * Whether a delivery has been invoiced is NOT answered here. An invoice can
+ * name the delivery as its source, or the delivery's lines can name the
+ * invoice's — both bill it, and a query checking one direction reports goods
+ * as unbilled that somebody has already charged for. The page reads that from
+ * getOpenDeliveries instead, which is the same reckoning the invoice form
+ * offers from, so what a screen calls outstanding and what a form lets you
+ * bill cannot disagree.
+ */
+export async function getDeliveryHistory(companyId: string) {
+  return sql`
+    select d.id, d.doc_no, d.doc_date, d.status, d.gross_total,
+           d.partner_id, p.name as partner_name,
+           l.code as location_code,
+           src.id as source_id, src.doc_no as source_no, src.doc_type as source_type,
+           (select count(*)::int from document_line dl where dl.document_id = d.id) as line_count
+      from document d
+      left join business_partner p on p.id = d.partner_id
+      left join location l on l.id = d.location_id
+      left join document src on src.id = d.source_document_id
+     where d.company_id = ${companyId} and d.doc_type = 'DELIVERY'
      order by d.doc_date desc, d.doc_no desc
      limit 300`;
 }
