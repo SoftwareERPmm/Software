@@ -225,12 +225,19 @@ export function CloseOrder({
               {/* The asterisk comes from the label style for a required
                   field; adding one here printed "Reason * *". */}
               <label htmlFor="close_reason">Reason</label>
+              {/* An example is only useful if it could be this order's. The
+                  reopen case read "supplier confirmed…" on a sales order and
+                  the close case "customer cancelled…" on a purchase one. */}
               <textarea id="close_reason" name="reason" required rows={3}
                         placeholder={isClosed
-                          ? "e.g. supplier confirmed the balance will ship"
+                          ? orderKind === "sales"
+                            ? "e.g. customer still wants the balance"
+                            : "e.g. supplier confirmed the balance will ship"
                           : cancelling
                             ? "e.g. order entered twice"
-                            : "e.g. customer cancelled the remainder"} />
+                            : orderKind === "sales"
+                              ? "e.g. customer cancelled the remainder"
+                              : "e.g. supplier cannot supply the rest"} />
             </div>
 
             <p className="drawer-note">No stock or money moves.</p>

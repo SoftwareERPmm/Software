@@ -837,6 +837,7 @@ export default async function DocumentPage({
       {movesGoods && (
         <LinkToOrder
           action={linkReceiptToOrder}
+          sales={isDel}
           lines={linkable.lines as never}
           openLines={linkable.openLines as never}
         />

@@ -125,10 +125,14 @@ export function SettlementForm({
       <input type="hidden" name="allocations" value={payload} />
       <input type="hidden" name="purpose" value={purpose} />
 
+      {/* Both halves of this screen describe money moving one way. On the
+          customer side it comes in, so "Pay existing invoices" had the
+          company paying its own customer — every other label here already
+          reads the direction from isPay. */}
       <fieldset className="purpose">
-        <legend>Payment purpose</legend>
+        <legend>{isPay ? "Payment purpose" : "Receipt purpose"}</legend>
         {([
-          ["settle", isPay ? "Pay existing bills" : "Pay existing invoices"],
+          ["settle", isPay ? "Pay existing bills" : "Settle existing invoices"],
           ["advance", isPay ? "Advance to supplier" : "Customer advance"],
         ] as const).map(([value, label]) => (
           <label key={value} className={purpose === value ? "on" : undefined}>

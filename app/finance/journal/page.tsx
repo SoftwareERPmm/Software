@@ -2,6 +2,7 @@ import { getFinanceData, peekVoucherNo, createJournalVoucher } from "@/lib/actio
 import { getCompany } from "@/lib/queries";
 import { VoucherForm } from "@/components/voucher-form";
 import { VoucherHelp } from "@/components/voucher-help";
+import { ErpCrumbs } from "@/components/erp-worklist";
 
 export default async function JournalVoucher() {
   const { accounts, accountTree, cashAccounts, bankAccounts, branches } = await getFinanceData();
@@ -13,8 +14,11 @@ export default async function JournalVoucher() {
   if (accounts.length === 0) {
     return (
       <>
+        <ErpCrumbs steps={[
+          { label: "General ledger", href: "/finance/general-ledger" },
+          { label: "Journal voucher" },
+        ]} />
         <div className="page-head">
-          <span className="eyebrow">Accounting</span>
           <h1>Journal voucher</h1>
         </div>
         <div className="alert">No postable accounts exist yet.</div>
@@ -24,8 +28,11 @@ export default async function JournalVoucher() {
 
   return (
     <>
+      <ErpCrumbs steps={[
+        { label: "General ledger", href: "/finance/general-ledger" },
+        { label: "Journal voucher" },
+      ]} />
       <div className="page-head">
-        <span className="eyebrow">Accounting</span>
         <h1>Journal voucher</h1>
         <span className="page-sub">
           Record depreciation, accruals and other accounting adjustments.

@@ -9,6 +9,7 @@ import { RelatedDocumentsPanel } from "@/components/related-documents";
 import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { DeliveryForm } from "@/components/delivery-form";
+import { ErpCrumbs } from "@/components/erp-worklist";
 
 export default async function NewDelivery({
   searchParams,
@@ -57,8 +58,11 @@ export default async function NewDelivery({
   if (d.customers.length === 0 || categories.length === 0 || d.locations.length === 0) {
     return (
       <>
+        <ErpCrumbs steps={[
+          { label: "Deliveries", href: "/sales/deliver" },
+          { label: "Deliver goods" },
+        ]} />
         <div className="page-head">
-          <span className="eyebrow">Sales</span>
           <h1>Deliver goods</h1>
         </div>
         <div className="alert">
@@ -72,8 +76,11 @@ export default async function NewDelivery({
 
   return (
     <>
+      <ErpCrumbs steps={[
+        { label: "Deliveries", href: "/sales/deliver" },
+        { label: "Deliver goods" },
+      ]} />
       <div className="page-head">
-        <span className="eyebrow">Sales</span>
         <h1>Deliver goods</h1>
         <span className="page-sub">
           For stock leaving with nothing raised beforehand &mdash; goods

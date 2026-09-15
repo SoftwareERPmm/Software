@@ -4,6 +4,7 @@ import { getReturnableSales } from "@/lib/queries";
 import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { ReturnForm } from "@/components/return-form";
+import { ErpCrumbs } from "@/components/erp-worklist";
 
 export default async function NewSalesReturn() {
   const d = await getFormData();
@@ -15,8 +16,11 @@ export default async function NewSalesReturn() {
   if (d.customers.length === 0 || categories.length === 0 || d.locations.length === 0) {
     return (
       <>
+        <ErpCrumbs steps={[
+          { label: "Customer returns", href: "/sales/returns" },
+          { label: "Customer return" },
+        ]} />
         <div className="page-head">
-          <span className="eyebrow">Sales</span>
           <h1>Customer return</h1>
         </div>
         <div className="alert">
@@ -30,8 +34,11 @@ export default async function NewSalesReturn() {
 
   return (
     <>
+      <ErpCrumbs steps={[
+        { label: "Customer returns", href: "/sales/returns" },
+        { label: "Customer return" },
+      ]} />
       <div className="page-head">
-        <span className="eyebrow">Sales</span>
         <h1>Customer return</h1>
         <span className="page-sub">
           Goods come back and the customer owes less — one document for

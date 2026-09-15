@@ -5,7 +5,9 @@ import type { ActionResult, PickerItem } from "@/lib/actions";
 import type { AwaitingLine } from "@/lib/queries";
 import { ItemPicker } from "./item-picker";
 import { PartnerPicker } from "./partner-picker";
+import Link from "next/link";
 import { AwaitingOrders, AlreadyAwaited } from "./awaiting-orders";
+import { useBackHere } from "./back-here";
 
 type Item = PickerItem;
 type Node = { id: string; code: string; segment: string; name: string; parent_id: string | null };
@@ -85,6 +87,7 @@ export function InvoiceForm({
   /** Arrived via "Create purchase invoice" on a specific receipt's own page — match it immediately. */
   initialGoodsReceiptId?: string;
 }) {
+  const backHere = useBackHere();
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     action as never,
     null
@@ -652,9 +655,9 @@ export function InvoiceForm({
           onto the goods: onto the stock still held, and to cost of sales for
           whatever has already been sold. If the new price is the agreed one,{" "}
           {orderBehind?.orderId
-            ? <a href={`/documents/${orderBehind.orderId}`} target="_blank" rel="noreferrer">
+            ? <Link href={backHere(orderBehind.orderId)}>
                 correct {orderBehind.orderNo}
-              </a>
+              </Link>
             : "correct the order"} instead, and it will carry into this bill.
         </div>
       )}

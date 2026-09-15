@@ -3,6 +3,7 @@ import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { getUntouchedOpenOrders } from "@/lib/queries";
 import { OrderForm } from "@/components/order-form";
+import { ErpCrumbs } from "@/components/erp-worklist";
 
 export default async function NewSalesOrder() {
   const d = await getFormData();
@@ -14,8 +15,11 @@ export default async function NewSalesOrder() {
   if (d.customers.length === 0 || categories.length === 0 || d.locations.length === 0) {
     return (
       <>
+        <ErpCrumbs steps={[
+          { label: "Sales orders", href: "/sales/orders" },
+          { label: "New sales order" },
+        ]} />
         <div className="page-head">
-          <span className="eyebrow">Sales</span>
           <h1>New sales order</h1>
         </div>
         <div className="alert">
@@ -29,8 +33,11 @@ export default async function NewSalesOrder() {
 
   return (
     <>
+      <ErpCrumbs steps={[
+        { label: "Sales orders", href: "/sales/orders" },
+        { label: "New sales order" },
+      ]} />
       <div className="page-head">
-        <span className="eyebrow">Sales</span>
         <h1>New sales order</h1>
         <span className="page-sub">
           A commitment from the customer. Deliver against it later — stock

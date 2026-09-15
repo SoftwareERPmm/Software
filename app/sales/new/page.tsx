@@ -3,6 +3,7 @@ import { getOpenDeliveries, getOwnershipMap, getOpenOrdersAwaitingGoods } from "
 import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { SalesVoucher } from "@/components/sales-voucher";
+import { ErpCrumbs } from "@/components/erp-worklist";
 
 export default async function NewSalesInvoice({
   searchParams,
@@ -14,6 +15,10 @@ export default async function NewSalesInvoice({
   const [co] = await sql`select id from company order by created_at limit 1`;
   const categories = await allCategories(co.id);
   const deliveries = await getOpenDeliveries(co.id);
+  // Same as the purchase side: billed from one delivery, the crumb names it.
+  const from = delivery_id
+    ? (deliveries as { id: string; doc_no: string }[]).find((d) => d.id === delivery_id)
+    : undefined;
   const awaiting = await getOpenOrdersAwaitingGoods(co.id, "SALES_ORDER");
   // Whose goods are on the shelf. A Take Now invoice moves stock, so the line
   // has to be able to say which pool it came out of.
@@ -25,8 +30,11 @@ export default async function NewSalesInvoice({
   if (d.customers.length === 0 || categories.length === 0 || d.locations.length === 0) {
     return (
       <>
+        <ErpCrumbs steps={[
+          { label: "Sales invoices", href: "/sales/invoices" },
+          { label: "Sales voucher" },
+        ]} />
         <div className="page-head">
-          <span className="eyebrow">Sales</span>
           <h1>Sales voucher</h1>
         </div>
         <div className="alert">
@@ -44,8 +52,12 @@ export default async function NewSalesInvoice({
 
   return (
     <>
+      <ErpCrumbs steps={[
+        { label: "Sales invoices", href: "/sales/invoices" },
+        ...(from ? [{ label: from.doc_no, href: `/documents/${from.id}` }] : []),
+        { label: "Sales voucher" },
+      ]} />
       <div className="page-head">
-        <span className="eyebrow">Sales</span>
         <h1>Sales voucher</h1>
         <span className="page-sub">
           ကုန်ပစ္စည်းများသည် FIFO ကုန်ကျစရိတ်ဖြင့် ထွက်ခွာပြီး၊ ဝင်ငွေကို

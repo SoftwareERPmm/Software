@@ -3,6 +3,7 @@ import { getFinanceData, peekVoucherNo, createCashVoucher } from "@/lib/actions"
 import { getCompany } from "@/lib/queries";
 import { VoucherForm } from "@/components/voucher-form";
 import { VoucherHelp } from "@/components/voucher-help";
+import { ErpCrumbs } from "@/components/erp-worklist";
 
 export default async function CashPayment() {
   const { accounts, accountTree, cashAccounts, branches } = await getFinanceData();
@@ -13,8 +14,11 @@ export default async function CashPayment() {
   if (cashAccounts.length === 0) {
     return (
       <>
+        <ErpCrumbs steps={[
+          { label: "Cash on hand", href: "/finance/cash-detail" },
+          { label: "Cash payment" },
+        ]} />
         <div className="page-head">
-          <span className="eyebrow">Cash &amp; Bank</span>
           <h1>Cash payment</h1>
         </div>
         <div className="alert">No cash account is set up. Mark one in the chart of accounts as a till.</div>
@@ -24,8 +28,11 @@ export default async function CashPayment() {
 
   return (
     <>
+      <ErpCrumbs steps={[
+        { label: "Cash on hand", href: "/finance/cash-detail" },
+        { label: "Cash payment" },
+      ]} />
       <div className="page-head">
-        <span className="eyebrow">Cash &amp; Bank</span>
         <h1>Cash payment</h1>
         <span className="page-sub">
           Money paid out of the till that isn&rsquo;t against a supplier bill — use{" "}

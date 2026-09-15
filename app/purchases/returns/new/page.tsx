@@ -4,6 +4,7 @@ import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { getReturnablePurchases } from "@/lib/queries";
 import { ReturnForm } from "@/components/return-form";
+import { ErpCrumbs } from "@/components/erp-worklist";
 
 export default async function NewPurchaseReturn() {
   const d = await getFormData();
@@ -15,8 +16,11 @@ export default async function NewPurchaseReturn() {
   if (d.suppliers.length === 0 || categories.length === 0 || d.locations.length === 0) {
     return (
       <>
+        <ErpCrumbs steps={[
+          { label: "Supplier returns", href: "/purchases/returns" },
+          { label: "Supplier return" },
+        ]} />
         <div className="page-head">
-          <span className="eyebrow">Purchases</span>
           <h1>Supplier return</h1>
         </div>
         <div className="alert">
@@ -30,8 +34,11 @@ export default async function NewPurchaseReturn() {
 
   return (
     <>
+      <ErpCrumbs steps={[
+        { label: "Supplier returns", href: "/purchases/returns" },
+        { label: "Supplier return" },
+      ]} />
       <div className="page-head">
-        <span className="eyebrow">Purchases</span>
         <h1>Supplier return</h1>
         <span className="page-sub">
           Goods go back and what&rsquo;s owed drops — one document for both.{" "}

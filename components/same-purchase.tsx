@@ -1,7 +1,10 @@
+"use client";
+
 import Link from "next/link";
 import { AlertCircle } from "lucide-react";
 import { qty, shortDate } from "@/lib/format";
 import type { GrirCollisionLine } from "@/lib/queries";
+import { useBackHere } from "./back-here";
 
 /**
  * Goods waiting on a bill and a bill waiting on goods, for the same items —
@@ -23,6 +26,12 @@ import type { GrirCollisionLine } from "@/lib/queries";
  * owing a bill for another, and only the person who spoke to them knows.
  */
 export function MaybeSamePurchase({ lines }: { lines: GrirCollisionLine[] }) {
+  // Opened in a new tab before, to keep the half-filled form behind it. That
+  // left the reader with two tabs and no way back in either; the document now
+  // opens here and carries an arrow home, at the cost of the form's contents
+  // — which is the honest trade, since checking this is exactly the case
+  // where what you were about to enter may be wrong.
+  const docHref = useBackHere();
   if (lines.length === 0) return null;
 
   const side = (s: "GOODS" | "BILL") => {
@@ -73,7 +82,7 @@ export function MaybeSamePurchase({ lines }: { lines: GrirCollisionLine[] }) {
                 <td>{d.what.join(" · ")}</td>
                 <td>in stock since {shortDate(d.date)}, waiting on a bill</td>
                 <td className="awaiting-go">
-                  <Link href={`/documents/${d.id}`} target="_blank">View receipt</Link>
+                  <Link href={docHref(d.id)}>View receipt</Link>
                 </td>
               </tr>
             ))}
@@ -83,7 +92,7 @@ export function MaybeSamePurchase({ lines }: { lines: GrirCollisionLine[] }) {
                 <td>{d.what.join(" · ")}</td>
                 <td>billed {shortDate(d.date)}, waiting on goods</td>
                 <td className="awaiting-go">
-                  <Link href={`/documents/${d.id}`} target="_blank">View bill</Link>
+                  <Link href={docHref(d.id)}>View bill</Link>
                 </td>
               </tr>
             ))}

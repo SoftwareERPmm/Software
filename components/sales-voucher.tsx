@@ -7,7 +7,9 @@ import { StockSourceDialog, poolsFor, type OwnershipSplit } from "./stock-source
 import { priceLines, type VolumeBand } from "@/lib/discount";
 import { ItemPicker } from "./item-picker";
 import { PartnerPicker } from "./partner-picker";
+import Link from "next/link";
 import { AwaitingOrders, AlreadyAwaited } from "./awaiting-orders";
+import { useBackHere } from "./back-here";
 import type { AwaitingLine } from "@/lib/queries";
 
 type Item = PickerItem;
@@ -135,6 +137,7 @@ export function SalesVoucher({
     consignor_code: string; consignor_name: string; qty: string;
   }[];
 }) {
+  const backHere = useBackHere();
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     action as never, null
   );
@@ -1060,13 +1063,13 @@ export function SalesVoucher({
       {/* The prices on this bill came from an order, and are held to it. Said
           once under the table rather than repeated on every line, and it
           offers the way to change them rather than only naming the rule. */}
-      {agreedFrom && (
+      {agreedFrom && agreedFrom.orderId && (
         <p className="hint" style={{ marginTop: "0.5rem" }}>
           Prices are the ones {agreedFrom.orderNo} agreed. To change what the
           customer is charged,{" "}
-          <a href={`/documents/${agreedFrom.orderId}`} target="_blank" rel="noreferrer">
+          <Link href={backHere(agreedFrom.orderId)}>
             correct the agreed price on {agreedFrom.orderNo}
-          </a>{" "}
+          </Link>{" "}
           — it carries into this bill, and both keep their number with the
           reason on the record.
         </p>

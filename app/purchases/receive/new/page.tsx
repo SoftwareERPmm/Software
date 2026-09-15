@@ -8,6 +8,7 @@ import { RelatedDocumentsPanel } from "@/components/related-documents";
 import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { ReceiptForm } from "@/components/receipt-form";
+import { ErpCrumbs } from "@/components/erp-worklist";
 
 export default async function NewGoodsReceipt({
   searchParams,
@@ -81,8 +82,11 @@ export default async function NewGoodsReceipt({
   if (d.suppliers.length === 0 || categories.length === 0 || d.locations.length === 0) {
     return (
       <>
+        <ErpCrumbs steps={[
+          { label: "Goods receipts", href: "/purchases/receive" },
+          { label: "Receive goods" },
+        ]} />
         <div className="page-head">
-          <span className="eyebrow">Purchases</span>
           <h1>Receive goods</h1>
         </div>
         <div className="alert">
@@ -96,8 +100,11 @@ export default async function NewGoodsReceipt({
 
   return (
     <>
+      <ErpCrumbs steps={[
+        { label: "Goods receipts", href: "/purchases/receive" },
+        { label: "Receive goods" },
+      ]} />
       <div className="page-head">
-        <span className="eyebrow">Purchases</span>
         <h1>Receive goods</h1>
         <span className="page-sub">
           For stock that arrived with no purchase order behind it. If there

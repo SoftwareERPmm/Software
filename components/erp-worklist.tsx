@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import Link from "next/link";
 import type { LucideIcon } from "lucide-react";
 
@@ -13,6 +14,33 @@ import type { LucideIcon } from "lucide-react";
  * Shared with the order screen's .erp-card, deliberately: a list and a
  * document should not look like two products.
  */
+
+/**
+ * Where this screen sits, and every step of the way back.
+ *
+ * The eyebrow it replaces named the section — "PURCHASES" — which says which
+ * corner of the app you are in and nothing about how to leave it. A crumb
+ * that links is the difference between a label and a way out, and it is what
+ * lets a document open in the page you were already on rather than in a tab
+ * you have to remember to close.
+ *
+ * Steps without an href render as plain text: the last one is where you are,
+ * and a link to the page you are on is a link that does nothing.
+ */
+export function ErpCrumbs({ steps }: { steps: { label: string; href?: string }[] }) {
+  return (
+    <div className="erp-crumb">
+      {steps.map((s, i) => (
+        <Fragment key={`${s.label}-${i}`}>
+          {i > 0 && <span className="erp-crumb-sep">/</span>}
+          {s.href
+            ? <Link href={s.href} className="erp-crumb-link">{s.label}</Link>
+            : <span className="erp-crumb-here">{s.label}</span>}
+        </Fragment>
+      ))}
+    </div>
+  );
+}
 
 /** Back to the document that sent you here. */
 export function ErpBackCrumb({
