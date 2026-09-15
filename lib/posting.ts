@@ -1897,8 +1897,9 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
   // A delivery continues either the order that asked for the goods or the
   // invoice that billed for them — never a purchase document, and never
   // another customer's.
+  let src: SourceDoc | null = null;
   if (input.sourceDocumentId) {
-    const src = await requireSource(tx, {
+    src = await requireSource(tx, {
       id: input.sourceDocumentId,
       companyId,
       partnerId,
@@ -2072,6 +2073,100 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
     update document set journal_entry_id = ${entryId}, net_total = ${deliveredValue},
            gross_total = ${deliveredValue}
      where id = ${doc.id}`;
+
+  /**
+   * The order behind the invoice these goods answer.
+   *
+   * The purchase side has done this since the complaint that started the
+   * whole family of warnings: a receipt raised against a bill left the order
+   * it came from sitting at nothing received, going overdue, with the goods
+   * on the shelf. The sales side never had it. A delivery raised against an
+   * invoice named the invoice and nothing else, so the order it was ordered
+   * on stayed unfulfilled however much went out — and the closed-order guard,
+   * which only fires when a delivery names the order directly, never saw
+   * these at all.
+   *
+   * Same rule as the purchase side, in the sales vocabulary: the order line
+   * the invoice line was raised from, resolved to the version standing now,
+   * capped at what that order still expects. And the same refusal, whole and
+   * atomic, where the order has been closed: goods do not answer a commitment
+   * somebody has given up, whichever door they arrive at.
+   */
+  if (src?.doc_type === "SALES_INVOICE") {
+    const carried = await tx`
+      select dl.id as fulfilment_line_id, dl.base_qty::float as qty,
+             cur.id as order_line_id, cur.item_id, live.id as order_id
+        from document_line dl
+        join document_line il on il.id = dl.source_line_id
+        join document_line ol on ol.id = il.source_line_id
+        join document o on o.id = ol.document_id
+        join document live on live.id = fn_current_document(o.id)
+        join lateral (
+              select x.id, x.item_id
+                from document_line x
+               where x.document_id = live.id
+                 and (
+                   x.id = fn_current_line(ol.id)
+                   or x.id = ol.id
+                   or (x.line_no = ol.line_no and x.item_id = ol.item_id)
+                   or (x.item_id = ol.item_id
+                       and 1 = (select count(*) from document_line y
+                                 where y.document_id = live.id and y.item_id = ol.item_id))
+                 )
+               order by case when x.id = fn_current_line(ol.id) then 0
+                             when x.id = ol.id then 1
+                             when x.line_no = ol.line_no and x.item_id = ol.item_id then 2
+                             else 3 end, x.line_no
+               limit 1
+        ) cur on true
+       where dl.document_id = ${doc.id}
+         and o.doc_type = 'SALES_ORDER'
+         and live.status = 'POSTED'
+       order by dl.line_no`;
+
+    const rows = carried as unknown as {
+      fulfilment_line_id: string; qty: number;
+      order_line_id: string; item_id: string; order_id: string;
+    }[];
+
+    const seenOrder = new Set<string>();
+    for (const c of rows) {
+      if (seenOrder.has(c.order_id)) continue;
+      seenOrder.add(c.order_id);
+      const [ord] = await tx`
+        select id, doc_no from document where id = ${c.order_id} for update`;
+      const [shut] = await tx`
+        select oc.is_open, oc.reason from order_closure oc
+         where fn_current_document(oc.document_id) = fn_current_document(${c.order_id})
+         order by oc.closed_at desc limit 1`;
+      if (shut && !shut.is_open) {
+        throw new Error(
+          `${ord?.doc_no ?? "That order"} was closed — "${shut.reason}" — and these `
+          + `goods would answer it. Reopen ${ord?.doc_no ?? "it"} before delivering `
+          + `against this invoice.`
+        );
+      }
+    }
+
+    const links: { fulfilmentLineId: string; orderLineId: string; qty: number }[] = [];
+    for (const c of rows) {
+      const [owed] = await tx`
+        select coalesce(sum(outstanding), 0)::float as v from v_order_outstanding
+         where order_id = ${c.order_id} and item_id = ${c.item_id}`;
+      const qty = round4(Math.min(Number(c.qty), Number((owed as { v: number }).v)));
+      if (qty > 0.0001) {
+        links.push({ fulfilmentLineId: c.fulfilment_line_id,
+                     orderLineId: c.order_line_id, qty });
+      }
+    }
+
+    if (links.length > 0) {
+      await linkFulfilmentIn(tx, {
+        companyId, lines: links, source: "POSTING",
+        reason: `Delivered against ${src.doc_no}, which was billed from the order`,
+      });
+    }
+  }
 
   return { id: doc.id as string, docNo: docNo as string };
 }
@@ -2413,7 +2508,7 @@ async function _postSalesInvoice(
          discount_pct, discount_amount,
          volume_discount_pct, volume_discount_amount, volume_discount_id,
          invoice_discount_pct, invoice_discount_amount, invoice_discount_id,
-         net_amount, tax_amount, gross_amount, foc_reason_id)
+         net_amount, tax_amount, gross_amount, foc_reason_id, source_line_id)
       values
         (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
          ${line.qty}, ${item.base_uom_id}, ${line.qty},
@@ -2421,7 +2516,18 @@ async function _postSalesInvoice(
          ${d?.itemDiscountPct ?? 0}, ${d?.itemDiscountAmount ?? 0},
          ${d?.volumeDiscountPct ?? 0}, ${d?.volumeDiscountAmount ?? 0}, ${d?.volumeDiscountId ?? null},
          ${d?.invoiceDiscountPct ?? 0}, ${d?.invoiceDiscountAmount ?? 0}, ${d?.invoiceDiscountId ?? null},
-         ${net}, 0, ${net}, ${line.focReasonId ?? null})`;
+         ${net}, 0, ${net}, ${line.focReasonId ?? null},
+         -- Which order line this bills. The purchase side has always recorded
+         -- it and the sales side never did, though the form sends it and the
+         -- type carries it: it was read off the input and dropped. A sales
+         -- invoice could not say which order it billed, so the order was
+         -- missing from its Related documents and from the delivery screen
+         -- raised against it, both of which read this to find it.
+         --
+         -- It records a relationship and nothing more. Fulfilment is counted
+         -- from deliveries and receipts, never from invoices, so nothing that
+         -- adds up quantities starts counting this.
+         ${line.sourceLineId ?? null})`;
 
     // Revenue only — stock and COGS belong to the delivery, not the invoice.
     if (net !== 0) {

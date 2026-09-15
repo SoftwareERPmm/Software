@@ -2361,6 +2361,136 @@ export async function getInvoiceProgress(companyId: string, documentId: string) 
  * what this offers and what a delivery can actually fulfil are the same
  * quantities. Voided deliveries are not deliveries.
  */
+/**
+ * Everything the delivering screen needs about one sales invoice.
+ *
+ * The mirror of getBillReceiptContext, and deliberately not a copy of it.
+ * The two sides ask different questions of the same shape:
+ *
+ *   A receipt is told what the goods cost by the bill, and the cost is the
+ *   figure that matters. A delivery is told what the customer is charged by
+ *   the invoice, and that price is not what the goods cost — the cost is
+ *   drawn FIFO from the lots actually on the shelf, at posting, and cannot be
+ *   known here. Showing the selling price in a "unit cost" column would be
+ *   the delivery screen's version of the error the receipt screen was fixed
+ *   for.
+ *
+ *   A receipt adds to stock and can always do so. A delivery takes stock away
+ *   and can run out, so what is on hand at this location is part of the
+ *   answer rather than a detail.
+ *
+ *   And a line may not be ours to ship at all. Consigned goods are held, not
+ *   owned, and they come from a separate pool that a sale must draw
+ *   explicitly — so the screen has to say which pool each line will take
+ *   from rather than let the difference pass silently.
+ */
+export async function getInvoiceDeliveryContext(companyId: string, invoiceId: string) {
+  const [inv] = await sql`
+    select d.id, d.doc_no, d.doc_date, d.partner_id, d.location_id, d.to_deliver,
+           p.code as partner_code, p.name as partner_name,
+           l.code as location_code, l.name as location_name
+      from document d
+      join business_partner p on p.id = d.partner_id
+      left join location l on l.id = d.location_id
+     where d.id = ${invoiceId} and d.company_id = ${companyId}
+       and d.doc_type = 'SALES_INVOICE' and d.status = 'POSTED'`;
+  if (!inv) return null;
+
+  const own = await sql`
+    select dl.id, dl.item_id, dl.base_qty as qty, dl.net_amount as net,
+           dl.unit_price, dl.foc_reason_id, dl.source_line_id, dl.is_consignment,
+           i.code as item_code, i.name as item_name, u.code as uom_code
+      from document_line dl
+      join item i on i.id = dl.item_id
+      join uom u on u.id = i.base_uom_id
+     where dl.document_id = ${invoiceId} and i.is_stocked
+     order by dl.line_no`;
+  if (own.length === 0) return null;
+
+  const delivered = await sql`
+    select dl.item_id, dl.base_qty as qty, dl.source_line_id
+      from document_line dl
+      join document d on d.id = dl.document_id
+     where d.company_id = ${companyId}
+       and d.doc_type = 'DELIVERY'
+       and d.status = 'POSTED'
+       and d.source_document_id = ${invoiceId}
+     order by d.posting_date, d.doc_no, dl.line_no`;
+
+  const draw = grirMatcher(own as unknown as MatchableLine[]);
+  const gone = new Map<string, number>();
+  for (const d of delivered) {
+    for (const t of draw(d.item_id, Number(d.qty), d.source_line_id).taken) {
+      gone.set(t.lineId, (gone.get(t.lineId) ?? 0) + t.qty);
+    }
+  }
+
+  // The order line behind each invoice line, where the invoice was raised
+  // from one, and where that order line stands now.
+  const orderLineIds = own.map((l: any) => l.source_line_id).filter(Boolean);
+  const orderLines = orderLineIds.length === 0 ? [] : await sql`
+    select ol.id as order_line_id, ol.item_id,
+           fn_current_document(o.id) as order_id, o.doc_no as order_no,
+           v.ordered, v.fulfilled, v.outstanding
+      from document_line ol
+      join document o on o.id = ol.document_id
+      left join v_order_outstanding v
+             on v.order_id = fn_current_document(o.id) and v.item_id = ol.item_id
+     where ol.id = any(${orderLineIds})
+       and o.doc_type = 'SALES_ORDER'`;
+  const byOrderLine = new Map(orderLines.map((r: any) => [r.order_line_id, r]));
+
+  // What is actually on the shelf where this invoice ships from. Asked per
+  // item rather than assumed: the delivery is refused without it, and finding
+  // that out after typing a quantity is the wrong moment.
+  const itemIds = [...new Set(own.map((l: any) => l.item_id as string))];
+  const onHand = inv.location_id ? await sql`
+    select i as item_id, fn_qty_on_hand(${companyId}, i, ${inv.location_id})::float as qty
+      from unnest(${itemIds}::uuid[]) as i` : [];
+  const stock = new Map(onHand.map((r: any) => [r.item_id as string, Number(r.qty)]));
+
+  const lines = own.map((l: any) => {
+    const sent = gone.get(l.id) ?? 0;
+    const ol = l.source_line_id ? byOrderLine.get(l.source_line_id) : null;
+    return {
+      lineId: l.id as string,
+      itemId: l.item_id as string,
+      itemCode: l.item_code as string,
+      itemName: l.item_name as string,
+      uomCode: (l.uom_code ?? null) as string | null,
+      invoicedQty: Number(l.qty),
+      deliveredQty: round4ish(sent),
+      remainingQty: round4ish(Number(l.qty) - sent),
+      // What the customer is charged. Shown as the price it is, never as a
+      // cost: the cost is drawn FIFO at posting from the lots on the shelf.
+      unitPrice: Number(l.unit_price),
+      isFree: !!l.foc_reason_id,
+      // Held rather than owned, and drawn from its own pool.
+      consigned: !!l.is_consignment,
+      onHand: stock.get(l.item_id as string) ?? 0,
+      orderLineId: (l.source_line_id ?? null) as string | null,
+      orderId: (ol?.order_id ?? null) as string | null,
+      orderNo: (ol?.order_no ?? null) as string | null,
+      orderOrdered: ol ? Number(ol.ordered ?? 0) : null,
+      orderFulfilled: ol ? Number(ol.fulfilled ?? 0) : null,
+      orderRemaining: ol ? Number(ol.outstanding ?? 0) : null,
+    };
+  });
+
+  return {
+    id: inv.id as string,
+    docNo: inv.doc_no as string,
+    docDate: String(inv.doc_date),
+    partnerId: inv.partner_id as string,
+    partnerCode: inv.partner_code as string,
+    partnerName: inv.partner_name as string,
+    locationId: (inv.location_id ?? null) as string | null,
+    locationCode: (inv.location_code ?? null) as string | null,
+    locationName: (inv.location_name ?? null) as string | null,
+    lines,
+  };
+}
+
 export async function getPendingDeliveryLines(companyId: string) {
   const docs = await sql`
     select inv.id, inv.doc_no, inv.doc_date, inv.partner_id, inv.location_id,
