@@ -2,7 +2,7 @@
 
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid,
-  BarChart, Bar, LabelList,
+  BarChart, Bar, LabelList, Cell,
 } from "recharts";
 import { money } from "@/lib/format";
 
@@ -75,6 +75,52 @@ export function RankedBarChart({
             formatter={(v: unknown) => money(v as number)}
             style={{ fill: "var(--muted)", fontSize: 11, fontFamily: "var(--mono)" }}
           />
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+/**
+ * The dashboard's revenue bars.
+ *
+ * Its own chart rather than a variant of RevenueTrendChart, because the two
+ * are answering different questions. That one is a trend line with a grid and
+ * axes, read for shape; this is six columns read for size, with the current
+ * month picked out so the eye lands on it first.
+ *
+ * Months with nothing posted keep their place at zero. A gap in trading is
+ * information, and a chart that quietly drops the month says the opposite of
+ * what happened.
+ */
+export function RevenueBars({
+  data,
+}: { data: { month: string; revenue: number | string }[] }) {
+  const rows = data.map((d) => ({ month: monthLabel(d.month), revenue: Number(d.revenue) }));
+  const last = rows.length - 1;
+  return (
+    <ResponsiveContainer width="100%" height={210}>
+      <BarChart data={rows} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
+        <XAxis
+          dataKey="month"
+          tickLine={false}
+          axisLine={false}
+          tick={{ fontSize: 12, fill: "var(--muted)" }}
+          dy={6}
+        />
+        <Tooltip
+          cursor={{ fill: "color-mix(in srgb, var(--brand) 6%, transparent)" }}
+          content={<ChartTooltip />}
+        />
+        <Bar dataKey="revenue" radius={[6, 6, 0, 0]} maxBarSize={46}>
+          {rows.map((_, i) => (
+            <Cell
+              key={i}
+              fill={i === last
+                ? "var(--brand)"
+                : "color-mix(in srgb, var(--brand) 22%, transparent)"}
+            />
+          ))}
         </Bar>
       </BarChart>
     </ResponsiveContainer>
