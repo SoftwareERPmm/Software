@@ -26,21 +26,32 @@
 //
 // So the lock is a row, which every backend can see.
 //
-// The cost is that a run killed outright leaves it behind, and the first
-// attempt at covering that was a timer: a lock older than twenty minutes was
-// assumed dead and taken over. That is not evidence of death, it is evidence
-// of age. A suite that legitimately ran longer would have its lock taken by a
-// second runner, both would then be writing to the same database, and — worse
-// — when the first finished it would delete a lock it no longer owned,
-// letting a third in. The guard would have produced exactly the collision it
-// exists to prevent, while reporting that everything was fine.
+// The cost is that a run killed outright leaves it behind, and two attempts
+// at covering that automatically were both wrong.
 //
-// So liveness is proved rather than assumed. The holder writes a heartbeat
-// every few seconds; a lock is only taken over when that heartbeat has
-// stopped, which means the process really is gone. And every lock carries an
-// owner token: releasing deletes the row only if it is still yours, so a run
-// that overran and was superseded cannot clear somebody else's lock on its
-// way out.
+// A timer first: a lock older than twenty minutes was assumed dead and taken
+// over. That is evidence of age, not of death. A suite that legitimately ran
+// longer had its lock taken, both runners then wrote to the same database,
+// and when the first finished it deleted a lock it no longer owned, letting a
+// third in — the exact collision this exists to prevent, while reporting that
+// everything was fine.
+//
+// Then a heartbeat, taking over only once the holder stopped reporting in.
+// Better, and still not safe: a process paused past the threshold — a laptop
+// asleep, a long stop at a breakpoint, the machine swapping — has not died.
+// It resumes and writes, and it writes before its next heartbeat can notice
+// the lock is no longer its. A guard cannot be built on the absence of a
+// signal when the signal can pause.
+//
+// So there is no automatic takeover at all. A lock is released by the run
+// that took it, or by a person who has checked that run is really gone:
+//
+//   ./node_modules/.bin/tsx scripts/test-lock.mjs --unlock
+//
+// The heartbeat stays, and now only informs: "last alive 4s ago" and "last
+// alive 40 minutes ago" are the difference between waiting and investigating.
+// It authorises nothing. Every lock also carries an owner token, so a run
+// that overran cannot clear a lock that is no longer its on the way out.
 //
 // Refused rather than queued. Waiting behind a suite that empties the
 // database would start the second one against a half-built world, which is
@@ -52,15 +63,13 @@ import { randomUUID } from "node:crypto";
 let held = null;
 
 /**
- * How long a heartbeat may go missing before the holder is presumed gone.
+ * How often the holder says it is still there.
  *
- * This is not "how long a suite may run" — a suite may run all day as long as
- * it keeps saying so. It is how long after a process dies before its lock can
- * be taken, so it only has to outlast a slow round trip to Neon and a pause
- * for garbage collection, not the slowest test in the repository.
+ * Informational only. Nothing is taken over on the strength of a missing
+ * heartbeat — see above — but the age of the last one is what tells a person
+ * whether to wait or to go and look.
  */
 const HEARTBEAT_EVERY_MS = 5_000;
-const PRESUMED_DEAD = "90 seconds";
 
 async function ensureTable(sql) {
   // Created on demand rather than by migration: this is scaffolding for the
@@ -95,17 +104,13 @@ export async function takeTestLock(sql, suiteName = "this suite") {
   // superseded cannot delete the lock of whatever took over from it.
   const owner = randomUUID();
 
+  // No on-conflict clause at all: an existing lock is somebody else's until
+  // they give it back or a person clears it. There is no condition under
+  // which this takes one.
   const [got] = await sql`
     insert into test_run_lock (id, holder, owner, beat_at)
     values (1, ${suiteName}, ${owner}, now())
-    on conflict (id) do update
-       set holder = excluded.holder, owner = excluded.owner,
-           started_at = now(), beat_at = now()
-     -- Taken over only where the holder has stopped saying it is alive. A row
-     -- written before this column existed has no heartbeat and is treated as
-     -- dead, which is the only safe reading: nothing is maintaining it.
-     where test_run_lock.beat_at is null
-        or test_run_lock.beat_at < now() - ${PRESUMED_DEAD}::interval
+    on conflict (id) do nothing
     returning holder, started_at`;
 
   if (got) {
@@ -149,9 +154,10 @@ export async function takeTestLock(sql, suiteName = "this suite") {
     + `${who?.quiet != null ? ` (last alive ${who.quiet}s ago)` : ""}. `
     + `These suites share one database and empty it, so ${suiteName} would `
     + `wreck that run and its own. Wait for it to finish, or point .env at a `
-    + `database of your own. A lock whose holder has stopped answering is `
-    + `taken over after ${PRESUMED_DEAD}; one still reporting in is not, `
-    + `however long it has been running.`
+    + `database of your own. Nothing takes a lock automatically, however old `
+    + `it looks — a paused process is not a dead one. If that run really has `
+    + `stopped, clear it deliberately:\n`
+    + `  ./node_modules/.bin/tsx scripts/test-lock.mjs --unlock`
   );
 }
 
