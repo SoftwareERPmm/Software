@@ -67,6 +67,14 @@ export type SalesInvoiceInput = InvoiceInput & {
   /** Someone confirmed the goods physically exist though the ERP records
    *  none. Reaches the delivery this voucher posts alongside the invoice. */
   allowNegativeStock?: boolean;
+  /**
+   * Why the confirmer believes the goods are there when the books say they
+   * are not. Required by the engine wherever the posting would create or
+   * deepen negative stock — a confirmation without one is a click, not a
+   * statement, and the difference between a delivery that is fine and a loss
+   * nobody has noticed lives in this sentence.
+   */
+  negativeStockReason?: string | null;
 
   /** Goods leave later. When true, this invoice posts revenue only — no
    *  delivery is created, and stock doesn't move until one is. */
@@ -152,6 +160,14 @@ export type FulfillmentInput = {
    * behaviour every caller gets by default.
    */
   allowNegativeStock?: boolean;
+  /**
+   * Why the confirmer believes the goods are there when the books say they
+   * are not. Required by the engine wherever the posting would create or
+   * deepen negative stock — a confirmation without one is a click, not a
+   * statement, and the difference between a delivery that is fine and a loss
+   * nobody has noticed lives in this sentence.
+   */
+  negativeStockReason?: string | null;
   memo?: string | null;
   reference?: string | null;
   sourceDocumentId?: string | null;
@@ -1920,7 +1936,8 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
       (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
        partner_id, location_id, currency, exchange_rate, status,
        net_total, tax_total, gross_total, memo, posted_at, reference, source_document_id,
-       delivery_fee, negative_stock_confirmed, negative_stock_confirmed_at)
+       delivery_fee, negative_stock_confirmed, negative_stock_confirmed_at,
+       negative_stock_reason)
     values
       (${companyId}, 'DELIVERY', ${docNo}, ${fiscalYear}, ${docDate}::date,
        ${docDate}::date, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
@@ -1930,7 +1947,9 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
        -- that stock went negative: the question asked was whether the goods
        -- physically exist, and the answer belongs where it was given.
        ${input.allowNegativeStock === true},
-       ${input.allowNegativeStock === true ? new Date().toISOString() : null})
+       ${input.allowNegativeStock === true ? new Date().toISOString() : null},
+       ${input.allowNegativeStock === true
+         ? (input.negativeStockReason?.trim() || null) : null})
     returning id`;
 
   const journal: JournalLine[] = [];
@@ -1986,6 +2005,26 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
     // reads the quantity, that one reads the cost layers, and relaxing only
     // one of them would either refuse a confirmed sale or let an unconfirmed
     // one through.
+    /**
+     * Going short needs a confirmation and a reason, together.
+     *
+     * Asked here, where the shortage is actually found, so it is asked of
+     * every caller rather than of the screen. A caller that reaches the
+     * engine directly — a script, an import, a resent request — meets the
+     * same rule, and a line that turns out not to be short meets no rule at
+     * all: the confirmation is required by the shortage, not by the flag.
+     */
+    if (onHand < line.qty
+        && input.allowNegativeStock === true
+        && !input.negativeStockReason?.trim()) {
+      throw new Error(
+        `${item.code} (${item.name}) is short at this location — ${onHand} on hand, ` +
+        `${line.qty} going out. Say why the goods are there when the books say ` +
+        `they are not: a confirmation without a reason records that somebody ` +
+        `clicked, not what they knew.`
+      );
+    }
+
     if (onHand < line.qty && input.allowNegativeStock !== true) {
       throw new Error(
         `Not enough ${item.code} (${item.name}) at this location — ` +
@@ -4170,6 +4209,14 @@ export type TransferInput = {
    * that is not recorded is refused.
    */
   allowNegativeStock?: boolean;
+  /**
+   * Why the confirmer believes the goods are there when the books say they
+   * are not. Required by the engine wherever the posting would create or
+   * deepen negative stock — a confirmation without one is a click, not a
+   * statement, and the difference between a delivery that is fine and a loss
+   * nobody has noticed lives in this sentence.
+   */
+  negativeStockReason?: string | null;
   memo?: string | null;
   reference?: string | null;
   /** When stock actually arrived at the destination, if more precise than docDate. */
@@ -4225,7 +4272,27 @@ export async function postStockTransfer(input: TransferInput) {
       // quantity, the planner reads the cost layers, and relaxing one without
       // the other either refuses a confirmed transfer or lets an unconfirmed
       // one through.
-      if (onHand < line.qty && input.allowNegativeStock !== true) {
+      /**
+     * Going short needs a confirmation and a reason, together.
+     *
+     * Asked here, where the shortage is actually found, so it is asked of
+     * every caller rather than of the screen. A caller that reaches the
+     * engine directly — a script, an import, a resent request — meets the
+     * same rule, and a line that turns out not to be short meets no rule at
+     * all: the confirmation is required by the shortage, not by the flag.
+     */
+    if (onHand < line.qty
+        && input.allowNegativeStock === true
+        && !input.negativeStockReason?.trim()) {
+      throw new Error(
+        `${item.code} (${item.name}) is short at this location — ${onHand} on hand, ` +
+        `${line.qty} going out. Say why the goods are there when the books say ` +
+        `they are not: a confirmation without a reason records that somebody ` +
+        `clicked, not what they knew.`
+      );
+    }
+
+    if (onHand < line.qty && input.allowNegativeStock !== true) {
         throw new Error(
           `Not enough ${item.code} (${item.name}) at the source location — ` +
             `${onHand} on hand, ${line.qty} requested`

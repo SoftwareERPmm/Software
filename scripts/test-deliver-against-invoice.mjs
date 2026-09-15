@@ -39,6 +39,9 @@ const check = (label, ok, detail = "") => {
   console.log(`  ${ok ? "PASS" : "FAIL"}  ${label}${detail ? "  " + detail : ""}`);
 };
 const n = (v) => Number(v ?? 0);
+const refused = async (fn) => {
+  try { await fn(); return null; } catch (e) { return e.message; }
+};
 
 try {
   const [co] = await sql`select id, name from company order by created_at limit 1`;
@@ -100,7 +103,12 @@ try {
     fd.set("doc_date", today);
     fd.set("source_document_id", invoiceId);
     fd.set("idempotency_key", opts.key ?? crypto.randomUUID());
-    if (opts.allowNegative) fd.set("allow_negative_stock", "true");
+    if (opts.allowNegative) {
+      fd.set("allow_negative_stock", "true");
+      if (opts.reason !== null) {
+        fd.set("negative_stock_reason", opts.reason ?? "supplier delivery not yet entered");
+      }
+    }
     fd.set("lines", JSON.stringify(lines));
     return A.createDelivery(null, fd);
   };
@@ -400,6 +408,154 @@ try {
       order by doc_no desc limit 1`;
     check("  once confirmed, the document says who agreed and when",
       d.negative_stock_confirmed === true && d.negative_stock_confirmed_at !== null);
+  }
+
+  // ---- a confirmation without a reason is a click, not a statement --------
+
+  console.log("\n  the reason is the server's rule, not the screen's\n");
+  {
+    const { inv, invLineId } = await setup({ stock: 30, ordered: 50, invoiced: 50 });
+    const line = [{ itemId: item.id, qty: 50, sourceLineId: invLineId }];
+
+    const noReason = await ran(() => ship(inv.id, line,
+      { allowNegative: true, reason: null }));
+    check("confirming without a reason is refused", !noReason.ok,
+      String(noReason.error).slice(0, 70));
+    const blank = await ran(() => ship(inv.id, line,
+      { allowNegative: true, reason: "   " }));
+    check("  and whitespace is not a reason", !blank.ok, String(blank.error).slice(0, 50));
+    check("  nothing moved", (await onHand()) === 30, `${await onHand()}`);
+
+    const ok = await ran(() => ship(inv.id, line,
+      { allowNegative: true, reason: "supplier delivery not yet entered" }));
+    check("with one, it posts", ok.ok, String(ok.error).slice(0, 60));
+
+    const [d] = await sql`select negative_stock_confirmed, negative_stock_confirmed_at,
+                                 negative_stock_reason
+      from document where company_id = ${co.id} and doc_type = 'DELIVERY'
+      order by doc_no desc limit 1`;
+    check("  and the reason is on the document, not buried in a memo",
+      d.negative_stock_reason === "supplier delivery not yet entered",
+      String(d.negative_stock_reason));
+    check("    beside the confirmation and its timestamp",
+      d.negative_stock_confirmed === true && d.negative_stock_confirmed_at !== null);
+  }
+  {
+    // The rule belongs to the shortage, not to the flag: a delivery that is
+    // not short needs no confirmation and no reason, however it is sent.
+    const { inv, invLineId } = await setup({ stock: 100, ordered: 50, invoiced: 50 });
+    const plenty = await ran(() => ship(inv.id, [
+      { itemId: item.id, qty: 20, sourceLineId: invLineId }]));
+    check("a delivery with stock behind it needs neither", plenty.ok,
+      String(plenty.error).slice(0, 60));
+    const [d] = await sql`select negative_stock_confirmed, negative_stock_reason
+      from document where company_id = ${co.id} and doc_type = 'DELIVERY'
+      order by doc_no desc limit 1`;
+    check("  and records neither", d.negative_stock_confirmed === false
+      && d.negative_stock_reason === null,
+      `${d.negative_stock_confirmed}/${d.negative_stock_reason}`);
+  }
+
+  // ---- the legacy exemption, and what may not claim it --------------------
+  //
+  // Confirmations made before a reason was asked for cannot be given one now
+  // without inventing it, so 0067 marks them and the check accepts them for
+  // good. NOT VALID alone was not enough: it exempts a row when the
+  // constraint is added and checks it again the moment anything updates it,
+  // which is how a correction to one of these documents would begin.
+
+  console.log("\n  a confirmation made before anybody was asked why\n");
+  {
+    const { inv, invLineId } = await setup({ stock: 30, ordered: 50, invoiced: 50 });
+    await ran(() => ship(inv.id, [{ itemId: item.id, qty: 50, sourceLineId: invLineId }],
+      { allowNegative: true, reason: "supplier delivery not yet entered" }));
+    const [d] = await sql`select id, doc_no from document where company_id = ${co.id}
+      and doc_type = 'DELIVERY' order by doc_no desc limit 1`;
+
+    // Made legacy the way 0067 does it, with the trigger stood down exactly
+    // as the migration's own transaction has it stood down.
+    await sql`alter table document disable trigger trg_negative_stock_legacy_is_historic`;
+    await sql`update document set negative_stock_reason = null,
+                                  negative_stock_reason_legacy = true where id = ${d.id}`;
+    await sql`alter table document enable trigger trg_negative_stock_legacy_is_historic`;
+
+    const touched = await refused(() => sql`update document set memo = 'touched'
+      where id = ${d.id}`);
+    check("a legacy row can still be edited", touched === null, String(touched).slice(0, 60));
+    const voidReason = await refused(() => sql`update document
+      set void_reason = 'entered in error' where id = ${d.id}`);
+    check("  including recording a void reason on it", voidReason === null,
+      String(voidReason).slice(0, 60));
+    const [still] = await sql`select negative_stock_reason from document where id = ${d.id}`;
+    check("  and no reason was invented for it", still.negative_stock_reason === null);
+
+    const v = await sql`select reason_is_legacy from v_negative_stock
+      where document_id = ${d.id}`;
+    check("  the screen can tell it from a blank answer",
+      v.length === 0 || v[0].reason_is_legacy === true,
+      v.length ? `legacy=${v[0].reason_is_legacy}` : "(settled, not pending)");
+
+    // And nothing new can claim the mark.
+    const [ordinary] = await sql`select id from document where company_id = ${co.id}
+      and not negative_stock_confirmed order by doc_no limit 1`;
+    const claimed = await refused(() => sql`update document
+      set negative_stock_reason_legacy = true where id = ${ordinary.id}`);
+    check("  an ordinary document cannot claim it", claimed !== null,
+      String(claimed).slice(0, 60));
+    const inserted = await refused(() => sql`insert into document
+      (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date, status,
+       net_total, tax_total, gross_total, negative_stock_reason_legacy)
+      select ${co.id}, 'DELIVERY', 'LEGACY-PROBE', fiscal_year_id, ${today}::date,
+             ${today}::date, 'DRAFT', 0, 0, 0, true from document limit 1`);
+    check("  and a new document cannot be inserted with it", inserted !== null,
+      String(inserted).slice(0, 60));
+  }
+  {
+    // One line short, another with plenty: the document is confirmed once and
+    // carries one reason, not one per line.
+    await wipe();
+    await sql`update number_series set next_value = 1`;
+    const items2 = await sql`select id, code from item
+       where company_id = ${co.id} and is_stocked and is_active order by code limit 2`;
+    const a = items2[0], b = items2[1] ?? items2[0];
+    await P.postGoodsReceipt({ ...base, partnerId: supp.id,
+      lines: [{ itemId: a.id, qty: 5, unitCost: 400 }, { itemId: b.id, qty: 100, unitCost: 400 }] });
+    const inv = await P.postSalesInvoice({ ...base, partnerId: cust.id, dueDate: today,
+      toDeliver: true, lines: [
+        { itemId: a.id, qty: 20, unitPrice: 900 },
+        { itemId: b.id, qty: 10, unitPrice: 900 },
+      ] });
+    const ils = await sql`select id, item_id from document_line
+      where document_id = ${inv.id} order by line_no`;
+
+    const r = await ran(() => ship(inv.id, [
+      { itemId: a.id, qty: 20, sourceLineId: ils[0].id },
+      { itemId: b.id, qty: 10, sourceLineId: ils[1].id },
+    ], { allowNegative: true, reason: "count pending on the short line" }));
+    check("one short line and one with plenty posts together", r.ok,
+      String(r.error).slice(0, 70));
+    const [doc] = await sql`select negative_stock_confirmed, negative_stock_reason
+      from document where company_id = ${co.id} and doc_type = 'DELIVERY'
+      order by doc_no desc limit 1`;
+    check("  the document carries the confirmation once",
+      doc.negative_stock_confirmed === true);
+    check("  with its reason", doc.negative_stock_reason === "count pending on the short line",
+      String(doc.negative_stock_reason));
+  }
+  {
+    // A retry of a confirmed shortage returns the first result rather than
+    // posting a second delivery.
+    const { inv, invLineId } = await setup({ stock: 30, ordered: 50, invoiced: 50 });
+    const key = crypto.randomUUID();
+    const line = [{ itemId: item.id, qty: 50, sourceLineId: invLineId }];
+    const opts = { allowNegative: true, reason: "supplier delivery not yet entered", key };
+    const a = await ran(() => ship(inv.id, line, opts));
+    const b = await ran(() => ship(inv.id, line, opts));
+    check("a resent confirmed shortage is accepted twice", a.ok && b.ok,
+      `${a.error ?? "ok"} / ${b.error ?? "ok"}`);
+    check("  and posts one delivery", n((await sql`select count(*)::int c from document
+      where company_id = ${co.id} and doc_type = 'DELIVERY'`)[0].c) === 1);
+    check("  taking the balance to -20 once", (await onHand()) === -20, `${await onHand()}`);
   }
 
   // ---- the same key, and a different one ----------------------------------

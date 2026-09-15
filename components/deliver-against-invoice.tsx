@@ -167,10 +167,12 @@ export function DeliverAgainstInvoice({
       </div>
 
       {shortConfirmed && <input type="hidden" name="allow_negative_stock" value="true" />}
-      {shortConfirmed && shortReason && (
-        <input type="hidden" name="memo"
-               value={[memo, `Stock short on delivery: ${shortReason}`]
-                 .filter(Boolean).join(" — ")} />
+      {/* Its own field, not folded into the memo. The engine asks for a
+          reason and needs an answer it can rely on; a memo is about anything
+          and searching it for text would make a posting depend on whether
+          somebody happened to type in the right box. */}
+      {shortConfirmed && (
+        <input type="hidden" name="negative_stock_reason" value={shortReason} />
       )}
 
       {state && "error" in state && <div className="alert">{state.error}</div>}
@@ -331,7 +333,7 @@ export function DeliverAgainstInvoice({
       <section className="rcv-card">
         <div className="rcv-card-head">Note</div>
         <div style={{ padding: "0.75rem 1rem" }}>
-          <textarea {...(shortConfirmed && shortReason ? {} : { name: "memo" })}
+          <textarea name="memo"
                     rows={2} placeholder="Optional — English or Myanmar"
                     value={memo} onChange={(e) => setMemo(e.target.value)} />
         </div>
