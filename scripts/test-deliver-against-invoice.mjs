@@ -243,12 +243,84 @@ try {
     // way the posting code asks it rather than guessed from a role name.
     const [cogsAcct] = await sql`
       select fn_resolve_account_for_item(${co.id}, 'COGS', ${item.id}) as a`;
-    // What the late receipt does to the provisional cost is asserted in the
-    // commit that fixes it — see the negative-stock settlement change.
+    const cogsOf = async (docId) => n((await sql`
+      select coalesce(sum(jl.base_amount), 0)::float v
+        from journal_line jl
+        join journal_entry je on je.id = jl.journal_entry_id
+       where je.source_id = ${docId} and jl.account_id = ${cogsAcct.a}`)[0].v);
+    const cogsAll = async () => n((await sql`
+      select coalesce(sum(jl.base_amount), 0)::float v
+        from journal_line jl
+       where jl.account_id = ${cogsAcct.a} and jl.company_id = ${co.id}`)[0].v);
+
+    // 30 came in at 400 and were costed at 400. The other 20 had nothing
+    // behind them, so their cost is provisional.
+    const provisional = await cogsOf(dlv.id);
+    check("  a cost of sale was booked for all 50", provisional > 0, `${provisional}`);
+
+    // The missing receipt arrives, and at a different price than was guessed.
     await P.postGoodsReceipt({ ...base, partnerId: supp.id,
       lines: [{ itemId: item.id, qty: 20, unitCost: 700 }] });
     check("  the missing receipt brings the balance back to nothing",
       (await onHand()) === 0, `${await onHand()}`);
+
+    const settled = await cogsAll();
+    const actual = 30 * 400 + 20 * 700;
+
+    /**
+     * The extra cost is recognised, but not as cost of sales.
+     *
+     * COGS stays at the provisional 20,000 — fifty units at the 400 that was
+     * all the shelf could offer — and the 6,000 the goods actually cost above
+     * that lands in Purchase Price Variance when the receipt arrives. The
+     * money is not lost and the trial balance is flat; it is sitting in a
+     * different line of the P&L from the sale it belongs to.
+     *
+     * Whether that is the right treatment is the forward-cost correction
+     * question already on the list, and not something to decide here. What is
+     * asserted is what happens, so that changing it is a deliberate act.
+     */
+    check("  COGS settles at what the goods actually cost",
+      Math.abs(settled - actual) < 0.01, `${settled} vs ${actual}`);
+    check("    which is more than was booked provisionally",
+      settled > provisional + 0.01, `provisional ${provisional}, settled ${settled}`);
+    const variance = n((await sql`select coalesce(sum(jl.base_amount), 0)::float v
+      from journal_line jl
+      join system_account sa on sa.account_id = jl.account_id
+                            and sa.company_id = jl.company_id
+     where sa.role = 'PURCHASE_PRICE_VARIANCE' and jl.company_id = ${co.id}`)[0].v);
+    check("    and nothing was left sitting in price variance",
+      Math.abs(variance) < 0.01, `${variance}`);
+
+    const [tb] = await sql`select coalesce(sum(balance), 0)::float t from v_trial_balance`;
+    check("    with the books still balancing", Math.abs(n(tb.t)) < 0.005, `${n(tb.t)}`);
+
+    /**
+     * This one fails, and is meant to.
+     *
+     * The inventory GL account reads nothing and the stock ledger reads 6,000
+     * against zero units, so v_check_inventory_reconciliation reports a
+     * break — the invariant view that exists for exactly this. It reproduces
+     * on a plain invoice with no order in sight, so it belongs to the
+     * negative-stock costing path and not to anything in this change. Left
+     * asserted rather than described in a comment: a defect nothing fails on
+     * is a defect somebody has to remember.
+     */
+    const breaks = await sql`select difference from v_check_inventory_reconciliation`;
+    check("  the inventory ledger agrees with the GL afterwards", breaks.length === 0,
+      breaks.length ? `off by ${n(breaks[0].difference)} with zero units on hand` : "");
+
+    const [ledger] = await sql`select coalesce(sum(total_cost), 0)::float v
+      from stock_movement where company_id = ${co.id}`;
+    check("    the stock ledger holds no value for goods that are not there",
+      Math.abs(n(ledger.v)) < 0.01, `${n(ledger.v)}`);
+    const [invGl] = await sql`select coalesce(sum(jl.base_amount), 0)::float v
+      from journal_line jl
+      join account_determination ad on ad.account_id = jl.account_id
+                                   and ad.company_id = jl.company_id
+     where ad.role = 'INVENTORY' and jl.company_id = ${co.id}`;
+    check("    and the inventory account holds none either",
+      Math.abs(n(invGl.v)) < 0.01, `${n(invGl.v)}`);
   }
 
   // ---- the consignor's goods ---------------------------------------------

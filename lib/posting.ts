@@ -2814,14 +2814,40 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
       select fn_resolve_account_for_item(${companyId}, 'INVENTORY', ${line.itemId}) as a`;
     journal.push({ accountId: inventory[0].a, amount: net, locationId });
 
-    // The sale charged the provisional figure; this receipt says what the
-    // goods actually cost. The difference belongs on the same account a
-    // purchase price difference goes to — it is the same kind of thing, a
-    // cost known later than the entry that needed it.
+    /**
+     * The sale charged a provisional figure; this receipt says what the goods
+     * actually cost.
+     *
+     * Those units are gone — they were delivered before anything was known
+     * about their cost — so the difference is not a variance on goods sitting
+     * in stock. It is the cost of that sale, arriving late. Booking it to
+     * Purchase Price Variance left cost of sales understated by exactly this
+     * amount against the revenue it belonged to: fifty units sold for 45,000
+     * showed 20,000 of cost when 26,000 had been spent, with the other 6,000
+     * in a variance line nothing connected to the sale.
+     *
+     * And it has to move the stock ledger as well as the account. The
+     * inventory account was already adjusted here; sum(stock_movement
+     * .total_cost) was not, so the two drifted apart by the variance and
+     * v_check_inventory_reconciliation reported a break with zero units on
+     * hand. A movement carrying value and no quantity is what 0057 relaxed
+     * the quantity constraint for, and this is the same kind of event: goods
+     * already here — or in this case already gone — turning out to be worth
+     * something different from what was first thought.
+     */
     if (Math.abs(variance) > 0.0001) {
-      const v = await tx`select fn_system_account(${companyId}, 'PURCHASE_PRICE_VARIANCE') as a`;
-      journal.push({ accountId: v[0].a, amount: variance, locationId });
+      const cogs = await tx`
+        select fn_resolve_account_for_item(${companyId}, 'COGS', ${line.itemId}) as a`;
+      journal.push({ accountId: cogs[0].a, amount: variance, locationId });
       journal.push({ accountId: inventory[0].a, amount: -variance, locationId });
+
+      await tx`
+        insert into stock_movement
+          (company_id, item_id, location_id, movement_date, qty,
+           unit_cost, total_cost, document_id)
+        values
+          (${companyId}, ${line.itemId}, ${locationId}, ${docDate}::date,
+           0, 0, ${-variance}, ${doc.id})`;
     }
   }
 
