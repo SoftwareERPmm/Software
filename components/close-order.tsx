@@ -5,6 +5,7 @@ import { useActionState } from "react";
 import Link from "next/link";
 import { CircleSlash, RotateCcw, XCircle, X, AlertCircle } from "lucide-react";
 import type { ActionResult } from "@/lib/actions";
+import { Portal } from "@/components/portal";
 
 type Linked = {
   id: string; doc_type: string; doc_no: string;
@@ -117,6 +118,10 @@ export function CloseOrder({
         <Icon size={14} aria-hidden="true" /> {verb}
       </button>
 
+      {/* Out of the tree and onto <body>: this trigger can sit inside the
+          overflow menu, and a menu that closes must not take the drawer it
+          just opened with it. */}
+      <Portal>
       <dialog
         ref={ref}
         className="drawer"
@@ -244,6 +249,7 @@ export function CloseOrder({
           </div>
         </form>
       </dialog>
+      </Portal>
     </>
   );
 }

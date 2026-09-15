@@ -5,6 +5,7 @@ import { useActionState } from "react";
 import { Pencil, TriangleAlert, ArrowRight } from "lucide-react";
 import { money, qty } from "@/lib/format";
 import type { ActionResult } from "@/lib/actions";
+import { Portal } from "@/components/portal";
 
 export type CorrectableLine = {
   /**
@@ -385,14 +386,19 @@ function Dialog({
     if (open && !d.open) d.showModal();
     if (!open && d.open) d.close();
   }, [open]);
+  // Portalled for the same reason as the closure drawer: the trigger can sit
+  // inside the overflow menu, and the menu unmounting must not take this with
+  // it.
   return (
-    <dialog
-      ref={ref}
-      className="confirm confirm-wide"
-      onCancel={(e) => { e.preventDefault(); onClose(); }}
-      onClick={(e) => { if (e.target === ref.current) onClose(); }}
-    >
-      <div className="confirm-panel linkpanel">{children}</div>
-    </dialog>
+    <Portal>
+      <dialog
+        ref={ref}
+        className="confirm confirm-wide"
+        onCancel={(e) => { e.preventDefault(); onClose(); }}
+        onClick={(e) => { if (e.target === ref.current) onClose(); }}
+      >
+        <div className="confirm-panel linkpanel">{children}</div>
+      </dialog>
+    </Portal>
   );
 }
