@@ -11,7 +11,15 @@ type Named = { id: string; code: string; name: string };
 type Account = Named & { account_type: string; is_control: boolean; subledger?: string | null };
 
 type StockRow = { key: number; itemId: string; locationId: string; qty: string; unitCost: string };
-type PartnerRow = { key: number; partnerId: string; reference: string; amount: string; dueDate: string };
+type PartnerRow = {
+  key: number; partnerId: string; reference: string; amount: string; dueDate: string;
+  /**
+   * The branch that made the sale, or bought the goods. An opening debt had
+   * no branch either — so a receivable settled later credited a branch that
+   * had never been shown owing it.
+   */
+  locationId: string;
+};
 type AccountRow = {
   key: number; accountId: string; debit: string; credit: string;
   /**
@@ -65,10 +73,12 @@ export function OpeningSetup({
     { key: 1, itemId: "", locationId: locations[0]?.id ?? "", qty: "", unitCost: "" },
   ]);
   const [receivables, setReceivables] = useState<PartnerRow[]>([
-    { key: 1, partnerId: "", reference: "", amount: "", dueDate: "" },
+    { key: 1, partnerId: "", reference: "", amount: "", dueDate: "",
+      locationId: branches[0]?.id ?? "" },
   ]);
   const [payables, setPayables] = useState<PartnerRow[]>([
-    { key: 1, partnerId: "", reference: "", amount: "", dueDate: "" },
+    { key: 1, partnerId: "", reference: "", amount: "", dueDate: "",
+      locationId: branches[0]?.id ?? "" },
   ]);
   const [others, setOthers] = useState<AccountRow[]>([
     { key: 1, accountId: "", debit: "", credit: "", locationId: branches[0]?.id ?? "" },
@@ -107,11 +117,11 @@ export function OpeningSetup({
     })),
     receivables: receivables.filter((r) => r.partnerId && n(r.amount)).map((r) => ({
       partnerId: r.partnerId, reference: r.reference, amount: n(r.amount),
-      dueDate: r.dueDate || null,
+      dueDate: r.dueDate || null, locationId: r.locationId || null,
     })),
     payables: payables.filter((r) => r.partnerId && n(r.amount)).map((r) => ({
       partnerId: r.partnerId, reference: r.reference, amount: n(r.amount),
-      dueDate: r.dueDate || null,
+      dueDate: r.dueDate || null, locationId: r.locationId || null,
     })),
     accounts: others.filter((r) => r.accountId && (n(r.debit) || n(r.credit))).map((r) => ({
       accountId: r.accountId, amount: n(r.debit) - n(r.credit),
@@ -235,6 +245,7 @@ export function OpeningSetup({
                 <thead>
                   <tr>
                     <th>{s.who}</th><th>Their invoice number</th><th>Due date</th>
+                    {branches.length > 1 && <th>Branch</th>}
                     <th className="r">Outstanding</th><th />
                   </tr>
                 </thead>
@@ -259,6 +270,16 @@ export function OpeningSetup({
                         <input type="date" value={r.dueDate} onChange={(e) => s.set((rs) =>
                           rs.map((x) => x.key === r.key ? { ...x, dueDate: e.target.value } : x))} />
                       </td>
+                      {branches.length > 1 && (
+                        <td>
+                          <select value={r.locationId} onChange={(e) => s.set((rs) =>
+                            rs.map((x) => x.key === r.key ? { ...x, locationId: e.target.value } : x))}>
+                            {branches.map((b) => (
+                              <option key={b.id} value={b.id}>{b.code} · {b.name}</option>
+                            ))}
+                          </select>
+                        </td>
+                      )}
                       <td>
                         <input type="number" step="any" value={r.amount} onChange={(e) => s.set((rs) =>
                           rs.map((x) => x.key === r.key ? { ...x, amount: e.target.value } : x))} />
@@ -272,9 +293,10 @@ export function OpeningSetup({
                 </tbody>
                 <tfoot>
                   <tr>
-                    <td colSpan={3}>
+                    <td colSpan={branches.length > 1 ? 4 : 3}>
                       <button type="button" className="ghost tiny" onClick={() =>
-                        add(s.set, (k) => ({ key: k, partnerId: "", reference: "", amount: "", dueDate: "" }))}>
+                        add(s.set, (k) => ({ key: k, partnerId: "", reference: "", amount: "",
+                                            dueDate: "", locationId: branches[0]?.id ?? "" }))}>
                         Add {s.who.toLowerCase()}
                       </button>
                     </td>

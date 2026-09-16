@@ -74,13 +74,17 @@ try {
     select id from account where company_id = ${co.id}
        and account_type = 'EQUITY' and is_postable and is_active order by code limit 1`);
   if (!rent || !salary) throw new Error("the chart has no expense accounts to post to");
+  // Every posting names the branch it happened at, so these do too.
+  const branch = await pick(sql`
+    select id from location where company_id = ${co.id}
+       and parent_id is null and is_active order by code limit 1`);
   const today = new Date().toISOString().slice(0, 10);
   console.log("");
 
   // ---- Account opening ---------------------------------------------------
 
   const ob = await postAccountOpening({
-    companyId: co.id, docDate: today,
+    companyId: co.id, locationId: branch, docDate: today,
     lines: [
       { accountId: cash, amount: 200000 },
       { accountId: bank, amount: 3000000 },
@@ -101,7 +105,7 @@ try {
   // ---- Cash book ---------------------------------------------------------
 
   const cv = await postCashVoucher({
-    companyId: co.id, docDate: today, memo: "August rent",
+    companyId: co.id, locationId: branch, docDate: today, memo: "August rent",
     lines: [
       { accountId: rent, amount: 150000 },
       { accountId: cash, amount: -150000 },
@@ -119,7 +123,7 @@ try {
   // ---- Bank --------------------------------------------------------------
 
   const bv = await postBankVoucher({
-    companyId: co.id, docDate: today, memo: "August salaries",
+    companyId: co.id, locationId: branch, docDate: today, memo: "August salaries",
     lines: [
       { accountId: salary, amount: 900000 },
       { accountId: bank, amount: -900000 },
@@ -130,7 +134,7 @@ try {
   // ---- Journal -----------------------------------------------------------
 
   const jv = await postJournalVoucher({
-    companyId: co.id, docDate: today, memo: "Owner injects capital",
+    companyId: co.id, locationId: branch, docDate: today, memo: "Owner injects capital",
     lines: [
       { accountId: bank, amount: 500000 },
       { accountId: capital, amount: -500000 },
@@ -141,7 +145,7 @@ try {
   let refusedUnbalanced = false;
   try {
     await postJournalVoucher({
-      companyId: co.id, docDate: today,
+      companyId: co.id, locationId: branch, docDate: today,
       lines: [
         { accountId: bank, amount: 100 },
         { accountId: capital, amount: -99 },
@@ -157,7 +161,7 @@ try {
   let refusedControl = false;
   try {
     await postJournalVoucher({
-      companyId: co.id, docDate: today,
+      companyId: co.id, locationId: branch, docDate: today,
       lines: [
         { accountId: ar, amount: 1000 },
         { accountId: capital, amount: -1000 },
@@ -169,7 +173,7 @@ try {
   // ---- Interbranch transfer ----------------------------------------------
 
   const ct = await postCashTransfer({
-    companyId: co.id, docDate: today,
+    companyId: co.id, fromLocationId: branch, toLocationId: branch, docDate: today,
     fromAccountId: bank, toAccountId: cash, amount: 300000,
     memo: "Cash drawn for Mandalay branch",
   });
@@ -182,7 +186,7 @@ try {
   let refusedSame = false;
   try {
     await postCashTransfer({
-      companyId: co.id, docDate: today,
+      companyId: co.id, fromLocationId: branch, toLocationId: branch, docDate: today,
       fromAccountId: cash, toAccountId: cash, amount: 100,
     });
   } catch { refusedSame = true; }

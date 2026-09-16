@@ -98,8 +98,14 @@ export function OpeningForm({
         {branches.length > 1 ? (
           <div className="field">
             <label htmlFor="location_id">Branch</label>
-            <select id="location_id" name="location_id" defaultValue="">
-              <option value="">None</option>
+            {/* "None" was an option here after it had already been taken out
+                of the voucher form, and it is the same hole: opening cash
+                belonging to no branch is in the company total and in none of
+                the branches, so the branch reports never add up — and the
+                figure it throws off is the opening one, which every later
+                balance is built on. The money opens somewhere. */}
+            <select id="location_id" name="location_id" defaultValue="" required>
+              <option value="" disabled>Choose a branch</option>
               {branches.map((b) => (
                 <option key={b.id} value={b.id}>{b.code} · {b.name}</option>
               ))}

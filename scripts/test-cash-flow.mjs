@@ -48,6 +48,10 @@ const n = (v) => Number(v).toLocaleString();
 
 try {
   const [co] = await sql`select id, name from company order by created_at limit 1`;
+  // Every posting names the branch it happened at, so these do too.
+  const [branch] = await sql`select id from location
+     where company_id = ${co.id} and parent_id is null and is_active
+     order by code limit 1`;
   const today = new Date().toISOString().slice(0, 10);
   const FROM = "2000-01-01", TO = "2099-12-31";
   console.log(`\n  ${co.name}\n`);
@@ -81,7 +85,7 @@ try {
 
   const before = await classified();
   await P.postJournalVoucher({
-    companyId: co.id, docDate: today, memo: "split cash test",
+    companyId: co.id, locationId: branch.id, docDate: today, memo: "split cash test",
     lines: [{ accountId: cash.id, amount: 60000 },
             { accountId: bank.id, amount: 40000 },
             { accountId: equity.id, amount: -100000 }],
@@ -98,7 +102,7 @@ try {
 
   const before2 = await classified();
   await P.postJournalVoucher({
-    companyId: co.id, docDate: today, memo: "split contra test",
+    companyId: co.id, locationId: branch.id, docDate: today, memo: "split contra test",
     lines: [{ accountId: expense.id, amount: 30000 },
             { accountId: equity.id, amount: 20000 },
             { accountId: cash.id, amount: -50000 }],
@@ -122,6 +126,7 @@ try {
   const before3 = await classified();
   await P.postCashTransfer({
     companyId: co.id, docDate: today, amount: 10000,
+    fromLocationId: branch.id, toLocationId: branch.id,
     fromAccountId: cash.id, toAccountId: bank.id, memo: "transfer test",
   });
   const after3 = await classified();

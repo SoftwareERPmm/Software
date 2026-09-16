@@ -1721,6 +1721,36 @@ function parseVoucherLines(fd: FormData): VoucherLine[] {
     .filter((l) => l.accountId && Number.isFinite(l.amount) && l.amount !== 0);
 }
 
+/**
+ * Which branch a manual posting happened at.
+ *
+ * Money moves somewhere. A ledger line with no branch is real activity
+ * belonging to none of them: it lands in the company total and in no branch
+ * view, so adding the branches up never reaches the company figure and the
+ * reports look broken rather than incomplete. The forms ask; this is what
+ * stops it arriving without one anyway, since a required attribute is a
+ * client-side courtesy and not a rule.
+ *
+ * A company with exactly one branch is never asked a question with one
+ * answer — it is filled in here instead.
+ *
+ * Returns the branch id, or the error result the caller should return.
+ */
+async function resolveBranch(
+  co: string,
+  given: string,
+  msg: { none: string; choose: string }
+): Promise<string | { error: string }> {
+  if (given) return given;
+  const branches = await sql`
+    select id from location
+     where company_id = ${co} and parent_id is null and is_active
+     order by code`;
+  if (branches.length === 0) return { error: msg.none };
+  if (branches.length > 1) return { error: msg.choose };
+  return branches[0].id as string;
+}
+
 async function postVoucherFrom(
   fd: FormData,
   kind: "cash" | "bank" | "journal"
@@ -1732,21 +1762,11 @@ async function postVoucherFrom(
     return { error: "A voucher needs at least two lines that balance" };
   }
 
-  // A voucher with no branch is real activity that belongs to none of them,
-  // and it is what makes a branch report fail to add up to the company. The
-  // form asks; this is what stops it arriving without one anyway. Companies
-  // with a single branch have it filled in for them, so nobody is asked a
-  // question with one answer.
-  let locationId = str(fd, "location_id") || null;
-  if (!locationId) {
-    const branches = await sql`
-      select id from location
-       where company_id = ${co} and parent_id is null and is_active
-       order by code`;
-    if (branches.length === 0) return { error: "Set up a branch before posting a voucher" };
-    if (branches.length > 1) return { error: "Choose the branch this voucher happened at" };
-    locationId = branches[0].id as string;
-  }
+  const locationId = await resolveBranch(co, str(fd, "location_id"), {
+    none: "Set up a branch before posting a voucher",
+    choose: "Choose the branch this voucher happened at",
+  });
+  if (typeof locationId !== "string") return locationId;
 
   const input = {
     companyId: co,
@@ -2329,13 +2349,27 @@ export async function createCashTransfer(_prev: unknown, fd: FormData): Promise<
     if (from === to) return { error: "Choose two different accounts" };
     if (!(amount > 0)) return { error: "Enter an amount" };
 
+    // Both ends. A transfer whose far end has no branch moves money out of a
+    // branch and into the company at large, which is the same hole as a
+    // branchless voucher with an extra step.
+    const fromLocationId = await resolveBranch(co, str(fd, "from_location_id"), {
+      none: "Set up a branch before transferring money",
+      choose: "Choose the branch the money is leaving",
+    });
+    if (typeof fromLocationId !== "string") return fromLocationId;
+    const toLocationId = await resolveBranch(co, str(fd, "to_location_id"), {
+      none: "Set up a branch before transferring money",
+      choose: "Choose the branch the money is going to",
+    });
+    if (typeof toLocationId !== "string") return toLocationId;
+
     const r = await postCashTransfer({
       companyId: co,
       docDate: str(fd, "doc_date"),
       fromAccountId: from,
       toAccountId: to,
-      fromLocationId: str(fd, "from_location_id") || null,
-      toLocationId: str(fd, "to_location_id") || null,
+      fromLocationId,
+      toLocationId,
       amount,
       memo: str(fd, "memo") || null,
       reference: str(fd, "reference") || null,
@@ -2357,11 +2391,21 @@ export async function createAccountOpening(_prev: unknown, fd: FormData): Promis
     const lines = parseVoucherLines(fd);
     if (lines.length === 0) return { error: "Enter at least one opening balance" };
 
+    // The same rule the voucher action enforces, and for a sharper reason:
+    // an opening balance with no branch is the figure every later balance is
+    // built on, so a branch that opens with nothing never catches up and the
+    // branch reports are wrong from day one rather than drifting.
+    const locationId = await resolveBranch(co, str(fd, "location_id"), {
+      none: "Set up a branch before posting opening balances",
+      choose: "Choose the branch these opening balances belong to",
+    });
+    if (typeof locationId !== "string") return locationId;
+
     const r = await postAccountOpening({
       companyId: co,
       docDate: str(fd, "doc_date"),
       memo: str(fd, "memo") || null,
-      locationId: str(fd, "location_id") || null,
+      locationId,
       lines: lines.map((l) => ({ accountId: l.accountId, amount: l.amount })),
     });
     id = r.id;
@@ -3958,8 +4002,8 @@ export async function createOpeningBatch(_prev: unknown, fd: FormData): Promise<
     let parsed: {
       cutoverDate?: string;
       stock?: { itemId: string; locationId: string; qty: number; unitCost: number }[];
-      receivables?: { partnerId: string; reference: string; amount: number; dueDate: string | null }[];
-      payables?: { partnerId: string; reference: string; amount: number; dueDate: string | null }[];
+      receivables?: { partnerId: string; reference: string; amount: number; dueDate: string | null; locationId?: string | null }[];
+      payables?: { partnerId: string; reference: string; amount: number; dueDate: string | null; locationId?: string | null }[];
       accounts?: { accountId: string; amount: number; locationId?: string | null }[];
     };
     try {
@@ -3970,13 +4014,36 @@ export async function createOpeningBatch(_prev: unknown, fd: FormData): Promise<
 
     if (!parsed.cutoverDate) return { error: "Choose the date you start using the system" };
 
+    // A debt belongs to the branch that made the sale or bought the goods.
+    // The screen asks per row once there is more than one branch; this fills
+    // in the only answer when there is one, and refuses rather than posting
+    // to nowhere when a row still has none.
+    const partnerRows = [
+      ...(parsed.receivables ?? []).map((r) => [r, "opening receivable"] as const),
+      ...(parsed.payables ?? []).map((r) => [r, "opening payable"] as const),
+    ];
+    if (partnerRows.some(([r]) => !r.locationId)) {
+      const branches = await sql`
+        select id from location
+         where company_id = ${co} and parent_id is null and is_active
+         order by code`;
+      if (branches.length === 0) {
+        return { error: "Set up a branch before posting opening balances" };
+      }
+      if (branches.length > 1) {
+        const [, what] = partnerRows.find(([r]) => !r.locationId)!;
+        return { error: `Choose the branch each ${what} belongs to` };
+      }
+      for (const [r] of partnerRows) r.locationId ??= branches[0].id as string;
+    }
+
     const r = await postOpeningBatch({
       companyId: co,
       cutoverDate: parsed.cutoverDate,
       memo: "Opening balances",
       stock: parsed.stock ?? [],
-      receivables: parsed.receivables ?? [],
-      payables: parsed.payables ?? [],
+      receivables: (parsed.receivables ?? []) as never,
+      payables: (parsed.payables ?? []) as never,
       accounts: parsed.accounts ?? [],
     });
     id = r.documents[0]?.id ?? "";

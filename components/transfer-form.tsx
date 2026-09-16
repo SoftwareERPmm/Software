@@ -51,17 +51,23 @@ export function TransferForm({
               </select>
             </div>
 
-            {branches.length > 0 && (
+            {branches.length > 1 ? (
               <div className="field">
                 <label htmlFor="from_location_id">From branch</label>
-                <select id="from_location_id" name="from_location_id" defaultValue="">
-                  <option value="">None</option>
+                {/* Both ends, not one. A transfer between branches is a real
+                    thing — it is exactly why the cash flow statement carries
+                    an unexplained-difference line — and it can only be told
+                    from a within-branch move if both ends say where they are. */}
+                <select id="from_location_id" name="from_location_id" defaultValue="" required>
+                  <option value="" disabled>Choose a branch</option>
                   {branches.map((l) => (
                     <option key={l.id} value={l.id}>{l.code} · {l.name}</option>
                   ))}
                 </select>
               </div>
-            )}
+            ) : branches.length === 1 ? (
+              <input type="hidden" name="from_location_id" value={branches[0].id} />
+            ) : null}
 
             <div className="field">
               <label htmlFor="to_account_id">To</label>
@@ -74,17 +80,23 @@ export function TransferForm({
               </select>
             </div>
 
-            {branches.length > 0 && (
+            {branches.length > 1 ? (
               <div className="field">
                 <label htmlFor="to_location_id">To branch</label>
-                <select id="to_location_id" name="to_location_id" defaultValue="">
-                  <option value="">None</option>
+                {/* Both ends, not one. A transfer between branches is a real
+                    thing — it is exactly why the cash flow statement carries
+                    an unexplained-difference line — and it can only be told
+                    from a within-branch move if both ends say where they are. */}
+                <select id="to_location_id" name="to_location_id" defaultValue="" required>
+                  <option value="" disabled>Choose a branch</option>
                   {branches.map((l) => (
                     <option key={l.id} value={l.id}>{l.code} · {l.name}</option>
                   ))}
                 </select>
               </div>
-            )}
+            ) : branches.length === 1 ? (
+              <input type="hidden" name="to_location_id" value={branches[0].id} />
+            ) : null}
 
             <div className="field">
               <label htmlFor="amount">Amount</label>

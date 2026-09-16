@@ -59,6 +59,10 @@ try {
   const [co] = await sql`select id, name from company order by created_at limit 1`;
   console.log(`\n  ${co.name}\n`);
   const stamp = Date.now().toString().slice(-6);
+  // Every posting names the branch it happened at, so these do too.
+  const [branch] = await sql`select id from location
+     where company_id = ${co.id} and parent_id is null and is_active
+     order by code limit 1`;
   const today = new Date().toISOString().slice(0, 10);
 
   const [cash] = await sql`
@@ -72,7 +76,7 @@ try {
   const before = await balances(co.id);
 
   const rec = await postCashVoucher({
-    companyId: co.id, docDate: today, memo: "to be voided",
+    companyId: co.id, locationId: branch.id, docDate: today, memo: "to be voided",
     lines: [{ accountId: cash.id, amount: 250000 }, { accountId: income.id, amount: -250000 }],
   });
   const after = await balances(co.id);
@@ -137,7 +141,7 @@ try {
   // The whole guard: hiding a document without the reversal is what made the
   // subledger and the control account disagree.
   const rec2 = await postCashVoucher({
-    companyId: co.id, docDate: today, memo: "flip test",
+    companyId: co.id, locationId: branch.id, docDate: today, memo: "flip test",
     lines: [{ accountId: cash.id, amount: 10000 }, { accountId: income.id, amount: -10000 }],
   });
   let flipped = false;
@@ -319,14 +323,14 @@ try {
     const { linkAmendment } = await import("../lib/posting.ts");
 
     const wrong = await postCashVoucher({
-      companyId: co.id, docDate: today, memo: "rent — wrong amount",
+      companyId: co.id, locationId: branch.id, docDate: today, memo: "rent — wrong amount",
       lines: [{ accountId: cash.id, amount: -300000 }, { accountId: income.id, amount: 300000 }],
     });
     const beforeEdit = await balances(co.id);
 
     await voidDocument({ documentId: wrong.id, reason: "amount was wrong" });
     const right = await postCashVoucher({
-      companyId: co.id, docDate: today, memo: "rent — corrected",
+      companyId: co.id, locationId: branch.id, docDate: today, memo: "rent — corrected",
       lines: [{ accountId: cash.id, amount: -350000 }, { accountId: income.id, amount: 350000 }],
     });
     const linked = await linkAmendment({
@@ -365,7 +369,7 @@ try {
     // Linking a replacement to a document nobody voided would leave both
     // standing, which is a duplicate rather than an edit.
     const stray = await postCashVoucher({
-      companyId: co.id, docDate: today, memo: "still standing",
+      companyId: co.id, locationId: branch.id, docDate: today, memo: "still standing",
       lines: [{ accountId: cash.id, amount: 1000 }, { accountId: income.id, amount: -1000 }],
     });
     let refusedLink = null;
