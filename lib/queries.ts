@@ -324,7 +324,24 @@ export async function getDocuments(companyId: string, docType?: string, openGrir
      where d.company_id = ${companyId}
        ${docType ? sql`and d.doc_type = ${docType}` : sql``}
        ${openGrirOnly ? sql`and exists (select 1 from v_grir_balance g where g.document_id = d.id)` : sql``}
-     order by d.posting_date desc, d.doc_no desc`;
+     -- Newest first, by the date the document carries, then by when it was
+     -- actually entered.
+     --
+     -- The tie-break is the fix. posting_date is a date with no time, so
+     -- everything dated today tied on it and fell through to doc_no — which
+     -- sorts alphabetically by prefix, so a bill entered an hour ago (DP…)
+     -- sat above a receipt entered a moment ago (STR…) for no reason a
+     -- reader could see. created_at is the only column that knows which came
+     -- first.
+     --
+     -- Business date stays the primary key rather than entry time, because
+     -- this is a register: the date on screen is posting_date, and a list
+     -- sorted by a column it does not show reads as unsorted. It also keeps
+     -- back-dated work in its place — opening balances entered today belong
+     -- with the day they open, not above this week's trading, and a bulk
+     -- repair or an import would otherwise take the whole top of the list.
+     -- "What happened just now" is the History log, which is its own screen.
+     order by d.posting_date desc, d.created_at desc, d.doc_no desc`;
 }
 
 /**
@@ -2782,7 +2799,24 @@ export async function getUnassignedBranchActivity(companyId: string) {
     select count(*)::int as lines,
            coalesce(sum(case when jl.base_amount > 0 then jl.base_amount else 0 end), 0) as debits
       from journal_line jl
-     where jl.company_id = ${companyId} and jl.location_id is null`;
+      join journal_entry je on je.id = jl.journal_entry_id
+      -- Left, not inner: history from before the branch dimension can have an
+      -- entry and no document, and it is exactly what this figure is for.
+      left join document d on d.journal_entry_id = je.id
+     where jl.company_id = ${companyId} and jl.location_id is null
+       -- A document that has been reversed, and the reversal itself, are not
+       -- activity belonging to no branch: together they net to nothing on
+       -- every account. Counting them would mean the one repair available
+       -- for a branchless entry — reverse it, post it again naming the
+       -- branch — made this figure worse, since the mirror image of a
+       -- branchless line is another branchless line. The same reason 0070
+       -- takes reversed documents out of the open items.
+       --
+       -- Keyed on the document because that is where a void is recorded:
+       -- journal_entry has reverses_entry_id and reversed_by_entry_id and
+       -- voidDocument sets neither, so testing those matched nothing at all.
+       and (d.id is null
+            or (d.status <> 'REVERSED' and d.reverses_document_id is null))`;
   return { lines: Number(r?.lines ?? 0), debits: Number(r?.debits ?? 0) };
 }
 
