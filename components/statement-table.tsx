@@ -1,7 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { ChevronRight, Download, Printer } from "lucide-react";
+import type { UrlObject } from "url";
 import { money } from "@/lib/format";
 import type { StatementNode } from "@/lib/report-tree";
 
@@ -37,7 +39,7 @@ export type Summary = {
  * decides what is on screen.
  */
 export function StatementTable({
-  title, sections, summaries, subtotals, scope, currency,
+  title, sections, summaries, subtotals, scope, currency, printHref,
 }: {
   title: string;
   sections: Section[];
@@ -47,6 +49,12 @@ export function StatementTable({
   /** "All branches · 2026-01-01 to 2026-09-16" */
   scope: string;
   currency: string;
+  /**
+   * The same statement as paper, carrying the same period and branch. A link
+   * rather than window.print(), so what prints is the statement rather than
+   * the screen it was read on, and it can be looked at first.
+   */
+  printHref: UrlObject;
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [showCodes, setShowCodes] = useState(true);
@@ -222,9 +230,9 @@ export function StatementTable({
           <button type="button" className="erp-hbtn noprint" onClick={exportCsv}>
             <Download size={15} aria-hidden="true" /> Export
           </button>
-          <button type="button" className="erp-hbtn noprint" onClick={() => window.print()}>
+          <Link href={printHref} className="erp-hbtn noprint">
             <Printer size={15} aria-hidden="true" /> Print
-          </button>
+          </Link>
         </div>
       </div>
 

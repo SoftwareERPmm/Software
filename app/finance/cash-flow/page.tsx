@@ -1,79 +1,32 @@
+import Link from "next/link";
+import { Printer } from "lucide-react";
 import { money } from "@/lib/db";
 import { AutoApply } from "@/components/auto-apply";
-import {
-  getCompany, getCashFlowStatement, getBranches,
-  getUnassignedBranchActivity, UNASSIGNED_BRANCH,
-} from "@/lib/queries";
-import { ErpCrumbs } from "@/components/erp-worklist";
-
-function defaultFrom() {
-  return `${new Date().getFullYear()}-01-01`;
-}
-function today() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-const SECTIONS: Array<{ key: string; label: string }> = [
-  { key: "operating", label: "Operating activities" },
-  { key: "investing", label: "Investing activities" },
-  { key: "financing", label: "Financing activities" },
-];
+import { UNASSIGNED_BRANCH } from "@/lib/queries";
+import { HelpHint } from "@/components/help-hint";
+import { getCashFlowData, SECTIONS, type Params } from "./data";
 
 export default async function CashFlow({
   searchParams,
 }: {
-  searchParams: Promise<{ from?: string; to?: string; branch?: string }>;
+  searchParams: Promise<Params>;
 }) {
-  const company = await getCompany();
-  if (!company) return <div className="empty">No company found.</div>;
-
-  const { from, to, branch } = await searchParams;
-  const range = { from: from || defaultFrom(), to: to || today() };
-
-  const branches = (await getBranches(company.id)) as unknown as
-    Array<{ id: string; code: string; name: string }>;
-  const unassignedLines = await getUnassignedBranchActivity(company.id);
-  // A branch id that no longer exists falls back to the consolidated view
-  // rather than showing an empty report with no explanation.
-  const branchId =
-    branch === UNASSIGNED_BRANCH ? UNASSIGNED_BRANCH
-    : branch && branches.some((b) => b.id === branch) ? branch
-    : null;
-
-  const { rows, beginningCash, endingCash } =
-    await getCashFlowStatement(company.id, range.from, range.to, branchId);
-  const typed = rows as unknown as Array<{ category: string; section: string; amount: string }>;
-
-  // Beginning plus what the statement explains should be what the ledger
-  // holds. A branch view legitimately differs: a transfer between branches
-  // moves that branch's cash but has no contra line to classify, so it is
-  // shown as a difference rather than quietly folded into a category.
-  const netChange = SECTIONS.reduce(
-    (s, sec) => s + typed.filter((r) => r.section === sec.key).reduce((s2, r) => s2 + Number(r.amount), 0),
-    0
-  );
-
-  // Beginning plus what the statement explains should be what the ledger
-  // holds. A branch view legitimately differs: a transfer between branches
-  // moves that branch's cash but has no contra line to classify, so it shows
-  // as a difference rather than being quietly folded into a category.
-  const difference = Number(endingCash) - (Number(beginningCash) + netChange);
-  const unreconciled = Math.abs(difference) > 0.01;
+  const data = await getCashFlowData(await searchParams);
+  if (!data) return <div className="empty">No company found.</div>;
+  const {
+    company, branches, unassignedLines, branchId, range, typed,
+    beginningCash, endingCash, netChange, difference, unreconciled,
+  } = data;
 
   return (
     <>
-      <ErpCrumbs steps={[
-        { label: "Accounting" },
-        { label: "Financial reports" },
-        { label: "Cash flow" },
-      ]} />
       <div className="page-head">
         <h1>Cash flow statement</h1>
-        <span className="page-sub">
+        <HelpHint label="What this statement shows">
           Direct method &mdash; actual cash in and out, by category, for the
           period below. Movements between your own cash and bank accounts are
           excluded; they are not a real inflow or outflow.
-        </span>
+        </HelpHint>
       </div>
 
       <form className="row" style={{ marginBottom: "1rem", alignItems: "flex-end" }}>
@@ -108,10 +61,10 @@ export default async function CashFlow({
 
       {unassignedLines.lines > 0 && branchId === null && (
         <p className="hint" style={{ margin: "0 0 1rem" }}>
-          {money(unassignedLines.debits)} of activity carries no branch — opening
-          balances, and anything posted without one. It is in the company
-          total and in none of the branches, so the branches will not add up
-          to it. Choose &ldquo;No branch&rdquo; above to see exactly what.
+          {money(unassignedLines.debits)} was posted without choosing a branch.
+          It counts in the company total but in none of the branches, so adding
+          the branches together will not reach this total. Choose
+          &ldquo;No branch&rdquo; above to see what those entries are.
         </p>
       )}
 
@@ -120,6 +73,19 @@ export default async function CashFlow({
           <div className="card-head">
             <h2>Statement</h2>
             <span className="page-sub">{range.from} to {range.to}</span>
+            {/* The same statement as paper, carrying the same period and
+                branch — a link rather than window.print(), so what prints is
+                the statement rather than the screen it was read on. */}
+            <Link
+              href={{ pathname: "/finance/cash-flow/print", query: {
+                from: range.from, to: range.to,
+                ...(branchId ? { branch: branchId } : {}),
+              } }}
+              className="erp-hbtn noprint"
+              style={{ marginLeft: "auto" }}
+            >
+              <Printer size={15} aria-hidden="true" /> Print
+            </Link>
           </div>
           <div className="tablewrap">
             <table>

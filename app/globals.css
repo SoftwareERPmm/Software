@@ -989,6 +989,38 @@ thead th.r { font-family: var(--sans); }
 }
 .page-head .actions { order: 4; margin-left: auto; }
 
+/* ------------------------------------------------------------- help hint -- */
+
+/* The explanation a screen used to print above its figures, kept but folded
+   away. Ordered with the title rather than after the sub-line it replaces,
+   because it belongs to the heading now. */
+.helphint { position: relative; display: inline-flex; order: 3; }
+.helphint-mark {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; padding: 0;
+  background: none; border: 0; border-radius: 50%;
+  color: var(--muted); cursor: help;
+}
+.helphint-mark:hover, .helphint-mark[aria-expanded="true"] {
+  background: var(--line-soft); color: var(--ink);
+}
+/* Below the mark and opening to the right of it.
+   Above would clear the filter row it briefly covers, but the page title sits
+   at the very top of the content area, so there is no room above — the bubble
+   opened off the screen. Centred on the mark, it reached further left than the
+   title does and covered the side nav. Anchored to the mark's left edge it
+   opens into the page, which is where the space is. */
+.helphint-bubble {
+  position: absolute; top: calc(100% + 6px); left: 0;
+  z-index: 30; width: max-content; max-width: min(34rem, calc(100vw - 2rem));
+  padding: 0.6rem 0.75rem;
+  background: var(--surface); color: var(--ink-soft);
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.12);
+  font-size: var(--t-sm); font-weight: 400; line-height: 1.5;
+  text-align: left; white-space: normal;
+}
+
 /* Cards are defined once, above — the squarer "sheet" treatment that used to
    live here was the most visible difference between the dashboard and every
    other screen, and it lost. */
@@ -1309,6 +1341,27 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 .sheet-table .c-uom { width: 16mm; }
 .sheet-table .c-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .sheet-code { color: #666; margin-right: 2mm; }
+
+/* A statement on paper. The sheet's own table is built for line items with a
+   quantity and a price; a statement has a description and one figure, so the
+   weight goes on the structure instead — headings, rules and totals. */
+.stmt-sheet-scope { font-weight: 400; }
+.stmt-sheet-table td { border-bottom: 0; padding: 1.4mm 2mm; }
+.stmt-sheet-section td {
+  font-size: 8pt; text-transform: uppercase; letter-spacing: 0.07em;
+  color: #333; font-weight: 600;
+  padding-top: 4mm; border-bottom: 1px solid #ccc;
+}
+.stmt-sheet-total td { border-top: 1px solid #999; font-weight: 600; }
+.stmt-sheet-total.strong td { border-top: 1px solid #111; font-weight: 700; }
+/* A figure the statement arrives at, not one it adds up — ruled above and
+   below so it reads as a result rather than another line. */
+.stmt-sheet-rule td {
+  border-top: 1px solid #111; border-bottom: 1px solid #111;
+  font-weight: 700; padding: 2mm;
+}
+.stmt-sheet-rule.strong td { border-bottom: 3px double #111; }
+.stmt-sheet-note td { color: #555; }
 
 .sheet-totals { margin-left: auto; border-collapse: collapse; min-width: 70mm; }
 .sheet-totals th {
@@ -2606,7 +2659,13 @@ dialog.drawer .drawer-panel {
   font-size: var(--t-sm);
   padding-left: 2.15rem;
 }
-.sidebar .navsubitems > .navlink { padding-left: 2.9rem; }
+/* A third level, indented like one. This has to name [data-sub] to outrank
+   the rule below it: every link in Accounting is written <NavLink sub>, so
+   both selectors match and the later one was winning at 2.15rem — the same
+   indent as .navsubhead above it. Financial Reports and Income Statement
+   started at the same x, and three levels read as two. */
+.sidebar .navsubitems > .navlink,
+.sidebar .navsubitems > .navlink[data-sub="true"] { padding-left: 2.9rem; }
 .sidebar .navlink:hover {
   background: rgb(255 255 255 / 0.06);
   color: var(--rail-ink);
