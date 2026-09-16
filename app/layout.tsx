@@ -4,6 +4,7 @@ import "./globals.css";
 import Link from "next/link";
 import { getCompany } from "@/lib/queries";
 import { NavLink, NavGroup, NavSubGroup } from "./nav";
+import { MobileNav } from "@/components/mobile-nav";
 import { Toast } from "@/components/toast";
 import {
   LayoutDashboard, ShoppingCart, Package, Wallet, BookOpen, Boxes, Database,
@@ -76,7 +77,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       <body>
         <DatePickerFix />
         <div className="shell">
-          <nav className="sidebar">
+          <MobileNav
+            title={company?.name ?? "Myanmar ERP"}
+            subtitle={company?.base_currency ?? "not set up"}
+          />
+          <nav className="sidebar" id="sidebar">
             <div className="brand">
               <span className="brand-name">{company?.name ?? "Myanmar ERP"}</span>
               <span className="brand-sub">{company?.base_currency ?? "not set up"}</span>
