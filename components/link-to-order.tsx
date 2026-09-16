@@ -47,11 +47,16 @@ const fmt = (n: number) =>
  * question being asked about it.
  */
 export function LinkToOrder({
-  action, lines, openLines,
+  action, lines, openLines, sales = false,
 }: {
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   lines: FulfilmentLine[];
   openLines: OpenOrderLine[];
+  /** A delivery answers a sales order, a receipt a purchase order. The engine
+   *  refuses the wrong pairing either way; this only decides what the screen
+   *  calls it, and calling both "purchase order" is how a delivery came to
+   *  offer linking to one. */
+  sales?: boolean;
 }) {
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     action as never, null,
@@ -107,7 +112,7 @@ export function LinkToOrder({
     <>
       <div className="docactions">
         <button type="button" className="btn ghost" onClick={() => setOpen(true)}>
-          <Link2 size={14} aria-hidden="true" /> Link to a purchase order
+          <Link2 size={14} aria-hidden="true" /> Link to a {sales ? "sales" : "purchase"} order
         </button>
       </div>
 
@@ -115,7 +120,7 @@ export function LinkToOrder({
         <form action={formAction}>
           <input type="hidden" name="allocations" value={JSON.stringify(allocations)} />
           <div className="card-head">
-            <h2>Which order did these goods answer?</h2>
+            <h2>Which {sales ? "sales" : "purchase"} order did these goods answer?</h2>
             <span className="page-sub">
               Changes what the order is owed. No stock moves and no entry is written.
             </span>
@@ -193,7 +198,9 @@ export function LinkToOrder({
         <div className="field">
           <label htmlFor="link_reason">Why</label>
           <input id="link_reason" name="reason" type="text"
-                 placeholder="e.g. received against the supplier's invoice" />
+                 placeholder={sales
+                   ? "e.g. delivered against the customer's invoice"
+                   : "e.g. received against the supplier's invoice"} />
           <span className="hint">Kept with the link, alongside the date.</span>
         </div>
       </div>

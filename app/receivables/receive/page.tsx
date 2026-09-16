@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getSettlementData, createCustomerReceipt } from "@/lib/actions";
 import { getCompany, getBranches } from "@/lib/queries";
 import { SettlementForm } from "@/components/settlement-form";
+import { ErpCrumbs } from "@/components/erp-worklist";
 
 export default async function ReceiveFromCustomer({
   searchParams,
@@ -17,8 +18,11 @@ export default async function ReceiveFromCustomer({
   if (partners.length === 0 || cashAccounts.length === 0) {
     return (
       <>
+        <ErpCrumbs steps={[
+          { label: "Receivables", href: "/receivables" },
+          { label: "Receive from a customer" },
+        ]} />
         <div className="page-head">
-          <span className="eyebrow">Sales</span>
           <h1>Receive from a customer</h1>
         </div>
         <div className="alert">
@@ -33,8 +37,11 @@ export default async function ReceiveFromCustomer({
 
   return (
     <>
+      <ErpCrumbs steps={[
+        { label: "Receivables", href: "/receivables" },
+        { label: "Receive from a customer" },
+      ]} />
       <div className="page-head">
-        <span className="eyebrow">Sales</span>
         <h1>Receive from a customer</h1>
         <span className="page-sub">
           Choose a customer to see their open invoices, then apply what they have paid against each one.{" "}

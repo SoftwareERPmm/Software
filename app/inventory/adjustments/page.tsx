@@ -3,6 +3,7 @@ import { getFormData, createStockAdjustment } from "@/lib/actions";
 import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { AdjustmentForm } from "@/components/adjustment-form";
+import { ErpCrumbs } from "@/components/erp-worklist";
 
 export default async function NewStockAdjustment() {
   const d = await getFormData();
@@ -13,8 +14,11 @@ export default async function NewStockAdjustment() {
   if (categories.length === 0 || d.locations.length === 0) {
     return (
       <>
+        <ErpCrumbs steps={[
+          { label: "Stock movements", href: "/inventory/movements" },
+          { label: "Stock adjustment" },
+        ]} />
         <div className="page-head">
-          <span className="eyebrow">Inventory</span>
           <h1>Stock adjustment</h1>
         </div>
         <div className="alert">
@@ -27,8 +31,11 @@ export default async function NewStockAdjustment() {
 
   return (
     <>
+      <ErpCrumbs steps={[
+        { label: "Stock movements", href: "/inventory/movements" },
+        { label: "Stock adjustment" },
+      ]} />
       <div className="page-head">
-        <span className="eyebrow">Inventory</span>
         <h1>Stock adjustment</h1>
         <span className="page-sub">
           Correct a count — damage, shrinkage, or what the shelf actually

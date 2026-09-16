@@ -1124,6 +1124,7 @@ export async function createSalesInvoice(_prev: unknown, fd: FormData): Promise<
       // refuses to issue stock it has no record of without it, so a form
       // that never asked cannot post negative stock by omission.
       allowNegativeStock: fd.get("allow_negative_stock") !== null,
+      negativeStockReason: str(fd, "negative_stock_reason") || null,
       lines,
     };
 
@@ -1462,6 +1463,7 @@ export async function createDelivery(_prev: unknown, fd: FormData): Promise<Acti
       // rule the sales voucher follows, so the two routes to moving stock
       // cannot disagree about whether someone had to be asked.
       allowNegativeStock: fd.get("allow_negative_stock") !== null,
+      negativeStockReason: str(fd, "negative_stock_reason") || null,
       lines,
     }, tx));
 
@@ -2911,6 +2913,7 @@ export async function createStockTransfer(_prev: unknown, fd: FormData): Promise
       reference: str(fd, "reference") || null,
       // Same rule as a delivery: present only when the dialog was answered.
       allowNegativeStock: fd.get("allow_negative_stock") !== null,
+      negativeStockReason: str(fd, "negative_stock_reason") || null,
       lines,
     });
 

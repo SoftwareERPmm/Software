@@ -73,7 +73,10 @@ export function InvoiceProgress({
             </Link>
             {linkReceiptHref && (
               <Link href={linkReceiptHref} className="btn ghost">
-                <Link2 size={14} aria-hidden="true" /> Link existing receipt
+                {/* A sales invoice is answered by a delivery, not a receipt.
+                    Every other label on this half already reads the side from
+                    `sales`; this one did not. */}
+                <Link2 size={14} aria-hidden="true" /> Link existing {sales ? "delivery" : "receipt"}
               </Link>
             )}
           </>

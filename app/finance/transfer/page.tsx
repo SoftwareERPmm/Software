@@ -1,5 +1,6 @@
 import { getFinanceData, createCashTransfer } from "@/lib/actions";
 import { TransferForm } from "@/components/transfer-form";
+import { ErpCrumbs } from "@/components/erp-worklist";
 
 export default async function InterbranchTransfer() {
   const { cashAccounts, bankAccounts, branches } = await getFinanceData();
@@ -13,8 +14,11 @@ export default async function InterbranchTransfer() {
   if (money.length < 2) {
     return (
       <>
+        <ErpCrumbs steps={[
+          { label: "Cash on hand", href: "/finance/cash-detail" },
+          { label: "Interbranch transfer" },
+        ]} />
         <div className="page-head">
-          <span className="eyebrow">Cash &amp; Bank</span>
           <h1>Interbranch transfer</h1>
         </div>
         <div className="alert">
@@ -26,8 +30,11 @@ export default async function InterbranchTransfer() {
 
   return (
     <>
+      <ErpCrumbs steps={[
+        { label: "Cash on hand", href: "/finance/cash-detail" },
+        { label: "Interbranch transfer" },
+      ]} />
       <div className="page-head">
-        <span className="eyebrow">Cash &amp; Bank</span>
         <h1>Interbranch transfer</h1>
         <span className="page-sub">
           Money between two of your own accounts &mdash; one branch&rsquo;s till to

@@ -3,6 +3,7 @@ import { getOpenGoodsReceipts, getOpenOrdersAwaitingGoods } from "@/lib/queries"
 import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { InvoiceForm } from "@/components/invoice-form";
+import { ErpCrumbs } from "@/components/erp-worklist";
 
 export default async function NewPurchaseInvoice({
   searchParams,
@@ -14,6 +15,11 @@ export default async function NewPurchaseInvoice({
   const [co] = await sql`select id from company order by created_at limit 1`;
   const categories = await allCategories(co.id);
   const goodsReceipts = await getOpenGoodsReceipts(co.id);
+  // Raised from one receipt's own page: the crumb names it, so the way back
+  // leads to that document rather than to a list the reader never came from.
+  const from = goods_receipt_id
+    ? (goodsReceipts as { id: string; doc_no: string }[]).find((g) => g.id === goods_receipt_id)
+    : undefined;
   const awaiting = await getOpenOrdersAwaitingGoods(co.id, "PURCHASE_ORDER");
   const today = new Date().toISOString().slice(0, 10);
 
@@ -22,8 +28,11 @@ export default async function NewPurchaseInvoice({
   if (suppliers.length === 0 || categories.length === 0 || locations.length === 0) {
     return (
       <>
+        <ErpCrumbs steps={[
+          { label: "Purchase invoices", href: "/purchases/invoices" },
+          { label: "New purchase invoice" },
+        ]} />
         <div className="page-head">
-          <span className="eyebrow">Purchases</span>
           <h1>New purchase invoice</h1>
         </div>
         <div className="alert">
@@ -41,8 +50,12 @@ export default async function NewPurchaseInvoice({
 
   return (
     <>
+      <ErpCrumbs steps={[
+        { label: "Purchase invoices", href: "/purchases/invoices" },
+        ...(from ? [{ label: from.doc_no, href: `/documents/${from.id}` }] : []),
+        { label: "New purchase invoice" },
+      ]} />
       <div className="page-head">
-        <span className="eyebrow">Purchases</span>
         <h1>New purchase invoice</h1>
         <span className="page-sub">
           Stock arrives at the price paid and the supplier balance opens. Each

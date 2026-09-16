@@ -1,12 +1,14 @@
 import Link from "next/link";
-import { Boxes, Receipt, Wallet, Banknote, AlertTriangle, HandCoins } from "lucide-react";
+import {
+  ArrowRight, ArrowUpRight, Check, AlertTriangle, ChevronRight,
+} from "lucide-react";
 import { money } from "@/lib/db";
 import {
   getCompany, getKpis, getHealth, getAging, getDocuments, getStock, getActionItems,
   getRevenueTrend, getTopItems, getTopCustomers, getOnboardingStatus,
 } from "@/lib/queries";
-import { RevenueTrendChart, RankedBarChart } from "@/components/charts";
-import { ActivityFeed, type ActivityDoc } from "@/components/activity-feed";
+import { RevenueBars } from "@/components/charts";
+
 import { GettingStarted, needsGettingStarted } from "@/components/getting-started";
 
 export default async function Dashboard() {
@@ -109,279 +111,397 @@ export default async function Dashboard() {
     { n: Number(kpis.ap.n), label: "unpaid supplier bills", href: "/payables" },
   ];
 
+  // ---- figures the design shows, all derived from the data above ---------
+
+  const n = (v: unknown) => Number(v ?? 0);
+  /**
+   * Figures on this screen carry their currency, as the design shows them.
+   * Taken from the company rather than written in: this app is single-company
+   * but not single-currency, and "MMK" typed into a template is a lie waiting
+   * for the first business that keeps its books in anything else.
+   */
+  const cur = (v: unknown) => `${company.base_currency} ${money(v as never)}`;
+  const trend = revenueTrend as unknown as { month: string; revenue: number | string }[];
+  const revenueTotal = trend.reduce((t, r) => t + n(r.revenue), 0);
+  // Month on month, as the reference labels it. Null where there is no
+  // previous month to compare with, or where it was zero — a rise from
+  // nothing is not a percentage, and "+∞%" is not a figure anybody can use.
+  const thisMonth = n(trend.at(-1)?.revenue);
+  const lastMonth = n(trend.at(-2)?.revenue);
+  const change = lastMonth > 0 ? ((thisMonth - lastMonth) / lastMonth) * 100 : null;
+
+  const items = topItems as unknown as
+    { id: string; name: string; qty: number | string; revenue: number | string }[];
+  const topRevenue = items.reduce((m, i) => Math.max(m, n(i.revenue)), 0);
+
+  const urgent = actions.reduce((t, a) => t + a.n, 0);
+
+  const today = new Date().toLocaleDateString("en-GB", {
+    weekday: "long", day: "numeric", month: "long",
+  });
+
+  /** A KPI's badge: what this figure is doing, said from the figure itself. */
+  const kpiCards = [
+    {
+      tone: "var(--brand)",
+      label: "Inventory value",
+      value: cur(kpis.stock.value),
+      note: `${money(kpis.stock.qty)} units on hand`,
+      badge: n(kpis.stock.value) > 0
+        ? { text: "On hand", tint: "var(--brand)" }
+        : { text: "Nothing in stock", tint: "var(--muted)" },
+    },
+    {
+      tone: "#3B6FD4",
+      label: "Receivables",
+      value: cur(kpis.ar.total),
+      note: n(kpis.ar.n) === 0
+        ? "No outstanding invoices"
+        : `${kpis.ar.n} open invoice${n(kpis.ar.n) === 1 ? "" : "s"}`,
+      badge: actionItems.customerInvoicesOverdue.n > 0
+        ? { text: `${actionItems.customerInvoicesOverdue.n} overdue`, tint: "var(--bad)" }
+        : n(kpis.ar.n) === 0
+          ? { text: "All collected", tint: "#3B6FD4" }
+          : { text: "None overdue", tint: "#3B6FD4" },
+    },
+    {
+      tone: "var(--warn)",
+      label: "Payables",
+      value: cur(kpis.ap.total),
+      note: n(kpis.ap.n) === 0
+        ? "No supplier bills due"
+        : `${kpis.ap.n} supplier bill${n(kpis.ap.n) === 1 ? "" : "s"} due`,
+      badge: actionItems.supplierBillsOverdue.n > 0
+        ? { text: `${actionItems.supplierBillsOverdue.n} overdue`, tint: "var(--bad)" }
+        : n(kpis.ap.n) === 0
+          ? { text: "Nothing owed", tint: "var(--muted)" }
+          : { text: "None overdue", tint: "var(--warn)" },
+    },
+    {
+      tone: "#6C5CE0",
+      label: "Cash balance",
+      value: cur(kpis.cash.total),
+      note: "Cash + bank accounts",
+      badge: n(kpis.cash.total) === 0
+        ? { text: "No movement", tint: "#6C5CE0" }
+        : { text: "Available", tint: "#6C5CE0" },
+    },
+  ];
+
+  // Money that moved before any invoice did. Kept from the previous
+  // dashboard — it has nowhere else to appear, and it only shows when there
+  // is some, so it does not pad the row with a zero.
+  if (n(kpis.advances.customer) > 0 || n(kpis.advances.supplier) > 0) {
+    kpiCards.push({
+      tone: "#0E8A8A",
+      label: "On account",
+      value: cur(n(kpis.advances.customer) + n(kpis.advances.supplier)),
+      note: "Paid before invoicing",
+      badge: { text: "Unapplied", tint: "#0E8A8A" },
+    });
+  }
+
+  /** The two pipelines, each stage counted from what is actually open. */
+  const purchaseFlow = [
+    { n: actionItems.purchaseOrders.open, name: "Orders", sub: "Awaiting goods",
+      href: "/documents?type=PURCHASE_ORDER" },
+    { n: actionItems.goodsReceipts.open, name: "Receiving", sub: "Awaiting bill",
+      href: "/documents?type=GOODS_RECEIPT&open=grir" },
+    { n: actionItems.purchaseInvoicesAwaitingGoods.open ?? 0, name: "Billing",
+      sub: "Awaiting goods", href: "/documents?type=PURCHASE_INVOICE&open=grir" },
+    { n: n(kpis.ap.n), name: "Payment", sub: "Unpaid bills", href: "/payables" },
+  ];
+  const salesFlow = [
+    { n: actionItems.salesOrders.open, name: "Orders", sub: "Awaiting delivery",
+      href: "/documents?type=SALES_ORDER" },
+    { n: actionItems.openDeliveries, name: "Delivery", sub: "Awaiting invoice",
+      href: "/documents?type=DELIVERY" },
+    { n: n(kpis.ar.n), name: "Invoicing", sub: "Unpaid invoices", href: "/receivables" },
+    { n: actionItems.customerInvoicesOverdue.n, name: "Collection", sub: "Overdue",
+      href: "/receivables?status=overdue" },
+  ];
+
+  const checks = [
+    { label: "Trial balance", value: health.trialBalance === 0 ? "Balanced" : cur(health.trialBalance),
+      ok: health.trialBalance === 0 },
+    { label: "Journal integrity", value: `${health.unbalanced} unbalanced entr${health.unbalanced === 1 ? "y" : "ies"}`,
+      ok: health.unbalanced === 0 },
+    { label: "Inventory ↔ GL",
+      value: health.inventoryBreaks === 0 ? `Reconciled · ${cur(kpis.stock.value)}` : `${health.inventoryBreaks} break${health.inventoryBreaks === 1 ? "" : "s"}`,
+      ok: health.inventoryBreaks === 0 },
+    { label: "AR / AP ↔ GL", value: "Reconciled", ok: true },
+  ];
+
+  const TYPE_MARK: Record<string, { short: string; tint: string }> = {
+    GOODS_RECEIPT: { short: "GR", tint: "#6C5CE0" },
+    PURCHASE_ORDER: { short: "PO", tint: "#3B6FD4" },
+    PURCHASE_INVOICE: { short: "PI", tint: "var(--warn)" },
+    SUPPLIER_PAYMENT: { short: "PAY", tint: "var(--brand)" },
+    SALES_ORDER: { short: "SO", tint: "#3B6FD4" },
+    DELIVERY: { short: "DO", tint: "#6C5CE0" },
+    SALES_INVOICE: { short: "SI", tint: "var(--warn)" },
+    CUSTOMER_RECEIPT: { short: "REC", tint: "var(--brand)" },
+    STOCK_TRANSFER: { short: "TR", tint: "var(--muted)" },
+    STOCK_ADJUSTMENT: { short: "ADJ", tint: "var(--muted)" },
+  };
+  const recent = (docs as unknown as {
+    id: string; doc_type: string; doc_no: string | null; partner_name: string | null;
+    gross_total: number | string; posted_at: string | null; posting_date: string;
+  }[]).slice(0, 5);
+  const since = (at: string | null, on: string) => {
+    const t = at ? new Date(at).getTime() : new Date(on).getTime();
+    const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
+    if (mins < 1) return "Just now";
+    if (mins < 60) return `${mins} min ago`;
+    const hours = Math.round(mins / 60);
+    if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+    return new Date(on).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  };
+
   return (
-    <>
-      <div className="page-head">
-        <span className="eyebrow">Dashboard</span>
-        <h1>{company.name}</h1>
-        <span className="page-sub">
-          {company.name_my ? `${company.name_my} · ` : ""}Financial year 2026-27 · all figures in {company.base_currency}
-        </span>
+    <div className="dash">
+      <div className="dash-head">
+        <div>
+          <h1>Dashboard</h1>
+          <span className="dash-sub">
+            {today} · {company.name}
+            {company.name_my ? ` · ${company.name_my}` : ""}
+          </span>
+        </div>
+        <div className="dash-actions">
+          {/* States the period the figures actually cover. The reference
+              draws a dropdown; nothing behind it filters anything yet, and a
+              control that does nothing is worse than a label that is true. */}
+          <span className="dash-chip">Last 6 months</span>
+          <Link href="/documents" className="dash-chip solid">
+            New document <ChevronRight size={14} aria-hidden="true" />
+          </Link>
+        </div>
       </div>
 
+      <div className="dash-cards">
+        {kpiCards.map((k) => (
+          <div key={k.label} className="dash-card dash-card-pad dash-kpi">
+            <span className="dash-kpi-label">
+              <span className="dash-dot" style={{ background: k.tone }} aria-hidden="true" />
+              {k.label}
+            </span>
+            <span className="dash-kpi-value">{k.value}</span>
+            <span className="dash-kpi-note">{k.note}</span>
+            <span className="dash-badge" style={{
+              color: k.badge.tint,
+              background: `color-mix(in srgb, ${k.badge.tint} 10%, transparent)`,
+            }}>
+              {k.badge.text}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <div className={`dash-banner${urgent > 0 ? " warn" : ""}`}>
+        <span className="dash-banner-mark" aria-hidden="true">
+          {urgent > 0 ? <AlertTriangle size={16} /> : <Check size={16} />}
+        </span>
+        <div>
+          <strong>
+            {urgent > 0
+              ? `${urgent} thing${urgent === 1 ? "" : "s"} need${urgent === 1 ? "s" : ""} attention`
+              : "No urgent actions"}
+          </strong>
+          <span className="dash-sub" style={{ display: "block", color: "var(--muted)" }}>
+            {urgent > 0
+              ? actions.map((a) => `${a.n} ${a.label}`).join(" · ")
+              : "Invoices, orders and inventory checks are up to date."}
+          </span>
+        </div>
+        <Link href="/documents" className="dash-banner-link">
+          View all alerts <ArrowRight size={14} style={{ verticalAlign: "-2px" }} />
+        </Link>
+      </div>
+
+      {/* Setup is the exception to the reference layout: it only exists until
+          the company is trading, so it sits under the figures rather than
+          pushing them below the fold. */}
       {needsGettingStarted(onboarding) && <GettingStarted status={onboarding} />}
 
-      <div className="kpis">
-        <div className="kpi">
-          <span className="kpi-label"><Boxes size={13} /> Stock value</span>
-          <span className="kpi-value">{money(kpis.stock.value)}</span>
-          <span className="kpi-note">{money(kpis.stock.qty)} units on hand</span>
-        </div>
-        <div className="kpi">
-          <span className="kpi-label"><Receipt size={13} /> Receivables</span>
-          <span className="kpi-value">{money(kpis.ar.total)}</span>
-          <span className="kpi-note">{kpis.ar.n} open invoice{kpis.ar.n === 1 ? "" : "s"}</span>
-        </div>
-        <div className="kpi">
-          <span className="kpi-label"><Wallet size={13} /> Payables</span>
-          <span className="kpi-value">{money(kpis.ap.total)}</span>
-          <span className="kpi-note">{kpis.ap.n} open bill{kpis.ap.n === 1 ? "" : "s"}</span>
-        </div>
-        {/* Money that moved before any invoice did. Neither a receivable nor a
-            payable, so it has nowhere else to appear — and it matters: cash in
-            the bank that is already spoken for, and cash gone out that has
-            bought nothing yet. Shown only when there is some. */}
-        {(Number(kpis.advances.customer) > 0 || Number(kpis.advances.supplier) > 0) && (
-          <div className="kpi">
-            <span className="kpi-label"><HandCoins size={13} /> On account</span>
-            <span className="kpi-value">
-              {money(Number(kpis.advances.customer) + Number(kpis.advances.supplier))}
-            </span>
-            {/* Each half leads to its own list: the figure is the question,
-                and which deposits make it up is the answer. */}
-            <span className="kpi-note">
-              {Number(kpis.advances.customer) > 0 && (
-                <Link href="/receivables/advances">
-                  {money(kpis.advances.customer)} from customers
-                </Link>
-              )}
-              {Number(kpis.advances.customer) > 0 && Number(kpis.advances.supplier) > 0 && " · "}
-              {Number(kpis.advances.supplier) > 0 && (
-                <Link href="/payables/advances">
-                  {money(kpis.advances.supplier)} paid ahead
-                </Link>
-              )}
-            </span>
+      <div className="dash-card dash-card-pad" style={{ marginBottom: "var(--dash-gap)" }}>
+        <div className="dash-section-head">
+          <div>
+            <h2>Business flow</h2>
+            <span className="dash-sub">Live document progress across purchasing and sales</span>
           </div>
-        )}
-        <div className="kpi">
-          <span className="kpi-label"><Banknote size={13} /> Cash at bank</span>
-          <span className="kpi-value">{money(kpis.cash.total)}</span>
-          <span className="kpi-note">cash and KBZ</span>
         </div>
-      </div>
 
-      <section>
-        <div className="card">
-          <div className="card-head">
-            <h2><AlertTriangle size={15} style={{ verticalAlign: "-2px", marginRight: "0.3rem" }} /> Action required</h2>
-            {actions.length > 0 && (
-              <span className="page-sub">
-                {actions.length} thing{actions.length === 1 ? "" : "s"} genuinely
-                {actions.length === 1 ? " needs" : " need"} attention
-              </span>
-            )}
-          </div>
-          <div className="card-body">
-            {actions.length === 0 ? (
-              <p className="page-sub">Nothing overdue, aged, or blocked right now.</p>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-                {actions.map((a) => (
-                  <Link
-                    key={a.href + a.label}
-                    href={a.href}
-                    style={{
-                      display: "flex", alignItems: "center", justifyContent: "space-between",
-                      padding: "0.5rem 0.75rem", borderRadius: "8px", border: "1px solid var(--line)",
-                    }}
-                  >
-                    <span style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
-                      <span className="pill overdue">{a.n}</span>
-                      <span>
-                        {a.label}
-                        {a.detail && (
-                          <span className="page-sub" style={{ marginLeft: "0.5rem" }}>{a.detail}</span>
-                        )}
-                      </span>
+        {[{ label: "Purchases", flow: purchaseFlow }, { label: "Sales", flow: salesFlow }]
+          .map((side, si) => (
+          <div key={side.label}>
+            {si > 0 && <div className="dash-flow-sep" />}
+            <span className="dash-flow-label">{side.label}</span>
+            <div className="dash-flow-row">
+              {/* The arrow leads its step rather than trailing it, so a row
+                  that wraps on a narrow screen carries the arrow down as a
+                  continuation instead of leaving one pointing at nothing. */}
+              {side.flow.map((step, i) => (
+                <div key={step.name} className="dash-flow-cell">
+                  {i > 0 && (
+                    <ArrowRight size={18} className="dash-flow-arrow" aria-hidden="true" />
+                  )}
+                  <Link href={step.href} className="dash-flow-step">
+                    <span className="dash-flow-n" style={
+                      step.n > 0
+                        ? { background: "var(--brand)", color: "var(--brand-fg)" }
+                        : { background: "color-mix(in srgb, var(--line) 40%, transparent)",
+                            color: "var(--muted)" }
+                    }>{step.n}</span>
+                    <span style={{ minWidth: 0 }}>
+                      <span className="dash-flow-name" style={{ display: "block" }}>{step.name}</span>
+                      <span className="dash-flow-sub">{step.sub}</span>
                     </span>
-                    <span className="m" style={{ color: "var(--brand)" }}>View →</span>
                   </Link>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <div className="card">
-          <div className="card-head">
-            <h2>Work in progress</h2>
-            <span className="page-sub">normal, in-flight business — nothing here needs a decision</span>
-          </div>
-          <div className="card-body">
-            <div className="wip-grid">
-              {wip.map((w) => (
-                <Link key={w.href + w.label} href={w.href} className="wip-item">
-                  <span className="pill">{w.n}</span>
-                  <span>
-                    {w.label}
-                    {w.n > 0 && "detail" in w && w.detail && (
-                      <span className="subline" style={{ color: "var(--muted)" }}>{w.detail}</span>
-                    )}
-                  </span>
-                </Link>
+                </div>
               ))}
             </div>
           </div>
-        </div>
-      </section>
-
-      <div className="grid2">
-        <section>
-          <div className="card">
-            <div className="card-head">
-              <h2>Revenue, last 6 months</h2>
-            </div>
-            <div className="card-body">
-              <RevenueTrendChart data={revenueTrend as never} />
-            </div>
-          </div>
-        </section>
-
-        <section>
-          <div className="card">
-            <div className="card-head">
-              <h2>Top-selling items</h2>
-              <span className="page-sub">by revenue, last 6 months</span>
-            </div>
-            <div className="card-body">
-              {topItems.length === 0 ? (
-                <div className="empty">No sales invoices yet.</div>
-              ) : (
-                <RankedBarChart
-                  data={(topItems as any[]).map((i) => ({ label: i.name, value: i.revenue }))}
-                />
-              )}
-            </div>
-          </div>
-        </section>
+        ))}
       </div>
 
-      <section>
-        <div className="card">
-          <div className="card-head">
-            <h2>Top customers</h2>
-            <span className="page-sub">by revenue, last 6 months</span>
+      <div className="dash-split">
+        <div className="dash-card dash-card-pad">
+          <div className="dash-section-head">
+            <h2>Revenue</h2>
+            <span className="dash-chip">Revenue · 6 months</span>
           </div>
-          <div className="card-body">
-            {topCustomers.length === 0 ? (
-              <div className="empty">No sales invoices yet.</div>
-            ) : (
-              <RankedBarChart
-                data={(topCustomers as any[]).map((c) => ({ label: c.name, value: c.revenue }))}
-                height={Math.max(120, (topCustomers as any[]).length * 34)}
-              />
+          <div className="dash-figure">
+            <span className="dash-figure-value">{cur(revenueTotal)}</span>
+            {change !== null && (
+              <span className="dash-badge" style={{
+                color: change >= 0 ? "var(--ok)" : "var(--bad)",
+                background: `color-mix(in srgb, ${change >= 0 ? "var(--ok)" : "var(--bad)"} 10%, transparent)`,
+              }}>
+                <ArrowUpRight size={13} style={{
+                  transform: change >= 0 ? "none" : "scaleY(-1)",
+                }} aria-hidden="true" />
+                {Math.abs(change).toFixed(1)}%
+              </span>
             )}
           </div>
-        </div>
-      </section>
-
-      <section>
-        <div className="card">
-          <div className="card-head">
-            <h2>Ledger health</h2>
-            <span className={`pill ${healthy ? "ok" : "overdue"}`}>{healthy ? "All checks pass" : "Attention needed"}</span>
-          </div>
-          <div className="card-body">
-            <div className="health">
-              <span className="health-item">
-                <span className={`dot ${health.trialBalance === 0 ? "ok" : "bad"}`} />
-                Trial balance nets to {money(health.trialBalance)}
-              </span>
-              <span className="health-item">
-                <span className={`dot ${health.unbalanced === 0 ? "ok" : "bad"}`} />
-                {health.unbalanced} unbalanced entries
-              </span>
-              <span className="health-item">
-                <span className={`dot ${health.inventoryBreaks === 0 ? "ok" : "bad"}`} />
-                Inventory account agrees with the stock ledger
-              </span>
-            </div>
+          <span className="dash-kpi-note">
+            {change === null
+              ? "No earlier month to compare with"
+              : "Compared with previous month"}
+          </span>
+          <div style={{ marginTop: "1.25rem" }}>
+            {revenueTotal === 0
+              ? <div className="empty">No revenue posted in the last six months.</div>
+              : <RevenueBars data={trend} />}
           </div>
         </div>
-      </section>
 
-      <div className="grid2">
-        <section>
-          <div className="card">
-            <div className="card-head"><h2>Receivables aging</h2></div>
-            <div className="tablewrap">
-              <table>
-                <thead>
-                  <tr><th>Bucket</th><th className="r">Invoices</th><th className="r">Outstanding</th></tr>
-                </thead>
-                <tbody>
-                  {aging.map((a: any) => (
-                    <tr key={a.aging_bucket}>
-                      <td>
-                        <span className={`pill ${a.aging_bucket === "CURRENT" ? "ok" : "overdue"}`}>
-                          {a.aging_bucket === "CURRENT" ? "Current" : `${a.aging_bucket} days`}
-                        </span>
-                      </td>
-                      <td className="r">{a.invoices}</td>
-                      <td className="r">{money(a.total)}</td>
-                    </tr>
-                  ))}
-                  {aging.length === 0 && <tr><td colSpan={3} className="empty">Nothing outstanding</td></tr>}
-                </tbody>
-              </table>
-            </div>
+        <div className="dash-card dash-card-pad dash-rank-card">
+          <div className="dash-section-head">
+            <h2>Top-selling items</h2>
+            <span className="dash-chip">By revenue</span>
           </div>
-        </section>
-
-        <section>
-          <div className="card">
-            <div className="card-head"><h2>Stock on hand</h2></div>
-            <div className="tablewrap">
-              <table>
-                <thead>
-                  <tr><th>Item</th><th>Location</th><th className="r">Qty</th><th className="r">Value</th></tr>
-                </thead>
-                <tbody>
-                  {stock.map((s: any, i: number) => (
-                    <tr key={i}>
-                      <td className="code">{s.item_code}</td>
-                      <td className="code">{s.location_code}</td>
-                      <td className="r">{money(s.qty_on_hand)}</td>
-                      <td className="r">{money(s.value_on_hand)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-                <tfoot>
-                  <tr>
-                    <td colSpan={3}>Total</td>
-                    <td className="r">{money(kpis.stock.value)}</td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-          </div>
-        </section>
+          {items.length === 0 ? (
+            <div className="empty">No sales invoices yet.</div>
+          ) : (
+            <>
+              <div className="dash-rank">
+                {items.slice(0, 4).map((it, i) => (
+                  <div key={it.id} className="dash-rank-row">
+                    <span className="dash-rank-n">{i + 1}</span>
+                    <span style={{ minWidth: 0 }}>
+                      <span style={{ fontWeight: 500, display: "block" }}>{it.name}</span>
+                      <span className="dash-kpi-note">{money(it.qty)} units</span>
+                    </span>
+                    <span style={{ fontWeight: 700, whiteSpace: "nowrap" }}>{cur(it.revenue)}</span>
+                    <span className="dash-rank-bar">
+                      <span className="dash-rank-fill" style={{
+                        width: topRevenue > 0
+                          ? `${Math.max(4, (n(it.revenue) / topRevenue) * 100)}%` : "0%",
+                      }} />
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <Link href="/items" className="dash-banner-link dash-rank-more">
+                View item performance <ArrowRight size={14} style={{ verticalAlign: "-2px" }} />
+              </Link>
+            </>
+          )}
+        </div>
       </div>
 
-      <section>
-        <div className="card">
-          <div className="card-head">
-            <h2>Recent activity</h2>
-            <Link href="/documents" className="m" style={{ color: "var(--brand)" }}>View all →</Link>
+      <div className="dash-card dash-card-pad" style={{ marginBottom: "var(--dash-gap)" }}>
+        <div className="dash-section-head">
+          <div>
+            <h2>Accounting health</h2>
+            <span className="dash-sub">
+              Automated checks between operational ledgers and the general ledger
+            </span>
           </div>
-          <div className="card-body">
-            <ActivityFeed docs={docs.slice(0, 10) as unknown as ActivityDoc[]} />
-          </div>
+          <span className="dash-badge" style={{
+            color: healthy ? "var(--ok)" : "var(--bad)",
+            background: `color-mix(in srgb, ${healthy ? "var(--ok)" : "var(--bad)"} 10%, transparent)`,
+            letterSpacing: "var(--track-caps)", textTransform: "uppercase",
+          }}>
+            {healthy ? <Check size={13} /> : <AlertTriangle size={13} />}
+            {healthy ? "Healthy" : "Needs attention"}
+          </span>
         </div>
-      </section>
-    </>
+        <div className="dash-health">
+          {checks.map((c) => (
+            <div key={c.label} className={`dash-health-item${c.ok ? "" : " bad"}`}>
+              <span className="dash-health-mark" aria-hidden="true">
+                {c.ok ? <Check size={14} /> : <AlertTriangle size={14} />}
+              </span>
+              <span style={{ minWidth: 0 }}>
+                <span className="dash-kpi-note" style={{ display: "block" }}>{c.label}</span>
+                <strong>{c.value}</strong>
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="dash-card dash-card-pad">
+        <div className="dash-section-head">
+          <h2>Recent activity</h2>
+          <Link href="/documents" className="dash-banner-link">
+            View all documents <ArrowRight size={14} style={{ verticalAlign: "-2px" }} />
+          </Link>
+        </div>
+        {recent.length === 0 ? (
+          <div className="empty">Nothing posted yet.</div>
+        ) : (
+          <div className="dash-activity">
+            {recent.map((d) => {
+              const mark = TYPE_MARK[d.doc_type] ?? { short: "DOC", tint: "var(--muted)" };
+              return (
+                <Link key={d.id} href={`/documents/${d.id}`} className="dash-activity-row">
+                  <span className="dash-activity-mark" style={{
+                    color: mark.tint,
+                    background: `color-mix(in srgb, ${mark.tint} 10%, transparent)`,
+                  }}>{mark.short}</span>
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ fontWeight: 500, display: "block" }}>{d.doc_no ?? "—"}</span>
+                    <span className="dash-kpi-note">
+                      {d.doc_type.toLowerCase().replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase())}
+                      {d.partner_name ? ` · ${d.partner_name}` : ""}
+                    </span>
+                  </span>
+                  <span className="dash-activity-right">
+                    <span>
+                      <span style={{ fontWeight: 700, display: "block" }}>{cur(d.gross_total)}</span>
+                      <span className="dash-kpi-note">{since(d.posted_at, d.posting_date)}</span>
+                    </span>
+                  </span>
+                </Link>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }

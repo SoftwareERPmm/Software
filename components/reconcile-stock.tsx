@@ -9,6 +9,7 @@ type Row = {
   partner_name: string | null;
   outstanding: string; provisional_unit_cost: string; outstanding_value: string;
   price_source: string | null; price_source_no: string | null;
+  confirmed_reason: string | null; reason_is_legacy: boolean;
 };
 
 const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 0 });
@@ -75,7 +76,7 @@ export function ReconcileStock({
             <thead>
               <tr>
                 <th style={{ width: "1%" }} />
-                <th>Item</th><th>Warehouse</th><th>Went out on</th>
+                <th>Item</th><th>Warehouse</th><th>Went out on</th><th>Why</th>
                 <th className="r">Quantity</th>
                 <th className="r">Inventory price</th>
                 <th>Source</th>
@@ -100,6 +101,16 @@ export function ReconcileStock({
                     <div className="subline" style={{ color: "var(--muted)" }}>
                       {r.doc_date}{r.partner_name ? ` · ${r.partner_name}` : ""}
                     </div>
+                  </td>
+                  {/* Why somebody said the goods were there. A confirmation
+                      made before that was asked for says so rather than
+                      showing an empty cell, which reads as an answer of
+                      "none" — as though the question had been put and
+                      declined. It never was. */}
+                  <td className="wrap">
+                    {r.reason_is_legacy
+                      ? <span className="muted">Reason not recorded &mdash; legacy</span>
+                      : (r.confirmed_reason ?? <span className="muted">&mdash;</span>)}
                   </td>
                   <td className="r">{qty(Number(r.outstanding))} {r.uom_code}</td>
                   <td className="r">{fmt(Number(r.provisional_unit_cost))}</td>

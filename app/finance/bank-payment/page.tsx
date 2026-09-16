@@ -3,6 +3,7 @@ import { getFinanceData, peekVoucherNo, createBankVoucher } from "@/lib/actions"
 import { getCompany } from "@/lib/queries";
 import { VoucherForm } from "@/components/voucher-form";
 import { VoucherHelp } from "@/components/voucher-help";
+import { ErpCrumbs } from "@/components/erp-worklist";
 
 export default async function BankPayment() {
   const { accounts, accountTree, bankAccounts, branches } = await getFinanceData();
@@ -13,8 +14,11 @@ export default async function BankPayment() {
   if (bankAccounts.length === 0) {
     return (
       <>
+        <ErpCrumbs steps={[
+          { label: "Bank accounts", href: "/finance/bank-detail" },
+          { label: "Bank payment" },
+        ]} />
         <div className="page-head">
-          <span className="eyebrow">Cash &amp; Bank</span>
           <h1>Bank payment</h1>
         </div>
         <div className="alert">No bank account is set up in the chart of accounts.</div>
@@ -24,8 +28,11 @@ export default async function BankPayment() {
 
   return (
     <>
+      <ErpCrumbs steps={[
+        { label: "Bank accounts", href: "/finance/bank-detail" },
+        { label: "Bank payment" },
+      ]} />
       <div className="page-head">
-        <span className="eyebrow">Cash &amp; Bank</span>
         <h1>Bank payment</h1>
         <span className="page-sub">
           Money paid out of a bank account that isn&rsquo;t against a supplier bill — use{" "}

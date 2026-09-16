@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getSettlementData, createSupplierPayment } from "@/lib/actions";
 import { getCompany, getBranches } from "@/lib/queries";
 import { SettlementForm } from "@/components/settlement-form";
+import { ErpCrumbs } from "@/components/erp-worklist";
 
 export default async function PaySupplier({
   searchParams,
@@ -17,8 +18,11 @@ export default async function PaySupplier({
   if (partners.length === 0 || cashAccounts.length === 0) {
     return (
       <>
+        <ErpCrumbs steps={[
+          { label: "Payables", href: "/payables" },
+          { label: "Pay a supplier" },
+        ]} />
         <div className="page-head">
-          <span className="eyebrow">Purchases</span>
           <h1>Pay a supplier</h1>
         </div>
         <div className="alert">
@@ -33,8 +37,11 @@ export default async function PaySupplier({
 
   return (
     <>
+      <ErpCrumbs steps={[
+        { label: "Payables", href: "/payables" },
+        { label: "Pay a supplier" },
+      ]} />
       <div className="page-head">
-        <span className="eyebrow">Purchases</span>
         <h1>Pay a supplier</h1>
         <span className="page-sub">
           Choose a supplier to see their open bills, then apply what you are paying against each one.{" "}

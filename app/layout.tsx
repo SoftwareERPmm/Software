@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Sans, IBM_Plex_Mono, Noto_Sans_Myanmar } from "next/font/google";
+import { IBM_Plex_Sans, IBM_Plex_Mono, Noto_Sans_Myanmar, DM_Sans } from "next/font/google";
 import "./globals.css";
 import Link from "next/link";
 import { getCompany } from "@/lib/queries";
@@ -12,6 +12,18 @@ import {
 // Plex was drawn for enterprise data rather than for marketing pages: open
 // apertures, unambiguous 1/l/I and 0/O, and a lower x-height than Inter, which
 // is what stops a screen of forty ledger rows turning into grey texture.
+// The dashboard is set in DM Sans: rounder, wider counters, and a taller
+// x-height than Plex, which is what makes a headline figure read as a figure
+// rather than as data. It leads the stack rather than replacing it — Myanmar
+// text still falls through to Noto, because DM Sans has no Burmese glyphs and
+// a name in Burmese must not silently lose its shapes to a fallback.
+const dmSans = DM_Sans({
+  subsets: ["latin"],
+  weight: ["400", "500", "700"],
+  variable: "--font-dm-sans",
+  display: "swap",
+});
+
 const plexSans = IBM_Plex_Sans({
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
@@ -59,7 +71,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   }
 
   return (
-    <html lang="en" className={`${plexSans.variable} ${plexMono.variable} ${notoMyanmar.variable}`}>
+    <html lang="en" className={`${dmSans.variable} ${plexSans.variable} ${plexMono.variable} ${notoMyanmar.variable}`}>
       <body>
         <div className="shell">
           <nav className="sidebar">

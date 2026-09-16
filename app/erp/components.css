@@ -36,6 +36,8 @@
 }
 
 .erp-num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--erp-font-mono); }
+/* The column below is mono so the figures line up. The heading is a word. */
+.erp-th.erp-num { font-family: var(--erp-font); }
 
 /* Line numbers: present so a line can be named out loud, quiet enough that
    they never compete with the figures beside them. */
@@ -119,7 +121,10 @@
 }
 .erp-crumb-link { color: var(--erp-brand); text-decoration: none; }
 .erp-crumb-sep  { color: var(--erp-fg-muted); }
-.erp-crumb-here { font-family: var(--erp-font-mono); color: var(--erp-fg-strong); font-weight: 600; }
+/* The last step is sometimes a document number and sometimes a phrase — "New
+   purchase invoice" in mono read as a code. The interface face takes both;
+   the number keeps mono everywhere it is a figure to be compared. */
+.erp-crumb-here { color: var(--erp-fg-strong); font-weight: 600; }
 
 .erp-actionbar {
   display: flex; align-items: center; justify-content: space-between;
@@ -127,7 +132,14 @@
   padding: 0.5rem 1rem; background: var(--erp-surface);
   border-bottom: 1px solid var(--erp-border);
 }
-.erp-actions { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+/* Actions now sit inside the sheet, under the quantities they act on,
+   rather than in the bar above it — so they need the sheet's own gutter and
+   room to breathe from the figures above and the notice below. */
+.erp-actions {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  padding: 0 1.25rem 1rem;
+}
+.erp-actionbar .erp-actions { padding: 0; }
 
 /* The chevron pipeline. The notch is what makes it read as direction rather
    than as a row of badges — a stepper with dots does not. */
@@ -265,6 +277,8 @@
   .erp-form { margin: 0; background: #fff; }
   .erp-sheet-page { border: 0; margin: 0; max-width: none; padding: 0; }
   .erp-actionbar { border: 0; padding-left: 0; }
+  /* A printed order is a record, not a console: nothing on it can be clicked,
+     and a row of buttons in ink is noise. */
   .erp-actions { display: none; }
   .erp-tr { break-inside: avoid; }
 }
@@ -304,3 +318,316 @@
     color-mix(in srgb, var(--erp-fg-muted) 14%, transparent) 5px 6px
   );
 }
+
+/* ===========================================================================
+   The document, as cards
+   ===========================================================================
+
+   The first screen on this layout is the order. It is deliberately additive:
+   .erp-form and everything above still frames the other eleven document
+   types, and nothing here touches them. When the order screen proves itself
+   the rest move onto these classes; until then two frames exist on purpose.
+
+   The idea is that a document answers its questions in order, and each answer
+   is a card rather than a band of the same sheet — what is this, how far along
+   is it and what do I do about it, what are its terms, what is on it. A single
+   sheet made the third question look like a subheading of the second. */
+
+.erp-doc { display: flex; flex-direction: column; gap: var(--s3); }
+.erp-doc > .erp-crumb { margin: 0; }
+
+/* Header ------------------------------------------------------------------
+   The document names itself once. Type, number, standing and counterparty
+   were spread across a breadcrumb, a caption and a stats row before; here
+   they are one line and the line under it. */
+.erp-head {
+  display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap;
+  padding: 0 0.25rem;
+}
+.erp-head-tile {
+  width: 46px; height: 46px; flex: 0 0 auto; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--dr) 13%, transparent);
+  color: color-mix(in srgb, var(--dr) 85%, var(--ink));
+  font-weight: 700; font-size: 1rem; letter-spacing: 0.02em;
+}
+.erp-head-id { min-width: 0; flex: 1 1 18rem; }
+.erp-head-line { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.erp-head-line h1 {
+  margin: 0; font-size: var(--t-lg); font-weight: 600;
+  letter-spacing: var(--track-tight); line-height: 1.3;
+}
+.erp-head-sub { display: block; color: var(--erp-fg-muted); margin-top: 0.25rem; }
+.erp-head-tools { display: flex; align-items: center; gap: 0.5rem; margin-left: auto; }
+
+/* A pill that reads as a word rather than a code. The uppercase mono pill is
+   right in a table, where it is one of forty and has to be scannable; at the
+   top of the document it is the only one, and shouting is not scanning. */
+.pill.plain {
+  font-family: var(--erp-font); font-size: var(--t-sm); font-weight: 500;
+  text-transform: none; letter-spacing: 0; padding: 0.25rem 0.6rem;
+  border-radius: var(--r-md);
+}
+
+.erp-hbtn {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  padding: 0.5rem 0.85rem; border-radius: var(--erp-radius);
+  border: 1px solid var(--erp-border); background: var(--erp-surface);
+  color: var(--erp-fg); font: inherit; font-weight: 500;
+  cursor: pointer; text-decoration: none; white-space: nowrap;
+}
+.erp-hbtn:hover, .erp-hbtn.on { border-color: var(--erp-border-strong); }
+
+/* Overflow menu ----------------------------------------------------------- */
+.erp-more { position: relative; }
+.erp-more-menu[hidden] { display: none; }
+.erp-more-menu {
+  position: absolute; right: 0; top: calc(100% + 0.4rem); z-index: 30;
+  min-width: 14rem; padding: 0.35rem;
+  background: var(--erp-surface); border: 1px solid var(--erp-border);
+  border-radius: 10px; box-shadow: 0 12px 32px rgb(0 0 0 / 0.14);
+  display: flex; flex-direction: column; gap: 0.1rem;
+}
+/* Whatever is dropped in here arrives as a button of its own — each action
+   owns its dialog, so the menu cannot render them as anything else. Restyled
+   to menu rows rather than reshaped into new components. */
+.erp-more-menu > * > .btn,
+.erp-more-menu > .btn {
+  width: 100%; justify-content: flex-start; border: 0; background: none;
+  padding: 0.5rem 0.6rem; border-radius: 6px; font-weight: 400;
+}
+.erp-more-menu > * > .btn:hover,
+.erp-more-menu > .btn:hover { background: var(--erp-surface-sunken); }
+.erp-more-menu > * > .btn.danger,
+.erp-more-menu > .btn.danger { color: var(--bad); }
+
+/* Cards ------------------------------------------------------------------- */
+.erp-card {
+  background: var(--erp-surface); border: 1px solid var(--erp-border);
+  border-radius: 12px; overflow: hidden;
+}
+.erp-card-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap; padding: 1.1rem 1.25rem 0;
+}
+.erp-card-head h2 {
+  margin: 0; font-size: var(--t-md); font-weight: 600; letter-spacing: var(--track-tight);
+}
+.erp-card-body { padding: 1rem 1.25rem 1.25rem; }
+
+/* Progress ---------------------------------------------------------------- */
+.erp-figs {
+  display: grid; gap: 0; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  margin-bottom: 1.1rem;
+}
+/* Ruled between rather than boxed: three figures of one measure, not three
+   separate claims. */
+.erp-fig { padding: 0 1.25rem; border-left: 1px solid var(--erp-border); }
+.erp-fig:first-child { padding-left: 0; border-left: 0; }
+.erp-fig-label { display: block; color: var(--erp-fg-muted); font-size: var(--t-md); }
+/* A step below the document number: these are what it stands at, not what it
+   is called. */
+.erp-fig-value {
+  display: block; margin-top: 0.2rem;
+  font-size: var(--t-2xl); font-weight: 700; letter-spacing: var(--track-tight);
+  font-variant-numeric: tabular-nums;
+}
+
+.erp-progress { display: flex; align-items: center; gap: 0.75rem; }
+.erp-bar {
+  flex: 1; height: 8px; border-radius: 999px; overflow: hidden;
+  background: color-mix(in srgb, var(--erp-fg-muted) 18%, transparent);
+}
+.erp-bar-fill { display: block; height: 100%; border-radius: 999px; background: var(--erp-brand); }
+.erp-bar-fill.full { background: var(--erp-success); }
+.erp-bar-pct {
+  color: var(--erp-fg-muted); font-variant-numeric: tabular-nums;
+  font-size: var(--t-md); min-width: 2.5rem; text-align: right;
+}
+.erp-bar-note { margin: 0.5rem 0 0; color: var(--erp-fg-muted); font-size: var(--t-md); }
+
+/* The one thing to do about an order still owed, under the figure that says
+   it is owed. Green because it is the way forward, not because it is a
+   warning — the amber notices on this page mean somebody is late. */
+.erp-fulfil {
+  display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap;
+  margin-top: 1.1rem; padding: 0.9rem 1rem; border-radius: 10px;
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--erp-green) 13%, var(--erp-surface)),
+    color-mix(in srgb, var(--erp-green) 6%, var(--erp-surface))
+  );
+  border: 1px solid color-mix(in srgb, var(--erp-green) 30%, transparent);
+}
+.erp-fulfil-icon {
+  width: 40px; height: 40px; flex: 0 0 auto; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--erp-brand);
+}
+.erp-fulfil-text { min-width: 0; flex: 1 1 14rem; display: flex; flex-direction: column; gap: 0.1rem; }
+.erp-fulfil-text strong { font-weight: 600; }
+.erp-fulfil-text span { color: var(--erp-fg-muted); font-size: var(--t-md); }
+.erp-fulfil-actions {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-left: auto;
+}
+.erp-fulfil-actions .btn { white-space: nowrap; }
+
+/* The lines table sits flush inside its card, so it keeps the card's gutter
+   rather than the sheet's. */
+.erp-card .erp-fields { margin: 0; }
+.erp-card > .erp-scroll { margin-top: 0.9rem; }
+.erp-card > .erp-foot { padding: 1rem 1.25rem 1.25rem; }
+
+/* Related documents and the activity log are shared with every other
+   document type, so they keep their own component and are only re-skinned
+   here — scoped to .erp-doc, which nothing else carries. */
+.erp-doc .docfooter .card {
+  border-radius: 12px; border-color: var(--erp-border); overflow: hidden;
+}
+.erp-doc .docfooter .card > .card-head {
+  background: transparent; border-bottom: 1px solid var(--erp-border);
+  padding: 1.1rem 1.25rem;
+}
+.erp-doc .docfooter .card > .card-head h2 { font-size: var(--t-md); font-weight: 600; }
+.erp-doc .docfooter .card > .card-body { padding: 1rem 1.25rem 1.25rem; }
+
+@media (max-width: 640px) {
+  .erp-head-tools { margin-left: 0; width: 100%; }
+  .erp-fig { padding: 0.6rem 0; border-left: 0; border-top: 1px solid var(--erp-border); }
+  .erp-fig:first-child { border-top: 0; padding-top: 0; }
+  .erp-fulfil-actions { margin-left: 0; width: 100%; }
+  .erp-fulfil-actions .btn { flex: 1 1 auto; justify-content: center; }
+}
+
+/* ===========================================================================
+   Worklists — receiving goods, sending them out
+   ===========================================================================
+
+   The same cards as the document screen, on the two pages that feed it. A
+   list and a document should not look like two products. */
+
+.erp-page { display: flex; flex-direction: column; gap: var(--s4); }
+.erp-page > .erp-crumb { margin: 0; }
+
+.erp-pagehead {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap; padding: 0 0.25rem;
+}
+.erp-pagehead-eyebrow {
+  display: block; font-family: var(--erp-font-mono); font-size: var(--t-2xs);
+  letter-spacing: var(--track-caps); text-transform: uppercase;
+  color: var(--erp-fg-muted); margin-bottom: 0.3rem;
+}
+.erp-pagehead h1 {
+  margin: 0; font-size: var(--t-lg); font-weight: 600;
+  letter-spacing: var(--track-tight); line-height: 1.3;
+}
+.erp-pagehead-lead { display: block; color: var(--erp-fg-muted); margin-top: 0.3rem; }
+.erp-pagehead-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+
+.erp-section-head { align-items: flex-start; }
+.erp-section-head h2 { display: flex; align-items: center; gap: 0.5rem; }
+.erp-section-lead { display: block; color: var(--erp-fg-muted); margin-top: 0.25rem; }
+/* Present only when there is something to count — a badge reading 0 beside
+   "awaiting receipt" states the absence twice, once as a number. */
+.erp-count {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 1.5rem; height: 1.5rem; padding: 0 0.4rem; border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--erp-green) 12%, transparent);
+  color: var(--erp-brand); font-size: var(--t-sm); font-weight: 600;
+}
+.erp-card-foot {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap;
+  padding: 0.9rem 1.25rem; border-top: 1px solid var(--erp-border);
+  color: var(--erp-fg-muted); font-size: var(--t-md);
+}
+.erp-card-foot strong { color: var(--erp-fg); font-variant-numeric: tabular-nums; }
+
+/* Summary --------------------------------------------------------------- */
+.erp-summary {
+  display: grid; gap: 0;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+}
+.erp-summary-item {
+  display: flex; align-items: flex-start; gap: 0.85rem;
+  padding: 0.25rem 1.25rem; border-left: 1px solid var(--erp-border);
+}
+.erp-summary-item:first-child { padding-left: 0; border-left: 0; }
+.erp-summary-icon {
+  width: 42px; height: 42px; flex: 0 0 auto; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--erp-green) 11%, transparent);
+  color: var(--erp-brand);
+}
+.erp-summary-item.warn .erp-summary-icon {
+  background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn);
+}
+.erp-summary-label { display: block; color: var(--erp-fg-muted); font-size: var(--t-md); }
+.erp-summary-value {
+  display: block; margin: 0.1rem 0;
+  font-size: var(--t-2xl); font-weight: 700; letter-spacing: var(--track-tight);
+  font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
+}
+.erp-summary-item.warn .erp-summary-value { color: var(--warn); }
+.erp-summary-note { display: block; color: var(--erp-fg-muted); font-size: var(--t-sm); }
+
+/* The worklist's own table keeps the card's gutter and loses the sunken
+   header band — inside a card it is the only table, so it does not need to
+   announce itself the way a page of stacked tables does. */
+/* Table flush to the card's edges; when it ends the card, it also eats the
+   padding below it, which otherwise reads as one more empty row. */
+.erp-card-body > .tablewrap { margin: 0 -1.25rem; }
+.erp-card-body > .tablewrap:last-child { margin-bottom: -1.25rem; }
+.erp-card-body > .tablewrap table { width: 100%; }
+.erp-card-body > .tablewrap th:first-child,
+.erp-card-body > .tablewrap td:first-child { padding-left: 1.25rem; }
+.erp-card-body > .tablewrap th:last-child,
+.erp-card-body > .tablewrap td:last-child { padding-right: 1.25rem; }
+
+@media (max-width: 640px) {
+  .erp-summary-item {
+    padding: 0.75rem 0; border-left: 0; border-top: 1px solid var(--erp-border);
+  }
+  .erp-summary-item:first-child { border-top: 0; padding-top: 0; }
+  .erp-pagehead-actions { width: 100%; }
+}
+/* Inside a card the table is the only one on screen and sits under a heading
+   that already names it, so the header row can read as words rather than as
+   the small-caps anchor a page of stacked tables needs. */
+.erp-card-body thead th {
+  font-family: var(--erp-font); font-size: var(--t-sm); letter-spacing: 0;
+  text-transform: none; font-weight: 500; color: var(--erp-fg-muted);
+  background: var(--erp-surface-sunken);
+}
+.erp-card-body thead th .sortbtn {
+  font: inherit; color: inherit; letter-spacing: inherit; text-transform: none;
+}
+/* Same reasoning for the status pill: one per row in a short list, read as a
+   phrase, not scanned as a code across forty. */
+.erp-card-body td > .pill,
+.erp-card-body td > a > .pill {
+  font-family: var(--erp-font); font-size: var(--t-sm); font-weight: 500;
+  text-transform: none; letter-spacing: 0; padding: 0.2rem 0.55rem;
+  border-radius: var(--r-md);
+}
+.erp-card-body tbody tr:last-child > td { border-bottom: 0; }
+
+/* The second line of a worklist row: what the document above it still owes. */
+.erp-row-sub {
+  display: block; color: var(--erp-fg-muted); font-size: var(--t-sm);
+  margin-top: 0.15rem; white-space: nowrap;
+}
+
+/* The fulfilment form on a page opened for one order: same chrome as the
+   cards around it, since it is now the whole page rather than one of a stack. */
+.erp-page > .card {
+  border-radius: 12px; border-color: var(--erp-border); overflow: hidden;
+}
+.erp-page > .card > .card-head {
+  background: transparent; border-bottom: 1px solid var(--erp-border);
+  padding: 1.1rem 1.25rem;
+}
+/* .form caps at 760px, which is right for a page of fields and wrong for a
+   line grid that is the whole card. */
+.erp-page > .card .form { max-width: none; }

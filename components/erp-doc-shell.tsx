@@ -92,9 +92,8 @@ export function ErpDocShell({
         </span>
       </div>
 
-      {(actions || chain.length > 0) && (
+      {chain.length > 0 && (
         <div className="erp-actionbar">
-          <div className="erp-actions">{actions}</div>
           {chain.length > 0 && (
             <div className="erp-pipeline" role="list" aria-label="Workflow">
               {chain.map((stage, i) => {
@@ -129,6 +128,20 @@ export function ErpDocShell({
         </div>
       )}
 
+      {/*
+        One order of sections, the same on every document, and it follows the
+        order the questions are asked in: what is this and how does it stand,
+        how much of it, what can I do, what should I know before doing it,
+        then the detail, then what it is joined to.
+
+        Actions used to sit above all of it, beside the pipeline, so the
+        expanded receiving form — a large thing — opened before the reader had
+        seen the quantities or even the vendor. A decision was being offered
+        before the facts it rests on. It sits after the figures now, and the
+        notice that qualifies it sits directly beneath it rather than above
+        the figures, where it read as a headline about the document rather
+        than as a caution about the action.
+      */}
       <div className="erp-sheet-page">
         <div className="erp-doc-title">
           <span className="erp-doc-type">{typeLabel}</span>
@@ -136,8 +149,9 @@ export function ErpDocShell({
           <span className={`pill ${status.toLowerCase()}`}>{status}</span>
           {badges}
         </div>
-        {banner}
         {stats}
+        {actions && <div className="erp-actions">{actions}</div>}
+        {banner}
         {children}
         {footer}
       </div>

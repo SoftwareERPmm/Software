@@ -26,12 +26,15 @@
   --bad:       #B4283C;
   --ghost:     #6E7787;
 
-  /* Plex Sans and Plex Mono are a designed pair, which matters here because
-     mono carries every label, header and figure — more of the screen than the
-     sans does. Neither has Myanmar glyphs, so Burmese falls through to the
-     Noto face rather than to whatever the OS happens to ship. Order matters:
-     Latin resolves in Plex first, Burmese in Noto. */
-  --sans: var(--font-plex-sans), var(--font-myanmar), system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* DM Sans carries the interface, Plex Mono every figure and document
+     number. The dashboard was built on DM Sans and the rest of the product on
+     Plex Sans, which is two products wearing one nav — so the dashboard's
+     face won and Plex Sans stays behind it as the fallback. Mono is untouched:
+     a column of kyat has to line up, and that is a job, not a style. Neither
+     Latin face has Myanmar glyphs, so Burmese falls through to the Noto face
+     rather than to whatever the OS happens to ship. Order matters: Latin
+     resolves in DM Sans first, Burmese in Noto. */
+  --sans: var(--font-dm-sans), var(--font-plex-sans), var(--font-myanmar), system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: var(--font-plex-mono), var(--font-myanmar), ui-monospace, "Cascadia Mono", "SF Mono", "Segoe UI Mono", "Roboto Mono", Menlo, Consolas, monospace;
 
   --s1: 0.35rem; --s2: 0.65rem; --s3: 1rem; --s4: 1.5rem; --s5: 2.25rem; --s6: 3.25rem;
@@ -45,10 +48,10 @@
   --t-sm:   0.8125rem;  /* 13px — hints, notes, nav items */
   --t-md:   0.875rem;   /* 14px — tables and dense data, the workhorse */
   --t-base: 0.9375rem;  /* 15px — body copy, form inputs */
-  --t-lg:   1.0625rem;  /* 17px — card headings */
-  --t-xl:   1.25rem;    /* 20px — voucher totals */
-  --t-2xl:  1.375rem;   /* 22px — KPI figures */
-  --t-3xl:  1.5rem;     /* 24px — page titles */
+  --t-lg:   1.0625rem;  /* 17px — page titles, the largest text in the app */
+  --t-xl:   1.125rem;   /* 18px — voucher totals */
+  --t-2xl:  1.25rem;    /* 20px — KPI figures, the ceiling */
+  --t-3xl:  1.25rem;    /* 20px — kept as an alias; nothing should exceed it */
 
   /* One tracking value per job, instead of four that drifted 0.06 to 0.12em
      across labels that are meant to look identical. */
@@ -218,10 +221,14 @@ section { display: flex; flex-direction: column; gap: var(--s3); }
    to be the loudest thing on the dashboard while it lasts. */
 .checklist { list-style: none; display: flex; flex-direction: column; gap: 0.15rem; }
 .checklist-item {
-  display: flex; align-items: flex-start; gap: 0.7rem;
+  display: flex; align-items: flex-start; gap: 0.7rem; flex-wrap: wrap;
   padding: 0.6rem 0.5rem; border-radius: var(--r-md);
   border-bottom: 1px solid var(--line-soft);
 }
+/* On a phone the call to action would otherwise squeeze the label into a
+   one-word column. Below the basis the row breaks and the button drops under
+   the text instead. */
+.checklist-item > .btn { margin-left: auto; }
 .checklist-item:last-child { border-bottom: none; }
 .checklist-mark {
   flex: none; width: 20px; height: 20px; margin-top: 0.1rem;
@@ -232,7 +239,7 @@ section { display: flex; flex-direction: column; gap: var(--s3); }
 .checklist-item[data-done] .checklist-mark {
   background: var(--ok); border-color: var(--ok); color: #fff;
 }
-.checklist-body { flex: 1; display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+.checklist-body { flex: 1 1 12rem; display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
 .checklist-label { font-weight: 500; }
 .checklist-item[data-done] .checklist-label { color: var(--muted); text-decoration: line-through; }
 .checklist-detail { font-size: var(--t-sm); color: var(--muted); }
@@ -370,8 +377,10 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-num
 
 /* ---------------------------------------------------------------- flow --- */
 
-.flow { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); font-family: var(--mono); font-size: var(--t-sm); }
-.flow-node { padding: 0.16rem 0.5rem; border: 1px solid var(--line); border-radius: var(--r-sm); }
+/* These read as words — "Partially fulfilled" is a state, not a code — so
+   they take the interface face like every other badge. */
+.flow { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); font-family: var(--sans); font-size: var(--t-sm); }
+.flow-node { padding: 0.25rem 0.65rem; border: 1px solid var(--line); border-radius: var(--r-md); }
 .flow-node.here { border-color: var(--brand); color: var(--brand); background: var(--brand-weak); }
 .flow-arrow { color: var(--muted); }
 
@@ -841,6 +850,86 @@ tbody tr.subrow > td:first-child::before {
 
 body { --erp-density-applied: 1; }
 
+/* --------------------------------------------------------------------------
+   One design, applied everywhere
+
+   Three looks had grown: the dashboard on DM Sans with rounded white cards and
+   sentence-case badges, the document screens on .erp-* classes, and fifty
+   other pages on the original flat sheets with uppercase mono pills. Same nav,
+   three products.
+
+   The dashboard's language wins, but not its scale — it had drifted to a 37px
+   title while the ordinary pages sat at 17px, and big is not the same as
+   clear. The ladder below is the whole of it, and nothing on any screen goes
+   above the top rung.
+
+     page title   17px / 600     the largest text in the product
+     card heading 14px / 600
+     sub-heading  13px / 600
+     body         15px / 400
+     table, dense 14px / 400
+     labels, hints 13px / 400
+     micro caps   11px / 500     uppercase, tracked
+
+   Figures are the one exception and cap at 20px, because a KPI that reads at
+   arm's length is the only thing on a screen that earns size.
+   -------------------------------------------------------------------------- */
+
+h1 { font-size: var(--t-lg); font-weight: 600; letter-spacing: var(--track-tight); }
+h2 { font-size: var(--t-md); font-weight: 600; letter-spacing: var(--track-tight); }
+h3 { font-size: var(--t-sm); font-weight: 600; letter-spacing: 0; margin: 0; }
+
+/* Cards, the dashboard's: a white sheet with a hairline and a real corner,
+   and a head that is a heading rather than a grey strip. This replaces the
+   squarer "sheet" treatment below — the two were the most visible difference
+   between the dashboard and everything else. */
+.card {
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  box-shadow: 0 1px 2px rgb(16 33 26 / 0.04);
+}
+.card-head {
+  padding: 0.85rem 1.1rem;
+  background: transparent;
+  border-bottom: 1px solid var(--line);
+  align-items: center;
+}
+.card-head h2 { font-size: var(--t-md); font-weight: 600; }
+.card-body { padding: 1rem 1.1rem; }
+
+/* Badges read as words. Uppercase mono was right when a pill was one of forty
+   in a column and had to be scanned; the dashboard's are sentence case and
+   rounded, and one product cannot have both. */
+.pill {
+  font-family: var(--sans); font-size: var(--t-sm); font-weight: 500;
+  text-transform: none; letter-spacing: 0;
+  padding: 0.2rem 0.55rem; border-radius: var(--r-md);
+}
+
+/* Table headers likewise: the heading above the table already names it. */
+thead th {
+  font-family: var(--sans); font-size: var(--t-sm); font-weight: 500;
+  letter-spacing: 0; text-transform: none; color: var(--muted);
+}
+thead th .sortbtn { font: inherit; color: inherit; letter-spacing: inherit; text-transform: none; }
+/* th.r puts the column into mono so figures line up under it. The heading is
+   a word, not a figure, and beat the rule above on specificity. */
+thead th.r { font-family: var(--sans); }
+
+/* KPI tiles are cards with a figure in them, so they are cards. */
+.kpi {
+  border-radius: 12px; box-shadow: 0 1px 2px rgb(16 33 26 / 0.04);
+  padding: 1rem 1.1rem; gap: 0.35rem;
+}
+.kpi-label {
+  font-family: var(--sans); font-size: var(--t-md); font-weight: 500;
+  letter-spacing: 0; text-transform: none; color: var(--ink);
+}
+.kpi-value {
+  font-family: var(--sans); font-size: var(--t-2xl); font-weight: 700;
+  letter-spacing: var(--track-tight);
+}
+
 /* The page heading becomes a control panel: one thin horizontal bar, the way
    every ERP screen opens, instead of a stacked eyebrow/title/subtitle block
    that pushes the data below the fold. */
@@ -865,16 +954,9 @@ body { --erp-density-applied: 1; }
 }
 .page-head .actions { order: 4; margin-left: auto; }
 
-/* Cards become sheets: squarer, flatter, and the head reads as a table strip
-   rather than as a second title. */
-.card { border-radius: var(--r-sm); }
-.card-head {
-  padding: 0.5rem var(--s3);
-  background: var(--line-soft);
-  align-items: center;
-}
-.card-head h2 { font-size: var(--t-md); font-weight: 600; margin: 0; }
-.card-body { padding: var(--s3); }
+/* Cards are defined once, above — the squarer "sheet" treatment that used to
+   live here was the most visible difference between the dashboard and every
+   other screen, and it lost. */
 
 /* 40px rows, asymmetric cell padding — a clean left gutter and a tight right
    edge, which is what lets a column of figures sit against its neighbour
@@ -1513,8 +1595,8 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 }
 .docstat-label {
   grid-area: label;
-  font-family: var(--mono); font-size: var(--t-2xs);
-  letter-spacing: var(--track-caps); text-transform: uppercase; color: var(--muted);
+  font-family: var(--sans); font-size: var(--t-md); font-weight: 500;
+  letter-spacing: 0; text-transform: none; color: var(--muted);
 }
 .docstat-value {
   grid-area: value;
@@ -1998,3 +2080,547 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
   font-size: 0.85rem;
   color: var(--muted);
 }
+
+/* The bill already waiting for an order's goods. One bill is the answer and
+   the rest are guesses from the same supplier, so the answer gets the notice
+   and the action, and the guesses go behind a count. Eight rows of maybe
+   beside one row of yes buries the yes. */
+.awaiting-act {
+  padding: 0 0 0.85rem 2.1rem;
+}
+.awaiting-others {
+  border-top: 1px solid var(--line);
+  padding-top: 0.5rem;
+}
+.awaiting-others > summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--muted);
+  padding: 0.15rem 0;
+  list-style-position: inside;
+}
+.awaiting-others > summary:hover { color: var(--ink); }
+.awaiting-others[open] > summary { margin-bottom: 0.4rem; }
+
+/* A drawer, not a centred box.
+   Same <dialog> underneath — focus trap, Esc, inert background, all free —
+   pushed to the right edge and given the full height. A decision with figures,
+   a document list and a reason to type is too tall for a centred card: it
+   either scrolls in the middle of the screen or covers the document it is
+   about. Against the edge it can be read beside the order it concerns, which
+   is the point of reviewing before confirming. */
+dialog.drawer {
+  max-width: none;
+  width: min(31rem, 100%);
+  height: 100%;
+  max-height: 100%;
+  margin: 0 0 0 auto;
+  /* The browser's own <dialog> rules give it a 3px solid black border, 15px
+     of padding and an opaque white background. .confirm above resets all
+     three; this rule only ever set geometry, so the drawer opened inside a
+     black frame with a white gutter. */
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+/* And without this the page behind a modal drawer stayed at full brightness,
+   which read as a panel bolted to the edge rather than a decision blocking
+   the document. No blur: Safari renders backdrop-filter on ::backdrop
+   unreliably, and a plain scrim says the same thing. */
+dialog.drawer::backdrop { background: rgb(0 0 0 / 0.45); }
+dialog.drawer .drawer-panel {
+  background: var(--surface);
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  box-shadow: -24px 0 60px rgb(0 0 0 / 0.22);
+}
+.drawer-head {
+  display: flex; align-items: flex-start; gap: var(--s3);
+  padding: var(--s4) var(--s4) var(--s3);
+  border-bottom: 1px solid var(--line);
+}
+.drawer-head h2 { margin: 0; font-size: var(--t-lg); font-weight: 600; letter-spacing: var(--track-tight); }
+.drawer-head .drawer-doc { display: block; color: var(--muted); font-size: var(--t-md); margin-top: 2px; }
+.drawer-x {
+  margin-left: auto; background: none; border: 0; cursor: pointer;
+  color: var(--muted); padding: 2px; line-height: 0;
+}
+.drawer-x:hover { color: var(--ink); }
+/* The only part that scrolls, so the decision buttons never leave the screen. */
+.drawer-body { flex: 1; overflow-y: auto; padding: var(--s4); }
+.drawer-lead { margin: 0 0 var(--s4); color: var(--muted); line-height: var(--lh-base); }
+.drawer-section { font-size: var(--t-md); font-weight: 600; margin: 0 0 var(--s2); }
+.drawer-figures { margin: 0 0 var(--s3); }
+.drawer-figure {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 0.3rem 0; border-bottom: 1px solid var(--line);
+}
+.drawer-figure:last-child { border-bottom: 0; }
+.drawer-figure .k { color: var(--muted); }
+.drawer-figure .v { font-variant-numeric: tabular-nums; }
+/* What it becomes, which is the figure being agreed to rather than reported. */
+.drawer-after {
+  display: flex; align-items: center; gap: var(--s2);
+  padding: 0.6rem 0.75rem; margin-bottom: var(--s4);
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+  background: color-mix(in srgb, var(--warn) 9%, transparent);
+  border-radius: var(--r-md);
+  color: color-mix(in srgb, var(--warn) 80%, var(--ink));
+}
+.drawer-linked { margin: 0 0 var(--s4); }
+.drawer-linked ul { margin: 0; padding-left: 1.1rem; }
+.drawer-linked li { margin-bottom: 0.2rem; }
+.drawer-none { color: var(--muted); margin: 0; }
+.drawer-note { color: var(--muted); font-size: var(--t-sm); margin: var(--s3) 0 0; }
+.drawer-foot {
+  display: flex; gap: var(--s2); justify-content: flex-end;
+  padding: var(--s3) var(--s4);
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+.drawer-foot .btn { min-width: 8rem; justify-content: center; }
+/* Irreversible, and coloured like it — on the trigger as well as the
+   confirmation, so the two read as the same act. */
+.btn.danger {
+  background: var(--bad);
+  border-color: var(--bad);
+  color: #fff;
+}
+.btn.danger:hover { background: color-mix(in srgb, var(--bad) 88%, #000); }
+.btn.ghost.danger {
+  background: transparent;
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 45%, transparent);
+}
+.btn.ghost.danger:hover { background: color-mix(in srgb, var(--bad) 8%, transparent); }
+
+/* Receiving against a bill that arrived first. Cards in the order the
+   questions are asked: what this is about, when and where, what turned up,
+   then what posting it would do. */
+.rcv { display: block; }
+.rcv-card {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  margin-bottom: var(--s3);
+  overflow: hidden;
+}
+.rcv-card-head {
+  padding: 0.55rem 1rem;
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--line) 22%, transparent);
+}
+/* The chosen bill leads, with a green edge: it is the subject, not a field. */
+.rcv-against { border-left: 3px solid var(--ok, var(--brand)); }
+.rcv-against-body {
+  display: flex; flex-wrap: wrap; gap: 2.5rem;
+  padding: 0.85rem 1rem; align-items: flex-start;
+}
+.rcv-k { color: var(--muted); font-size: var(--t-sm); margin-bottom: 2px; }
+.rcv-change { margin-left: auto; color: var(--brand); }
+.rcv-fields {
+  display: grid; gap: 1rem; padding: 0.85rem 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+}
+.rcv-table th.r, .rcv-table td.r { text-align: right; }
+.rcv-qty { display: inline-flex; align-items: center; gap: 0; }
+.rcv-qty input { width: 5.5rem; text-align: right; }
+.rcv-uom {
+  padding: 0 0.4rem; color: var(--muted);
+  border: 1px solid var(--line); border-left: 0;
+  align-self: stretch; display: flex; align-items: center;
+}
+.rcv-locked {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  color: var(--muted); border: 1px solid var(--line);
+  border-radius: var(--r-sm); padding: 0.15rem 0.45rem;
+  background: color-mix(in srgb, var(--line) 18%, transparent);
+}
+.rcv-foot {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 0.6rem 1rem; border-top: 1px solid var(--line);
+}
+.rcv-preview { width: 100%; border-collapse: collapse; }
+.rcv-preview th {
+  text-align: left; font-weight: 400; color: var(--ink);
+  padding: 0.45rem 1rem; border-bottom: 1px solid var(--line); width: 40%;
+}
+.rcv-preview td { padding: 0.45rem 1rem; border-bottom: 1px solid var(--line); }
+.rcv-preview tr:last-child th, .rcv-preview tr:last-child td { border-bottom: 0; }
+.rcv-actions {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding-top: 0.5rem; flex-wrap: wrap;
+}
+.rcv-actions .muted { margin-right: auto; }
+
+/* ===========================================================================
+   Dashboard
+   ===========================================================================
+
+   The one screen that is read rather than worked in. Everywhere else in this
+   app is a ledger: dense rows, mono figures, a table doing the talking. The
+   dashboard is the opposite job — a handful of numbers that have to land at
+   arm's length — so it gets its own scale and its own type, and borrows the
+   rest from the tokens above rather than inventing a second design system.
+
+   DM Sans here, Plex everywhere else. Deliberate: the figures are large and
+   few, which is what DM Sans is good at and what Plex was chosen against. */
+
+.dash {
+  font-family: var(--font-dm-sans), var(--font-myanmar), system-ui, sans-serif;
+  --dash-radius: 12px;
+  --dash-gap: 1.25rem;
+  --dash-card: var(--surface);
+  --dash-line: color-mix(in srgb, var(--line) 70%, transparent);
+  --dash-tint: color-mix(in srgb, var(--brand) 7%, transparent);
+  --dash-shadow: 0 1px 2px rgb(16 33 26 / 0.04);
+}
+
+.dash-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: var(--s3); flex-wrap: wrap; margin-bottom: var(--s4);
+}
+/* The same rung as every other page title. It had climbed to 37px, which
+   made the dashboard a different product from the screen it links to. */
+.dash-head h1 {
+  font-size: var(--t-lg); font-weight: 600;
+  letter-spacing: var(--track-tight); margin: 0; line-height: 1.3;
+}
+/* Burmese stacks marks above and below the baseline, so this line carries a
+   looser leading than the Latin text alone would need — at the app default
+   the company name in Myanmar reaches up into the heading. */
+.dash-head .dash-sub {
+  color: var(--muted); margin-top: 0.3rem; display: block; line-height: 1.75;
+}
+.dash-actions { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+
+/* A chip that states a fact rather than offering a choice. The reference
+   draws these as dropdowns; nothing behind them filters anything yet, and a
+   control that does nothing is worse than a label that is true. */
+.dash-chip {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  padding: 0.4rem 0.75rem; border-radius: var(--r-md);
+  border: 1px solid var(--dash-line); background: var(--surface);
+  font-size: var(--t-sm); color: var(--ink-soft); white-space: nowrap;
+}
+.dash-chip.solid {
+  background: var(--brand); border-color: var(--brand); color: var(--brand-fg);
+  font-weight: 500;
+}
+
+.dash-cards {
+  display: grid; gap: var(--dash-gap); margin-bottom: var(--dash-gap);
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+}
+.dash-card {
+  background: var(--dash-card); border: 1px solid var(--dash-line);
+  border-radius: var(--dash-radius); box-shadow: var(--dash-shadow);
+}
+.dash-card-pad { padding: 1.15rem 1.35rem; }
+
+/* KPI ------------------------------------------------------------------- */
+.dash-kpi { display: flex; flex-direction: column; gap: 0.5rem; }
+.dash-kpi-label {
+  display: flex; align-items: center; gap: 0.5rem;
+  font-size: var(--t-base); font-weight: 500; color: var(--ink);
+}
+.dash-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.dash-kpi-value {
+  font-size: var(--t-2xl); font-weight: 700;
+  letter-spacing: -0.02em; line-height: 1.15;
+  /* Figures wrap rather than overflow: MMK 1,234,567,890 is a real number in
+     kyat and must not push the card wider than its column. */
+  overflow-wrap: anywhere;
+}
+.dash-kpi-note { color: var(--muted); font-size: var(--t-sm); }
+.dash-badge {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 0.3rem;
+  padding: 0.3rem 0.65rem; border-radius: var(--r-md);
+  font-size: var(--t-xs); font-weight: 500;
+}
+
+/* Banner ---------------------------------------------------------------- */
+.dash-banner {
+  display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap;
+  padding: 1rem 1.35rem; border-radius: var(--dash-radius);
+  margin-bottom: var(--dash-gap);
+  background: var(--dash-tint);
+  border: 1px solid color-mix(in srgb, var(--brand) 16%, transparent);
+}
+.dash-banner.warn {
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  border-color: color-mix(in srgb, var(--warn) 25%, transparent);
+}
+.dash-banner-mark {
+  width: 30px; height: 30px; border-radius: 50%; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--brand); color: var(--brand-fg);
+}
+.dash-banner.warn .dash-banner-mark { background: var(--warn); }
+.dash-banner-link { margin-left: auto; color: var(--brand); font-weight: 500; }
+
+/* Section head ---------------------------------------------------------- */
+.dash-section-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: var(--s3); flex-wrap: wrap; margin-bottom: 1rem;
+}
+.dash-section-head h2 {
+  font-size: var(--t-md); font-weight: 600; letter-spacing: var(--track-tight); margin: 0;
+}
+.dash-section-head .dash-sub { color: var(--muted); display: block; margin-top: 0.25rem; }
+
+/* Business flow --------------------------------------------------------- */
+.dash-flow-label {
+  display: inline-block; padding: 0.3rem 0.7rem; border-radius: 6px;
+  background: color-mix(in srgb, var(--line) 40%, transparent);
+  font-size: var(--t-2xs); font-weight: 500; letter-spacing: var(--track-caps);
+  text-transform: uppercase; color: var(--ink-soft); margin-bottom: 0.9rem;
+}
+/* Wraps instead of clipping. The reference cuts the sales row off at the
+   card's edge; a pipeline that hides its last stage is worse than one that
+   takes two lines. */
+.dash-flow-row {
+  display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
+  row-gap: 1rem;
+}
+.dash-flow-cell {
+  display: flex; align-items: center; gap: 0.75rem;
+  flex: 1 1 12rem; min-width: 0;
+}
+.dash-flow-step {
+  display: flex; align-items: center; gap: 0.7rem;
+  flex: 1 1 auto; min-width: 0;
+}
+.dash-flow-n {
+  width: 38px; height: 38px; border-radius: 10px; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: var(--t-base);
+}
+.dash-flow-name { font-weight: 500; }
+.dash-flow-sub { color: var(--muted); font-size: var(--t-sm); }
+.dash-flow-arrow { color: var(--line); flex: 0 0 auto; }
+.dash-flow-sep {
+  height: 1px; background: var(--dash-line); margin: 1.35rem 0;
+}
+
+/* Revenue + ranked ------------------------------------------------------ */
+.dash-split {
+  display: grid; gap: var(--dash-gap); margin-bottom: var(--dash-gap);
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+}
+@media (max-width: 1100px) { .dash-split { grid-template-columns: 1fr; } }
+.dash-figure {
+  display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
+  margin-bottom: 0.25rem;
+}
+.dash-figure-value {
+  font-size: var(--t-2xl); font-weight: 700; letter-spacing: var(--track-tight);
+}
+.dash-rank { display: flex; flex-direction: column; gap: 1.1rem; }
+.dash-rank-row { display: grid; grid-template-columns: auto 1fr auto; gap: 0.75rem; align-items: baseline; }
+.dash-rank-n {
+  width: 26px; height: 26px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--line) 40%, transparent);
+  font-size: var(--t-xs); color: var(--ink-soft); font-weight: 500;
+}
+.dash-rank-bar {
+  grid-column: 2 / -1; height: 4px; border-radius: 999px;
+  background: color-mix(in srgb, var(--line) 50%, transparent); margin-top: 0.45rem;
+}
+.dash-rank-fill { height: 100%; border-radius: 999px; background: var(--brand); }
+
+/* Health ---------------------------------------------------------------- */
+.dash-health {
+  display: grid; gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+}
+.dash-health-item {
+  display: flex; align-items: center; gap: 0.7rem;
+  padding: 0.9rem 1rem; border-radius: 10px; background: var(--dash-tint);
+}
+.dash-health-item.bad { background: color-mix(in srgb, var(--bad) 8%, transparent); }
+.dash-health-mark {
+  width: 26px; height: 26px; border-radius: 50%; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--surface); color: var(--brand);
+}
+.dash-health-item.bad .dash-health-mark { color: var(--bad); }
+
+/* Activity -------------------------------------------------------------- */
+.dash-activity { display: flex; flex-direction: column; }
+.dash-activity-row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.9rem; align-items: center;
+  padding: 0.95rem 0; border-bottom: 1px solid var(--dash-line);
+}
+.dash-activity-row:last-child { border-bottom: 0; }
+.dash-activity-mark {
+  width: 42px; height: 42px; border-radius: 10px; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  font-size: var(--t-xs); font-weight: 700; letter-spacing: 0.02em;
+}
+.dash-activity-right { text-align: right; display: flex; align-items: center; gap: 0.9rem; }
+@media (max-width: 720px) {
+  .dash-activity-row { grid-template-columns: auto minmax(0, 1fr); }
+  .dash-activity-right { grid-column: 2; justify-content: flex-start; text-align: left; }
+}
+
+/* ===========================================================================
+   Sidebar, dark
+   ===========================================================================
+
+   The navigation reads as chrome rather than as content: a dark rail the eye
+   skips past on the way to the figures, instead of a second white column
+   competing with the cards for attention.
+
+   Colours only. The groups, the links, the icons and the expand behaviour are
+   exactly as they were — this repaints what is there rather than rebuilding
+   it, so nothing about where a click goes has changed. */
+
+.sidebar {
+  --rail: #101613;
+  --rail-ink: #E7EDE9;
+  --rail-muted: #8C9B93;
+  width: 232px;
+  background: var(--rail);
+  border-right: 0;
+  color: var(--rail-ink);
+  font-family: var(--font-dm-sans), var(--font-myanmar), system-ui, sans-serif;
+  padding: var(--s4) 0.65rem;
+  gap: var(--s4);
+}
+
+/* The mark, then the company, then which database — the three things somebody
+   glances at the corner to check, in that order. */
+.sidebar .brand {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 0.7rem;
+  align-items: center;
+  padding: 0.35rem 0.65rem var(--s2);
+}
+.sidebar .brand::before {
+  content: "M";
+  grid-row: 1 / 3;
+  width: 38px; height: 38px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--brand); color: var(--brand-fg);
+  font-weight: 700; font-size: 1.05rem;
+}
+.sidebar .brand-name {
+  color: #fff; font-weight: 700; font-size: 1rem; letter-spacing: -0.01em;
+  min-width: 0; overflow-wrap: anywhere;
+}
+.sidebar .brand-sub {
+  font-family: inherit; color: var(--rail-muted); text-transform: none;
+  letter-spacing: 0; font-size: var(--t-sm);
+}
+
+.sidebar .navlabel {
+  font-family: inherit; color: var(--rail-muted);
+  font-size: var(--t-2xs); font-weight: 500;
+  padding: 0 0.65rem var(--s1);
+}
+
+/* A group heading outranks the links inside it. Small caps at --t-2xs put it
+   a size below its own children, so Purchases read as a caption over seven
+   louder items rather than as the thing they belong to. Sentence case at the
+   size of a top-level link, with the children a step down and muted, puts the
+   three levels in the order they actually stand: page, group, page in group. */
+.sidebar .navhead {
+  font-family: inherit; font-size: var(--t-base); font-weight: 500;
+  text-transform: none; letter-spacing: 0;
+  color: var(--rail-ink);
+  padding: 0.5rem 0.75rem;
+  border-radius: 9px;
+}
+.sidebar .navhead:hover { background: rgb(255 255 255 / 0.06); color: #fff; }
+.sidebar .navhead[data-inside="true"] { color: #fff; }
+/* Open, the group is a heading over its list rather than a row in it. */
+.sidebar .navhead[aria-expanded="true"] { color: #fff; }
+.sidebar .navitems { padding-bottom: var(--s3); }
+.sidebar .navsubhead {
+  color: var(--rail-muted); font-size: var(--t-sm);
+  padding: 0.4rem 0.75rem 0.4rem 2.15rem; border-radius: 9px;
+}
+.sidebar .navsubhead:hover { background: rgb(255 255 255 / 0.06); color: var(--rail-ink); }
+.sidebar .navsubhead[data-inside="true"] { color: #fff; }
+.sidebar .navlink {
+  color: var(--rail-muted);
+  border-left: 0;
+  border-radius: 9px;
+  padding: 0.5rem 0.75rem;
+  font-size: var(--t-base);
+}
+/* Inside an open group they are one step in and one size down — the whole
+   point of the group being above them. */
+.sidebar .navitems > .navlink,
+.sidebar .navsubitems > .navlink {
+  font-size: var(--t-sm);
+  padding-left: 2.15rem;
+}
+.sidebar .navsubitems > .navlink { padding-left: 2.9rem; }
+.sidebar .navlink:hover {
+  background: rgb(255 255 255 / 0.06);
+  color: var(--rail-ink);
+}
+/* The current page as a filled pill, the way the reference marks it — a left
+   border on a dark ground is almost invisible. */
+.sidebar .navlink[data-active="true"] {
+  background: color-mix(in srgb, var(--brand) 55%, #101613);
+  color: #fff;
+  font-weight: 500;
+}
+.sidebar .navlink[data-sub="true"] {
+  padding-left: 2.15rem;
+  color: var(--rail-muted);
+  font-size: var(--t-sm);
+}
+.sidebar .navlink[data-sub="true"][data-active="true"] { color: #fff; }
+
+/* Group headers are buttons here, not plain labels. */
+.sidebar button.navlabel,
+.sidebar .navgroup > button {
+  color: var(--rail-ink);
+  background: none;
+  width: 100%;
+  border-radius: 9px;
+}
+.sidebar .navgroup > button:hover { background: rgb(255 255 255 / 0.06); }
+.sidebar svg { opacity: 0.85; }
+
+/* The page beside it lightens, so the cards have something to sit on. */
+.main { background: #F6F8F7; }
+@media (prefers-color-scheme: dark) {
+  .main { background: var(--bg); }
+}
+
+/* The setup checklist is a shared component with the app-wide card chrome.
+   Inside the dashboard it has to sit alongside .dash-card without looking
+   bolted on, so the chrome is restated here rather than forked into a second
+   component. */
+.dash > section > .card {
+  border: 1px solid var(--dash-line); border-radius: var(--dash-radius);
+  box-shadow: var(--dash-shadow); overflow: hidden;
+  margin-bottom: var(--dash-gap);
+}
+.dash > section > .card > .card-head {
+  background: transparent; border-bottom: 1px solid var(--dash-line);
+  padding: 1.1rem 1.35rem;
+}
+.dash > section > .card > .card-head h2 { font-size: var(--t-md); font-weight: 600; }
+.dash > section > .card > .card-body { padding: 0.65rem 1.35rem 1.35rem; }
+
+/* Ranked items sit beside the revenue chart, so the card is as tall as the
+   chart whether or not there are four items to fill it. The link is pinned to
+   the bottom rather than left floating under a short list. */
+.dash-rank-card { display: flex; flex-direction: column; }
+.dash-rank-more { display: inline-block; margin-top: auto; padding-top: 1.25rem; }

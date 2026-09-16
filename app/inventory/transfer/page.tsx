@@ -3,6 +3,7 @@ import { getFormData, createStockTransfer } from "@/lib/actions";
 import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { StockTransferForm } from "@/components/stock-transfer-form";
+import { ErpCrumbs } from "@/components/erp-worklist";
 
 export default async function NewStockTransfer() {
   const d = await getFormData();
@@ -13,8 +14,11 @@ export default async function NewStockTransfer() {
   if (categories.length === 0 || d.locations.length < 2) {
     return (
       <>
+        <ErpCrumbs steps={[
+          { label: "Stock movements", href: "/inventory/movements" },
+          { label: "Stock transfer" },
+        ]} />
         <div className="page-head">
-          <span className="eyebrow">Inventory</span>
           <h1>Stock transfer</h1>
         </div>
         <div className="alert">
@@ -27,8 +31,11 @@ export default async function NewStockTransfer() {
 
   return (
     <>
+      <ErpCrumbs steps={[
+        { label: "Stock movements", href: "/inventory/movements" },
+        { label: "Stock transfer" },
+      ]} />
       <div className="page-head">
-        <span className="eyebrow">Inventory</span>
         <h1>Stock transfer</h1>
         <span className="page-sub">
           Move stock between two of the company&rsquo;s own warehouses — the

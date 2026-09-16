@@ -4,6 +4,8 @@
 // half past six in the morning is still "yesterday" in UTC. Rendering that
 // raw shows users the wrong day.
 
+// No lock: this suite reads and computes, and writes nothing. See
+// scripts/test-lock.mjs for what the others have to take before they start.
 process.env.TZ = "UTC"; // match the deployment
 
 const { shortDate, dateTime, timeOfDay, DISPLAY_TZ } = await import("../lib/format.ts");

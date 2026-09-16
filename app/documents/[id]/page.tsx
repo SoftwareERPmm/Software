@@ -381,6 +381,7 @@ export default async function DocumentPage({
       .filter((r) => r.order_id === doc.id)
       .map((r) => ({
         lineId: r.line_id, itemId: r.item_id, itemCode: r.item_code, itemName: r.item_name,
+        uomCode: r.uom_code ?? undefined,
         remainingQty: Number(r.remaining_qty), expectedPrice: Number(r.expected_price ?? 0),
       }));
     if (doc.doc_type === "SALES_ORDER") {
@@ -645,8 +646,9 @@ export default async function DocumentPage({
           </>
         }
         badges={versionBadge}
-        stats={statsNode}
         footer={footer}
+        unitWord={unitWord ?? null}
+        openLineCount={orderLines.length || undefined}
         chain={chain.map((step) => ({
           type: step,
           label: label(step).replace(/\b\w/g, (c) => c.toUpperCase()),
@@ -654,31 +656,37 @@ export default async function DocumentPage({
           href: stageDoc[step] ? null : nextStageHref(step),
           optional: OPTIONAL_STAGE.has(step),
         }))}
-        actions={
+        /* Receiving lives at one door now. The button below already pointed at
+           /purchases/receive?order=, and that page renders the very same
+           FulfillOrderForm this screen used to embed — so the inline copy was
+           a second way into one form, sitting in a row meant for buttons. */
+        fulfilActions={canFulfil ? (
           <>
-            {isOpenOrder && orderLines.length > 0 && (
-              <FulfillOrderForm
-                kind={sales ? "sales" : "purchase"}
-                orderId={doc.id}
-                orderNo={doc.doc_no}
-                partnerName={doc.partner_name}
-                partnerId={doc.partner_id}
-                locationId={doc.location_id}
-                lines={orderLines}
-                action={sales ? createDelivery : createGoodsReceipt}
-                stockByLocation={sales ? stockByLocation : undefined}
-                collisions={sales ? [] : collisions}
-                openBills={billsAwaiting}
-              />
-            )}
-            {/* Giving the order up, or asking for it back. This lived only on
-                the render path below, which an order never reaches — it
-                returns into ErpOrderForm above — so closing and reopening
-                have had no button on the screen that owns them. */}
+            <LinkFulfilment
+              action={linkReceiptToOrder}
+              orderLines={linkableGoods.orderLines as never}
+              candidates={linkableGoods.candidates as never}
+              sales={sales}
+            />
+            <Link
+              href={sales ? `/sales/deliver?order=${doc.id}` : `/purchases/receive?order=${doc.id}`}
+              className="btn primary"
+            >
+              <Truck size={15} aria-hidden="true" /> {sales ? "Deliver goods" : "Receive goods"}
+            </Link>
+          </>
+        ) : null}
+        /* Correcting an order and giving it up: both rare, one irreversible.
+           Behind the overflow menu rather than beside the routine action. */
+        menuActions={
+          <>
+            {correction}
             {isPostedOrder && (
               <CloseOrder
                 action={closeOrderAction}
                 documentId={doc.id}
+                docNo={doc.doc_no}
+                orderKind={sales ? "sales" : "purchase"}
                 isClosed={orderState.isClosed}
                 ordered={cancellation?.ordered ?? 0}
                 fulfilled={cancellation?.fulfilled ?? 0}
@@ -829,6 +837,7 @@ export default async function DocumentPage({
       {movesGoods && (
         <LinkToOrder
           action={linkReceiptToOrder}
+          sales={isDel}
           lines={linkable.lines as never}
           openLines={linkable.openLines as never}
         />
@@ -850,6 +859,8 @@ export default async function DocumentPage({
           <CloseOrder
             action={closeOrderAction}
             documentId={doc.id}
+            docNo={doc.doc_no}
+            orderKind={doc.doc_type === "SALES_ORDER" ? "sales" : "purchase"}
             isClosed={orderState.isClosed}
             ordered={cancellation?.ordered ?? 0}
             fulfilled={cancellation?.fulfilled ?? 0}

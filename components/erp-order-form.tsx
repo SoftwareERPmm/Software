@@ -1,17 +1,38 @@
+import Link from "next/link";
+import { ArrowLeft, Printer, UserRound } from "lucide-react";
 import { money, qty as fmtQty, shortDate } from "@/lib/format";
-import { ErpDocShell, type ChainStage } from "@/components/erp-doc-shell";
+import { ErpCopyNumber } from "@/components/erp-doc-toolbar";
+import { ErpMore } from "@/components/erp-more";
+import type { ChainStage } from "@/components/erp-doc-shell";
 
 /**
- * The transaction-document form: breadcrumb, action row with a chevron
- * pipeline, a sheet of header fields, a line grid, and totals.
+ * The order screen: sales and purchase orders, which are the same document
+ * with buyer-side vocabulary — Customer/Vendor, Delivered/Received. Building
+ * them as two screens means maintaining the same bugs twice, so the only
+ * thing that varies is the config passed in.
  *
- * Sales and purchase orders render through this one component. They are the
- * same document with buyer-side vocabulary — Customer/Vendor,
- * Delivered/Received — and the reference patterns make the point that
- * building them as two screens means maintaining the same bugs twice. The
- * only thing that varies is the config passed in.
+ * This is the first screen on the card layout, adopted deliberately one
+ * screen at a time rather than switched on across all twelve document types
+ * at once. ErpDocShell still frames everything else and is untouched; when
+ * this proves itself, the frame here is what the rest move onto. Until then
+ * two frames exist on purpose.
  *
- * Two things are shown rather than enforced here, which is the pattern worth
+ * What changed from the shell, and why:
+ *
+ *   The header names the document once — an icon for the type, the number,
+ *   where it stands, and who it is with — instead of spreading those across a
+ *   breadcrumb, a type caption and a stats row.
+ *
+ *   Progress is one card, not three loose tiles: the figures, the bar that
+ *   reads them at a glance, and the one action they lead to. The action row
+ *   used to be a flex line of buttons that a whole receiving card had been
+ *   dropped into, which is why it sat where it did.
+ *
+ *   Correcting and cancelling moved into the overflow menu. Both are rare and
+ *   one is irreversible; neither should stand at the same weight as the
+ *   routine act of receiving goods.
+ *
+ * Two things are still shown rather than enforced, which is the pattern worth
  * copying: a stage that has not happened is dimmed instead of hidden, so the
  * shape of the workflow is visible from any point in it; and a line that is
  * fully fulfilled loses its "remaining" figure rather than showing a zero to
@@ -44,8 +65,8 @@ export type OrderFormConfig = {
 
 export function ErpOrderForm({
   config, docId, docNo, status, partnerName, partnerCode, docDate, dueDate,
-  locationName, reference, memo, lines, netTotal, chain, actions, related,
-  banner, stats, footer, badges,
+  locationName, reference, memo, lines, netTotal, chain, related,
+  banner, footer, badges, fulfilActions, menuActions, openLineCount, unitWord,
   backHref, backLabel,
 }: {
   config: OrderFormConfig;
@@ -62,83 +83,211 @@ export function ErpOrderForm({
   lines: OrderLine[];
   netTotal: number;
   chain: ChainStage[];
-  /** Rendered left of the pipeline, the way the reference puts workflow actions there. */
-  actions?: React.ReactNode;
   /**
    * The related-documents panel. An order earns one as much as anything
    * downstream of it does — it is the head of the chain, and the question
    * "what came of this order" is the one the page exists to answer.
    */
   related?: React.ReactNode;
-  /** The same three the rest of the documents carry: whose move it is, the
-   *  figures it is about, and the office around it. An order is not a lesser
-   *  document for having no ledger entry. */
+  /** Whose move it is, when somebody is late. Above the document itself. */
   banner?: React.ReactNode;
-  stats?: React.ReactNode;
   footer?: React.ReactNode;
-  /** Beside the fulfilment pill this builds for itself — the version, mainly. */
+  /** Beside the status pill — the version, mainly. */
   badges?: React.ReactNode;
-  /** Passed straight through to the shell — see ErpDocShell. */
+  /**
+   * The one or two things to do about an order that is still owed. They sit
+   * inside the progress card, under the figure they answer, rather than in a
+   * button row above it.
+   */
+  fulfilActions?: React.ReactNode;
+  /** Correcting and cancelling: rare, consequential, behind the overflow menu. */
+  menuActions?: React.ReactNode;
+  /** How many lines still have something outstanding. */
+  openLineCount?: number;
+  /** The unit the quantities are counted in — CTN, PCS. */
+  unitWord?: string | null;
+  /** Where the reader came from, when it was not the list. */
   backHref?: string | null;
   backLabel?: string | null;
 }) {
   const totalOrdered = lines.reduce((s, l) => s + l.ordered, 0);
   const totalFulfilled = lines.reduce((s, l) => s + l.fulfilled, 0);
+  const remaining = Math.max(0, Math.round((totalOrdered - totalFulfilled) * 10000) / 10000);
   const complete = totalOrdered > 0 && totalFulfilled >= totalOrdered;
+  const started = totalFulfilled > 0;
+  // Never rounded up to 100: a bar reading full beside a remaining figure that
+  // is not zero is the one thing this card must never say.
+  const pct = totalOrdered > 0
+    ? (complete ? 100 : Math.min(99, Math.floor((totalFulfilled / totalOrdered) * 100)))
+    : 0;
 
-  // The stage this document is, and everything the chain has actually
-  // produced — a stage with no document behind it is dimmed, not dropped.
+  const done = config.fulfilledLabel.toLowerCase();
+  const progressWord = complete ? `Fully ${done}` : started ? `Partly ${done}` : `Not ${done}`;
+  const unit = unitWord ? ` ${unitWord}` : "";
+  const openLines = openLineCount ?? lines.filter((l) => l.fulfilled < l.ordered).length;
+
+  // Two letters for the type, the way the number itself is read out loud.
+  const initials = config.typeLabel.split(/\s+/).map((w) => w[0]).join("").toUpperCase();
+  const currentIndex = chain.findIndex((s) => s.doc?.doc_no === docNo);
 
   return (
-    <ErpDocShell
-      docId={docId}
-      docNo={docNo}
-      typeLabel={config.typeLabel}
-      status={status}
-      listHref={config.listHref}
-      listLabel={config.listLabel}
-      backHref={backHref}
-      backLabel={backLabel}
-      chain={chain}
-      actions={actions}
-      banner={banner}
-      stats={stats}
-      footer={footer}
-      badges={
-        <>
-          {totalOrdered > 0 && (
-            <span className={`pill ${complete ? "ok" : "warn"}`}>
-              {complete
-                ? `Fully ${config.fulfilledLabel.toLowerCase()}`
-                : `${fmtQty(totalFulfilled)} of ${fmtQty(totalOrdered)} ${config.fulfilledLabel.toLowerCase()}`}
+    <div data-density="odoo" className="erp-form erp-doc">
+      <div className="erp-crumb">
+        {backHref && (
+          <>
+            <Link href={backHref} className="erp-crumb-link backlink">
+              <ArrowLeft size={13} aria-hidden="true" /> {backLabel ?? "Back"}
+            </Link>
+            <span className="erp-crumb-sep">/</span>
+          </>
+        )}
+        <Link href={config.listHref} className="erp-crumb-link">{config.listLabel}</Link>
+        <span className="erp-crumb-sep">/</span>
+        <span className="erp-crumb-here">{docNo}</span>
+        <ErpCopyNumber docNo={docNo} />
+      </div>
+
+      <header className="erp-head">
+        <span className="erp-head-tile" aria-hidden="true">{initials}</span>
+        <div className="erp-head-id">
+          <div className="erp-head-line">
+            <h1>{docNo}</h1>
+            <span className={`pill plain ${status.toLowerCase()}`}>
+              {status.charAt(0) + status.slice(1).toLowerCase()}
             </span>
-          )}
-          {badges}
-        </>
-      }
-    >
-        <div className="erp-fields">
-          <div>
-            <dl className="erp-kv">
-              <dt>{config.partyLabel}</dt>
-              <dd>{partnerName ? `${partnerCode ? partnerCode + " · " : ""}${partnerName}` : "—"}</dd>
-              <dt>Reference</dt>
-              <dd className="m">{reference ?? "—"}</dd>
-            </dl>
+            {badges}
           </div>
-          <div>
-            <dl className="erp-kv">
-              <dt>Order date</dt>
-              <dd className="m">{shortDate(docDate)}</dd>
-              <dt>Expected</dt>
-              <dd className="m">{dueDate ? shortDate(dueDate) : "—"}</dd>
-              <dt>Warehouse</dt>
-              <dd>{locationName ?? "—"}</dd>
-            </dl>
+          <span className="erp-head-sub">
+            {partnerName
+              ? `${partnerName}${partnerCode ? ` · ${partnerCode}` : ""}`
+              : config.typeLabel}
+          </span>
+        </div>
+        <div className="erp-head-tools">
+          <a href={`/documents/${docId}/print`} className="erp-hbtn">
+            <Printer size={15} aria-hidden="true" /> Print
+          </a>
+          {menuActions && <ErpMore>{menuActions}</ErpMore>}
+        </div>
+      </header>
+
+      {chain.length > 0 && (
+        <div className="erp-pipeline" role="list" aria-label="Workflow">
+          {chain.map((stage, i) => {
+            const stageDone = !!stage.doc;
+            const here = i === currentIndex;
+            const body = (
+              <>
+                {stage.label}
+                {stage.doc && !here && <span className="erp-stage-no">{stage.doc.doc_no}</span>}
+                {!stage.doc && stage.href && <span className="erp-stage-no">create</span>}
+              </>
+            );
+            return (
+              <div key={stage.type} role="listitem"
+                   className={`erp-stage ${here ? "here" : stageDone ? "done" : "todo"}${
+                     !stageDone && stage.href ? " next" : ""}${
+                     !stageDone && stage.optional ? " optional" : ""}`}
+                   title={!stageDone && stage.optional
+                     ? `${stage.label} is optional — this chain is valid without one`
+                     : undefined}
+                   aria-current={here ? "step" : undefined}>
+                {stage.doc && !here
+                  ? <Link href={`/documents/${stage.doc.id}`}>{body}</Link>
+                  : !stage.doc && stage.href
+                    ? <Link href={stage.href}>{body}</Link>
+                    : body}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {banner}
+
+      {totalOrdered > 0 && (
+        <section className="erp-card">
+          <div className="erp-card-head">
+            <h2>{config.fulfilledLabel === "Delivered" ? "Delivery" : "Receiving"} progress</h2>
+            <span className={`pill plain ${complete ? "ok" : started ? "warn" : ""}`}>
+              {progressWord}
+            </span>
+          </div>
+          <div className="erp-card-body">
+            <div className="erp-figs">
+              <div className="erp-fig">
+                <span className="erp-fig-label">Ordered</span>
+                <strong className="erp-fig-value">{fmtQty(totalOrdered)}{unit}</strong>
+              </div>
+              <div className="erp-fig">
+                <span className="erp-fig-label">{config.fulfilledLabel}</span>
+                <strong className="erp-fig-value">{fmtQty(totalFulfilled)}{unit}</strong>
+              </div>
+              <div className="erp-fig">
+                <span className="erp-fig-label">Remaining</span>
+                <strong className="erp-fig-value">{fmtQty(remaining)}{unit}</strong>
+              </div>
+            </div>
+
+            <div className="erp-progress">
+              <div className="erp-bar">
+                <span className={`erp-bar-fill${complete ? " full" : ""}`}
+                      style={{ width: `${pct}%` }} />
+              </div>
+              <span className="erp-bar-pct">{pct}%</span>
+            </div>
+            <p className="erp-bar-note">
+              {fmtQty(totalFulfilled)} of {fmtQty(totalOrdered)}{unit} {done}
+            </p>
+
+            {fulfilActions && (
+              <div className="erp-fulfil">
+                <span className="erp-fulfil-icon" aria-hidden="true">
+                  <UserRound size={20} />
+                </span>
+                <div className="erp-fulfil-text">
+                  <strong>{partnerName ?? config.partyLabel}</strong>
+                  <span>
+                    {openLines} order line{openLines === 1 ? "" : "s"} awaiting{" "}
+                    {config.fulfilledLabel === "Delivered" ? "delivery" : "receipt"}
+                    {remaining > 0 && ` · ${fmtQty(remaining)}${unit} remaining`}
+                  </span>
+                </div>
+                <div className="erp-fulfil-actions">{fulfilActions}</div>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
+      <section className="erp-card">
+        <div className="erp-card-head"><h2>Order details</h2></div>
+        <div className="erp-card-body">
+          <div className="erp-fields">
+            <div>
+              <dl className="erp-kv">
+                <dt>{config.partyLabel}</dt>
+                <dd>{partnerName ? `${partnerCode ? partnerCode + " · " : ""}${partnerName}` : "—"}</dd>
+                <dt>Reference</dt>
+                <dd className="m">{reference ?? "—"}</dd>
+                <dt>Order date</dt>
+                <dd className="m">{shortDate(docDate)}</dd>
+              </dl>
+            </div>
+            <div>
+              <dl className="erp-kv">
+                <dt>Expected</dt>
+                <dd className="m">{dueDate ? shortDate(dueDate) : "—"}</dd>
+                <dt>Warehouse</dt>
+                <dd>{locationName ?? "—"}</dd>
+              </dl>
+            </div>
           </div>
         </div>
+      </section>
 
-        <div className="erp-tabs"><span className="erp-tab here">Lines</span></div>
+      <section className="erp-card">
+        <div className="erp-card-head"><h2>Order items</h2></div>
 
         <div className="erp-scroll">
           <table className="erp-table">
@@ -194,6 +343,10 @@ export function ErpOrderForm({
             <dt className="grand">Total</dt><dd className="grand">{money(netTotal)}</dd>
           </dl>
         </div>
-    </ErpDocShell>
+      </section>
+
+      {related}
+      {footer}
+    </div>
   );
 }

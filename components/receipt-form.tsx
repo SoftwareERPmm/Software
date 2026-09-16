@@ -21,10 +21,14 @@ type Line = {
    * never billed is indistinguishable from one it did.
    */
   sourceLineId?: string | null;
+  /** The order line behind the bill line, where the bill came from an order. */
+  orderLineId?: string | null;
 };
 type MatchLine = {
   lineId: string; itemId: string; itemCode: string; itemName: string;
   qty: number; unitPrice: number;
+  /** The order line this bill line was raised from, where there was one. */
+  orderLineId?: string | null;
 };
 type OpenDoc = {
   id: string; doc_no: string; doc_date: string; partner_id: string;
