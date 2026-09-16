@@ -15,7 +15,7 @@ export default async function NewStockAdjustment() {
     return (
       <>
         <ErpCrumbs steps={[
-          { label: "Stock movements", href: "/inventory/movements" },
+          { label: "Inventory" },
           { label: "Stock adjustment" },
         ]} />
         <div className="page-head">
@@ -32,7 +32,7 @@ export default async function NewStockAdjustment() {
   return (
     <>
       <ErpCrumbs steps={[
-        { label: "Stock movements", href: "/inventory/movements" },
+        { label: "Inventory" },
         { label: "Stock adjustment" },
       ]} />
       <div className="page-head">

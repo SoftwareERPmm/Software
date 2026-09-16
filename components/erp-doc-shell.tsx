@@ -21,6 +21,12 @@ export type ChainStage = {
   label: string;
   doc: { id: string; doc_no: string } | null;
   /**
+   * Every document at this stage. A stage can hold more than one — an order
+   * delivered in two runs has two deliveries — and a strip showing the first
+   * of them says the others do not exist.
+   */
+  docs?: { id: string; doc_no: string }[];
+  /**
    * Where to go to create this stage, when it does not exist yet and this
    * document is what it would be created from. Set only on the immediate next
    * step, so the pipeline is walkable forwards as well as backwards — a stage

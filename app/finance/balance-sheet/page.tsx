@@ -1,6 +1,9 @@
 import { money } from "@/lib/db";
 import { AutoApply } from "@/components/auto-apply";
-import { getCompany, getBalanceSheet, getBranches, getUnassignedBranchActivity, UNASSIGNED_BRANCH } from "@/lib/queries";
+import { getCompany, getBalanceSheet, getBranches, getUnassignedBranchActivity, getAccountTree, UNASSIGNED_BRANCH } from "@/lib/queries";
+import { buildStatement, type ChartRow, type StatementNode } from "@/lib/report-tree";
+import { StatementTable } from "@/components/statement-table";
+import { ErpCrumbs } from "@/components/erp-worklist";
 
 function today() {
   return new Date().toISOString().slice(0, 10);
@@ -34,38 +37,40 @@ export default async function BalanceSheet({
     id: string; code: string; name: string; account_type: "ASSET" | "LIABILITY" | "EQUITY"; amount: string;
   }>;
 
-  const sumOf = (type: string) =>
-    typed.filter((r) => r.account_type === type).reduce((s, r) => s + Number(r.amount), 0);
-  const assets = sumOf("ASSET");
-  const liabilities = sumOf("LIABILITY");
-  const equity = sumOf("EQUITY") + netIncome;
-  const balanced = Math.abs(assets - (liabilities + equity)) < 0.0001;
+  const chart = (await getAccountTree(company.id)) as unknown as ChartRow[];
+  const amounts = new Map(typed.map((r) => [r.id, Number(r.amount)]));
+  const assetTree = buildStatement(chart, amounts, ["ASSET"]);
+  const liabilityTree = buildStatement(chart, amounts, ["LIABILITY"]);
+  const equityTree = buildStatement(chart, amounts, ["EQUITY"]);
 
-  const section = (type: "ASSET" | "LIABILITY" | "EQUITY", label: string) => {
-    const items = typed.filter((r) => r.account_type === type);
-    return (
-      <tbody key={type}>
-        <tr><td colSpan={2} style={{ background: "var(--line-soft)" }}><span className="eyebrow">{label}</span></td></tr>
-        {items.map((r) => (
-          <tr key={r.id}>
-            <td className="wrap"><span className="code">{r.code}</span> {r.name}</td>
-            <td className="r">{money(r.amount)}</td>
-          </tr>
-        ))}
-        {type === "EQUITY" && netIncome !== 0 && (
-          <tr>
-            <td className="wrap" style={{ color: "var(--muted)" }}>Retained earnings (current, unclosed)</td>
-            <td className="r">{money(netIncome)}</td>
-          </tr>
-        )}
-      </tbody>
-    );
+  /**
+   * This period's result, not yet closed to an equity account — so it belongs
+   * in equity but has no account in the chart to hang from. Appended as its
+   * own row rather than folded into one, because a reader has to be able to
+   * tell what the books recorded from what the statement is adding on their
+   * behalf.
+   */
+  const retained: StatementNode = {
+    id: "retained-earnings-current", code: "", depth: 0, postable: true,
+    name: "Retained earnings (current, unclosed)", amount: netIncome, children: [],
   };
+  const equityNodes = netIncome !== 0
+    ? [...equityTree.nodes, retained]
+    : equityTree.nodes;
+
+  const assets = assetTree.total;
+  const liabilities = liabilityTree.total;
+  const equity = equityTree.total + netIncome;
+  const balanced = Math.abs(assets - (liabilities + equity)) < 0.0001;
 
   return (
     <>
+      <ErpCrumbs steps={[
+        { label: "Accounting" },
+        { label: "Financial reports" },
+        { label: "Balance sheet" },
+      ]} />
       <div className="page-head">
-        <span className="eyebrow">Reports</span>
         <h1>Balance sheet</h1>
         <span className="page-sub">
           A snapshot, not a period. Revenue and expense are never closed to
@@ -106,34 +111,29 @@ export default async function BalanceSheet({
         </p>
       )}
 
-      <section>
-        <div className="card">
-          <div className="card-head">
-            <h2>Statement</h2>
-            <span className="page-sub">{branchName} · as of {asOf}</span>
-            <span className={`pill ${balanced ? "ok" : "overdue"}`}>
-              {balanced ? "Balanced" : `Out by ${money(assets - (liabilities + equity))}`}
-            </span>
-          </div>
-          <div className="tablewrap">
-            <table>
-              {section("ASSET", "Assets")}
-              <tbody>
-                <tr><td>Total assets</td><td className="r" style={{ fontWeight: 700 }}>{money(assets)}</td></tr>
-              </tbody>
-              {section("LIABILITY", "Liabilities")}
-              <tbody>
-                <tr><td>Total liabilities</td><td className="r" style={{ fontWeight: 600 }}>{money(liabilities)}</td></tr>
-              </tbody>
-              {section("EQUITY", "Equity")}
-              <tfoot>
-                <tr><td>Total equity</td><td className="r" style={{ fontWeight: 600 }}>{money(equity)}</td></tr>
-                <tr><td>Total liabilities and equity</td><td className="r" style={{ fontWeight: 700 }}>{money(liabilities + equity)}</td></tr>
-              </tfoot>
-            </table>
-          </div>
-        </div>
-      </section>
+      <StatementTable
+        title="Statement"
+        currency={company.base_currency}
+        scope={`${branchName} · as of ${asOf} · ${
+          balanced ? "Balanced" : `Out by ${money(assets - (liabilities + equity))}`}`}
+        summaries={[
+          { label: "Total assets", value: assets, note: "what the company holds" },
+          { label: "Total liabilities", value: liabilities, note: "what it owes" },
+          { label: "Total equity", value: equity, note: "including this period's result" },
+        ]}
+        sections={[
+          { key: "ASSET", label: "Assets", nodes: assetTree.nodes,
+            total: assets, totalLabel: "Total assets" },
+          { key: "LIABILITY", label: "Liabilities", nodes: liabilityTree.nodes,
+            total: liabilities, totalLabel: "Total liabilities" },
+          { key: "EQUITY", label: "Equity", nodes: equityNodes,
+            total: equity, totalLabel: "Total equity" },
+        ]}
+        subtotals={[
+          { after: "EQUITY", label: "Total liabilities and equity",
+            value: liabilities + equity, strong: true },
+        ]}
+      />
     </>
   );
 }

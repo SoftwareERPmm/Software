@@ -29,7 +29,8 @@ export default async function JournalVoucher() {
   return (
     <>
       <ErpCrumbs steps={[
-        { label: "General ledger", href: "/finance/general-ledger" },
+        { label: "Accounting" },
+        { label: "Transactions" },
         { label: "Journal voucher" },
       ]} />
       <div className="page-head">

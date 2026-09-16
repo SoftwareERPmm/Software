@@ -24,20 +24,27 @@ import type { LucideIcon } from "lucide-react";
  * lets a document open in the page you were already on rather than in a tab
  * you have to remember to close.
  *
- * Steps without an href render as plain text: the last one is where you are,
- * and a link to the page you are on is a link that does nothing.
+ * Three kinds of step, because a trail has three kinds of place. The last is
+ * where you are. One with an href is a page you can go to. One without is a
+ * grouping that has no page of its own — "Financial reports" is a heading in
+ * the nav, not a route — and it is drawn quietly rather than linked to a
+ * sibling that happens to sit near it. Pointing a parent crumb at a page
+ * beside it is how Balance sheet came to claim it lived under General ledger.
  */
 export function ErpCrumbs({ steps }: { steps: { label: string; href?: string }[] }) {
   return (
     <div className="erp-crumb">
-      {steps.map((s, i) => (
-        <Fragment key={`${s.label}-${i}`}>
-          {i > 0 && <span className="erp-crumb-sep">/</span>}
-          {s.href
-            ? <Link href={s.href} className="erp-crumb-link">{s.label}</Link>
-            : <span className="erp-crumb-here">{s.label}</span>}
-        </Fragment>
-      ))}
+      {steps.map((s, i) => {
+        const last = i === steps.length - 1;
+        return (
+          <Fragment key={`${s.label}-${i}`}>
+            {i > 0 && <span className="erp-crumb-sep">/</span>}
+            {s.href
+              ? <Link href={s.href} className="erp-crumb-link">{s.label}</Link>
+              : <span className={last ? "erp-crumb-here" : "erp-crumb-group"}>{s.label}</span>}
+          </Fragment>
+        );
+      })}
     </div>
   );
 }

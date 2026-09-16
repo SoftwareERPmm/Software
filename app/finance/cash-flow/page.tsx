@@ -4,6 +4,7 @@ import {
   getCompany, getCashFlowStatement, getBranches,
   getUnassignedBranchActivity, UNASSIGNED_BRANCH,
 } from "@/lib/queries";
+import { ErpCrumbs } from "@/components/erp-worklist";
 
 function defaultFrom() {
   return `${new Date().getFullYear()}-01-01`;
@@ -61,8 +62,12 @@ export default async function CashFlow({
 
   return (
     <>
+      <ErpCrumbs steps={[
+        { label: "Accounting" },
+        { label: "Financial reports" },
+        { label: "Cash flow" },
+      ]} />
       <div className="page-head">
-        <span className="eyebrow">Reports</span>
         <h1>Cash flow statement</h1>
         <span className="page-sub">
           Direct method &mdash; actual cash in and out, by category, for the

@@ -2786,6 +2786,27 @@ export async function getUnassignedBranchActivity(companyId: string) {
   return { lines: Number(r?.lines ?? 0), debits: Number(r?.debits ?? 0) };
 }
 
+/**
+ * The chart itself — every account, postable or not, with its parent.
+ *
+ * The statements group by account_type and list postable accounts flat, which
+ * throws away the structure the chart already has: 4000 Sales and 4100 Other
+ * Income both sit under 4-SA, and the Selling and Administration expenses are
+ * separate groups under 6-EX. A reader looking for "what did administration
+ * cost" had to add the rows up themselves.
+ *
+ * Returned whole rather than joined into the figures, because a group with no
+ * postings in the period still has to exist for its children to hang from —
+ * and because both statements need the same tree.
+ */
+export async function getAccountTree(companyId: string) {
+  return sql`
+    select id, code, name, parent_id, account_type, is_postable
+      from account
+     where company_id = ${companyId}
+     order by code`;
+}
+
 export async function getIncomeStatement(
   companyId: string, from: string, to: string, branchId?: string | null
 ) {

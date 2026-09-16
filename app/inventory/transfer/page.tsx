@@ -15,7 +15,7 @@ export default async function NewStockTransfer() {
     return (
       <>
         <ErpCrumbs steps={[
-          { label: "Stock movements", href: "/inventory/movements" },
+          { label: "Inventory" },
           { label: "Stock transfer" },
         ]} />
         <div className="page-head">
@@ -32,7 +32,7 @@ export default async function NewStockTransfer() {
   return (
     <>
       <ErpCrumbs steps={[
-        { label: "Stock movements", href: "/inventory/movements" },
+        { label: "Inventory" },
         { label: "Stock transfer" },
       ]} />
       <div className="page-head">

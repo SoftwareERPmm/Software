@@ -631,3 +631,128 @@
 /* .form caps at 760px, which is right for a page of fields and wrong for a
    line grid that is the whole card. */
 .erp-page > .card .form { max-width: none; }
+
+/* Every receipt or delivery that answered the order, named. The chevron strip
+   above can only say how many — and before it could not even do that, because
+   it showed the first document found and nothing about the rest. */
+.erp-fulfilled { margin-top: 1.1rem; }
+.erp-fulfilled-head {
+  display: block; font-weight: 600; font-size: var(--t-md); margin-bottom: 0.6rem;
+}
+.erp-fulfilled-list {
+  display: grid; gap: 0.6rem;
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+}
+.erp-fulfilled-row {
+  display: flex; align-items: center; gap: 0.7rem;
+  padding: 0.7rem 0.85rem; border-radius: 10px;
+  border: 1px solid var(--erp-border); background: var(--erp-surface);
+  color: var(--erp-fg); text-decoration: none;
+}
+.erp-fulfilled-row:hover { border-color: var(--erp-border-strong); }
+.erp-fulfilled-icon {
+  width: 34px; height: 34px; flex: 0 0 auto; border-radius: var(--r-md);
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--erp-green) 11%, transparent); color: var(--erp-brand);
+}
+.erp-fulfilled-text { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+.erp-fulfilled-text strong { font-weight: 600; }
+.erp-fulfilled-text span { color: var(--erp-fg-muted); font-size: var(--t-sm); }
+.erp-fulfilled-go { margin-left: auto; color: var(--erp-fg-muted); flex: 0 0 auto; }
+.erp-fulfilled-billing {
+  display: block; margin-top: 0.7rem; color: var(--erp-fg-muted); font-size: var(--t-sm);
+}
+.erp-fulfilled-billing a { color: var(--erp-brand); }
+
+/* ------------------------------------------------------------- statement ---
+   A financial statement read the way the chart is written: section, group,
+   account. The old one listed every postable account flat under its type,
+   which threw away structure the chart already carried — 4000 Sales and 4100
+   Other Income both hang from 4-SA, and a reader wanting "what did selling
+   cost" had to add the rows up by eye. */
+.stmt-head { align-items: center; }
+.stmt-controls { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.stmt-controls .erp-hbtn { padding: 0.4rem 0.7rem; font-size: var(--t-sm); }
+.stmt-switch {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  font-size: var(--t-sm); color: var(--erp-fg-muted); cursor: pointer;
+  padding: 0 0.3rem;
+}
+.stmt-switch input { width: auto; min-height: 0; margin: 0; }
+
+.stmt-summaries {
+  display: grid; gap: 0; padding: 1rem 1.25rem 0;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+}
+.stmt-summary { padding: 0 1.25rem; border-left: 1px solid var(--erp-border); }
+.stmt-summary:first-child { padding-left: 0; border-left: 0; }
+.stmt-summary-label { display: block; color: var(--erp-fg-muted); font-size: var(--t-md); }
+.stmt-summary-value {
+  display: block; margin: 0.15rem 0;
+  font-size: var(--t-2xl); font-weight: 700; letter-spacing: var(--track-tight);
+  font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
+}
+.stmt-summary-note { display: block; color: var(--erp-fg-muted); font-size: var(--t-sm); }
+
+.stmt-scope {
+  padding: 1rem 1.25rem 0.6rem; color: var(--erp-fg-muted); font-size: var(--t-sm);
+}
+.stmt .tablewrap { margin: 0; }
+.stmt-table { width: 100%; }
+.stmt-table td { padding: 0.5rem 1.25rem; }
+.stmt-table th { padding: 0.55rem 1.25rem; }
+
+/* The three ranks, told apart by weight and ground rather than by indent
+   alone — an indent is invisible once a row is long. */
+.stmt-section-head td {
+  background: var(--erp-surface-sunken); font-weight: 600;
+  text-transform: uppercase; letter-spacing: var(--track-caps);
+  font-size: var(--t-2xs);
+}
+.stmt-group td { font-weight: 500; }
+.stmt-total td {
+  font-weight: 600; border-top: 1px solid var(--erp-border);
+  background: color-mix(in srgb, var(--erp-fg-muted) 4%, transparent);
+}
+.stmt-subtotal td {
+  font-weight: 600;
+  background: color-mix(in srgb, var(--erp-green) 8%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--erp-green) 25%, transparent);
+}
+.stmt-subtotal.strong td { font-weight: 700; }
+.stmt-none { color: var(--erp-fg-muted); font-size: var(--t-sm); }
+
+.stmt-toggle {
+  display: inline-flex; align-items: center; gap: 0.45rem;
+  background: none; border: 0; padding: 0; font: inherit; color: inherit;
+  cursor: pointer; text-align: left;
+}
+.stmt-toggle svg { transition: transform 150ms; flex: none; color: var(--erp-fg-muted); }
+.stmt-leaf { display: inline-flex; align-items: center; gap: 0.45rem; }
+/* The chevron's footprint, kept on rows that have no chevron. */
+.stmt-spacer { width: 14px; flex: none; }
+/* The code is a reference, so it keeps mono while the name stays in the
+   interface face. Fixed width so the names line up under one another. */
+.stmt-code {
+  font-family: var(--erp-font-mono); font-size: var(--t-sm);
+  color: var(--erp-fg-muted); min-width: 3.2rem;
+}
+.stmt-pct { color: var(--erp-fg-muted); width: 7rem; }
+
+@media (max-width: 640px) {
+  .stmt-summary { padding: 0.7rem 0; border-left: 0; border-top: 1px solid var(--erp-border); }
+  .stmt-summary:first-child { border-top: 0; padding-top: 0; }
+  .stmt-pct { display: none; }
+}
+/* Printing a statement should produce the statement, not the toolbar. */
+@media print {
+  .stmt-controls, .stmt .noprint { display: none !important; }
+}
+.stmt-level {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  font-size: var(--t-sm); color: var(--erp-fg-muted);
+}
+.stmt-level select { width: auto; min-height: 2.1rem; font-size: var(--t-sm); }
+/* A nav grouping with no page behind it. Present so the trail reads the way
+   the sidebar does, quiet because there is nowhere to go. */
+.erp-crumb-group { color: var(--erp-fg-muted); }
