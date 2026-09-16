@@ -219,17 +219,45 @@ comment on view v_check_control_reconciliation is
 
 -- ---------------------------------------------------------------------------
 -- Rebuilt because it reads outstanding straight out of v_invoice_status, and
--- that figure has changed underneath it. Same definition, restated so the
--- dependency is recreated rather than left pointing at the old shape.
+-- that figure has changed underneath it. Restated in full so the dependency is
+-- recreated rather than left pointing at the old shape.
+--
+-- In full means in full: 0013 created this view and 0020 added due_soon and
+-- credit_limit to it, joining business_partner so the Receivables and Payables
+-- rollups get everything from one row. Restating only 0013's columns would
+-- drop those two -- which Postgres refuses outright, since create or replace
+-- may append columns but never remove them. So this carries 0020's shape
+-- forward, and the figures underneath it are the corrected ones.
 
 create or replace view v_partner_balance as
-select company_id, partner_id, partner_code, partner_name, doc_type,
-       (count(*) filter (where outstanding <> 0::numeric))::integer as open_invoices,
-       sum(gross_total) as invoiced,
-       sum(paid) as paid,
-       sum(outstanding) as outstanding,
-       sum(outstanding) filter (
-         where due_date is not null and current_date > due_date) as overdue
-  from v_invoice_status
- group by company_id, partner_id, partner_code, partner_name, doc_type
-having sum(outstanding) <> 0::numeric;
+select
+    v.company_id,
+    v.partner_id,
+    v.partner_code,
+    v.partner_name,
+    v.doc_type,
+    count(*) filter (where v.outstanding <> 0)::int as open_invoices,
+    sum(v.gross_total)                              as invoiced,
+    sum(v.paid)                                     as paid,
+    sum(v.outstanding)                              as outstanding,
+    sum(v.outstanding) filter (
+        where v.due_date is not null and v.days_overdue > 0
+    )                                               as overdue,
+    sum(v.outstanding) filter (
+        where v.due_date is not null
+          and v.days_overdue <= 0
+          and v.due_date <= current_date + 7
+    )                                               as due_soon,
+    max(p.credit_limit)                             as credit_limit
+
+  from v_invoice_status v
+  join business_partner p on p.id = v.partner_id
+ group by v.company_id, v.partner_id, v.partner_code, v.partner_name, v.doc_type
+having sum(v.outstanding) <> 0;
+
+comment on view v_partner_balance is
+    'What each partner owes or is owed, rolled up from open invoices. '
+    'due_soon is outstanding and not yet overdue but due within a week; '
+    'credit_limit is carried through from business_partner for the same '
+    'reason partner_name is -- one row has everything the summary needs. '
+    'Outstanding is net of returns and ignores reversed documents (0070).';
