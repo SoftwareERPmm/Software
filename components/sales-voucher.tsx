@@ -10,6 +10,7 @@ import { PartnerPicker } from "./partner-picker";
 import Link from "next/link";
 import { AwaitingOrders, AlreadyAwaited } from "./awaiting-orders";
 import { useBackHere } from "./back-here";
+import { PackageCheck, Truck, Clock, ShoppingBag, Check } from "lucide-react";
 import type { AwaitingLine } from "@/lib/queries";
 
 type Item = PickerItem;
@@ -178,6 +179,21 @@ export function SalesVoucher({
   const [cashIn, setCashIn] = useState("");
   const [showRemark, setShowRemark] = useState(false);
   const [toDeliver, setToDeliver] = useState(false);
+  /**
+   * Whether the goods have gone, are going, or go later.
+   *
+   * The same question the purchase invoice asks about a goods receipt, and it
+   * was asked the same way it used to be there: a "Match delivery" select in
+   * the header row and two radios at the foot of the payment card, a card
+   * apart from each other, both below the lines. It decides whether posting
+   * moves stock — the most consequential thing on the screen — and it read
+   * like a preference.
+   *
+   * matchedDeliveryId and toDeliver still carry it to the server; this only
+   * decides which of them the screen is setting, so the three states cannot
+   * contradict each other the way two independent controls could.
+   */
+  const [fulfilMode, setFulfilMode] = useState<"counter" | "send" | "later" | "match">("counter");
   const [sourceFor, setSourceFor] = useState<number | null>(null);
   const [fee, setFee] = useState("");
   const [tab, setTab] = useState<"invoices" | "promotions">("invoices");
@@ -271,6 +287,23 @@ export function SalesVoucher({
    */
   const referenceFor = (d: OpenDelivery) => d.source_no || d.doc_no;
 
+  function chooseFulfilMode(mode: "counter" | "send" | "later" | "match") {
+    setFulfilMode(mode);
+    // A transport charge only means something where somebody carried the
+    // goods. Cleared rather than hidden-and-kept, so what is on screen is
+    // what posts.
+    if (mode === "counter" || mode === "match") setFee("");
+    if (mode === "match") { setToDeliver(false); return; }
+    // Leaving "already gone" drops the delivery it was matched to, and the
+    // lines that came from it — they were that delivery's, not this sale's.
+    if (matchedDeliveryId) {
+      setMatchedDeliveryId("");
+      setLines([{ key: 1, itemId: "", qty: "", unitPrice: "", discountPct: "",
+                  focQty: "", focReasonId: "", source: "OWNED" }]);
+    }
+    setToDeliver(mode === "later");
+  }
+
   function matchDelivery(id: string) {
     setFromOrderId(null);
     setMatchedDeliveryId(id);
@@ -280,6 +313,7 @@ export function SalesVoucher({
     setCustomerId(d.partner_id);
     setLocationId(d.location_id);
     setToDeliver(false); // stock already left — "deliver later" no longer applies
+    setFulfilMode("match");
     // A delivery moves stock at cost and carries no selling price of its own,
     // so the price comes from somewhere else. Where the delivery came out of
     // an order, that somewhere is the order: what was agreed is what is
@@ -647,28 +681,6 @@ export function SalesVoucher({
               </select>
             </div>
 
-            {(deliveries?.length ?? 0) > 0 && (
-              <div className="field">
-                <label htmlFor="delivery_id">Match delivery</label>
-                <select id="delivery_id" name="delivery_id" value={matchedDeliveryId}
-                  onChange={(e) => matchDelivery(e.target.value)} disabled={!customerId}>
-                  <option value="">
-                    {customerId ? "Not matched" : "Choose a customer first"}
-                  </option>
-                  {openDeliveries.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.doc_no} · {String(d.doc_date).slice(0, 10)} · {d.lines.length} line{d.lines.length === 1 ? "" : "s"}
-                    </option>
-                  ))}
-                </select>
-                <span className="hint">
-                  {matchedDeliveryId
-                    ? "Lines filled from it — stock already left, so Fulfilment no longer applies"
-                    : "For stock that already left and just needs its invoice"}
-                </span>
-              </div>
-            )}
-
             <div className="field">
               <label htmlFor="due_date">Due date</label>
               <input id="due_date" name="due_date" type="date" value={dueDate}
@@ -693,6 +705,160 @@ export function SalesVoucher({
         onUse={fillFromOrder}
         usedOrderId={fromOrderId}
       />
+
+      {/* Above the lines, because the situation is decided before the items
+          are typed — and worded as the situation rather than the mechanism.
+          Somebody billing a sale knows whether the goods have gone; they do
+          not necessarily know what a delivery document is. */}
+      <div className="card receive-mode">
+        <div className="card-head">
+          <h2>Fulfilment</h2>
+          <span className="page-sub">Choose how the goods leave your business.</span>
+        </div>
+        <div className="card-body">
+          <div className="modes" role="radiogroup" aria-label="Delivery status">
+            {([
+              {
+                key: "counter" as const,
+                icon: <ShoppingBag size={18} aria-hidden="true" />,
+                title: "Customer takes now",
+                lead: "Counter sale or pickup. Goods leave immediately.",
+                // Not "no delivery document" — one is always written for
+                // stocked goods, because it is what records the stock leaving
+                // and draws the cost. What is true is that nobody has to make
+                // it, and somebody who read that there was none would go
+                // looking for the SI… number and not understand it.
+                note: "No delivery step, and no transport charge",
+                disabled: false,
+              },
+              {
+                key: "send" as const,
+                icon: <Truck size={18} aria-hidden="true" />,
+                title: "We deliver now",
+                lead: "Goods leave now, carried to the customer.",
+                note: "A delivery is recorded, and you can charge for it",
+                disabled: false,
+              },
+              {
+                key: "later" as const,
+                icon: <Clock size={18} aria-hidden="true" />,
+                title: "Deliver later",
+                lead: "Invoice now, deliver later.",
+                note: "Stock leaves when you create the delivery",
+                disabled: false,
+              },
+              {
+                key: "match" as const,
+                icon: <PackageCheck size={18} aria-hidden="true" />,
+                title: "Already delivered",
+                lead: "Bill a delivery that has already gone out.",
+                note: customerId
+                  ? openDeliveries.length > 0
+                    ? `${openDeliveries.length} deliver${openDeliveries.length === 1 ? "y" : "ies"} waiting on an invoice`
+                    : "Nothing for this customer is waiting on an invoice"
+                  : "Choose a customer first",
+                disabled: !customerId || openDeliveries.length === 0,
+              },
+            ]).map((m) => (
+              <button
+                key={m.key}
+                type="button"
+                role="radio"
+                aria-checked={fulfilMode === m.key}
+                className={`mode${fulfilMode === m.key ? " on" : ""}`}
+                disabled={m.disabled}
+                onClick={() => chooseFulfilMode(m.key)}
+              >
+                <span className="mode-icon">{m.icon}</span>
+                <span className="mode-text">
+                  <strong>{m.title}</strong>
+                  <span className="mode-lead">{m.lead}</span>
+                  <span className="mode-note">{m.note}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+
+          {/* What the choice just made will do, in the three terms somebody
+              posting cares about: the stock, the paperwork, and the money.
+              It restates the card deliberately — this is the one decision on
+              the screen that cannot be undone by editing, and a line that
+              confirms it after the click is read where a card read before it
+              was chosen is not. */}
+          <div className="fulfil-says">
+            <Check size={15} aria-hidden="true" />
+            <div>
+              <strong>
+                {fulfilMode === "counter" ? "Customer takes now"
+                  : fulfilMode === "send" ? "We deliver now"
+                  : fulfilMode === "later" ? "Deliver later"
+                  : "Already delivered"} selected
+              </strong>
+              <ul>
+                <li>
+                  {fulfilMode === "later"
+                    ? "Stock stays where it is until you create the delivery."
+                    : fulfilMode === "match"
+                      ? "Stock already left with that delivery — nothing moves again."
+                      : "Stock leaves as soon as this invoice posts."}
+                </li>
+                <li>
+                  {fulfilMode === "match"
+                    ? "The delivery's own transport charge is billed here."
+                    : fulfilMode === "counter"
+                      ? "No transport charge — nobody carried the goods."
+                      : "A transport charge can be added below."}
+                </li>
+                <li>
+                  {fulfilMode === "later"
+                    ? "Revenue and the receivable post now."
+                    : fulfilMode === "match"
+                      ? "Revenue posts now; the cost was taken by the delivery."
+                      : "A delivery is recorded for you — no separate step."}
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          {/* Under the choice it belongs to. In the header row it was a field
+              somebody scrolled past on the way to the lines. */}
+          {fulfilMode === "match" && (deliveries?.length ?? 0) > 0 && (
+            <div className="field" style={{ marginTop: "1rem", maxWidth: "32rem" }}>
+              <label htmlFor="delivery_id">Which delivery</label>
+              <select id="delivery_id" name="delivery_id" value={matchedDeliveryId}
+                onChange={(e) => matchDelivery(e.target.value)} disabled={!customerId}>
+                <option value="">
+                  {customerId ? "Choose the delivery this bills" : "Choose a customer first"}
+                </option>
+                {openDeliveries.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.doc_no} · {String(d.doc_date).slice(0, 10)} · {d.lines.length} line{d.lines.length === 1 ? "" : "s"}
+                  </option>
+                ))}
+              </select>
+              <span className="hint">
+                {matchedDeliveryId
+                  ? "Lines filled from it, and held to what actually went out"
+                  : "For stock that already left and just needs its invoice"}
+              </span>
+            </div>
+          )}
+
+          {fulfilMode === "later" && <input type="hidden" name="to_deliver" value="on" />}
+
+          {/* Only where it is a warning. Under "already gone" the customer's
+              waiting deliveries are the point, not a mistake. */}
+          {fulfilMode !== "match" && openDeliveries.length > 0 && (
+            <div className="alert" style={{ marginTop: "0.75rem" }}>
+              {customer?.name ?? "This customer"} already ha{openDeliveries.length === 1 ? "s" : "ve"}{" "}
+              {openDeliveries.length} deliver{openDeliveries.length === 1 ? "y" : "ies"} waiting for an
+              invoice. If this sale is for stock that already left, choose
+              &ldquo;Already gone&rdquo; instead — otherwise{" "}
+              {fulfilMode === "later" ? "this creates yet another one waiting" : "the same stock leaves twice"}.
+            </div>
+          )}
+        </div>
+      </div>
 
       <div className="card">
         <div className="card-head">
@@ -913,15 +1079,38 @@ export function SalesVoucher({
           <div className="card-head"><h2>Payment &amp; delivery</h2></div>
           <div className="card-body">
             <div className="row">
+              {/* Not "delivery fee": this screen already uses delivery for the
+                  document recording stock leaving the warehouse, which happens
+                  on a counter sale too, so a field of that name reads as
+                  something owed on every sale.
+
+                  Disabled rather than removed, so the charge stays visible as
+                  something this screen can do — and that is load-bearing, not
+                  cosmetic. A disabled input is left out of the submission
+                  entirely, so the action sees no field at all, which is the
+                  one case it reads as "bill whatever the delivery charged".
+                  While this was always enabled, a blank box posted a charge of
+                  zero and billing a delivery that carried one silently dropped
+                  it: measured, a delivery carrying 7,500 billed at 10,000 with
+                  a fee of 0. */}
+              {(() => {
+                const noCharge = fulfilMode === "counter" || fulfilMode === "match";
+                return (
               <div className="field">
-                <label htmlFor="delivery_fee">Delivery fee</label>
+                <label htmlFor="delivery_fee">Transport charge to customer</label>
                 <input id="delivery_fee" name="delivery_fee" type="number" min="0" step="0.01"
-                  value={fee} onChange={(e) => setFee(e.target.value)} placeholder="0" />
+                  value={noCharge ? "" : fee} onChange={(e) => setFee(e.target.value)}
+                  placeholder="0" disabled={noCharge} />
                 <span className="hint">
-                  Charged for carrying the goods. Credited to delivery income, not
-                  sales, so margin on the products stays honest.
+                  {fulfilMode === "counter"
+                    ? "Nobody carried the goods — the customer took them away."
+                    : fulfilMode === "match"
+                      ? "Whatever that delivery charged is billed here already."
+                      : "Charged for carrying the goods to the customer. Credited to delivery income, not sales, so margin on the products stays honest."}
                 </span>
               </div>
+                );
+              })()}
               <div className="field">
                 <label htmlFor="cash_in">Cash in</label>
                 <input id="cash_in" name="cash_in" type="number" min="0" step="any"
@@ -938,46 +1127,6 @@ export function SalesVoucher({
                 </select>
               </div>
             </div>
-
-            {matchedDeliveryId ? (
-              <div style={{ marginTop: "1rem" }}>
-                <label style={{ display: "block", marginBottom: "0.5rem" }}>Fulfilment</label>
-                <span className="hint">Stock already left with this delivery — this invoice only records revenue.</span>
-              </div>
-            ) : (
-              <div style={{ marginTop: "1rem" }}>
-                <label style={{ display: "block", marginBottom: "0.5rem" }}>Fulfilment</label>
-                <div className="row">
-                  <label className="check" style={{ alignItems: "flex-start" }}>
-                    <input type="radio" name="fulfilment" checked={!toDeliver}
-                      onChange={() => setToDeliver(false)} style={{ marginTop: "0.2rem" }} />
-                    <span>
-                      <div>Take now</div>
-                      <span className="hint">Goods leave immediately — delivery and invoice post together</span>
-                    </span>
-                  </label>
-                  <label className="check" style={{ alignItems: "flex-start" }}>
-                    <input type="radio" name="fulfilment" checked={toDeliver}
-                      onChange={() => setToDeliver(true)} style={{ marginTop: "0.2rem" }} />
-                    <span>
-                      <div>Deliver later</div>
-                      <span className="hint">
-                        Revenue posts now; stock leaves later from Sales → Deliveries
-                      </span>
-                    </span>
-                  </label>
-                </div>
-                {toDeliver && <input type="hidden" name="to_deliver" value="on" />}
-                {openDeliveries.length > 0 && (
-                  <div className="alert" style={{ marginTop: "0.75rem" }}>
-                    {customer?.name ?? "This customer"} already ha{openDeliveries.length === 1 ? "s" : "ve"}{" "}
-                    {openDeliveries.length} deliver{openDeliveries.length === 1 ? "y" : "ies"} waiting for an
-                    invoice. If this sale is for stock that already left, match it above instead —
-                    otherwise {toDeliver ? "this creates yet another one waiting" : "the same stock leaves twice"}.
-                  </div>
-                )}
-              </div>
-            )}
 
             <div className="totalbar" style={{ marginTop: "0.5rem", paddingRight: 0 }}>
               <span style={{ color: "var(--muted)" }}>Balance on account</span>
