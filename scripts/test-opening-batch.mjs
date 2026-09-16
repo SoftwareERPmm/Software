@@ -62,6 +62,10 @@ try {
   const one = async (q) => (await q)[0];
   const wh = await one(sql`select id from location where company_id = ${co.id}
      and is_stock_location and is_active order by code limit 1`);
+  // Opening balances now have to say which branch they belong to, the same
+  // as every other posting. The warehouse above hangs under one of these.
+  const branch = await one(sql`select id from location where company_id = ${co.id}
+     and parent_id is null and is_active order by code limit 1`);
   const uom = await one(sql`select id from uom where company_id = ${co.id} order by code limit 1`);
   let grp = await one(sql`select id from item_group where company_id = ${co.id} order by code limit 1`);
   if (!grp) grp = await one(sql`insert into item_group (company_id, segment, code, name)
@@ -85,9 +89,11 @@ try {
   const batch = await P.postOpeningBatch({
     companyId: co.id, cutoverDate: "2026-09-01", memo: "test cutover",
     stock: [{ itemId: item.id, locationId: wh.id, qty: 200, unitCost: 600 }],
-    receivables: [{ partnerId: cust.id, reference: "INV-8842", amount: 450000, dueDate: "2026-09-20" }],
-    payables: [{ partnerId: supp.id, reference: "ABC-1177", amount: 300000, dueDate: "2026-09-15" }],
-    accounts: [{ accountId: cash.id, amount: 1200000 }],
+    receivables: [{ partnerId: cust.id, reference: "INV-8842", amount: 450000,
+                    dueDate: "2026-09-20", locationId: branch.id }],
+    payables: [{ partnerId: supp.id, reference: "ABC-1177", amount: 300000,
+                 dueDate: "2026-09-15", locationId: branch.id }],
+    accounts: [{ accountId: cash.id, amount: 1200000, locationId: branch.id }],
   });
 
   check("the batch posts", Boolean(batch.batchId), `${batch.documents.length} documents`);
@@ -188,7 +194,7 @@ try {
   try {
     await P.postOpeningBatch({
       companyId: co.id, cutoverDate: "2026-09-01",
-      accounts: [{ accountId: cash.id, amount: 1 }],
+      accounts: [{ accountId: cash.id, amount: 1, locationId: branch.id }],
     });
   } catch (e) { second = e.message; }
   check("a second cutover is refused", second !== null,

@@ -5532,6 +5532,33 @@ async function _postVoucher(
   {
     const { companyId, docDate } = input;
 
+    /**
+     * Where the money moved. Required here rather than only in the action
+     * that calls it: a required attribute is a courtesy to the person at the
+     * form, and the rule has to hold for anything that reaches the ledger —
+     * an importer, a script, a screen written next year.
+     *
+     * A company with exactly one branch is not asked a question with one
+     * answer; there is only one place this can have happened, so it is filled
+     * in. With several, a voucher that names none is refused, because the
+     * alternative is a line in the company total and in no branch, which is
+     * what stops the branches ever adding up.
+     */
+    const needsBranch = input.lines.some((l) => !(l.locationId ?? input.locationId));
+    if (needsBranch) {
+      const branches = await tx`
+        select id from location
+         where company_id = ${companyId} and parent_id is null and is_active
+         order by code`;
+      if (branches.length === 0) {
+        throw new Error("Set up a branch before posting a voucher");
+      }
+      if (branches.length > 1) {
+        throw new Error("A voucher must say which branch it happened at");
+      }
+      input = { ...input, locationId: input.locationId ?? (branches[0].id as string) };
+    }
+
     const fyRows = await tx`select fn_fiscal_year_for(${companyId}, ${docDate}::date) as fy`;
     const fiscalYear = fyRows[0]?.fy ?? null;
     if (!fiscalYear) throw new Error(`No fiscal year covers ${docDate}`);
@@ -7494,6 +7521,13 @@ export type OpeningPartnerLine = {
   reference: string;
   amount: number;
   dueDate?: string | null;
+  /**
+   * Which branch the debt belongs to — the one that made the sale, or bought
+   * the goods. Required for the same reason every other posting needs it: a
+   * receivable belonging to no branch sits in the company total and in none
+   * of the branch views, and the two stop adding up.
+   */
+  locationId: string;
 };
 
 export type OpeningBatchInput = {
@@ -7686,16 +7720,23 @@ export async function postOpeningBatch(input: OpeningBatchInput) {
       role: "AR_CONTROL" | "AP_CONTROL", sign: 1 | -1, label: string,
     ) => {
       for (const l of lines) {
+        if (!l.locationId) {
+          throw new Error(`${label} must say which branch it belongs to`);
+        }
         const amount = round4(Math.abs(l.amount));
-        const doc = await newDoc(docType, l.partnerId, null, amount,
+        const doc = await newDoc(docType, l.partnerId, l.locationId, amount,
           `${label} — ${l.reference}`, l.reference, l.dueDate ?? null);
         const [ctrl] = await tx`
           select fn_resolve_control_account(${companyId}, ${role}, ${l.partnerId}) as a`;
+        // Both legs, not just the control one. The equity counter-leg is the
+        // same line that went unstamped in the accounts section above, and it
+        // is half of every opening debt.
         const entryId = await writeJournal(tx, companyId, docDate, docType, doc.id,
           `${doc.docNo} ${label}`, [
-            { accountId: ctrl.a, amount: sign * amount, partnerId: l.partnerId },
-            { accountId: equity, amount: -sign * amount },
-          ]);
+            { accountId: ctrl.a, amount: sign * amount, partnerId: l.partnerId,
+              locationId: l.locationId },
+            { accountId: equity, amount: -sign * amount, locationId: l.locationId },
+          ], l.locationId);
         await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
         documents.push({ ...doc, kind: label });
       }
@@ -7705,22 +7746,45 @@ export async function postOpeningBatch(input: OpeningBatchInput) {
     await openItems(payables, "PURCHASE_INVOICE", "AP_CONTROL", -1, "Opening payable");
 
     // ---- everything else --------------------------------------------------
+    // One document per branch, the way opening stock above already does it.
+    //
+    // Two holes closed here, and the second is the one that bit. A row could
+    // arrive with no branch at all, and the balancing equity leg was written
+    // with none whatever the rows said — so an opening batch whose figures did
+    // not happen to net to zero always left the remainder belonging to no
+    // branch. That is the worst line to lose: opening balances are what every
+    // later balance is built on, so a branch that opens short never catches
+    // up, and the branch reports are wrong from the first day rather than
+    // drifting later. Grouped by branch, each one opens with its own equity
+    // and they add up to the company by construction.
     if (accounts.length > 0) {
-      const total = round4(accounts.reduce((s, l) => s + l.amount, 0));
-      const gross = round4(accounts.filter((l) => l.amount > 0).reduce((s, l) => s + l.amount, 0));
-      const doc = await newDoc("OPENING_BALANCE", null, null, gross,
-        "Opening balances", null, null);
-      const journal: JournalLine[] = accounts.map((l) => ({
-        accountId: l.accountId, amount: l.amount, locationId: l.locationId ?? null,
-      }));
-      // Whatever the listed balances do not account for is the remainder, and
-      // it belongs in equity where it can be looked at rather than spread
-      // silently across the accounts that were entered.
-      if (total !== 0) journal.push({ accountId: equity, amount: -total });
-      const entryId = await writeJournal(tx, companyId, docDate, "OPENING_BALANCE",
-        doc.id, `${doc.docNo} opening balances`, journal);
-      await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
-      documents.push({ ...doc, kind: "accounts" });
+      const byBranch = new Map<string, typeof accounts>();
+      for (const l of accounts) {
+        if (!l.locationId) {
+          throw new Error("An opening balance must say which branch it belongs to");
+        }
+        const list = byBranch.get(l.locationId) ?? [];
+        list.push(l);
+        byBranch.set(l.locationId, list);
+      }
+
+      for (const [locationId, rows] of byBranch) {
+        const total = round4(rows.reduce((s, l) => s + l.amount, 0));
+        const gross = round4(rows.filter((l) => l.amount > 0).reduce((s, l) => s + l.amount, 0));
+        const doc = await newDoc("OPENING_BALANCE", null, locationId, gross,
+          "Opening balances", null, null);
+        const journal: JournalLine[] = rows.map((l) => ({
+          accountId: l.accountId, amount: l.amount, locationId,
+        }));
+        // Whatever the listed balances do not account for is the remainder, and
+        // it belongs in equity where it can be looked at rather than spread
+        // silently across the accounts that were entered.
+        if (total !== 0) journal.push({ accountId: equity, amount: -total, locationId });
+        const entryId = await writeJournal(tx, companyId, docDate, "OPENING_BALANCE",
+          doc.id, `${doc.docNo} opening balances`, journal, locationId);
+        await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
+        documents.push({ ...doc, kind: "accounts" });
+      }
     }
 
     return { batchId: batch.id as string, docDate, documents };

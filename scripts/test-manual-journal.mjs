@@ -48,6 +48,10 @@ const check = (label, ok, detail = "") => {
 
 try {
   const [co] = await sql`select id, name from company order by created_at limit 1`;
+  // Every posting names the branch it happened at, so these do too.
+  const [branch] = await sql`select id from location
+     where company_id = ${co.id} and parent_id is null and is_active
+     order by code limit 1`;
   const today = new Date().toISOString().slice(0, 10);
   console.log(`\n  ${co.name}\n`);
 
@@ -93,7 +97,7 @@ try {
     let msg = null;
     try {
       await postJournalVoucher({
-        companyId: co.id, docDate: today, memo: "guard test",
+        companyId: co.id, locationId: branch.id, docDate: today, memo: "guard test",
         lines: [{ accountId: drAccount.id, amount: 1000 },
                 { accountId: crAccount.id, amount: -1000 }],
       });
@@ -113,7 +117,7 @@ try {
   let cashMsg = null;
   try {
     await postCashVoucher({
-      companyId: co.id, docDate: today, memo: "guard test",
+      companyId: co.id, locationId: branch.id, docDate: today, memo: "guard test",
       lines: [{ accountId: inv.id, amount: 1000 }, { accountId: cash.id, amount: -1000 }],
     });
   } catch (e) { cashMsg = e.message; }
@@ -128,7 +132,7 @@ try {
   let openMsg = null;
   try {
     await postAccountOpening({
-      companyId: co.id, docDate: today, memo: "guard test",
+      companyId: co.id, locationId: branch.id, docDate: today, memo: "guard test",
       lines: [{ accountId: inv.id, amount: 1000000 }],
     });
   } catch (e) { openMsg = e.message; }
@@ -143,7 +147,7 @@ try {
   const posts = async (label, drAccount, crAccount) => {
     try {
       const v = await postJournalVoucher({
-        companyId: co.id, docDate: today, memo: "guard test",
+        companyId: co.id, locationId: branch.id, docDate: today, memo: "guard test",
         lines: [{ accountId: drAccount.id, amount: 1000 },
                 { accountId: crAccount.id, amount: -1000 }],
       });
@@ -153,7 +157,7 @@ try {
 
   try {
     const ob = await postAccountOpening({
-      companyId: co.id, docDate: today, memo: "guard test",
+      companyId: co.id, locationId: branch.id, docDate: today, memo: "guard test",
       lines: [{ accountId: cash.id, amount: 5000 }],
     });
     check("an opening balance for cash still posts", true, ob.docNo);

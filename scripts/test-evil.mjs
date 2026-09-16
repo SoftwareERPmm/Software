@@ -118,6 +118,10 @@ try {
       values (${co.id}, ${grp.id}, '001', 'x', 'Evil Test Item', ${uom.id}) returning id, code`;
   }
 
+  // Every posting names the branch it happened at, so these do too.
+  const [branch] = await sql`select id from location
+     where company_id = ${co.id} and parent_id is null and is_active
+     order by code limit 1`;
   const today = new Date().toISOString().slice(0, 10);
   const buy = { companyId: co.id, partnerId: supp.id, locationId: loc.id, docDate: today };
   const sell = { companyId: co.id, partnerId: cust.id, locationId: loc.id, docDate: today };
@@ -223,7 +227,7 @@ try {
     // all, so it can never satisfy the requirement that a control-account
     // line name the party it belongs to.
     await refuses("a voucher cannot reach the receivables control account",
-      () => postCashVoucher({ companyId: co.id, docDate: today, memo: "quietly",
+      () => postCashVoucher({ companyId: co.id, locationId: branch.id, docDate: today, memo: "quietly",
         lines: [{ accountId: ctrlRow.id, amount: 50000 }, { accountId: cash.id, amount: -50000 }] }));
 
     // The first barrier is the one that matters to someone writing SQL: a
@@ -252,7 +256,7 @@ try {
   check("a heading account exists to try posting into", !!header);
   if (header && cash) {
     await refuses("a voucher cannot post to a heading account",
-      () => postCashVoucher({ companyId: co.id, docDate: today, memo: "into a total",
+      () => postCashVoucher({ companyId: co.id, locationId: branch.id, docDate: today, memo: "into a total",
         lines: [{ accountId: header.id, amount: 1000 }, { accountId: cash.id, amount: -1000 }] }));
   }
 
@@ -264,7 +268,7 @@ try {
     await sql`update account set is_active = false where id = ${spare.id}`;
     try {
       await refuses("a voucher cannot post to a deactivated account",
-        () => postCashVoucher({ companyId: co.id, docDate: today, memo: "to a dead account",
+        () => postCashVoucher({ companyId: co.id, locationId: branch.id, docDate: today, memo: "to a dead account",
           lines: [{ accountId: spare.id, amount: 1000 }, { accountId: cash.id, amount: -1000 }] }));
     } finally {
       await sql`update account set is_active = true where id = ${spare.id}`;
@@ -520,7 +524,7 @@ try {
 
   try {
     await refuses("a voucher cannot credit another company's account",
-      () => postCashVoucher({ companyId: co.id, docDate: today, memo: "reaching",
+      () => postCashVoucher({ companyId: co.id, locationId: branch.id, docDate: today, memo: "reaching",
         lines: [{ accountId: ownExpense.id, amount: 50000 },
                 { accountId: acctB.id, amount: -50000 }] }));
 
