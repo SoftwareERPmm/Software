@@ -2664,24 +2664,29 @@ dialog.drawer .drawer-panel {
 .dash-rank-card { display: flex; flex-direction: column; }
 .dash-rank-more { display: inline-block; margin-top: auto; padding-top: 1.25rem; }
 
-/* --------------------------------------------------------- receive mode ---
-   Whether the goods are in the warehouse decides whether posting this bill
-   moves stock. It was a checkbox, defaulted on, below the lines — the most
-   consequential control on the form and the quietest thing on the screen.
-   Three cards, one of them chosen, none of them silent. */
-.receive-mode .modes {
+/* ---------------------------------------------------------- mode cards ----
+   A question with two or three answers, asked where it matters instead of
+   hidden in a tick. First used for whether the goods are in the warehouse
+   when a bill is entered — a checkbox, defaulted on, below the lines: the
+   most consequential control on the form and the quietest thing on screen.
+   Now also asked when a goods receipt is cancelled, which is the same kind
+   of question: what actually happened, physically?
+
+   Not scoped to either screen, because the pattern is the point. A card can
+   be a <button> that chooses, or an <a> that goes somewhere to do it. */
+.modes {
   display: grid; gap: 0.75rem;
   grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
 }
-.receive-mode .mode {
+.mode {
   display: flex; align-items: flex-start; gap: 0.7rem; text-align: left;
   padding: 0.9rem 1rem; border-radius: var(--r-lg);
   border: 1px solid var(--line); background: var(--surface);
   font: inherit; color: var(--ink); cursor: pointer;
   transition: border-color 150ms, background-color 150ms;
 }
-.receive-mode .mode:hover:not(:disabled) { border-color: var(--ghost); }
-.receive-mode .mode.on {
+.mode:hover:not(:disabled) { border-color: var(--ghost); }
+.mode.on {
   border-color: var(--brand);
   background: color-mix(in srgb, var(--brand) 7%, var(--surface));
   box-shadow: 0 0 0 1px var(--brand);
@@ -2689,16 +2694,16 @@ dialog.drawer .drawer-panel {
 /* Not offered rather than offered and refused: with nothing waiting on a
    bill there is no receipt to match, and a card that cannot be chosen should
    look like one. */
-.receive-mode .mode:disabled { opacity: 0.5; cursor: not-allowed; }
-.receive-mode .mode-icon {
+.mode:disabled { opacity: 0.5; cursor: not-allowed; }
+.mode-icon {
   flex: 0 0 auto; width: 34px; height: 34px; border-radius: var(--r-md);
   display: flex; align-items: center; justify-content: center;
   background: color-mix(in srgb, var(--muted) 12%, transparent); color: var(--muted);
 }
-.receive-mode .mode.on .mode-icon {
+.mode.on .mode-icon {
   background: color-mix(in srgb, var(--brand) 14%, transparent); color: var(--brand);
 }
-.receive-mode .mode-text { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
-.receive-mode .mode-text strong { font-weight: 600; }
-.receive-mode .mode-lead { color: var(--ink-soft); font-size: var(--t-sm); }
-.receive-mode .mode-note { color: var(--muted); font-size: var(--t-xs); }
+.mode-text { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+.mode-text strong { font-weight: 600; }
+.mode-lead { color: var(--ink-soft); font-size: var(--t-sm); }
+.mode-note { color: var(--muted); font-size: var(--t-xs); }

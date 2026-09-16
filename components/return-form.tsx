@@ -34,6 +34,7 @@ export function ReturnForm({
   categories,
   uoms,
   salesDocs,
+  prefill,
 }: {
   kind: "sales" | "purchase";
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
@@ -44,6 +45,15 @@ export function ReturnForm({
   categories: Node[];
   uoms: { id: string; code: string; name: string }[];
   salesDocs?: SalesDoc[];
+  /**
+   * Arrived here from a goods receipt being cancelled because the goods went
+   * back. Everything this return needs is already on that receipt, so it is
+   * carried across rather than asked for again.
+   */
+  prefill?: {
+    sourceDocumentId: string; docNo: string; partnerId: string; locationId: string;
+    lines: { itemId: string; qty: string; unitPrice: string }[];
+  } | null;
 }) {
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     action as never,
@@ -56,10 +66,13 @@ export function ReturnForm({
   const [items, setItems] = useState<Item[]>(initialItems);
   const addItem = (i: Item) => setItems((xs) => [...xs, i]);
 
-  const [lines, setLines] = useState<Line[]>([{ key: 1, itemId: "", qty: "", unitPrice: "" }]);
-  const [partnerId, setPartnerId] = useState("");
+  const [lines, setLines] = useState<Line[]>(() =>
+    prefill && prefill.lines.length > 0
+      ? prefill.lines.map((l, i) => ({ key: i + 1, ...l }))
+      : [{ key: 1, itemId: "", qty: "", unitPrice: "" }]);
+  const [partnerId, setPartnerId] = useState(prefill?.partnerId ?? "");
   const [docDate, setDocDate] = useState(today);
-  const [sourceDocumentId, setSourceDocumentId] = useState("");
+  const [sourceDocumentId, setSourceDocumentId] = useState(prefill?.sourceDocumentId ?? "");
   const [receivedTime, setReceivedTime] = useState("");
 
   useEffect(() => {
@@ -100,7 +113,10 @@ export function ReturnForm({
     setLine(key, { itemId, unitPrice: Number(price) > 0 ? String(Number(price)) : "" });
   }
 
-  // Switching the source re-prices what is already on the form. Picking the
+  // Switching the source re-prices what is already on the form. On a prefilled
+  // return this runs once on mount and arrives at the figures already there —
+  // both come from the receipt's own rate, which is the point.
+  // Picking
   // receipt after the lines were entered is the ordinary way round, and
   // leaving yesterday's next_cost sitting in a locked field would be worse
   // than leaving it editable.
@@ -163,7 +179,11 @@ export function ReturnForm({
 
             <div className="field">
               <label htmlFor="location_id">Warehouse</label>
-              <select id="location_id" name="location_id" defaultValue={locations[0]?.id ?? ""} required>
+              {/* The receipt's own warehouse where there is one: goods that
+                  came into Mandalay go back from Mandalay, and asking again
+                  invites picking the wrong shelf. */}
+              <select id="location_id" name="location_id" required
+                      defaultValue={prefill?.locationId || locations[0]?.id || ""}>
                 {locations.map((l) => (
                   <option key={l.id} value={l.id}>{l.code} · {l.name}</option>
                 ))}
