@@ -26,12 +26,15 @@
   --bad:       #B4283C;
   --ghost:     #6E7787;
 
-  /* Plex Sans and Plex Mono are a designed pair, which matters here because
-     mono carries every label, header and figure — more of the screen than the
-     sans does. Neither has Myanmar glyphs, so Burmese falls through to the
-     Noto face rather than to whatever the OS happens to ship. Order matters:
-     Latin resolves in Plex first, Burmese in Noto. */
-  --sans: var(--font-plex-sans), var(--font-myanmar), system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* DM Sans carries the interface, Plex Mono every figure and document
+     number. The dashboard was built on DM Sans and the rest of the product on
+     Plex Sans, which is two products wearing one nav — so the dashboard's
+     face won and Plex Sans stays behind it as the fallback. Mono is untouched:
+     a column of kyat has to line up, and that is a job, not a style. Neither
+     Latin face has Myanmar glyphs, so Burmese falls through to the Noto face
+     rather than to whatever the OS happens to ship. Order matters: Latin
+     resolves in DM Sans first, Burmese in Noto. */
+  --sans: var(--font-dm-sans), var(--font-plex-sans), var(--font-myanmar), system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: var(--font-plex-mono), var(--font-myanmar), ui-monospace, "Cascadia Mono", "SF Mono", "Segoe UI Mono", "Roboto Mono", Menlo, Consolas, monospace;
 
   --s1: 0.35rem; --s2: 0.65rem; --s3: 1rem; --s4: 1.5rem; --s5: 2.25rem; --s6: 3.25rem;
@@ -45,10 +48,10 @@
   --t-sm:   0.8125rem;  /* 13px — hints, notes, nav items */
   --t-md:   0.875rem;   /* 14px — tables and dense data, the workhorse */
   --t-base: 0.9375rem;  /* 15px — body copy, form inputs */
-  --t-lg:   1.0625rem;  /* 17px — card headings */
-  --t-xl:   1.25rem;    /* 20px — voucher totals */
-  --t-2xl:  1.375rem;   /* 22px — KPI figures */
-  --t-3xl:  1.5rem;     /* 24px — page titles */
+  --t-lg:   1.0625rem;  /* 17px — page titles, the largest text in the app */
+  --t-xl:   1.125rem;   /* 18px — voucher totals */
+  --t-2xl:  1.25rem;    /* 20px — KPI figures, the ceiling */
+  --t-3xl:  1.25rem;    /* 20px — kept as an alias; nothing should exceed it */
 
   /* One tracking value per job, instead of four that drifted 0.06 to 0.12em
      across labels that are meant to look identical. */
@@ -374,8 +377,10 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-num
 
 /* ---------------------------------------------------------------- flow --- */
 
-.flow { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); font-family: var(--mono); font-size: var(--t-sm); }
-.flow-node { padding: 0.16rem 0.5rem; border: 1px solid var(--line); border-radius: var(--r-sm); }
+/* These read as words — "Partially fulfilled" is a state, not a code — so
+   they take the interface face like every other badge. */
+.flow { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); font-family: var(--sans); font-size: var(--t-sm); }
+.flow-node { padding: 0.25rem 0.65rem; border: 1px solid var(--line); border-radius: var(--r-md); }
 .flow-node.here { border-color: var(--brand); color: var(--brand); background: var(--brand-weak); }
 .flow-arrow { color: var(--muted); }
 
@@ -845,6 +850,86 @@ tbody tr.subrow > td:first-child::before {
 
 body { --erp-density-applied: 1; }
 
+/* --------------------------------------------------------------------------
+   One design, applied everywhere
+
+   Three looks had grown: the dashboard on DM Sans with rounded white cards and
+   sentence-case badges, the document screens on .erp-* classes, and fifty
+   other pages on the original flat sheets with uppercase mono pills. Same nav,
+   three products.
+
+   The dashboard's language wins, but not its scale — it had drifted to a 37px
+   title while the ordinary pages sat at 17px, and big is not the same as
+   clear. The ladder below is the whole of it, and nothing on any screen goes
+   above the top rung.
+
+     page title   17px / 600     the largest text in the product
+     card heading 14px / 600
+     sub-heading  13px / 600
+     body         15px / 400
+     table, dense 14px / 400
+     labels, hints 13px / 400
+     micro caps   11px / 500     uppercase, tracked
+
+   Figures are the one exception and cap at 20px, because a KPI that reads at
+   arm's length is the only thing on a screen that earns size.
+   -------------------------------------------------------------------------- */
+
+h1 { font-size: var(--t-lg); font-weight: 600; letter-spacing: var(--track-tight); }
+h2 { font-size: var(--t-md); font-weight: 600; letter-spacing: var(--track-tight); }
+h3 { font-size: var(--t-sm); font-weight: 600; letter-spacing: 0; margin: 0; }
+
+/* Cards, the dashboard's: a white sheet with a hairline and a real corner,
+   and a head that is a heading rather than a grey strip. This replaces the
+   squarer "sheet" treatment below — the two were the most visible difference
+   between the dashboard and everything else. */
+.card {
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  box-shadow: 0 1px 2px rgb(16 33 26 / 0.04);
+}
+.card-head {
+  padding: 0.85rem 1.1rem;
+  background: transparent;
+  border-bottom: 1px solid var(--line);
+  align-items: center;
+}
+.card-head h2 { font-size: var(--t-md); font-weight: 600; }
+.card-body { padding: 1rem 1.1rem; }
+
+/* Badges read as words. Uppercase mono was right when a pill was one of forty
+   in a column and had to be scanned; the dashboard's are sentence case and
+   rounded, and one product cannot have both. */
+.pill {
+  font-family: var(--sans); font-size: var(--t-sm); font-weight: 500;
+  text-transform: none; letter-spacing: 0;
+  padding: 0.2rem 0.55rem; border-radius: var(--r-md);
+}
+
+/* Table headers likewise: the heading above the table already names it. */
+thead th {
+  font-family: var(--sans); font-size: var(--t-sm); font-weight: 500;
+  letter-spacing: 0; text-transform: none; color: var(--muted);
+}
+thead th .sortbtn { font: inherit; color: inherit; letter-spacing: inherit; text-transform: none; }
+/* th.r puts the column into mono so figures line up under it. The heading is
+   a word, not a figure, and beat the rule above on specificity. */
+thead th.r { font-family: var(--sans); }
+
+/* KPI tiles are cards with a figure in them, so they are cards. */
+.kpi {
+  border-radius: 12px; box-shadow: 0 1px 2px rgb(16 33 26 / 0.04);
+  padding: 1rem 1.1rem; gap: 0.35rem;
+}
+.kpi-label {
+  font-family: var(--sans); font-size: var(--t-md); font-weight: 500;
+  letter-spacing: 0; text-transform: none; color: var(--ink);
+}
+.kpi-value {
+  font-family: var(--sans); font-size: var(--t-2xl); font-weight: 700;
+  letter-spacing: var(--track-tight);
+}
+
 /* The page heading becomes a control panel: one thin horizontal bar, the way
    every ERP screen opens, instead of a stacked eyebrow/title/subtitle block
    that pushes the data below the fold. */
@@ -869,16 +954,9 @@ body { --erp-density-applied: 1; }
 }
 .page-head .actions { order: 4; margin-left: auto; }
 
-/* Cards become sheets: squarer, flatter, and the head reads as a table strip
-   rather than as a second title. */
-.card { border-radius: var(--r-sm); }
-.card-head {
-  padding: 0.5rem var(--s3);
-  background: var(--line-soft);
-  align-items: center;
-}
-.card-head h2 { font-size: var(--t-md); font-weight: 600; margin: 0; }
-.card-body { padding: var(--s3); }
+/* Cards are defined once, above — the squarer "sheet" treatment that used to
+   live here was the most visible difference between the dashboard and every
+   other screen, and it lost. */
 
 /* 40px rows, asymmetric cell padding — a clean left gutter and a tight right
    edge, which is what lets a column of figures sit against its neighbour
@@ -1517,8 +1595,8 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 }
 .docstat-label {
   grid-area: label;
-  font-family: var(--mono); font-size: var(--t-2xs);
-  letter-spacing: var(--track-caps); text-transform: uppercase; color: var(--muted);
+  font-family: var(--sans); font-size: var(--t-md); font-weight: 500;
+  letter-spacing: 0; text-transform: none; color: var(--muted);
 }
 .docstat-value {
   grid-area: value;
@@ -2196,7 +2274,7 @@ dialog.drawer .drawer-panel {
 
 .dash {
   font-family: var(--font-dm-sans), var(--font-myanmar), system-ui, sans-serif;
-  --dash-radius: 14px;
+  --dash-radius: 12px;
   --dash-gap: 1.25rem;
   --dash-card: var(--surface);
   --dash-line: color-mix(in srgb, var(--line) 70%, transparent);
@@ -2208,9 +2286,11 @@ dialog.drawer .drawer-panel {
   display: flex; align-items: flex-start; justify-content: space-between;
   gap: var(--s3); flex-wrap: wrap; margin-bottom: var(--s4);
 }
+/* The same rung as every other page title. It had climbed to 37px, which
+   made the dashboard a different product from the screen it links to. */
 .dash-head h1 {
-  font-size: clamp(1.75rem, 2.6vw, 2.35rem);
-  font-weight: 700; letter-spacing: -0.02em; margin: 0; line-height: 1.1;
+  font-size: var(--t-lg); font-weight: 600;
+  letter-spacing: var(--track-tight); margin: 0; line-height: 1.3;
 }
 /* Burmese stacks marks above and below the baseline, so this line carries a
    looser leading than the Latin text alone would need — at the app default
@@ -2225,7 +2305,7 @@ dialog.drawer .drawer-panel {
    control that does nothing is worse than a label that is true. */
 .dash-chip {
   display: inline-flex; align-items: center; gap: 0.35rem;
-  padding: 0.4rem 0.75rem; border-radius: 999px;
+  padding: 0.4rem 0.75rem; border-radius: var(--r-md);
   border: 1px solid var(--dash-line); background: var(--surface);
   font-size: var(--t-sm); color: var(--ink-soft); white-space: nowrap;
 }
@@ -2252,7 +2332,7 @@ dialog.drawer .drawer-panel {
 }
 .dash-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
 .dash-kpi-value {
-  font-size: clamp(1.2rem, 1.6vw, 1.45rem); font-weight: 700;
+  font-size: var(--t-2xl); font-weight: 700;
   letter-spacing: -0.02em; line-height: 1.15;
   /* Figures wrap rather than overflow: MMK 1,234,567,890 is a real number in
      kyat and must not push the card wider than its column. */
@@ -2261,7 +2341,7 @@ dialog.drawer .drawer-panel {
 .dash-kpi-note { color: var(--muted); font-size: var(--t-sm); }
 .dash-badge {
   align-self: flex-start; display: inline-flex; align-items: center; gap: 0.3rem;
-  padding: 0.3rem 0.65rem; border-radius: 999px;
+  padding: 0.3rem 0.65rem; border-radius: var(--r-md);
   font-size: var(--t-xs); font-weight: 500;
 }
 
@@ -2291,7 +2371,7 @@ dialog.drawer .drawer-panel {
   gap: var(--s3); flex-wrap: wrap; margin-bottom: 1rem;
 }
 .dash-section-head h2 {
-  font-size: 1.15rem; font-weight: 700; letter-spacing: -0.015em; margin: 0;
+  font-size: var(--t-md); font-weight: 600; letter-spacing: var(--track-tight); margin: 0;
 }
 .dash-section-head .dash-sub { color: var(--muted); display: block; margin-top: 0.25rem; }
 
@@ -2340,7 +2420,7 @@ dialog.drawer .drawer-panel {
   margin-bottom: 0.25rem;
 }
 .dash-figure-value {
-  font-size: clamp(1.35rem, 1.9vw, 1.65rem); font-weight: 700; letter-spacing: -0.02em;
+  font-size: var(--t-2xl); font-weight: 700; letter-spacing: var(--track-tight);
 }
 .dash-rank { display: flex; flex-direction: column; gap: 1.1rem; }
 .dash-rank-row { display: grid; grid-template-columns: auto 1fr auto; gap: 0.75rem; align-items: baseline; }
@@ -2536,7 +2616,7 @@ dialog.drawer .drawer-panel {
   background: transparent; border-bottom: 1px solid var(--dash-line);
   padding: 1.1rem 1.35rem;
 }
-.dash > section > .card > .card-head h2 { font-size: 1.05rem; font-weight: 700; }
+.dash > section > .card > .card-head h2 { font-size: var(--t-md); font-weight: 600; }
 .dash > section > .card > .card-body { padding: 0.65rem 1.35rem 1.35rem; }
 
 /* Ranked items sit beside the revenue chart, so the card is as tall as the

@@ -36,6 +36,8 @@
 }
 
 .erp-num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--erp-font-mono); }
+/* The column below is mono so the figures line up. The heading is a word. */
+.erp-th.erp-num { font-family: var(--erp-font); }
 
 /* Line numbers: present so a line can be named out loud, quiet enough that
    they never compete with the figures beside them. */
@@ -119,7 +121,10 @@
 }
 .erp-crumb-link { color: var(--erp-brand); text-decoration: none; }
 .erp-crumb-sep  { color: var(--erp-fg-muted); }
-.erp-crumb-here { font-family: var(--erp-font-mono); color: var(--erp-fg-strong); font-weight: 600; }
+/* The last step is sometimes a document number and sometimes a phrase — "New
+   purchase invoice" in mono read as a code. The interface face takes both;
+   the number keeps mono everywhere it is a figure to be compared. */
+.erp-crumb-here { color: var(--erp-fg-strong); font-weight: 600; }
 
 .erp-actionbar {
   display: flex; align-items: center; justify-content: space-between;
@@ -349,8 +354,8 @@
 .erp-head-id { min-width: 0; flex: 1 1 18rem; }
 .erp-head-line { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
 .erp-head-line h1 {
-  margin: 0; font-size: clamp(1.15rem, 1.7vw, 1.4rem); font-weight: 700;
-  letter-spacing: -0.01em; line-height: 1.15;
+  margin: 0; font-size: var(--t-lg); font-weight: 600;
+  letter-spacing: var(--track-tight); line-height: 1.3;
 }
 .erp-head-sub { display: block; color: var(--erp-fg-muted); margin-top: 0.25rem; }
 .erp-head-tools { display: flex; align-items: center; gap: 0.5rem; margin-left: auto; }
@@ -361,7 +366,7 @@
 .pill.plain {
   font-family: var(--erp-font); font-size: var(--t-sm); font-weight: 500;
   text-transform: none; letter-spacing: 0; padding: 0.25rem 0.6rem;
-  border-radius: 999px;
+  border-radius: var(--r-md);
 }
 
 .erp-hbtn {
@@ -406,7 +411,7 @@
   gap: 1rem; flex-wrap: wrap; padding: 1.1rem 1.25rem 0;
 }
 .erp-card-head h2 {
-  margin: 0; font-size: 1.05rem; font-weight: 600; letter-spacing: -0.01em;
+  margin: 0; font-size: var(--t-md); font-weight: 600; letter-spacing: var(--track-tight);
 }
 .erp-card-body { padding: 1rem 1.25rem 1.25rem; }
 
@@ -424,7 +429,7 @@
    is called. */
 .erp-fig-value {
   display: block; margin-top: 0.2rem;
-  font-size: 1.25rem; font-weight: 700; letter-spacing: -0.01em;
+  font-size: var(--t-2xl); font-weight: 700; letter-spacing: var(--track-tight);
   font-variant-numeric: tabular-nums;
 }
 
@@ -483,7 +488,7 @@
   background: transparent; border-bottom: 1px solid var(--erp-border);
   padding: 1.1rem 1.25rem;
 }
-.erp-doc .docfooter .card > .card-head h2 { font-size: 1.05rem; font-weight: 600; }
+.erp-doc .docfooter .card > .card-head h2 { font-size: var(--t-md); font-weight: 600; }
 .erp-doc .docfooter .card > .card-body { padding: 1rem 1.25rem 1.25rem; }
 
 @media (max-width: 640px) {
@@ -514,8 +519,8 @@
   color: var(--erp-fg-muted); margin-bottom: 0.3rem;
 }
 .erp-pagehead h1 {
-  margin: 0; font-size: clamp(1.5rem, 2.4vw, 1.95rem); font-weight: 700;
-  letter-spacing: -0.02em; line-height: 1.1;
+  margin: 0; font-size: var(--t-lg); font-weight: 600;
+  letter-spacing: var(--track-tight); line-height: 1.3;
 }
 .erp-pagehead-lead { display: block; color: var(--erp-fg-muted); margin-top: 0.3rem; }
 .erp-pagehead-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
@@ -527,7 +532,7 @@
    "awaiting receipt" states the absence twice, once as a number. */
 .erp-count {
   display: inline-flex; align-items: center; justify-content: center;
-  min-width: 1.5rem; height: 1.5rem; padding: 0 0.4rem; border-radius: 999px;
+  min-width: 1.5rem; height: 1.5rem; padding: 0 0.4rem; border-radius: var(--r-md);
   background: color-mix(in srgb, var(--erp-green) 12%, transparent);
   color: var(--erp-brand); font-size: var(--t-sm); font-weight: 600;
 }
@@ -561,7 +566,7 @@
 .erp-summary-label { display: block; color: var(--erp-fg-muted); font-size: var(--t-md); }
 .erp-summary-value {
   display: block; margin: 0.1rem 0;
-  font-size: 1.25rem; font-weight: 700; letter-spacing: -0.01em;
+  font-size: var(--t-2xl); font-weight: 700; letter-spacing: var(--track-tight);
   font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
 }
 .erp-summary-item.warn .erp-summary-value { color: var(--warn); }
@@ -604,7 +609,7 @@
 .erp-card-body td > a > .pill {
   font-family: var(--erp-font); font-size: var(--t-sm); font-weight: 500;
   text-transform: none; letter-spacing: 0; padding: 0.2rem 0.55rem;
-  border-radius: 999px;
+  border-radius: var(--r-md);
 }
 .erp-card-body tbody tr:last-child > td { border-bottom: 0; }
 
