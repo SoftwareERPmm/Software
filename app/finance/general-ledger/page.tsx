@@ -10,6 +10,7 @@ import { money } from "@/lib/db";
 import { AutoApply } from "@/components/auto-apply";
 import { AccountPicker } from "@/components/account-picker";
 import { JournalEntryList, type Entry } from "@/components/journal-entry-list";
+import { ErpCrumbs } from "@/components/erp-worklist";
 
 /**
  * One ledger, read two ways.
@@ -102,8 +103,12 @@ export default async function GeneralLedger({
 
   return (
     <>
+      <ErpCrumbs steps={[
+        { label: "Accounting" },
+        { label: "Ledgers" },
+        { label: "General ledger" },
+      ]} />
       <div className="page-head">
-        <span className="eyebrow">Accounting</span>
         <h1>General ledger</h1>
         <span className="page-sub">
           Every posted entry, whatever document wrote it. Read it in date

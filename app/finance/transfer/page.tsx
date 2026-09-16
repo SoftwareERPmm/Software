@@ -15,7 +15,7 @@ export default async function InterbranchTransfer() {
     return (
       <>
         <ErpCrumbs steps={[
-          { label: "Cash on hand", href: "/finance/cash-detail" },
+          { label: "Cash & bank" },
           { label: "Interbranch transfer" },
         ]} />
         <div className="page-head">
@@ -31,7 +31,7 @@ export default async function InterbranchTransfer() {
   return (
     <>
       <ErpCrumbs steps={[
-        { label: "Cash on hand", href: "/finance/cash-detail" },
+        { label: "Cash & bank" },
         { label: "Interbranch transfer" },
       ]} />
       <div className="page-head">

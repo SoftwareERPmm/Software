@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowLeft, Printer, UserRound } from "lucide-react";
+import { ArrowLeft, ChevronRight, Printer, Truck, UserRound } from "lucide-react";
 import { money, qty as fmtQty, shortDate } from "@/lib/format";
 import { ErpCopyNumber } from "@/components/erp-doc-toolbar";
 import { ErpMore } from "@/components/erp-more";
@@ -67,7 +67,7 @@ export function ErpOrderForm({
   config, docId, docNo, status, partnerName, partnerCode, docDate, dueDate,
   locationName, reference, memo, lines, netTotal, chain, related,
   banner, footer, badges, fulfilActions, menuActions, openLineCount, unitWord,
-  backHref, backLabel,
+  fulfilments = [], billing, backHref, backLabel,
 }: {
   config: OrderFormConfig;
   docId: string;
@@ -106,6 +106,13 @@ export function ErpOrderForm({
   openLineCount?: number;
   /** The unit the quantities are counted in — CTN, PCS. */
   unitWord?: string | null;
+  /**
+   * Every receipt or delivery that answered this order, named. The pipeline
+   * above can only say how many; this says which, with what each one moved.
+   */
+  fulfilments?: { id: string; docNo: string; docDate: string; qty: number }[];
+  /** How the order stands for billing, in a phrase. */
+  billing?: { docs: { id: string; docNo: string }[] } | null;
   /** Where the reader came from, when it was not the list. */
   backHref?: string | null;
   backLabel?: string | null;
@@ -176,10 +183,14 @@ export function ErpOrderForm({
           {chain.map((stage, i) => {
             const stageDone = !!stage.doc;
             const here = i === currentIndex;
+            const many = (stage.docs?.length ?? 0) > 1;
             const body = (
               <>
                 {stage.label}
-                {stage.doc && !here && <span className="erp-stage-no">{stage.doc.doc_no}</span>}
+                {/* One document shows its number; several show how many,
+                    because naming one of three is worse than naming none. */}
+                {many && !here && <span className="erp-stage-no">({stage.docs!.length})</span>}
+                {!many && stage.doc && !here && <span className="erp-stage-no">{stage.doc.doc_no}</span>}
                 {!stage.doc && stage.href && <span className="erp-stage-no">create</span>}
               </>
             );
@@ -192,11 +203,13 @@ export function ErpOrderForm({
                      ? `${stage.label} is optional — this chain is valid without one`
                      : undefined}
                    aria-current={here ? "step" : undefined}>
-                {stage.doc && !here
-                  ? <Link href={`/documents/${stage.doc.id}`}>{body}</Link>
-                  : !stage.doc && stage.href
-                    ? <Link href={stage.href}>{body}</Link>
-                    : body}
+                {many && !here
+                  ? <a href="#fulfilments">{body}</a>
+                  : stage.doc && !here
+                    ? <Link href={`/documents/${stage.doc.id}`}>{body}</Link>
+                    : !stage.doc && stage.href
+                      ? <Link href={stage.href}>{body}</Link>
+                      : body}
               </div>
             );
           })}
@@ -239,6 +252,39 @@ export function ErpOrderForm({
             <p className="erp-bar-note">
               {fmtQty(totalFulfilled)} of {fmtQty(totalOrdered)}{unit} {done}
             </p>
+
+            {/* Only when there is more than one. With a single receipt the
+                strip above already names it, and a list of one repeats it. */}
+            {fulfilments.length > 1 && (
+              <div className="erp-fulfilled" id="fulfilments">
+                <span className="erp-fulfilled-head">
+                  {config.fulfilledLabel === "Delivered" ? "Deliveries" : "Goods receipts"}
+                  {" "}({fulfilments.length})
+                </span>
+                <div className="erp-fulfilled-list">
+                  {fulfilments.map((f) => (
+                    <Link key={f.id} href={`/documents/${f.id}`} className="erp-fulfilled-row">
+                      <span className="erp-fulfilled-icon" aria-hidden="true"><Truck size={16} /></span>
+                      <span className="erp-fulfilled-text">
+                        <strong>{f.docNo}</strong>
+                        <span>
+                          {shortDate(f.docDate)}
+                          {f.qty > 0 && ` · ${fmtQty(f.qty)}${unit}`}
+                        </span>
+                      </span>
+                      <ChevronRight size={16} aria-hidden="true" className="erp-fulfilled-go" />
+                    </Link>
+                  ))}
+                </div>
+                {/* Said once, and only when nothing else says it: with
+                    invoices raised the strip above carries the count. */}
+                {billing && billing.docs.length === 0 && (
+                  <span className="erp-fulfilled-billing">
+                    Delivered in full, not invoiced yet
+                  </span>
+                )}
+              </div>
+            )}
 
             {fulfilActions && (
               <div className="erp-fulfil">

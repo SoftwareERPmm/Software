@@ -15,7 +15,7 @@ export default async function CashPayment() {
     return (
       <>
         <ErpCrumbs steps={[
-          { label: "Cash on hand", href: "/finance/cash-detail" },
+          { label: "Cash & bank" },
           { label: "Cash payment" },
         ]} />
         <div className="page-head">
@@ -29,7 +29,7 @@ export default async function CashPayment() {
   return (
     <>
       <ErpCrumbs steps={[
-        { label: "Cash on hand", href: "/finance/cash-detail" },
+        { label: "Cash & bank" },
         { label: "Cash payment" },
       ]} />
       <div className="page-head">

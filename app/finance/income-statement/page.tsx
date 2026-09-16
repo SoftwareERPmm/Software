@@ -1,6 +1,9 @@
 import { money } from "@/lib/db";
 import { AutoApply } from "@/components/auto-apply";
-import { getCompany, getIncomeStatement, getBranches, getUnassignedBranchActivity, UNASSIGNED_BRANCH } from "@/lib/queries";
+import { getCompany, getIncomeStatement, getBranches, getUnassignedBranchActivity, getAccountTree, UNASSIGNED_BRANCH } from "@/lib/queries";
+import { buildStatement, type ChartRow } from "@/lib/report-tree";
+import { StatementTable } from "@/components/statement-table";
+import { ErpCrumbs } from "@/components/erp-worklist";
 
 function defaultFrom() {
   return `${new Date().getFullYear()}-01-01`;
@@ -39,34 +42,32 @@ export default async function IncomeStatement({
     id: string; code: string; name: string; account_type: "REVENUE" | "COGS" | "EXPENSE"; amount: string;
   }>;
 
-  const sumOf = (type: string) =>
-    rows.filter((r) => r.account_type === type).reduce((s, r) => s + Number(r.amount), 0);
-  const revenue = sumOf("REVENUE");
-  const cogs = sumOf("COGS");
-  const expense = sumOf("EXPENSE");
+  /**
+   * The chart's own shape, applied to the ledger's own figures. Amounts come
+   * from the query exactly as before; this only decides which account sits
+   * under which, and every subtotal is the sum of the rows beneath it rather
+   * than a second calculation that could disagree with them.
+   */
+  const chart = (await getAccountTree(company.id)) as unknown as ChartRow[];
+  const amounts = new Map(rows.map((r) => [r.id, Number(r.amount)]));
+  const revenueTree = buildStatement(chart, amounts, ["REVENUE"]);
+  const cogsTree = buildStatement(chart, amounts, ["COGS"]);
+  const expenseTree = buildStatement(chart, amounts, ["EXPENSE"]);
+
+  const revenue = revenueTree.total;
+  const cogs = cogsTree.total;
+  const expense = expenseTree.total;
   const grossProfit = revenue - cogs;
   const netIncome = grossProfit - expense;
 
-  const section = (type: "REVENUE" | "COGS" | "EXPENSE", label: string) => {
-    const items = rows.filter((r) => r.account_type === type);
-    if (items.length === 0) return null;
-    return (
-      <tbody key={type}>
-        <tr><td colSpan={2} style={{ background: "var(--line-soft)" }}><span className="eyebrow">{label}</span></td></tr>
-        {items.map((r) => (
-          <tr key={r.id}>
-            <td className="wrap"><span className="code">{r.code}</span> {r.name}</td>
-            <td className="r">{money(r.amount)}</td>
-          </tr>
-        ))}
-      </tbody>
-    );
-  };
-
   return (
     <>
+      <ErpCrumbs steps={[
+        { label: "Accounting" },
+        { label: "Financial reports" },
+        { label: "Income statement" },
+      ]} />
       <div className="page-head">
-        <span className="eyebrow">Reports</span>
         <h1>Income statement</h1>
         <span className="page-sub">
           Revenue less cost of goods sold less expense, read straight from the
@@ -113,33 +114,28 @@ export default async function IncomeStatement({
         </p>
       )}
 
-      <section>
-        <div className="card">
-          <div className="card-head">
-            <h2>Statement</h2>
-            <span className="page-sub">{branchName} · {range.from} to {range.to}</span>
-          </div>
-          <div className="tablewrap">
-            <table>
-              {section("REVENUE", "Revenue")}
-              <tbody>
-                <tr><td>Total revenue</td><td className="r" style={{ fontWeight: 600 }}>{money(revenue)}</td></tr>
-              </tbody>
-              {section("COGS", "Cost of goods sold")}
-              <tbody>
-                <tr><td>Gross profit</td><td className="r" style={{ fontWeight: 600 }}>{money(grossProfit)}</td></tr>
-              </tbody>
-              {section("EXPENSE", "Expense")}
-              <tfoot>
-                <tr>
-                  <td>Net income</td>
-                  <td className="r" style={{ fontWeight: 700 }}>{money(netIncome)}</td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-        </div>
-      </section>
+      <StatementTable
+        title="Statement"
+        currency={company.base_currency}
+        scope={`${branchName} · ${range.from} to ${range.to}`}
+        summaries={[
+          { label: "Total revenue", value: revenue, note: "what the period earned" },
+          { label: "Gross profit", value: grossProfit, note: "revenue less cost of goods sold" },
+          { label: "Net income", value: netIncome, note: "after every expense" },
+        ]}
+        sections={[
+          { key: "REVENUE", label: "Revenue", nodes: revenueTree.nodes,
+            total: revenue, totalLabel: "Total revenue" },
+          { key: "COGS", label: "Cost of goods sold", nodes: cogsTree.nodes,
+            total: cogs, totalLabel: "Total cost of goods sold" },
+          { key: "EXPENSE", label: "Operating expenses", nodes: expenseTree.nodes,
+            total: expense, totalLabel: "Total operating expenses" },
+        ]}
+        subtotals={[
+          { after: "COGS", label: "Gross profit", value: grossProfit },
+          { after: "EXPENSE", label: "Net income", value: netIncome, strong: true },
+        ]}
+      />
     </>
   );
 }

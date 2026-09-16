@@ -46,6 +46,7 @@ import {
   getAdvancesFor,
   getUnsettledConsignment,
   getLinkableOrders,
+  getOpenDeliveries,
   getOrderOutstanding,
   getOrderClosure,
   getDocumentPeople,
@@ -174,15 +175,26 @@ export default async function DocumentPage({
   // source_document_id, in either direction. Payment sits outside that
   // chain (it allocates against invoices, it isn't sourced from one), so
   // it gets its own lookup once an invoice is found.
+  /**
+   * Every document at each stage, not the first one found.
+   *
+   * An order delivered in two runs has two deliveries, and .find() showed one
+   * of them — so the strip said DEL…002 and a reader had no way to know a
+   * second existed. Related documents below had them both the whole time,
+   * which is the tell: the data was right and the summary above it was not.
+   */
+  const stageDocs: Record<string, { id: string; doc_no: string }[]> = {};
   const stageDoc: Record<string, { id: string; doc_no: string } | null> = {};
   for (const step of chain) {
     if (step === "SUPPLIER_PAYMENT" || step === "CUSTOMER_RECEIPT") continue;
-    stageDoc[step] = (chainDocuments as any[]).find((d) => d.doc_type === step) ?? null;
+    stageDocs[step] = (chainDocuments as any[]).filter((d) => d.doc_type === step);
+    stageDoc[step] = stageDocs[step][0] ?? null;
   }
   const invoiceStage = stageDoc["PURCHASE_INVOICE"] ?? stageDoc["SALES_INVOICE"] ?? null;
   const paymentStep = chain.includes("SUPPLIER_PAYMENT") ? "SUPPLIER_PAYMENT" : "CUSTOMER_RECEIPT";
   if (chain.includes(paymentStep)) {
     stageDoc[paymentStep] = invoiceStage ? ((await getSettlingPayment(invoiceStage.id)) as any) : null;
+    stageDocs[paymentStep] = stageDoc[paymentStep] ? [stageDoc[paymentStep]!] : [];
   }
 
   // Only offer to match this document against its counterpart if it
@@ -349,6 +361,34 @@ export default async function DocumentPage({
   // needsInvoiceMatch, just off the chain link itself rather than a
   // clearing-account view, since a delivery never touches GR/IR.
   const needsSalesInvoice = doc.doc_type === "DELIVERY" && doc.status === "POSTED" && !stageDoc["SALES_INVOICE"];
+
+  /**
+   * What the invoice this button opens would actually come to.
+   *
+   * It used to show the delivery's own gross_total, copied from the purchase
+   * side where it is right: a bill owes what the goods cost, so a receipt's
+   * total is the bill's total. A delivery is the opposite — it moves stock out
+   * at cost and charges nobody — so the same expression put COGS on a button
+   * offering to invoice a customer. Twenty-five cartons costing 2,000 and
+   * agreed at 5,000 read as 50,000 next to an invoice that would raise
+   * 125,000.
+   *
+   * Read from getOpenDeliveries, which is what the sales voucher itself
+   * prices from, so the figure on the button and the figure on the form
+   * cannot disagree. Null where no order agreed a price: the voucher falls
+   * back to the price list at billing time, and a number guessed here would
+   * be a different wrong answer rather than no answer.
+   */
+  let salesInvoiceValue: number | null = null;
+  if (needsSalesInvoice) {
+    const open = (await getOpenDeliveries(doc.company_id, null)) as unknown as {
+      id: string; lines: { qty: number; orderPrice: number | null }[];
+    }[];
+    const mine = open.find((d) => d.id === doc.id);
+    if (mine && mine.lines.length > 0 && mine.lines.every((l) => l.orderPrice !== null)) {
+      salesInvoiceValue = mine.lines.reduce((t, l) => t + l.qty * (l.orderPrice ?? 0), 0);
+    }
+  }
 
   // A delivery and a stock transfer charge nobody: the figure on the line is
   // what the goods cost leaving inventory, not what anyone is paying. Calling
@@ -649,10 +689,21 @@ export default async function DocumentPage({
         footer={footer}
         unitWord={unitWord ?? null}
         openLineCount={orderLines.length || undefined}
+        /* Named from the same panel that always had them right, rather than
+           from a second query that could disagree with it. */
+        fulfilments={related.downstream
+          .flatMap((g) => g.docs)
+          .filter((d) => d.docType === (sales ? "DELIVERY" : "GOODS_RECEIPT"))
+          .map((d) => ({ id: d.id, docNo: d.docNo, docDate: d.docDate, qty: d.qty }))}
+        billing={{
+          docs: (stageDocs[sales ? "SALES_INVOICE" : "PURCHASE_INVOICE"] ?? [])
+            .map((d) => ({ id: d.id, docNo: d.doc_no })),
+        }}
         chain={chain.map((step) => ({
           type: step,
           label: label(step).replace(/\b\w/g, (c) => c.toUpperCase()),
           doc: stageDoc[step] ?? null,
+          docs: stageDocs[step] ?? [],
           href: stageDoc[step] ? null : nextStageHref(step),
           optional: OPTIONAL_STAGE.has(step),
         }))}
@@ -958,9 +1009,15 @@ export default async function DocumentPage({
       {needsSalesInvoice && (
         <div className="docactions">
           <Link href={`/sales/new?delivery_id=${doc.id}`} className="btn">
-            Create sales invoice — {money(doc.gross_total)}
+            Create sales invoice
+            {salesInvoiceValue !== null && <> — {money(salesInvoiceValue)}</>}
           </Link>
-          <span className="page-sub">Nothing has billed for this delivery yet.</span>
+          <span className="page-sub">
+            {salesInvoiceValue !== null
+              ? "Nothing has billed for this delivery yet. At the price its order agreed."
+              : "Nothing has billed for this delivery yet. No order set a price, so the "
+                + "price list decides it on the invoice."}
+          </span>
         </div>
       )}
 
