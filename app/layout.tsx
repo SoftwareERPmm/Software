@@ -8,6 +8,7 @@ import { Toast } from "@/components/toast";
 import {
   LayoutDashboard, ShoppingCart, Package, Wallet, BookOpen, Boxes, Database,
 } from "lucide-react";
+import { DatePickerFix } from "@/components/date-picker-fix";
 
 // Plex was drawn for enterprise data rather than for marketing pages: open
 // apertures, unambiguous 1/l/I and 0/O, and a lower x-height than Inter, which
@@ -73,6 +74,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   return (
     <html lang="en" className={`${dmSans.variable} ${plexSans.variable} ${plexMono.variable} ${notoMyanmar.variable}`}>
       <body>
+        <DatePickerFix />
         <div className="shell">
           <nav className="sidebar">
             <div className="brand">
