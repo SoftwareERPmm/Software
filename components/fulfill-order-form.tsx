@@ -277,7 +277,10 @@ export function FulfillOrderForm({
 
             {kind === "sales" && (
               <div className="field" style={{ maxWidth: 300, marginTop: "0.6rem" }}>
-                <label htmlFor={`delivery_fee_${orderId}`}>Delivery fee</label>
+                {/* The same charge, and so the same name it has on the sales
+                    invoice. One thing with two labels is how it comes to be
+                    entered twice. */}
+                <label htmlFor={`delivery_fee_${orderId}`}>Transport charge to customer</label>
                 <input id={`delivery_fee_${orderId}`} name="delivery_fee"
                        type="number" min="0" step="0.01" placeholder="0" />
                 <span className="hint">
