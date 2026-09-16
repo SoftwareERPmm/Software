@@ -69,10 +69,18 @@
      toast, dropdowns) get more rounding — that contrast is what reads as
      "considered" rather than "every corner is the same radius." */
   --r-sm: 4px; --r-md: 6px; --r-lg: 10px;
+
+  /* The browser draws the insides of a date field, a select arrow and a
+     scrollbar itself, and without this it picks light or dark from the
+     reader's own setting rather than from the page. On a machine set to dark
+     that produced a white calendar icon on our white card: invisible, and
+     indistinguishable from a broken field. Declared, so the two agree. */
+  color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --ground:    #0E1116;
     --surface:   #161B22;
     --ink:       #E4E8EE;
@@ -438,6 +446,33 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 14%, transparent);
 }
 input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+
+/* The calendar button is the only way into the picker on Windows, and in a
+   dense header row it was being squeezed to a sliver. Given a real size and a
+   pointer, so it is a target rather than a hint. DatePickerFix opens the same
+   picker from anywhere in the field; this is the half that needs no script. */
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator {
+  width: 1rem; height: 1rem; padding: 0; margin-left: 0.35rem;
+  cursor: pointer; opacity: 0.6;
+  /* Ours, not the browser's. color-scheme above should be enough, but a
+     forced-dark extension or a browser that ignores it would put the icon
+     back out of sight — and an invisible control reads as a bug, not as a
+     theme. This one is drawn in our own muted grey and cannot disappear. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236B7686' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='18' rx='2'/%3E%3Cpath d='M16 2v4M8 2v4M3 10h18'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: center; background-size: 1rem;
+}
+input[type="date"]:hover::-webkit-calendar-picker-indicator,
+input[type="time"]:hover::-webkit-calendar-picker-indicator { opacity: 1; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) input[type="date"]::-webkit-calendar-picker-indicator,
+  :root:not([data-theme="light"]) input[type="time"]::-webkit-calendar-picker-indicator {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238B95A5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='18' rx='2'/%3E%3Cpath d='M16 2v4M8 2v4M3 10h18'/%3E%3C/svg%3E");
+  }
+}
+/* A date field carries a control the browser draws itself, so it cannot be
+   compressed as far as a text box. Below this the button is clipped. */
+input[type="date"], input[type="time"] { min-height: 2.1rem; }
 
 /* Native <select> chrome (the arrow, the box height) renders differently
    per browser and OS — the actual source of "narrow here, wide there."
@@ -1025,6 +1060,10 @@ tbody tr.coa-section > td { padding-top: 10px; padding-bottom: 10px; }
 .doc-meta input[type="date"], .doc-meta select {
   min-height: 1.95rem; padding: 0.25rem 0.5rem; font-size: var(--t-md);
 }
+/* Except a date, which carries a button the browser draws for itself. The
+   header's tighter height clipped it to a sliver — visible on Windows, where
+   that button is the only way into the calendar. */
+.doc-meta input[type="date"], .doc-meta input[type="time"] { min-height: 2.1rem; }
 .doc-meta select { background-position: right 0.5rem center; padding-right: 1.75rem; }
 /* Hints in the header carry a rule worth keeping, but at header weight —
    they were 13px sentences under 15px controls, two lines each. */
@@ -2624,3 +2663,42 @@ dialog.drawer .drawer-panel {
    the bottom rather than left floating under a short list. */
 .dash-rank-card { display: flex; flex-direction: column; }
 .dash-rank-more { display: inline-block; margin-top: auto; padding-top: 1.25rem; }
+
+/* --------------------------------------------------------- receive mode ---
+   Whether the goods are in the warehouse decides whether posting this bill
+   moves stock. It was a checkbox, defaulted on, below the lines — the most
+   consequential control on the form and the quietest thing on the screen.
+   Three cards, one of them chosen, none of them silent. */
+.receive-mode .modes {
+  display: grid; gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+}
+.receive-mode .mode {
+  display: flex; align-items: flex-start; gap: 0.7rem; text-align: left;
+  padding: 0.9rem 1rem; border-radius: var(--r-lg);
+  border: 1px solid var(--line); background: var(--surface);
+  font: inherit; color: var(--ink); cursor: pointer;
+  transition: border-color 150ms, background-color 150ms;
+}
+.receive-mode .mode:hover:not(:disabled) { border-color: var(--ghost); }
+.receive-mode .mode.on {
+  border-color: var(--brand);
+  background: color-mix(in srgb, var(--brand) 7%, var(--surface));
+  box-shadow: 0 0 0 1px var(--brand);
+}
+/* Not offered rather than offered and refused: with nothing waiting on a
+   bill there is no receipt to match, and a card that cannot be chosen should
+   look like one. */
+.receive-mode .mode:disabled { opacity: 0.5; cursor: not-allowed; }
+.receive-mode .mode-icon {
+  flex: 0 0 auto; width: 34px; height: 34px; border-radius: var(--r-md);
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--muted) 12%, transparent); color: var(--muted);
+}
+.receive-mode .mode.on .mode-icon {
+  background: color-mix(in srgb, var(--brand) 14%, transparent); color: var(--brand);
+}
+.receive-mode .mode-text { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+.receive-mode .mode-text strong { font-weight: 600; }
+.receive-mode .mode-lead { color: var(--ink-soft); font-size: var(--t-sm); }
+.receive-mode .mode-note { color: var(--muted); font-size: var(--t-xs); }

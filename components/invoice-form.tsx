@@ -8,6 +8,7 @@ import { PartnerPicker } from "./partner-picker";
 import Link from "next/link";
 import { AwaitingOrders, AlreadyAwaited } from "./awaiting-orders";
 import { useBackHere } from "./back-here";
+import { PackageCheck, Truck, Clock } from "lucide-react";
 
 type Item = PickerItem;
 type Node = { id: string; code: string; segment: string; name: string; parent_id: string | null };
@@ -107,6 +108,16 @@ export function InvoiceForm({
   const [cashAccountId, setCashAccountId] = useState("");
   const [matchedGrId, setMatchedGrId] = useState("");
   /**
+   * Which of the three ways this bill can post. The engine has always had
+   * three — matched to a receipt that already exists, composing a fresh one,
+   * or deferred so only the payable side lands — and the form expressed them
+   * as a select in the header plus a checkbox two screens down, default on.
+   * Whether stock moves was decided by a tick that was easy to miss and
+   * easier to leave alone by accident. It is one question now, asked once,
+   * with all three answers visible and none of them pre-chosen silently.
+   */
+  const [receiveMode, setReceiveMode] = useState<"match" | "now" | "later">("now");
+  /**
    * Which warehouse this bill is for. Follows the receipt being matched: an
    * invoice billing goods that went into Magway is an invoice for Magway, and
    * asking again is asking a question whose answer is already on the screen.
@@ -165,6 +176,7 @@ export function InvoiceForm({
 
   function matchGoodsReceipt(id: string) {
     setMatchedGrId(id);
+    if (id) setReceiveMode("match");
     setBillPart(false);
     const gr = openReceipts.find((d) => d.id === id);
     if (!gr) return;
@@ -269,6 +281,17 @@ export function InvoiceForm({
     setFromOrderId(null);
     const p = partners.find((x) => x.id === id);
     if (p && p.payment_terms_days > 0) setDueDate(addDays(docDate, p.payment_terms_days));
+  }
+
+  /**
+   * Leaving "matched" drops the receipt it was matched to. Keeping it would
+   * send goods_receipt_id alongside a choice that says no receipt exists,
+   * and the engine reads the id first — so the screen would say one thing
+   * and the posting do another.
+   */
+  function chooseReceiveMode(m: "match" | "now" | "later") {
+    setReceiveMode(m);
+    if (m !== "match" && matchedGrId) setMatchedGrId("");
   }
 
   const addLine = () =>
@@ -377,36 +400,6 @@ export function InvoiceForm({
               />
             </div>
 
-            {!isSales && (
-              <div className="field">
-                <label htmlFor="goods_receipt_id">Match goods receipt</label>
-                <select id="goods_receipt_id" name="goods_receipt_id" value={matchedGrId}
-                  onChange={(e) => matchGoodsReceipt(e.target.value)} disabled={!partnerId}>
-                  <option value="">
-                    {partnerId ? "Not matched" : "Choose a supplier first"}
-                  </option>
-                  {openReceipts.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.doc_no} · {String(d.doc_date).slice(0, 10)} · {d.lines.length} line{d.lines.length === 1 ? "" : "s"}
-                    </option>
-                  ))}
-                </select>
-                <span className="hint">
-                  {/* Same rule as the receipt side: say which of the three
-                      situations this is, rather than one line that is only
-                      true in some of them. */}
-                  {matchedGr
-                    ? "Lines filled from it — check against the actual bill"
-                    : openReceipts.length > 0
-                      ? `${openReceipts.length} receipt${openReceipts.length === 1 ? "" : "s"} `
-                        + "from this supplier are waiting on a bill"
-                      : partnerId
-                        ? "Nothing from this supplier is waiting on a bill"
-                        : "For goods already in the warehouse, awaiting their bill"}
-                </span>
-              </div>
-            )}
-
             <div className="field">
               <label htmlFor="due_date">Due date</label>
               <input
@@ -424,6 +417,101 @@ export function InvoiceForm({
           </div>
         </div>
       </div>
+
+      {/* The one question that decides whether stock moves. Three cards
+          because the engine has three paths, worded as the situation rather
+          than as the mechanism — somebody entering a bill knows whether the
+          goods are in the warehouse; they do not know what GR/IR clearing is. */}
+      {!isSales && (
+        <div className="card receive-mode">
+          <div className="card-head">
+            <h2>Have the goods arrived?</h2>
+            <span className="page-sub">This decides whether stock moves when the bill posts.</span>
+          </div>
+          <div className="card-body">
+            <div className="modes" role="radiogroup" aria-label="Goods receipt status">
+              {([
+                {
+                  key: "match" as const,
+                  icon: <PackageCheck size={18} aria-hidden="true" />,
+                  title: "Already received",
+                  lead: "A goods receipt recorded them. This bill matches it.",
+                  note: partnerId
+                    ? openReceipts.length > 0
+                      ? `${openReceipts.length} receipt${openReceipts.length === 1 ? "" : "s"} waiting on a bill`
+                      : "Nothing from this supplier is waiting on a bill"
+                    : "Choose a supplier first",
+                  disabled: !partnerId || openReceipts.length === 0,
+                },
+                {
+                  key: "now" as const,
+                  icon: <Truck size={18} aria-hidden="true" />,
+                  title: "Arriving with this bill",
+                  lead: "No receipt was raised. Posting records the goods in too.",
+                  note: "A goods receipt posts alongside the bill",
+                  disabled: false,
+                },
+                {
+                  key: "later" as const,
+                  icon: <Clock size={18} aria-hidden="true" />,
+                  title: "Not yet arrived",
+                  lead: "Bill first. Only what you owe posts now.",
+                  note: "Receive them later from Purchases → Goods receipts",
+                  disabled: false,
+                },
+              ]).map((m) => (
+                <button
+                  key={m.key}
+                  type="button"
+                  role="radio"
+                  aria-checked={receiveMode === m.key}
+                  className={`mode${receiveMode === m.key ? " on" : ""}`}
+                  disabled={m.disabled}
+                  onClick={() => chooseReceiveMode(m.key)}
+                >
+                  <span className="mode-icon">{m.icon}</span>
+                  <span className="mode-text">
+                    <strong>{m.title}</strong>
+                    <span className="mode-lead">{m.lead}</span>
+                    <span className="mode-note">{m.note}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            {/* Only under the choice it belongs to. In the header it was a
+                field somebody scrolled past on the way to the lines. */}
+            {receiveMode === "match" && (
+              <div className="field" style={{ marginTop: "1rem", maxWidth: "32rem" }}>
+                <label htmlFor="goods_receipt_id">Which goods receipt</label>
+                <select id="goods_receipt_id" name="goods_receipt_id" value={matchedGrId}
+                  onChange={(e) => matchGoodsReceipt(e.target.value)}
+                  disabled={!partnerId} required>
+                  <option value="">Choose the receipt this bill is for…</option>
+                  {openReceipts.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.doc_no} · {String(d.doc_date).slice(0, 10)} · {d.lines.length} line{d.lines.length === 1 ? "" : "s"}
+                    </option>
+                  ))}
+                </select>
+                <span className="hint">
+                  {matchedGr
+                    ? "Lines filled from it — check them against the actual bill"
+                    : "Its lines and costs fill this bill in"}
+                </span>
+              </div>
+            )}
+
+            {/* Sent only when it is the answer. The engine reads
+                goods_receipt_id first and received_now second, so a stale
+                value from an abandoned choice would decide the posting. */}
+            {receiveMode === "now" && (
+              <input type="hidden" name="received_now" value="1" />
+            )}
+          </div>
+        </div>
+      )}
+
 
       {/* An open order this bill may belong to. The dangerous path is the
           quiet one: no receipt matched, "received now" left ticked, and the
@@ -659,20 +747,6 @@ export function InvoiceForm({
                 correct {orderBehind.orderNo}
               </Link>
             : "correct the order"} instead, and it will carry into this bill.
-        </div>
-      )}
-
-      {!isSales && !matchedGrId && (
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.65rem", marginTop: "0.5rem" }}>
-          <label className="check" htmlFor="received_now">
-            <input id="received_now" name="received_now" type="checkbox" defaultChecked />
-            Received now — goods are already in the warehouse
-          </label>
-          <span className="hint">
-            Checked: a goods receipt posts alongside the bill, now. Unchecked:
-            only the payable side posts — the goods haven&rsquo;t arrived yet,
-            so receive them later from Purchases → Goods receipts.
-          </span>
         </div>
       )}
 
