@@ -50,15 +50,60 @@ export default async function IncomeStatement({
    */
   const chart = (await getAccountTree(company.id)) as unknown as ChartRow[];
   const amounts = new Map(rows.map((r) => [r.id, Number(r.amount)]));
-  const revenueTree = buildStatement(chart, amounts, ["REVENUE"]);
   const cogsTree = buildStatement(chart, amounts, ["COGS"]);
   const expenseTree = buildStatement(chart, amounts, ["EXPENSE"]);
 
-  const revenue = revenueTree.total;
+  /**
+   * Revenue is credit-natured money in, and two different things wear that
+   * nature: what the business sold, and everything else — a delivery charge,
+   * an exchange gain. Both are REVENUE to the ledger and only one is turnover,
+   * so the chart keeps them in separate groups (0071) and the statement reads
+   * them as separate sections. Without that, other income inflates the top
+   * line, inflates gross profit with it, and widens the base of every
+   * percentage measured against revenue.
+   *
+   * Matched on the group's code, which is the one place the chart names this
+   * distinction; a company whose chart has no such group simply shows no
+   * other-income section, and the statement reads as it did before.
+   */
+  const OTHER_INCOME_GROUP = "4-OI";
+  const NON_OPERATING_EXPENSE_GROUP = "6-NO";
+  const revenueAll = buildStatement(chart, amounts, ["REVENUE"]);
+  const revenueNodes = revenueAll.nodes.filter((n) => n.code !== OTHER_INCOME_GROUP);
+  const otherNodes = revenueAll.nodes.filter((n) => n.code === OTHER_INCOME_GROUP);
+
+  /**
+   * The expense side of the same line. An exchange loss is not a cost of
+   * running the business, so operating profit must not carry it — and it sat
+   * in Miscellaneous Expenses until 0072, where it did.
+   *
+   * Found by walking the tree rather than the roots, because the group hangs
+   * under 6-EX rather than standing on its own.
+   */
+  const findGroup = (nodes: typeof expenseTree.nodes, code: string): typeof nodes =>
+    nodes.flatMap((n) => (n.code === code ? [n] : findGroup(n.children, code)));
+  const nonOpNodes = findGroup(expenseTree.nodes, NON_OPERATING_EXPENSE_GROUP);
+  const nonOpExpense = nonOpNodes.reduce((t, n) => t + n.amount, 0);
+
+  /** Operating expenses with the non-operating group taken back out. */
+  const stripNonOp = (nodes: typeof expenseTree.nodes): typeof nodes =>
+    nodes
+      .filter((n) => n.code !== NON_OPERATING_EXPENSE_GROUP)
+      .map((n) => ({ ...n, children: stripNonOp(n.children),
+                     amount: n.amount - findGroup([n], NON_OPERATING_EXPENSE_GROUP)
+                                          .reduce((t, g) => t + g.amount, 0) }));
+  const operatingNodes = stripNonOp(expenseTree.nodes).filter((n) => n.amount !== 0 || n.children.length > 0);
+
+  const revenue = revenueNodes.reduce((t, n) => t + n.amount, 0);
+  const otherIncome = otherNodes.reduce((t, n) => t + n.amount, 0);
   const cogs = cogsTree.total;
-  const expense = expenseTree.total;
+  const expense = expenseTree.total - nonOpExpense;
   const grossProfit = revenue - cogs;
-  const netIncome = grossProfit - expense;
+  // What trading itself made, before anything earned or lost another way.
+  const operatingProfit = grossProfit - expense;
+  const netIncome = operatingProfit + otherIncome - nonOpExpense;
+  /** Whether anything sits below the operating line at all. */
+  const belowTheLine = otherNodes.length > 0 || nonOpNodes.length > 0;
 
   return (
     <>
@@ -119,21 +164,44 @@ export default async function IncomeStatement({
         currency={company.base_currency}
         scope={`${branchName} · ${range.from} to ${range.to}`}
         summaries={[
+          /* Revenue is a size, not a verdict — a big one is not automatically
+             good. Profit is the other way round, so those two take their
+             colour from the sign and revenue stays plain. */
           { label: "Total revenue", value: revenue, note: "what the period earned" },
-          { label: "Gross profit", value: grossProfit, note: "revenue less cost of goods sold" },
-          { label: "Net income", value: netIncome, note: "after every expense" },
+          { label: "Operating profit", value: operatingProfit,
+            note: "what trading itself made", tone: "verdict" as const },
+          { label: "Net income", value: netIncome,
+            note: otherIncome !== 0 ? "including income earned other ways" : "after every expense",
+            tone: "verdict" as const },
         ]}
         sections={[
-          { key: "REVENUE", label: "Revenue", nodes: revenueTree.nodes,
+          { key: "REVENUE", label: "Revenue", nodes: revenueNodes,
             total: revenue, totalLabel: "Total revenue" },
           { key: "COGS", label: "Cost of goods sold", nodes: cogsTree.nodes,
             total: cogs, totalLabel: "Total cost of goods sold" },
-          { key: "EXPENSE", label: "Operating expenses", nodes: expenseTree.nodes,
+          { key: "EXPENSE", label: "Operating expenses", nodes: operatingNodes,
             total: expense, totalLabel: "Total operating expenses" },
+          /* Only when there is some. A company that never earns outside its
+             trade should not read a section of zeroes. */
+          ...(otherNodes.length > 0
+            ? [{ key: "OTHER", label: "Other income", nodes: otherNodes,
+                 total: otherIncome, totalLabel: "Total other income" }]
+            : []),
+          ...(nonOpNodes.length > 0
+            ? [{ key: "NONOP", label: "Non-operating expenses", nodes: nonOpNodes,
+                 total: nonOpExpense, totalLabel: "Total non-operating expenses" }]
+            : []),
         ]}
         subtotals={[
           { after: "COGS", label: "Gross profit", value: grossProfit },
-          { after: "EXPENSE", label: "Net income", value: netIncome, strong: true },
+          /* Operating profit closes the trading story; net income closes the
+             statement. With no other income the two are the same figure, so
+             only one of them is drawn. */
+          ...(belowTheLine
+            ? [{ after: "EXPENSE", label: "Operating profit", value: operatingProfit },
+               { after: nonOpNodes.length > 0 ? "NONOP" : "OTHER",
+                 label: "Net income", value: netIncome, strong: true }]
+            : [{ after: "EXPENSE", label: "Net income", value: netIncome, strong: true }]),
         ]}
       />
     </>

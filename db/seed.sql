@@ -114,6 +114,7 @@ insert into account (company_id, code, name, account_type, is_postable) values
     (co, '2-LT',   'Long-Term Liabilities',               'LIABILITY',  false),
     (co, '3-EQ',   'Owner Equity',                        'EQUITY',    false),
     (co, '4-SA',   'Sales',                               'REVENUE',   false),
+    (co, '4-OI',   'Other Income',                        'REVENUE',   false),
     (co, '5-CG',   'Cost of Good Sold',                   'COGS',      false),
     (co, '6-EX',   'Expense',                             'EXPENSE',   false),
     (co, '7-TX',   'Tax Account',                         'LIABILITY',  false);
@@ -123,7 +124,8 @@ insert into account (company_id, parent_id, code, name, account_type, is_postabl
 select co, p.id, x.code, x.name, x.atype, false
 from (values
     ('6-EX', '6-GA', 'General & Administration Expenses',   'EXPENSE'::account_type),
-    ('6-EX', '6-SD', 'Selling & Distribution Expenses',     'EXPENSE'::account_type)
+    ('6-EX', '6-SD', 'Selling & Distribution Expenses',     'EXPENSE'::account_type),
+    ('6-EX', '6-NO', 'Non-Operating Expenses',              'EXPENSE'::account_type)
 ) as x(parent, code, name, atype)
 join account p on p.company_id = co and p.code = x.parent;
 
@@ -162,7 +164,8 @@ from (values
     ('4-SA', '4000', 'Sales',                               'REVENUE'::account_type,  false,  false,  false),
     ('4-SA', '4010', 'Sales Return',                        'REVENUE'::account_type,  false,  false,  false),
     ('4-SA', '4020', 'Sales Discount',                      'REVENUE'::account_type,  false,  false,  false),
-    ('4-SA', '4100', 'Other Income',                        'REVENUE'::account_type,  false,  false,  false),
+    ('4-SA', '4030', 'Delivery Income',                     'REVENUE'::account_type,  false,  false,  false),
+    ('4-OI', '4100', 'Other Income',                        'REVENUE'::account_type,  false,  false,  false),
     ('5-CG', '5000', 'Purchase',                            'COGS'::account_type,    false,  false,  false),
     ('5-CG', '5010', 'Purchase Return',                     'COGS'::account_type,    false,  false,  false),
     ('5-CG', '5020', 'Purchase Discounts',                  'COGS'::account_type,    false,  false,  false),
@@ -180,11 +183,12 @@ from (values
     ('6-GA', '6100', 'Bank Charges',                        'EXPENSE'::account_type,  false,  false,  false),
     ('6-GA', '6110', 'Miscellaneous Expenses',              'EXPENSE'::account_type,  false,  false,  false),
     ('6-GA', '6160', 'Depreciation Expense',                'EXPENSE'::account_type,  false,  false,  false),
-    ('6-SD', '6300', 'Discount Allowed',                    'EXPENSE'::account_type,  false,  false,  false),
-    ('6-SD', '6310', 'Advertising Expense',                 'EXPENSE'::account_type,  false,  false,  false),
-    ('6-SD', '6320', 'Promotion Expense',                   'EXPENSE'::account_type,  false,  false,  false),
-    ('6-SD', '6330', 'Commission Expenses',                 'EXPENSE'::account_type,  false,  false,  false),
-    ('6-SD', '6340', 'Delivery Charges',                    'EXPENSE'::account_type,  false,  false,  false),
+    ('6-NO', '6400', 'Foreign Exchange Loss',               'EXPENSE'::account_type,  false,  false,  false),
+    ('6-NO', '6300', 'Discount Allowed',                    'EXPENSE'::account_type,  false,  false,  false),
+    ('6-NO', '6310', 'Advertising Expense',                 'EXPENSE'::account_type,  false,  false,  false),
+    ('6-NO', '6320', 'Promotion Expense',                   'EXPENSE'::account_type,  false,  false,  false),
+    ('6-NO', '6330', 'Commission Expenses',                 'EXPENSE'::account_type,  false,  false,  false),
+    ('6-NO', '6340', 'Delivery Charges',                    'EXPENSE'::account_type,  false,  false,  false),
     ('7-TX', '7000', 'Commercial Tax Payable',              'LIABILITY'::account_type,  false,  false,  false),
     ('7-TX', '7010', 'Income Tax Payable',                  'LIABILITY'::account_type,  false,  false,  false)
 ) as x(parent, code, name, atype, ctrl, cash, bank)
@@ -202,9 +206,9 @@ from (values
     ('PROMOTION_EXPENSE',           '6320'),
     ('STOCK_ADJUSTMENT',            '5300'),
     ('FX_GAIN',                     '4100'),
-    ('FX_LOSS',                     '6110'),
+    ('FX_LOSS',                     '6400'),
     ('ROUNDING_DIFFERENCE',         '6110'),
-    ('DELIVERY_INCOME',             '4100'),
+    ('DELIVERY_INCOME',             '4030'),
     ('CUSTOMER_ADVANCE',            '2060'),
     ('SUPPLIER_ADVANCE',            '1070')
 ) as r(role, code)

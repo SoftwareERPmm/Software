@@ -19,6 +19,13 @@ export type Summary = {
   value: number;
   /** A line stating what the figure closes over, not a computed trend. */
   note: string;
+  /**
+   * Whether this figure carries a verdict. A profit is good and a loss is
+   * bad, so those cards take their colour from the sign. Total assets is
+   * neither — a big balance sheet is not a good one — so most figures stay
+   * plain and the colour keeps meaning something.
+   */
+  tone?: "verdict" | "plain";
 };
 
 /**
@@ -43,6 +50,7 @@ export function StatementTable({
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [showCodes, setShowCodes] = useState(true);
+  const [showPct, setShowPct] = useState(true);
 
   /** Every group, with how deep it sits — the level control needs both. */
   const groups = useMemo(() => {
@@ -164,7 +172,7 @@ export function StatementTable({
             )}
           </td>
           <td className="r">{money(n.amount)}</td>
-          <td className="r stmt-pct">{pct(n.amount) ?? "\u2014"}</td>
+          {showPct && <td className="r stmt-pct">{pct(n.amount) ?? "\u2014"}</td>}
         </tr>
       );
       return shut ? [row] : [row, ...renderNodes(n.children)];
@@ -202,7 +210,14 @@ export function StatementTable({
           <label className="stmt-switch">
             <input type="checkbox" checked={showCodes}
                    onChange={(e) => setShowCodes(e.target.checked)} />
+            <span className="stmt-track" aria-hidden="true" />
             Account codes
+          </label>
+          <label className="stmt-switch">
+            <input type="checkbox" checked={showPct}
+                   onChange={(e) => setShowPct(e.target.checked)} />
+            <span className="stmt-track" aria-hidden="true" />
+            Percentages
           </label>
           <button type="button" className="erp-hbtn noprint" onClick={exportCsv}>
             <Download size={15} aria-hidden="true" /> Export
@@ -214,13 +229,18 @@ export function StatementTable({
       </div>
 
       <div className="stmt-summaries">
-        {summaries.map((s) => (
-          <div key={s.label} className="stmt-summary">
-            <span className="stmt-summary-label">{s.label}</span>
-            <strong className="stmt-summary-value">{currency} {money(s.value)}</strong>
-            <span className="stmt-summary-note">{s.note}</span>
-          </div>
-        ))}
+        {summaries.map((s) => {
+          const verdict = s.tone === "verdict"
+            ? (s.value < 0 ? " bad" : " good")
+            : "";
+          return (
+            <div key={s.label} className={`stmt-summary${verdict}`}>
+              <span className="stmt-summary-label">{s.label}</span>
+              <strong className="stmt-summary-value">{currency} {money(s.value)}</strong>
+              <span className="stmt-summary-note">{s.note}</span>
+            </div>
+          );
+        })}
       </div>
 
       <div className="stmt-scope">{scope}</div>
@@ -231,30 +251,37 @@ export function StatementTable({
             <tr>
               <th>Description</th>
               <th className="r">Amount ({currency})</th>
-              <th className="r">% of {summaries[0]?.label.toLowerCase() ?? "total"}</th>
+              {showPct && (
+                <th className="r">% of {summaries[0]?.label.toLowerCase() ?? "total"}</th>
+              )}
             </tr>
           </thead>
           {sections.map((s) => (
             <tbody key={s.key} className="stmt-section">
+              {/* A heading, not a figure. It used to carry the section total
+                  and so did the row closing the section — the same number
+                  twice, three rows apart, with the detail in between. */}
               <tr className="stmt-section-head">
-                <td>{s.label}</td>
-                <td className="r">{money(s.total)}</td>
-                <td className="r stmt-pct">{pct(s.total) ?? "—"}</td>
+                <td colSpan={showPct ? 3 : 2}>{s.label}</td>
               </tr>
               {s.nodes.length === 0 && (
-                <tr><td colSpan={3} className="stmt-none">Nothing posted in this period.</td></tr>
+                <tr><td colSpan={showPct ? 3 : 2} className="stmt-none">Nothing posted in this period.</td></tr>
               )}
               {renderNodes(s.nodes)}
               <tr className="stmt-total">
                 <td>{s.totalLabel}</td>
                 <td className="r">{money(s.total)}</td>
-                <td className="r stmt-pct">{pct(s.total) ?? "—"}</td>
+                {showPct && <td className="r stmt-pct">{pct(s.total) ?? "—"}</td>}
               </tr>
+              {/* A loss reads as a loss. The only colour in the table, and it
+                  is on the lines that carry a verdict. */}
               {subtotals.filter((x) => x.after === s.key).map((st) => (
-                <tr key={st.label} className={`stmt-subtotal${st.strong ? " strong" : ""}`}>
+                <tr key={st.label}
+                    className={`stmt-subtotal${st.strong ? " strong" : ""}`
+                      + (st.value < 0 ? " bad" : "")}>
                   <td>{st.label}</td>
                   <td className="r">{money(st.value)}</td>
-                  <td className="r stmt-pct">{pct(st.value) ?? "—"}</td>
+                  {showPct && <td className="r stmt-pct">{pct(st.value) ?? "—"}</td>}
                 </tr>
               ))}
             </tbody>

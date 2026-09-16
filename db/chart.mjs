@@ -61,6 +61,17 @@ export const CHART = [
   ["4000",  "Sales",                             "REVENUE",   true],
   ["4010",  "Sales Return",                      "REVENUE",   true],
   ["4020",  "Sales Discount",                    "REVENUE",   true],
+  // Charged to the customer for carrying the goods they bought. Not product
+  // sales, so not 4000 — but revenue all the same, because it exists only
+  // because the sale did. It sat in Other Income, which put money earned from
+  // trading below the operating-profit line.
+  ["4030",  "Delivery Income",                   "REVENUE",   true,  { added: true }],
+  // Not trading income, so not part of revenue. Kept in a group of its own so
+  // the income statement can show what the business earned by trading before
+  // adding what it earned some other way — a delivery charge or an exchange
+  // gain inside "revenue" inflates the top line, the gross profit and every
+  // percentage measured against it.
+  ["4-OI",  "Other Income",                      "REVENUE",   false],
   ["4100",  "Other Income",                      "REVENUE",   true],
   ["5-CG", "Cost of Good Sold",                 "COGS",      false],
   ["5000",  "Purchase",                          "COGS",      true],
@@ -83,6 +94,11 @@ export const CHART = [
   ["6110",  "Miscellaneous Expenses",            "EXPENSE",   true],
   ["6160",  "Depreciation Expense",              "EXPENSE",   true],
   ["6-SD",  "Selling & Distribution Expenses",   "EXPENSE",   false, { under: "6-EX" }],
+  // Below the operating line, opposite 4-OI. An exchange loss is not a cost of
+  // running the business; it is what happened to money between agreeing a
+  // price and settling it.
+  ["6-NO",  "Non-Operating Expenses",            "EXPENSE",   false, { under: "6-EX" }],
+  ["6400",  "Foreign Exchange Loss",             "EXPENSE",   true,  { added: true }],
   ["6300",  "Discount Allowed",                  "EXPENSE",   true],
   ["6310",  "Advertising Expense",               "EXPENSE",   true],
   ["6320",  "Promotion Expense",                 "EXPENSE",   true],
@@ -101,14 +117,18 @@ export const SYSTEM = {
   PURCHASE_PRICE_VARIANCE: "5050", PURCHASE_DISCOUNT_RECEIVED: "5020",
   SALES_DISCOUNT_ALLOWED: "6300", PROMOTION_EXPENSE: "6320", STOCK_ADJUSTMENT: "5300",
 
-  // These have homes in the chart already, so they use them rather than
-  // adding accounts nobody asked for. Settlement in another currency is other
-  // income or a miscellaneous cost; a rounding difference is the same; and a
-  // delivery fee charged to the customer is plainly other income too — it is
-  // money earned for carrying goods, not for selling them, which is the whole
-  // reason it is kept out of 4000 Sales.
-  FX_GAIN: "4100", FX_LOSS: "6110", ROUNDING_DIFFERENCE: "6110",
-  DELIVERY_INCOME: "4100",
+  // Mostly homes the chart already has, rather than accounts nobody asked for
+  // — a rounding difference is a miscellaneous cost and stays one.
+  //
+  // Two exceptions, both about which side of the operating line money falls.
+  // A delivery fee is earned because a sale happened, so it is revenue and
+  // belongs above that line — kept out of 4000 Sales because it is not product
+  // sales, but revenue nonetheless. An exchange difference is the opposite: it
+  // is what happened to money between agreeing a price and settling it, and
+  // belongs below. So the gain sits in Other Income and the loss now has an
+  // account of its own instead of hiding inside Miscellaneous Expenses.
+  FX_GAIN: "4100", FX_LOSS: "6400", ROUNDING_DIFFERENCE: "6110",
+  DELIVERY_INCOME: "4030",
 
   // Money that moved before the invoice did. Deliberately not the control
   // accounts: an advance has no open item, so parking it in receivables would

@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useState } from "react";
-import { Lock } from "lucide-react";
+import { Lock, FileX, Undo2 } from "lucide-react";
 import type { ActionResult } from "@/lib/actions";
 
 type Blocker = { reason: string; docNo?: string; docId?: string };
@@ -28,6 +28,7 @@ type Blocker = { reason: string; docNo?: string; docId?: string };
  */
 export function VoidDocument({
   action, documentId, docNo, canVoid, blockers, effects, children,
+  returnHref, returnLabel,
 }: {
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   documentId: string;
@@ -42,6 +43,20 @@ export function VoidDocument({
    * question — this is wrong, what now?
    */
   children?: React.ReactNode;
+  /**
+   * Where a supplier return for this receipt would be started, pre-filled.
+   *
+   * Set only on a goods receipt, and it changes what voiding asks. Voiding
+   * says the receipt should never have existed; a return says the goods came
+   * and went back. Both take the stock off the shelf and they leave entirely
+   * different records — one showing nothing ever arrived, the other showing
+   * what arrived, when it left and what the supplier owes for it. The screen
+   * asked neither, took any free-text reason, and let somebody undoing a real
+   * physical return erase the fact it happened.
+   */
+  returnHref?: string | null;
+  /** What that return will actually do — it differs once a bill exists. */
+  returnLabel?: string | null;
 }) {
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     action as never, null
@@ -50,6 +65,8 @@ export function VoidDocument({
   /** One void per opening of this panel — see postOnce. */
   const [attemptKey] = useState(() => crypto.randomUUID());
   const [open, setOpen] = useState(false);
+  /** null until the goods question is answered; false = never arrived. */
+  const [arrived, setArrived] = useState<boolean | null>(null);
 
   if (!canVoid) {
     return (
@@ -84,7 +101,53 @@ export function VoidDocument({
     return (
       <div className="docactions">
         {children}
-        <button type="button" className="warn" onClick={() => setOpen(true)}>Void this document</button>
+        <button type="button" className="warn"
+                onClick={() => { setArrived(null); setOpen(true); }}>
+          {returnHref ? "Cancel this receipt" : "Void this document"}
+        </button>
+      </div>
+    );
+  }
+
+  /**
+   * Which of the two situations this is. Unanswered until it is answered:
+   * defaulting to "never arrived" would make the commoner, safer-looking
+   * option the one nobody reads.
+   */
+  if (returnHref && arrived === null) {
+    return (
+      <div className="card" style={{ marginTop: "0.75rem" }}>
+        <div className="card-head">
+          <h2>Cancel {docNo}</h2>
+          <span className="actions">
+            <button type="button" className="ghost tiny" onClick={() => setOpen(false)}>Cancel</button>
+          </span>
+        </div>
+        <div className="card-body">
+          <p className="page-sub" style={{ marginBottom: "0.9rem" }}>
+            Did these goods physically arrive at the warehouse?
+          </p>
+          <div className="modes">
+            <button type="button" className="mode" onClick={() => setArrived(false)}>
+              <span className="mode-icon"><FileX size={18} aria-hidden="true" /></span>
+              <span className="mode-text">
+                <strong>No — the receipt is a mistake</strong>
+                <span className="mode-lead">Entered twice, or keyed against the wrong order.</span>
+                <span className="mode-note">Voids it. Nothing physically moved.</span>
+              </span>
+            </button>
+            <a className="mode" href={returnHref}>
+              <span className="mode-icon"><Undo2 size={18} aria-hidden="true" /></span>
+              <span className="mode-text">
+                <strong>Yes — and they went back to the supplier</strong>
+                <span className="mode-lead">They were on the shelf and have been sent back.</span>
+                <span className="mode-note">
+                  {returnLabel ?? "Records a supplier return, filled in from this receipt"}
+                </span>
+              </span>
+            </a>
+          </div>
+        </div>
       </div>
     );
   }

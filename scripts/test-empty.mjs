@@ -141,5 +141,13 @@ try {
   console.log(bad === 0 ? "\n  a cleared database is fully usable\n" : `\n  ${bad} failed\n`);
 } catch (e) {
   console.error(`\n  error: ${e.message}\n`); bad++;
-} finally { await sql.end(); }
+} finally {
+  // Released before the connection closes, like every other suite. This one
+  // imported releaseTestLock and never called it, so it took the lock and
+  // kept it — leaving the next run refused by a holder that had already
+  // exited, which is exactly the situation the lock is careful not to clear
+  // on its own.
+  await releaseTestLock(sql);
+  await sql.end();
+}
 process.exit(bad === 0 ? 0 : 1);

@@ -360,7 +360,33 @@ export default async function DocumentPage({
   // A delivery with no invoice against it yet — the sales-side mirror of
   // needsInvoiceMatch, just off the chain link itself rather than a
   // clearing-account view, since a delivery never touches GR/IR.
-  const needsSalesInvoice = doc.doc_type === "DELIVERY" && doc.status === "POSTED" && !stageDoc["SALES_INVOICE"];
+  /**
+   * Where "the goods went back" leads, for a goods receipt.
+   *
+   * Against the receipt while nobody has billed for it: what that receipt
+   * created was an accrual, and the return takes it off. Once a bill exists
+   * the return has to name the bill instead — the supplier has asked for
+   * money, so what goes back is a credit against it, and clearing the accrual
+   * would leave the invoice standing in full for goods that are gone. The
+   * engine refuses the wrong one; this stops the screen offering it.
+   */
+  const returnRoute = await (async () => {
+    if (doc.doc_type !== "GOODS_RECEIPT" || doc.status !== "POSTED") return null;
+    const [billed] = await sql`
+      select d.id, d.doc_no from document d
+       where d.company_id = ${doc.company_id}
+         and d.doc_type = 'PURCHASE_INVOICE' and d.status = 'POSTED'
+         and (fn_current_document(d.source_document_id) = fn_current_document(${doc.id})
+           or fn_current_document(${doc.source_document_id}) = fn_current_document(d.id))
+       limit 1`;
+    return billed
+      ? { href: `/purchases/returns/new?source=${billed.id}`,
+          label: `Records a supplier return against ${billed.doc_no}, the bill for these goods` }
+      : { href: `/purchases/returns/new?source=${doc.id}`,
+          label: "Records a supplier return, filled in from this receipt" };
+  })();
+
+    const needsSalesInvoice = doc.doc_type === "DELIVERY" && doc.status === "POSTED" && !stageDoc["SALES_INVOICE"];
 
   /**
    * What the invoice this button opens would actually come to.
@@ -880,6 +906,12 @@ export default async function DocumentPage({
           canVoid={voidPlan.canVoid}
           blockers={voidPlan.blockers}
           effects={voidPlan.effects}
+          /* Only a goods receipt is asked the question, because only a goods
+             receipt has the other answer: goods that arrived and went back are
+             a supplier return. Nothing else here has a physical counterpart
+             the reader could confuse a void with. */
+          returnHref={returnRoute?.href ?? null}
+          returnLabel={returnRoute?.label ?? null}
         >
           {correctInvoiceAction}
         </VoidDocument>
