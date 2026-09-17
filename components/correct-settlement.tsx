@@ -57,6 +57,7 @@ export function CorrectSettlement({
   /** What the document is for. The correction must still add up to it. */
   total: number;
 }) {
+  const noun = docType === "SUPPLIER_PAYMENT" ? "payment" : "receipt";
   const [open, setOpen] = useState(false);
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     action as never, null,
@@ -87,12 +88,12 @@ export function CorrectSettlement({
     .map((i) => ({ invoiceId: i.document_id, amount: n(amounts[i.document_id]) || 0 }))
     .filter((a) => a.amount > 0);
 
-  const noun = docType === "SUPPLIER_PAYMENT" ? "payment" : "receipt";
+
 
   return (
     <>
-      <button type="button" className="ghost tiny" onClick={() => setOpen(true)}>
-        <Pencil size={13} aria-hidden="true" /> Correct
+      <button type="button" className="ghost" onClick={() => setOpen(true)}>
+        <Pencil size={14} aria-hidden="true" /> Correct {noun}
       </button>
 
       {open && (

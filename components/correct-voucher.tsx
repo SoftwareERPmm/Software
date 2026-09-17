@@ -84,8 +84,12 @@ export function CorrectVoucher({
 
   return (
     <>
-      <button type="button" className="ghost tiny" onClick={() => setOpen(true)}>
-        <Pencil size={13} aria-hidden="true" /> Correct
+      {/* Full size, and named after what it corrects — the pair beside it is
+          one question with two answers, and a smaller button reads as a lesser
+          one. The order and invoice screens have always done it this way; this
+          and the settlement were written separately and drifted. */}
+      <button type="button" className="ghost" onClick={() => setOpen(true)}>
+        <Pencil size={14} aria-hidden="true" /> Correct voucher
       </button>
 
       {open && (

@@ -163,7 +163,10 @@ export function CorrectOrder({
 
   return (
     <>
-      <button type="button" className="btn ghost" onClick={() => setOpen(true)}>
+      {/* .btn is the class that makes an <a> look like a button; on a real
+          button it adds nothing, and carrying it here implied a difference
+          from the one beside it that does not exist. */}
+      <button type="button" className="ghost" onClick={() => setOpen(true)}>
         <Pencil size={14} aria-hidden="true" /> Correct {noun}
       </button>
 

@@ -81,9 +81,13 @@ export function VoidDocument({
     return (
       <div className="docactions voidlock">
         {children}
-        <button type="button" className="btn ghost tiny" onClick={() => setOpen(!open)}
+        {/* The same size as the button it stands in for. A refusal rendered
+            smaller than the action reads as a note about the page rather than
+            as the answer to "can I undo this" — and on a purchase invoice it
+            sat between two full-size buttons at two other heights. */}
+        <button type="button" className="ghost" onClick={() => setOpen(!open)}
                 aria-expanded={open}>
-          <Lock size={13} aria-hidden="true" /> Cannot be voided
+          <Lock size={14} aria-hidden="true" /> Cannot be voided
         </button>
         {open && (
           <div className="voidlock-why">

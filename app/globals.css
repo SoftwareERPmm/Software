@@ -461,6 +461,39 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-num
 .kv dt { font-family: var(--mono); font-size: var(--t-2xs); letter-spacing: var(--track-caps); text-transform: uppercase; color: var(--muted); align-self: center; }
 .kv dd { margin: 0; }
 
+/* The document panel: pairs across the width, each on a rule.
+   The plain .kv above is a label column and a value column, which is right
+   for a narrow aside and wrong for a card that spans the page — the value
+   column takes everything left over, so a document number sits in a thousand
+   pixels of nothing and a date is a screen's width from its label. Here each
+   pair is its own cell and the rule under it says where the field ends, the
+   way a form does. */
+.kv.ruled {
+  /* Two, fixed — not auto-fit. Left to fit, a wide card takes three columns
+     and the panel reads as a grid of scattered words rather than two lists
+     you can run an eye down. Two is the shape a document header has on
+     paper. */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 var(--s5);
+  align-items: start;
+}
+/* One column where two would leave nothing for the value. */
+@media (max-width: 46rem) {
+  .kv.ruled { grid-template-columns: minmax(0, 1fr); }
+}
+.kv.ruled > div {
+  display: grid;
+  grid-template-columns: minmax(5.5rem, auto) minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--s3);
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--line);
+}
+/* A remark is a sentence: it takes the whole width rather than wrapping into
+   a narrow column of three-word lines. */
+.kv.ruled > div.kv-wide { grid-column: 1 / -1; }
+.kv.ruled dd { min-width: 0; overflow-wrap: anywhere; }
+
 .empty { padding: var(--s5) var(--s3); text-align: center; color: var(--muted); font-size: var(--t-md); }
 
 /* ---------------------------------------------------------------- forms -- */
@@ -2038,11 +2071,25 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 }
 .origin-head { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.5rem; }
 .origin-list {
+  /* Two pairs across, not four stacked down the left. The value column used
+     to take everything the strip was wide, so "Paid in full" sat in most of a
+     screen and the four facts read as a tall list in a short box. No rules
+     here, unlike the Document panel: this is a sentence about where the
+     document came from, not a form. */
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.25rem var(--s5);
+  margin: 0;
+  align-items: baseline;
+}
+.origin-list > div {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   gap: 0.25rem 0.75rem;
-  margin: 0;
   align-items: baseline;
+}
+@media (max-width: 46rem) {
+  .origin-list { grid-template-columns: minmax(0, 1fr); }
 }
 .origin-list dt { color: var(--muted); }
 .origin-list dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
