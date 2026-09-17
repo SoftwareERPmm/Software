@@ -2703,12 +2703,12 @@ async function _postSalesInvoice(
         (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
          partner_id, location_id, currency, exchange_rate, status,
          net_total, tax_total, gross_total, memo, posted_at,
-         source_document_id, payment_type, salesman_id)
+         source_document_id, lifecycle_owner_id, payment_type, salesman_id)
       values
         (${companyId}, 'CUSTOMER_RECEIPT', ${receiptNo}, ${fiscalYear}, ${docDate}::date,
          ${docDate}::date, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
          ${cashIn}, 0, ${cashIn}, ${`Cash received against ${docNo}`}, now(),
-         ${doc.id}, 'CASH', ${input.salesmanId ?? null})
+         ${doc.id}, ${doc.id}, 'CASH', ${input.salesmanId ?? null})
       returning id`;
 
     await tx`
@@ -2787,7 +2787,19 @@ export async function postSaleWithDelivery(input: SalesInvoiceInput, outer?: Tra
       deliveryId = delivery.id;
     }
 
-    return _postSalesInvoice(tx, { ...input, deliveryId });
+    const invoice = await _postSalesInvoice(tx, { ...input, deliveryId });
+
+    // Stamped after, because the delivery is written first — the stock has to
+    // move before the bill that reports it can exist. The owner is what makes
+    // this delivery part of the invoice rather than a document of its own,
+    // and it is the difference between a counter sale and a delivery somebody
+    // raised by hand against the same invoice.
+    if (deliveryId) {
+      await tx`
+        update document set lifecycle_owner_id = ${invoice.id}
+         where id = ${deliveryId}`;
+    }
+    return invoice;
   });
 }
 
@@ -4090,12 +4102,12 @@ async function _postPurchaseInvoice(
         (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
          partner_id, currency, exchange_rate, status,
          net_total, tax_total, gross_total, memo, posted_at,
-         source_document_id, payment_type)
+         source_document_id, lifecycle_owner_id, payment_type)
       values
         (${companyId}, 'SUPPLIER_PAYMENT', ${paymentNo}, ${fiscalYear}, ${docDate}::date,
          ${docDate}::date, ${partnerId}, 'MMK', 1, 'POSTED',
          ${cashOut}, 0, ${cashOut}, ${`Cash paid against ${docNo}`}, now(),
-         ${doc.id}, 'CASH')
+         ${doc.id}, ${doc.id}, 'CASH')
       returning id`;
 
     await tx`
@@ -4232,7 +4244,18 @@ export async function postPurchaseWithReceipt(
       }
     }
 
-    return _postPurchaseInvoice(tx, { ...input, lines, goodsReceiptId });
+    const bill = await _postPurchaseInvoice(tx, { ...input, lines, goodsReceiptId });
+
+    // The same stamp as the counter sale's delivery, for the same reason: a
+    // receipt somebody raised is theirs and blocks the bill, a receipt this
+    // bill composed is part of it. Written after, because the goods have to
+    // arrive before the bill that reports them can exist.
+    if (goodsReceiptId) {
+      await tx`
+        update document set lifecycle_owner_id = ${bill.id}
+         where id = ${goodsReceiptId}`;
+    }
+    return bill;
   });
 }
 
@@ -6157,6 +6180,21 @@ export async function reconcileNegativeStock(input: {
 export async function voidDocument(input: {
   documentId: string;
   reason?: string | null;
+  /**
+   * Somebody has looked at the shelf and the goods are on it.
+   *
+   * Required before a void puts stock back, and required for the same reason
+   * allowNegativeStock is required before a posting takes stock it has no
+   * record of: the system cannot see a warehouse. Voiding a counter sale
+   * keyed in error, seconds later, with the goods still on the counter, is
+   * one thing. Voiding it after the customer has carried them out is another,
+   * and putting the stock back then makes the books say there is something
+   * on the shelf that is not.
+   *
+   * Only asked where it is load-bearing — a void that moves no stock never
+   * needs it.
+   */
+  goodsBack?: boolean;
 }, tx?: TransactionSql) {
   return inTransaction(tx, async (t) => voidDocumentIn(t, input));
 }
@@ -6171,7 +6209,7 @@ export async function voidDocument(input: {
  */
 async function voidDocumentIn(
   tx: TransactionSql,
-  input: { documentId: string; reason?: string | null }
+  input: { documentId: string; reason?: string | null; goodsBack?: boolean }
 ) {
   const { documentId } = input;
   {
@@ -6181,6 +6219,7 @@ async function voidDocumentIn(
       select id, company_id, doc_type, doc_no, partner_id, location_id, currency,
              exchange_rate, net_total, tax_total, gross_total, journal_entry_id,
              status, reversed_by_document_id, fiscal_year_id, voucher_direction,
+             lifecycle_owner_id,
              to_char(doc_date, 'YYYY-MM-DD') as doc_date,
              to_char(posting_date, 'YYYY-MM-DD') as posting_date
         from document where id = ${documentId} for update`;
@@ -6199,6 +6238,60 @@ async function voidDocumentIn(
     const plan = await planVoidIn(tx, documentId);
     if (!plan.canVoid) {
       throw new Error(plan.blockers.map((b: VoidBlocker) => b.reason).join(" "));
+    }
+
+    /**
+     * What this document composed goes with it.
+     *
+     * A counter sale is one act that writes three documents: the invoice, the
+     * delivery that takes the stock out, and — when the money is taken at the
+     * counter — the receipt. Undoing the act has to undo all three, and the
+     * user who never wrote two of them should not be asked to.
+     *
+     * Children first, so nothing is half-undone: each is planned and refused
+     * on its own terms, and a refusal anywhere throws before the parent's
+     * reversal is written. The whole thing is one transaction, so a refusal
+     * leaves the books exactly as they were.
+     *
+     * Only what names this document as its owner. A delivery somebody raised
+     * against this invoice is their document, blocks this void, and is never
+     * reached here.
+     */
+    const owned = await tx`
+      select id, doc_no from document
+       where lifecycle_owner_id = ${documentId} and status = 'POSTED'
+       order by doc_type`;
+
+    /**
+     * Stock does not come back because a document was undone. Somebody has to
+     * have looked.
+     *
+     * Asked here rather than at the screen because a screen is one caller.
+     * What makes this safe is the same thing that makes allowNegativeStock
+     * safe: the engine refuses without it, so an importer or a script cannot
+     * quietly put stock on a shelf it has never seen.
+     */
+    const restoring = await tx`
+      select coalesce(sum(-sm.qty), 0) as qty
+        from stock_movement sm
+        join document d on d.id = sm.document_id
+       where d.lifecycle_owner_id = ${documentId}
+         and d.status = 'POSTED' and sm.qty < 0`;
+    const comingBack = Number((restoring as unknown as { qty: string }[])[0]?.qty ?? 0);
+    if (comingBack > 0 && input.goodsBack !== true) {
+      throw new Error(
+        `Voiding ${doc.doc_no} puts ${comingBack} unit${comingBack === 1 ? "" : "s"} back on `
+        + `the shelf. Confirm the goods are physically there. If the customer still has `
+        + `them, this is not a void — raise a sales return when they come back.`
+      );
+    }
+    for (const child of owned as unknown as { id: string; doc_no: string }[]) {
+      await voidDocumentIn(tx, {
+        documentId: child.id,
+        reason: input.reason
+          ? `${input.reason} (with ${doc.doc_no})`
+          : `Reversed with ${doc.doc_no}`,
+      });
     }
 
     const lines = await tx`
@@ -6328,6 +6421,57 @@ async function voidDocumentIn(
      * trigger, and rightly: what arrived did arrive, and the record of it
      * stays.
      */
+    /**
+     * And goods a reversed issue took out come back on.
+     *
+     * The mirror of the receipt above, and it cannot be its exact mirror. A
+     * receipt's lots are closed by consuming them, which FIFO already
+     * understands. An issue's lots cannot be re-opened the same way:
+     * stock_lot_consumption is CHECK (qty > 0) and immutable by trigger, so
+     * there is no such thing as a negative consumption and no editing the row
+     * that recorded the goods leaving. What left, left.
+     *
+     * So the goods come back the way a customer return brings them back — as
+     * lots of their own, at the cost the originals went out at, drawn slice by
+     * slice from what this document actually consumed. Valuation is exact;
+     * only the FIFO position moves, and for a document being undone rather
+     * than aged that is immaterial.
+     *
+     * Reached only for a document the void is carrying — a counter sale's own
+     * delivery. An issue somebody raised is still refused by planVoidIn,
+     * because goods that genuinely went out do not come back by paperwork.
+     */
+    if (doc.doc_type === "DELIVERY" && doc.lifecycle_owner_id) {
+      const consumed = await tx`
+        select c.qty, c.unit_cost, l.item_id, l.location_id
+          from stock_lot_consumption c
+          join stock_movement sm on sm.id = c.stock_movement_id
+          join stock_lot l on l.id = c.lot_id
+         where sm.document_id = ${doc.id}
+         order by c.created_at`;
+
+      for (const slice of consumed as unknown as {
+        qty: string; unit_cost: string; item_id: string; location_id: string;
+      }[]) {
+        const qty = Number(slice.qty);
+        const unitCost = Number(slice.unit_cost);
+        const cost = round4(qty * unitCost);
+
+        const [back] = await tx`
+          insert into stock_movement
+            (company_id, item_id, location_id, movement_date, qty, unit_cost,
+             total_cost, document_id)
+          values
+            (${doc.company_id}, ${slice.item_id}, ${slice.location_id},
+             ${plan.reversalDate}::date, ${qty}, ${unitCost}, ${cost}, ${reversal.id})
+          returning id`;
+
+        await createFifoLot(tx, doc.company_id as string, slice.item_id,
+                            slice.location_id, plan.reversalDate, unitCost, qty,
+                            back.id as string);
+      }
+    }
+
     if (doc.doc_type === "GOODS_RECEIPT") {
       const lots = await tx`
         select l.id, l.item_id, l.location_id, l.qty_received, l.unit_cost
@@ -6371,6 +6515,13 @@ async function voidDocumentIn(
                 posting_date: doc.posting_date,
                 reversal_no: reversalNo,
                 reversal_date: plan.reversalDate,
+                // Kept because it is a statement somebody made about a
+                // warehouse, not a flag the software set. Six months later
+                // the question "who said those goods were back" has an
+                // answer, the way the negative-stock confirmation does.
+                ...(comingBack > 0
+                  ? { goods_back_confirmed: true, units_restored: comingBack }
+                  : {}),
               })})`;
 
     return {

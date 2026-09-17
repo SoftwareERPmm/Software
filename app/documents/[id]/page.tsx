@@ -301,6 +301,21 @@ export default async function DocumentPage({
   // the action then refuses.
   const voidPlan = doc.status === "POSTED" ? await planVoid(doc.id) : null;
 
+  /**
+   * What voiding this would put back on the shelf. Only a counter sale has
+   * any: it composed the delivery that took the stock out, so undoing the
+   * sale undoes that too — and nobody should be able to do it without saying
+   * the goods are actually there.
+   */
+  const [restores] = doc.status === "POSTED"
+    ? (await sql`
+        select coalesce(sum(-sm.qty), 0)::float as units
+          from stock_movement sm
+          join document child on child.id = sm.document_id
+         where child.lifecycle_owner_id = ${doc.id}
+           and child.status = 'POSTED' and sm.qty < 0`) as unknown as { units: number }[]
+    : [{ units: 0 }];
+
   // What this document is genuinely linked to, in both directions. Shown
   // alongside the workflow pipeline rather than instead of it: the pipeline
   // is the shape a sale usually takes and carries the "create the next one"
@@ -977,6 +992,8 @@ export default async function DocumentPage({
              the reader could confuse a void with. */
           returnHref={returnRoute?.href ?? null}
           returnLabel={returnRoute?.label ?? null}
+          restoresUnits={Number(restores?.units ?? 0)}
+          salesReturnHref={`/sales/returns/new?source=${doc.id}`}
         >
           {correctInvoiceAction}
           {voucherCorrection}

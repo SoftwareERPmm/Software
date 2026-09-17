@@ -79,6 +79,7 @@ export async function planVoid(documentId: string): Promise<VoidPlan | null> {
 export async function planVoidIn(db: Db, documentId: string): Promise<VoidPlan> {
   const [doc] = await db`
     select d.id, d.company_id, d.doc_no, d.doc_type, d.status, d.gross_total,
+           d.lifecycle_owner_id,
            d.partner_id, d.journal_entry_id, d.reversed_by_document_id,
            to_char(d.doc_date, 'YYYY-MM-DD') as doc_date,
            to_char(d.posting_date, 'YYYY-MM-DD') as posting_date
@@ -141,11 +142,30 @@ export async function planVoidIn(db: Db, documentId: string): Promise<VoidPlan> 
   // ---- what has been built on top of it -----------------------------------
   // Anything naming this document as its source is downstream of it, and
   // undoing this one underneath it would leave that one explaining nothing.
+  // Documents this one composed are excluded: they are not somebody else's
+  // work resting on this, they are part of it, and the void carries them
+  // rather than demanding they be unpicked first. A counter sale's delivery
+  // and the receipt for the cash taken with it are the cases — neither was
+  // asked for, and requiring somebody to void a receipt they never created
+  // is how a cash counter sale became impossible to undo.
+  //
+  // Their own rules still hold. What each owned document refuses, the whole
+  // void refuses, gathered below — so goods already sold on still stop this,
+  // exactly as they stop it today.
   const children = await db`
     select id, doc_no, doc_type from document
      where company_id = ${doc.company_id}
        and source_document_id = ${documentId}
-       and status = 'POSTED'`;
+       and status = 'POSTED'
+       and (lifecycle_owner_id is null or lifecycle_owner_id <> ${documentId})
+       -- Nor this document's own owner. A counter sale's invoice names the
+       -- delivery as its source, and the delivery names the invoice as its
+       -- owner: they point at each other, because one act wrote both. Read
+       -- from the delivery, the invoice is not something built on top of it
+       -- to be unpicked first — it is the thing this belongs to, and it is
+       -- being undone in the same breath.
+       and (${doc.lifecycle_owner_id ?? null}::uuid is null
+            or id <> ${doc.lifecycle_owner_id ?? null}::uuid)`;
   for (const c of children as unknown as { id: string; doc_no: string; doc_type: string }[]) {
     blockers.push({
       reason: `${c.doc_no} was raised from this document. Void that first.`,
@@ -158,11 +178,16 @@ export async function planVoidIn(db: Db, documentId: string): Promise<VoidPlan> 
   // the GR/IR balance the receipt is still holding.
 
   // ---- money already settled against it ------------------------------------
+  // Money somebody paid against this blocks it; money this document took for
+  // itself does not. The cash on a counter sale is the invoice's own — it
+  // comes back when the invoice goes, and asking for it to be undone first
+  // is asking about a document nobody wrote.
   const allocations = await db`
     select d.id, d.doc_no, sum(pa.amount) as amount
       from payment_allocation pa
       join document d on d.id = pa.payment_id
      where pa.invoice_id = ${documentId} and d.status = 'POSTED'
+       and (d.lifecycle_owner_id is null or d.lifecycle_owner_id <> ${documentId})
      group by d.id, d.doc_no`;
   for (const a of allocations as unknown as { id: string; doc_no: string; amount: string }[]) {
     blockers.push({
@@ -247,7 +272,13 @@ export async function planVoidIn(db: Db, documentId: string): Promise<VoidPlan> 
     select count(*)::int as n, coalesce(sum(case when qty < 0 then 1 else 0 end), 0)::int as issues
       from stock_movement where document_id = ${documentId} and qty <> 0`;
   const mv = (movements as unknown as { n: number; issues: number }[])[0];
-  if (mv && mv.issues > 0) {
+  // An issue somebody raised still stands: goods that went out do not come
+  // back because the paperwork was undone, and a return is what records them
+  // coming back. An issue this document's owner composed is different — it is
+  // half of one act, and undoing that act undoes both halves. The lots it
+  // consumed are re-created at the cost they left at, which voidDocumentIn
+  // does and a customer return already did before it.
+  if (mv && mv.issues > 0 && !doc.lifecycle_owner_id) {
     blockers.push({
       reason: "This document issued stock. Putting issued stock back means re-creating the " +
               "cost layers it consumed, which is not built yet — use a return instead.",

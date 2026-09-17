@@ -3753,6 +3753,11 @@ export async function voidDocumentAction(_prev: unknown, fd: FormData): Promise<
       const out = await voidDocument({
         documentId: docId,
         reason: str(fd, "reason") || null,
+        // Answered on the screen, where somebody who can see the shelf is
+        // standing. The engine refuses without it wherever stock would come
+        // back, so a form that never asked cannot restore goods by omission —
+        // the same shape as the negative-stock confirmation.
+        goodsBack: fd.get("goods_back") !== null,
       }, tx);
       return { ...out, id: out.id, docNo: out.docNo };
     });

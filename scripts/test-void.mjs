@@ -30,7 +30,8 @@ const { sql } = await import("../lib/db.ts");
 await takeTestLock(sql, "test-void.mjs");
 const { planVoid } = await import("../lib/void.ts");
 const { voidDocument, postCashVoucher, postGoodsReceipt, postPurchaseInvoice,
-        postPurchaseWithReceipt, postSupplierPayment } = await import("../lib/posting.ts");
+        postPurchaseWithReceipt, postSupplierPayment,
+        postSaleWithDelivery, postSalesInvoice, postDelivery } = await import("../lib/posting.ts");
 
 let failures = 0;
 const check = (label, ok, detail = "") => {
@@ -438,6 +439,113 @@ try {
      where company_id = ${co.id} and partner_id = ${vSup.id}`;
   check("  and it is gone from the invoice list too", statuses[0].c === 0,
     String(statuses[0].c));
+
+  // ---- what one act wrote, one act undoes ---------------------------------
+  //
+  // A counter sale writes the invoice, the delivery that takes the stock out,
+  // and — when the money is taken at the counter — the receipt. Nobody asked
+  // for the last two. Undoing the sale has to undo all three, and until the
+  // owner was recorded it did neither reliably: on credit the delivery stayed
+  // posted and the stock stayed out, and in cash the void was refused because
+  // of a receipt the user never wrote.
+
+  console.log("\n  a counter sale is one act\n");
+
+  const [ccCust] = await sql`
+    select id from business_partner where company_id = ${co.id} and is_customer limit 1`;
+  const [ccItem] = await sql`
+    select id from item where company_id = ${co.id} and is_stocked limit 1`;
+  const [ccWh] = await sql`
+    select id from location where company_id = ${co.id} and is_stock_location and is_active
+     order by code limit 1`;
+  const [ccSup] = await sql`
+    select id from business_partner where company_id = ${co.id} and is_supplier limit 1`;
+  const today3 = new Date().toISOString().slice(0, 10);
+  const held = async () => {
+    const [r] = await sql`select coalesce(sum(qty),0) q from stock_movement
+      where company_id = ${co.id} and item_id = ${ccItem.id} and location_id = ${ccWh.id}`;
+    return Number(r.q);
+  };
+
+  await postGoodsReceipt({ companyId: co.id, partnerId: ccSup.id, locationId: ccWh.id,
+    docDate: today3, memo: "counter stock", lines: [{ itemId: ccItem.id, qty: 30, unitCost: 1000 }] });
+
+  // On credit: the delivery is the only thing it composed.
+  const beforeCredit = await held();
+  const credit = await postSaleWithDelivery({ companyId: co.id, partnerId: ccCust.id,
+    locationId: ccWh.id, docDate: today3, dueDate: today3, memo: "credit counter sale",
+    lines: [{ itemId: ccItem.id, qty: 5, unitPrice: 4000 }] });
+  check("a counter sale takes the stock out", (await held()) === beforeCredit - 5,
+    String(await held()));
+  // Stock does not come back because a document was undone. Somebody has to
+  // have looked at the shelf, and the engine is where that is insisted on —
+  // a screen is one caller, and an importer has no eyes at all.
+  let unconfirmed = null;
+  try { await voidDocument({ documentId: credit.id, reason: "keyed in error" }); }
+  catch (e) { unconfirmed = e.message; }
+  check("  it will not put stock back unasked", unconfirmed !== null,
+    unconfirmed ? unconfirmed.slice(0, 58) : "VOIDED — it should not have");
+  check("    and nothing moved while it refused", (await held()) === beforeCredit - 5,
+    String(await held()));
+
+  await voidDocument({ documentId: credit.id, reason: "keyed in error", goodsBack: true });
+  check("  voiding it with the goods confirmed puts the stock back",
+    (await held()) === beforeCredit, `${await held()} of ${beforeCredit}`);
+  const confirmed = await sql`
+    select detail from document_history where document_id = ${credit.id} and action = 'VOID'`;
+  check("    and the confirmation is kept, not just consumed",
+    confirmed[0]?.detail?.goods_back_confirmed === true
+      && Number(confirmed[0]?.detail?.units_restored) === 5,
+    JSON.stringify(confirmed[0]?.detail?.units_restored));
+
+  // In cash: a receipt too, and it used to make the void impossible.
+  const beforeCash = await held();
+  const [ccCash] = await sql`
+    select id from account where company_id = ${co.id} and is_cash_account and is_active
+     order by code limit 1`;
+  const cashSale = await postSaleWithDelivery({ companyId: co.id, partnerId: ccCust.id,
+    locationId: ccWh.id, docDate: today3, dueDate: today3, memo: "cash counter sale",
+    cashIn: 16000, cashAccountId: ccCash.id,
+    lines: [{ itemId: ccItem.id, qty: 4, unitPrice: 4000 }] });
+  const cashPlan = await planVoid(cashSale.id);
+  check("  a cash counter sale can be voided at all", cashPlan.canVoid,
+    cashPlan.blockers[0]?.reason?.slice(0, 56) ?? "");
+  await voidDocument({ documentId: cashSale.id, reason: "keyed in error", goodsBack: true });
+  check("    and that puts the stock back too", (await held()) === beforeCash,
+    `${await held()} of ${beforeCash}`);
+  const composed = await sql`
+    select doc_type, status from document where lifecycle_owner_id = ${cashSale.id}`;
+  check("    with everything it composed reversed with it",
+    composed.length === 2 && composed.every((c) => c.status === "REVERSED"),
+    composed.map((c) => `${c.doc_type} ${c.status}`).join(", "));
+
+  // A delivery somebody raised is theirs, and outlives the invoice billing it.
+  const ownDelivery = await postDelivery({ companyId: co.id, partnerId: ccCust.id,
+    locationId: ccWh.id, docDate: today3, memo: "shipped on its own day",
+    lines: [{ itemId: ccItem.id, qty: 3 }] });
+  const bills = await postSalesInvoice({ companyId: co.id, partnerId: ccCust.id,
+    locationId: ccWh.id, docDate: today3, dueDate: today3, deliveryId: ownDelivery.id,
+    memo: "bills that delivery", lines: [{ itemId: ccItem.id, qty: 3, unitPrice: 4000 }] });
+  const heldBefore = await held();
+  await voidDocument({ documentId: bills.id, reason: "probe" });
+  const stillThere = await sql`select status from document where id = ${ownDelivery.id}`;
+  check("a delivery somebody raised outlives the invoice billing it",
+    stillThere[0].status === "POSTED" && (await held()) === heldBefore,
+    `${stillThere[0].status}, stock ${await held()}`);
+
+  // And still blocks, when it was raised against the invoice being voided.
+  const laterInv = await postSalesInvoice({ companyId: co.id, partnerId: ccCust.id,
+    locationId: ccWh.id, docDate: today3, dueDate: today3, toDeliver: true,
+    memo: "deliver later", lines: [{ itemId: ccItem.id, qty: 2, unitPrice: 4000 }] });
+  await postDelivery({ companyId: co.id, partnerId: ccCust.id, locationId: ccWh.id,
+    docDate: today3, sourceDocumentId: laterInv.id, memo: "shipped by hand",
+    lines: [{ itemId: ccItem.id, qty: 2 }] });
+  const laterPlan = await planVoid(laterInv.id);
+  check("  and blocks the invoice it was raised against", !laterPlan.canVoid,
+    laterPlan.blockers[0]?.reason?.slice(0, 48) ?? "");
+
+  const [ccRecon] = await sql`select count(*)::int n from v_check_inventory_reconciliation`;
+  check("  inventory still reconciles through all of it", ccRecon.n === 0, String(ccRecon.n));
 
   console.log(`\n  ${failures === 0 ? "all void tests pass" : failures + " FAILED"}\n`);
 } finally {
