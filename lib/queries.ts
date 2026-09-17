@@ -1111,6 +1111,62 @@ export async function getVoucherLines(journalEntryId: string | null) {
      order by jl.line_no`;
 }
 
+/**
+ * What a receipt or payment correction needs to show.
+ *
+ * Not simply the open invoices. The invoice this document already pays reads
+ * as owing nothing — this document is what settles it — so the entry form's
+ * "outstanding <> 0" would hide the very row somebody opened the screen to
+ * change. The list is therefore every open invoice for the partner PLUS
+ * whatever this document allocates to, however settled that looks now.
+ *
+ * And `available` is what each invoice would owe if this document did not
+ * exist, which is the figure a correction is working against. Showing today's
+ * outstanding instead would tell somebody an invoice is fully paid at the
+ * moment they are trying to move the payment off it.
+ */
+export async function getSettlementForCorrection(documentId: string) {
+  const [doc] = await sql`
+    select d.id, d.company_id, d.doc_no, d.doc_type, d.version, d.partner_id,
+           d.memo, d.reference, d.location_id, d.source_document_id,
+           to_char(d.doc_date, 'YYYY-MM-DD') as doc_date,
+           p.name as partner_name
+      from document d
+      left join business_partner p on p.id = d.partner_id
+     where d.id = ${documentId}`;
+  if (!doc) return null;
+
+  const invoiceType = doc.doc_type === "SUPPLIER_PAYMENT"
+    ? "PURCHASE_INVOICE" : "SALES_INVOICE";
+
+  const invoices = await sql`
+    select vi.document_id, d.doc_no,
+           to_char(vi.due_date, 'YYYY-MM-DD') as due_date,
+           vi.gross_total, vi.outstanding,
+           coalesce(mine.amt, 0) as allocated_here,
+           (vi.outstanding + coalesce(mine.amt, 0)) as available
+      from v_invoice_status vi
+      join document d on d.id = vi.document_id
+      left join (
+        select invoice_id, sum(amount) as amt
+          from payment_allocation
+         where payment_id = ${documentId}
+         group by invoice_id
+      ) mine on mine.invoice_id = vi.document_id
+     where vi.company_id = ${doc.company_id}
+       and vi.doc_type = ${invoiceType}
+       and vi.partner_id = ${doc.partner_id}
+       and (vi.outstanding <> 0 or mine.amt is not null)
+     order by vi.due_date nulls last, d.doc_no`;
+
+  const cashAccounts = await sql`
+    select id, code, name from account
+     where company_id = ${doc.company_id} and is_cash_account and is_active
+     order by code`;
+
+  return { doc, invoices, cashAccounts };
+}
+
 export async function getDownstream(documentId: string) {
   return sql`
     select id, doc_type, doc_no, posting_date, status, gross_total

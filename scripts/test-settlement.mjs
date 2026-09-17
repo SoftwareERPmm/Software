@@ -21,7 +21,8 @@ if (!process.env.DATABASE_URL) {
   }
 }
 
-const { postPurchaseInvoice, postSalesInvoice, postSupplierPayment, postCustomerReceipt } =
+const { postPurchaseInvoice, postSalesInvoice, postSupplierPayment, postCustomerReceipt,
+        amendSettlement } =
   await import("../lib/posting.ts");
 
 const url = process.env.DATABASE_URL;
@@ -164,6 +165,60 @@ try {
     select account_code, debit, credit from v_journal_line where source_id = ${rc.id}`;
   check("receipt debits cash", rcJournal.some((l) => n(l.debit) === 100000 && l.account_code === cash.code));
   check("receipt credits receivables", rcJournal.some((l) => n(l.credit) === 100000 && l.account_code === AR));
+
+  // ---- moving a receipt onto the right invoice ---------------------------
+  //
+  // The reason this exists: a customer with more than one bill open pays one
+  // of them, and the money is recorded against another. Nothing about the
+  // money is wrong, so the receipt keeps its number and takes a version —
+  // and neither invoice is written to, because what an invoice owes is
+  // derived from the allocations rather than stored on it.
+
+  const si2 = await postSalesInvoice({
+    companyId: co.id, partnerId: cus.id, locationId: loc.id,
+    docDate: today, dueDate: null,
+    lines: [{ itemId: item.id, qty: 10, unitPrice: 5000 }],
+  });
+
+  const misfiled = await postCustomerReceipt({
+    companyId: co.id, partnerId: cus.id, docDate: today,
+    cashAccountId: cash.id, allocations: [{ invoiceId: si.id, amount: 50000 }],
+  });
+  check("the money lands on the wrong invoice first",
+    n((await statusOf(si.id)).outstanding) === 100000,
+    `${n((await statusOf(si.id)).outstanding)} left on the wrong one`);
+
+  await amendSettlement({
+    companyId: co.id, documentId: misfiled.id,
+    reason: "Paid against the wrong invoice",
+    settlement: {
+      partnerId: cus.id, docDate: today, cashAccountId: cash.id,
+      allocations: [{ invoiceId: si2.id, amount: 50000 }],
+    },
+  });
+
+  check("  the wrong invoice owes it again", n((await statusOf(si.id)).outstanding) === 150000,
+    String(n((await statusOf(si.id)).outstanding)));
+  check("  and the right one is settled", n((await statusOf(si2.id)).outstanding) === 0,
+    String(n((await statusOf(si2.id)).outstanding)));
+
+  const moved = await sql`
+    select version, status from document where doc_no = ${misfiled.docNo} order by version`;
+  check("  the receipt keeps its number", moved.length === 2, misfiled.docNo);
+  check("  v1 is reversed and v2 stands",
+    moved[0]?.status === "REVERSED" && moved[1]?.status === "POSTED",
+    `v1 ${moved[0]?.status}, v2 ${moved[1]?.status}`);
+
+  // The total is what came in. Changing it is a different receipt.
+  let refusedShort = false;
+  try {
+    await amendSettlement({
+      companyId: co.id, documentId: misfiled.id, reason: "again",
+      settlement: { partnerId: cus.id, docDate: today, cashAccountId: cash.id,
+        allocations: [{ invoiceId: si.id, amount: 10 }] },
+    });
+  } catch { refusedShort = true; }
+  check("  a superseded version cannot be corrected again", refusedShort);
 
   // ---- Balances and invariants -------------------------------------------
 

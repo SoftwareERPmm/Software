@@ -15,6 +15,7 @@ import {
 import { CloseOrder } from "@/components/close-order";
 import { CorrectOrder, type CorrectableLine } from "@/components/correct-order";
 import { CorrectVoucher } from "@/components/correct-voucher";
+import { CorrectSettlement } from "@/components/correct-settlement";
 import { VersionBadge, VersionTrail, type DocumentVersion }
   from "@/components/version-history";
 import { TransactionOrigin } from "@/components/transaction-origin";
@@ -24,6 +25,7 @@ import {
   previewOrderCorrection, correctOrder,
   previewInvoiceCorrection, correctInvoice, applyAdvanceAction,
   correctVoucher,
+  correctSettlement,
   getFinanceData,
 } from "@/lib/actions";
 import Link from "next/link";
@@ -61,6 +63,7 @@ import {
   getReturnedAgainst,
   getOrderCancellation,
   getVoucherLines,
+  getSettlementForCorrection,
 } from "@/lib/queries";
 import {
   createDelivery, createGoodsReceipt, replaceConsignmentSettlement,
@@ -596,6 +599,37 @@ export default async function DocumentPage({
     />
   ) : null;
 
+  /**
+   * A receipt or a payment, almost always because it went against the wrong
+   * invoice. Not offered for one a sales invoice wrote itself — that money
+   * belongs to the invoice and is corrected there; the engine refuses it too.
+   */
+  const isSettlement = (doc.doc_type === "CUSTOMER_RECEIPT" || doc.doc_type === "SUPPLIER_PAYMENT")
+    && doc.status === "POSTED"
+    && !doc.superseded_by_document_id
+    // A reversal is a posted receipt of its own, carrying negated figures. It
+    // is the record of an undoing, not a payment anybody can re-point.
+    && !doc.reverses_document_id
+    && !doc.source_document_id;
+  const settlementData = isSettlement
+    ? await getSettlementForCorrection(doc.id)
+    : null;
+  const settlementCorrection = settlementData ? (
+    <CorrectSettlement
+      action={correctSettlement}
+      documentId={doc.id}
+      docNo={doc.doc_no ?? ""}
+      version={Number(doc.version ?? 1)}
+      docType={doc.doc_type}
+      partnerName={(settlementData.doc.partner_name as string) ?? null}
+      invoices={settlementData.invoices as never}
+      cashAccounts={settlementData.cashAccounts as never}
+      cashAccountId={null}
+      memo={(doc.memo as string) ?? null}
+      total={Number(doc.gross_total)}
+    />
+  ) : null;
+
   const correctInvoiceAction = isLiveInvoice && !orderBehind ? (
     <CorrectOrder
       noun="invoice"
@@ -946,6 +980,7 @@ export default async function DocumentPage({
         >
           {correctInvoiceAction}
           {voucherCorrection}
+          {settlementCorrection}
         </VoidDocument>
       )}
 

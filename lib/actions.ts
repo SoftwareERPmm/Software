@@ -19,7 +19,7 @@ import {
   amendmentFingerprint, StalePlan, applyAdvance,
   type AmendmentPlan,
   postCashTransfer, postAccountOpening, postOpeningBatch, resettleConsignmentSale,
-  amendVoucher,
+  amendVoucher, amendSettlement,
   postStockAdjustment, postStockTransfer,
   importItems, importVouchers, voidDocument, reconcileNegativeStock,
   postSalesReturn, postPurchaseReturn, postConsignmentReceipt,
@@ -2237,6 +2237,62 @@ export async function correctVoucher(
   }
   financeRevalidate();
   revalidatePath("/documents", "layout");
+  redirectWithToast(`/documents/${landOn}`, "Correction posted");
+}
+
+/**
+ * Correct a receipt or a payment — in practice, move it to the right invoice.
+ *
+ * The date, the branch and the partner are the original's. A correction that
+ * changed the partner would be a different payment from a different person
+ * wearing this one's number, and moving the date would split the reversal and
+ * its replacement across periods.
+ */
+export async function correctSettlement(
+  _prev: unknown, fd: FormData,
+): Promise<ActionResult> {
+  let landOn: string;
+  try {
+    const co = await companyId();
+    const documentId = str(fd, "document_id");
+    if (!documentId) return { error: "No receipt given" };
+    const reason = str(fd, "reason");
+    if (!reason.trim()) return { error: "Say why this is being corrected" };
+
+    const allocations = parseAllocations(fd);
+    if (allocations.length === 0) {
+      return { error: "Put the money against at least one invoice" };
+    }
+
+    const [orig] = await sql`
+      select partner_id, location_id, reference,
+             to_char(doc_date, 'YYYY-MM-DD') as doc_date
+        from document where id = ${documentId} and company_id = ${co}`;
+    if (!orig) return { error: "That document no longer exists" };
+
+    const posted = await postOnce(co, attemptKey(fd), (tx) =>
+      amendSettlement({
+        companyId: co,
+        documentId,
+        reason,
+        settlement: {
+          partnerId: orig.partner_id as string,
+          docDate: String(orig.doc_date),
+          cashAccountId: str(fd, "cash_account_id"),
+          locationId: (orig.location_id as string) ?? null,
+          memo: str(fd, "memo") || null,
+          reference: (orig.reference as string) ?? null,
+          allocations,
+        },
+      }, tx).then((done) => ({ ...done, id: done.replacementId, docNo: done.docNo ?? "" })));
+    landOn = posted.id;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  financeRevalidate();
+  revalidatePath("/documents", "layout");
+  revalidatePath("/receivables");
+  revalidatePath("/payables");
   redirectWithToast(`/documents/${landOn}`, "Correction posted");
 }
 
