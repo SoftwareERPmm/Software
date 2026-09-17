@@ -97,7 +97,26 @@ export default async function Stock({
     const projected = available + incomingQty;
     return { ...i, onHand, valueOnHand, reservedQty, incomingQty, consignedQty, available, projected };
   });
-  const totalValue = stocked.reduce((s, i) => s + i.valueOnHand, 0);
+  /**
+   * Which items this view is about.
+   *
+   * Every stocked item, when the question is "what does the company hold" —
+   * an item at zero everywhere is the whole point of a Low stock tile, and
+   * dropping it would hide exactly the row somebody is looking for.
+   *
+   * But a warehouse is a narrower question. Asked what is in Mandalay, the
+   * answer is not the entire catalogue with zeroes against the things that
+   * have never been there: that listed all seven items under all three
+   * choices, so picking a warehouse appeared to do nothing at all. Held,
+   * reserved, on its way, or there on consignment — any of those is presence
+   * at that warehouse. None of them is absence.
+   */
+  const visible = allLocations
+    ? stocked
+    : stocked.filter((i) =>
+        i.onHand !== 0 || i.reservedQty !== 0 || i.incomingQty !== 0 || i.consignedQty !== 0);
+
+  const totalValue = visible.reduce((s, i) => s + i.valueOnHand, 0);
 
   /** Which consignors an item's held-but-unowned stock belongs to. */
   const consignorsOf = (itemId: string) =>
@@ -132,7 +151,7 @@ export default async function Stock({
 
   const STOCK_COLUMNS = 12;
 
-  const rows: DataRow[] = stocked.map((i) => {
+  const rows: DataRow[] = visible.map((i) => {
     const consignors = consignorsOf(i.id);
     const category = i.parent_group_name ? `${i.parent_group_name} / ${i.group_name}` : i.group_name;
 
@@ -214,7 +233,7 @@ export default async function Stock({
           <span className="kpi-body">
             <span className="kpi-label">Stock value</span>
             <span className="kpi-value">{money(totalValue)}</span>
-            <span className="kpi-note">{stocked.length} stocked item{stocked.length === 1 ? "" : "s"}</span>
+            <span className="kpi-note">{visible.length} stocked item{visible.length === 1 ? "" : "s"}</span>
           </span>
         </div>
 
@@ -366,20 +385,29 @@ export default async function Stock({
           <div className="card-head">
             <h2>Stock position</h2>
             <span className="page-sub">
-              {stocked.length} stocked items
-              {!allLocations && ` · ${reorderableLocations.find((l) => l.id === selectedLocationId)?.name ?? ""}`}
+              {visible.length} stocked item{visible.length === 1 ? "" : "s"}
+              {!allLocations && ` here · ${reorderableLocations.find((l) => l.id === selectedLocationId)?.name ?? ""}`}
             </span>
           </div>
 
-          {stocked.length === 0 ? (
+          {visible.length === 0 ? (
             <div className="empty">
-              No stocked items yet.{" "}
-              <Link href="/items" style={{ color: "var(--brand)" }}>Add an item</Link>
+              {allLocations ? (
+                <>
+                  No stocked items yet.{" "}
+                  <Link href="/items" style={{ color: "var(--brand)" }}>Add an item</Link>
+                </>
+              ) : (
+                <>
+                  Nothing held, reserved or on its way at this warehouse.{" "}
+                  <Link href="/items/stock" style={{ color: "var(--brand)" }}>See all warehouses</Link>
+                </>
+              )}
             </div>
           ) : (
             <StockTable
               rows={rows}
-              consignmentItemIds={stocked.filter((i) => i.consignedQty > 0).map((i) => i.id)}
+              consignmentItemIds={visible.filter((i) => i.consignedQty > 0).map((i) => i.id)}
               emptyLabel="No stocked items"
               searchPlaceholder="Search stock…"
               defaultSort={{ key: "code", dir: "asc" }}
