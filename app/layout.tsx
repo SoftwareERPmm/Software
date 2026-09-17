@@ -5,6 +5,7 @@ import Link from "next/link";
 import { getCompany } from "@/lib/queries";
 import { NavLink, NavGroup, NavSubGroup } from "./nav";
 import { MobileNav } from "@/components/mobile-nav";
+import { SidebarCollapse } from "@/components/sidebar-collapse";
 import { Toast } from "@/components/toast";
 import {
   LayoutDashboard, ShoppingCart, Package, Wallet, BookOpen, Boxes, Database,
@@ -75,6 +76,17 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   return (
     <html lang="en" className={`${dmSans.variable} ${plexSans.variable} ${plexMono.variable} ${notoMyanmar.variable}`}>
       <body>
+        {/* Before first paint, so a rail somebody collapsed yesterday does not
+            flash open and shove the page sideways on the way in. The effect in
+            SidebarCollapse runs after paint, which is too late to prevent that
+            — this is the same reason a theme preference is read here. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "try{if(localStorage.getItem('navCollapsed')==='true')"
+              + "document.body.dataset.navCollapsed='true'}catch(e){}",
+          }}
+        />
         <DatePickerFix />
         <div className="shell">
           <MobileNav
@@ -86,6 +98,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <span className="brand-name">{company?.name ?? "Myanmar ERP"}</span>
               <span className="brand-sub">{company?.base_currency ?? "not set up"}</span>
             </div>
+
+            <SidebarCollapse />
 
             <NavGroup label="Overview" icon={<LayoutDashboard size={14} />} match={["/"]}>
               <NavLink href="/">Dashboard</NavLink>

@@ -2887,3 +2887,95 @@ dialog.drawer .drawer-panel {
 .mode-text strong { font-weight: 600; }
 .mode-lead { color: var(--ink-soft); font-size: var(--t-sm); }
 .mode-note { color: var(--muted); font-size: var(--t-xs); }
+
+/* --------------------------------------------- the rail, collapsed ------ */
+
+/* Nine groups and some sixty links is a lot of column to carry on a page you
+   are reading rather than navigating. Collapsed, the rail keeps the one thing
+   worth keeping — which section you are in — and gives 168px back to the
+   figures.
+
+   Everything here is CSS on a <body> attribute. No part of the nav unmounts,
+   so every link stays in the DOM and the tab order, and the groups keep the
+   open/closed state they had when the rail closed. */
+
+.navcollapse-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 0.65rem;
+  /* Cancels the sidebar's own flex gap, so the button tucks under the brand
+     rather than opening a third band of empty rail above the first group. */
+  margin-top: calc(var(--s4) * -1);
+}
+.navcollapse {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; flex: none; padding: 0;
+  background: transparent; color: var(--rail-muted, #8C9B93);
+  border: 0; border-radius: 8px; cursor: pointer;
+}
+.navcollapse:hover { background: rgb(255 255 255 / 0.08); color: #fff; }
+
+/* The drawer has a close button in the bar above it and no width to give
+   back, so there is nothing for this to do there. */
+@media (max-width: 820px) {
+  .navcollapse-row { display: none; }
+}
+
+@media (min-width: 821px) {
+  body[data-nav-collapsed="true"] .shell .sidebar {
+    width: 64px;
+    padding-left: 0.4rem;
+    padding-right: 0.4rem;
+    /* A label mid-transition must not be able to push a horizontal scrollbar
+       into a 64px column. */
+    overflow-x: hidden;
+  }
+
+  /* The mark alone, centred where the three-line brand block was. */
+  body[data-nav-collapsed="true"] .sidebar .brand {
+    grid-template-columns: auto;
+    justify-content: center;
+    padding: 0.35rem 0 var(--s2);
+  }
+  body[data-nav-collapsed="true"] .sidebar .brand-name,
+  body[data-nav-collapsed="true"] .sidebar .brand-sub,
+  body[data-nav-collapsed="true"] .sidebar .navlabel,
+  body[data-nav-collapsed="true"] .sidebar .navcaret,
+  body[data-nav-collapsed="true"] .sidebar .navhead-text {
+    display: none;
+  }
+  /* Outranks .navitems[data-open="true"], which a group left open would
+     otherwise keep showing as a column of text in a 64px rail. */
+  body[data-nav-collapsed="true"] .sidebar .navitems { display: none; }
+
+  body[data-nav-collapsed="true"] .navcollapse-row { justify-content: center; }
+
+  /* The icon is now the whole entry, so it sits in the middle of the rail and
+     is sized to be one — 14px was a mark beside a word, and a mark with no
+     word beside it has to carry the row on its own. */
+  body[data-nav-collapsed="true"] .sidebar .navhead {
+    justify-content: center;
+    padding: 0.6rem 0;
+  }
+  body[data-nav-collapsed="true"] .sidebar .navhead-label { gap: 0; }
+  body[data-nav-collapsed="true"] .sidebar .navhead svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  /* Expanded, the open group and the lit link between them say where you are.
+     Collapsed there is no open group and no link, so the section icon has to
+     say it by itself — otherwise the rail shows nine identical marks and none
+     of them is the page you are on. */
+  body[data-nav-collapsed="true"] .sidebar .navhead[data-inside="true"] {
+    background: color-mix(in srgb, var(--brand) 55%, #101613);
+    color: #fff;
+  }
+  body[data-nav-collapsed="true"] .sidebar .navhead[data-inside="true"] svg {
+    opacity: 1;
+  }
+}
+
+@media (min-width: 821px) and (prefers-reduced-motion: no-preference) {
+  .shell .sidebar { transition: width 160ms ease; }
+}
