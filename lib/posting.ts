@@ -5105,6 +5105,12 @@ export type SettlementInput = {
    * anyway. It is owed back until the goods go.
    */
   advance?: number;
+  /**
+   * Set only when this posting replaces an existing settlement: it keeps that
+   * document's number and takes the next version under it. Same field, same
+   * reason, as the orders, invoices and vouchers carry.
+   */
+  amendOf?: AmendIdentity | null;
 };
 
 async function postSettlement(
@@ -5227,17 +5233,16 @@ async function postSettlement(
     const cashLocationId =
       input.locationId ?? (settledLocations.length === 1 ? settledLocations[0] : null);
 
-    const noRows = await tx`
-      select fn_next_document_no(${companyId}, ${kind}, ${docDate}::date) as no`;
-    const docNo = noRows[0].no;
+    const { docNo, version } = await documentNumberFor(
+      tx, companyId, kind, docDate, input.amendOf);
 
     const [doc] = await tx`
       insert into document
-        (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
+        (company_id, doc_type, doc_no, version, fiscal_year_id, doc_date, posting_date,
          partner_id, location_id, currency, exchange_rate, status,
          net_total, tax_total, gross_total, memo, reference, payment_type, posted_at)
       values
-        (${companyId}, ${kind}, ${docNo}, ${fiscalYear}, ${docDate}::date, ${docDate}::date,
+        (${companyId}, ${kind}, ${docNo}, ${version}, ${fiscalYear}, ${docDate}::date, ${docDate}::date,
          ${partnerId}, ${cashLocationId}, 'MMK', 1, 'POSTED',
          ${total}, 0, ${total}, ${input.memo ?? null}, ${input.reference ?? null},
          'CASH', now())
@@ -7314,6 +7319,62 @@ export async function amendVoucher(input: {
         tx,
         { ...input.voucher, companyId: input.companyId, amendOf: identity },
         docType
+      );
+    },
+  }, tx);
+}
+
+/**
+ * Correct a customer receipt or a supplier payment.
+ *
+ * Almost always because the money went against the wrong invoice: a customer
+ * with several bills open pays one of them, and the receipt is allocated to
+ * another. Nothing about the money is wrong — it arrived, it is in the till —
+ * so voiding and re-entering gives the payment a second number for a mistake
+ * that was never about the payment.
+ *
+ * No invoice is rewritten, and none needs to be. What an invoice still owes
+ * falls out of payment_allocation, and v_invoice_status counts an allocation
+ * only while the paying document is POSTED and not reversed (0070). So the
+ * void half un-settles every invoice this document touched, the repost half
+ * settles whatever it now names, and both invoices correct themselves.
+ *
+ * Settlement and advance stay separate. The engine refuses a document that is
+ * both, and turning one into the other is a different decision from fixing
+ * which bill was paid — an advance that has since been applied is blocked by
+ * the void rules anyway, naming the application to undo first.
+ */
+export async function amendSettlement(input: {
+  companyId: string;
+  documentId: string;
+  reason: string;
+  settlement: Omit<SettlementInput, "amendOf" | "companyId">;
+}, tx?: TransactionSql) {
+  return amendDocument({
+    companyId: input.companyId,
+    documentId: input.documentId,
+    reason: input.reason,
+    repost: async (tx, identity) => {
+      const [orig] = await tx`
+        select doc_type, source_document_id from document where id = ${input.documentId}`;
+      const kind = String(orig.doc_type);
+      if (kind !== "CUSTOMER_RECEIPT" && kind !== "SUPPLIER_PAYMENT") {
+        throw new Error(`${kind} is not a receipt or a payment and is not corrected this way`);
+      }
+      // A receipt written by a sales invoice belongs to that invoice: it
+      // records the cash taken at the counter, and the invoice's own figure
+      // would disagree with it the moment this changed underneath. Corrected
+      // where it was created, the way an order-linked invoice is.
+      if (orig.source_document_id) {
+        throw new Error(
+          "This was taken with an invoice, so it is corrected there — " +
+          "correcting it on its own would leave the invoice and the money disagreeing."
+        );
+      }
+      return postSettlement(
+        { ...input.settlement, companyId: input.companyId, amendOf: identity },
+        kind,
+        tx
       );
     },
   }, tx);
