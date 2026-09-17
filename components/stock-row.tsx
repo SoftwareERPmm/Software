@@ -46,6 +46,7 @@ export type StockRowItem = {
   valueOnHand: number;
   lastCost: string | null;
   lastCostDocNo: string | null;
+  lastCostDocId: string | null;
   lastCostDate: string | null;
   /** Empty when this item carries no consigned stock. */
   consignors: string[];
@@ -188,29 +189,42 @@ export function StockRow({ item, columnCount }: { item: StockRowItem; columnCoun
 
               <section className="stockpanel">
                 <h3>Pricing</h3>
+                {/* The last price paid, the bill it was paid on, and what the
+                    units actually on the shelf cost.
+
+                    The invoice is the part worth having here: a cost figure
+                    with no provenance invites being read as "the" cost, and
+                    the answer to "says who?" is one click away rather than a
+                    number to go looking for. Last against Average is the other
+                    half — average below last means the shelf is cheaper than
+                    replacing it, and the margin on these units is not the
+                    margin on the next ones.
+
+                    Value is deliberately absent: it is the last column of the
+                    row this panel opened from, two inches above. */}
                 <dl className="stockpanel-kv">
-                  {/* What the last one cost, not what the ones on hand are
-                      carried at — a receipt at a new price does not restate
-                      the FIFO layers already on the shelf. */}
                   <div>
-                    <dt>Last cost</dt>
+                    <dt>Latest purchase price</dt>
                     <dd className="r">{item.lastCost ? money(item.lastCost) : DASH}</dd>
                   </div>
                   <div>
-                    <dt>From</dt>
-                    <dd>{item.lastCostDocNo ?? DASH}</dd>
+                    <dt>From invoice</dt>
+                    <dd>
+                      {item.lastCostDocNo
+                        ? (item.lastCostDocId
+                            ? <Link href={`/documents/${item.lastCostDocId}`}
+                                    style={{ color: "var(--brand)" }}>{item.lastCostDocNo}</Link>
+                            : item.lastCostDocNo)
+                        : DASH}
+                    </dd>
                   </div>
                   <div>
-                    <dt>Last cost date</dt>
+                    <dt>Invoice date</dt>
                     <dd>{item.lastCostDate ?? DASH}</dd>
                   </div>
                   <div>
                     <dt>Average cost</dt>
                     <dd className="r">{averageCost === null ? DASH : money(averageCost)}</dd>
-                  </div>
-                  <div>
-                    <dt>Value (MMK)</dt>
-                    <dd className="r"><strong>{money(item.valueOnHand)}</strong></dd>
                   </div>
                 </dl>
                 {consigned && (

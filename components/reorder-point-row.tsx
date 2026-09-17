@@ -66,7 +66,7 @@ export function ReorderPointRow({
             pending={delPending}
             error={delState && "error" in delState ? delState.error : null}
             title={`Remove the reorder point for ${point.item_name}?`}
-            detail="The item stays; only the reorder threshold at this location is removed."
+            detail="The item stays; only the reorder threshold at this warehouse is removed."
             label="Remove"
             pendingLabel="Removing…"
             confirmLabel="Remove"

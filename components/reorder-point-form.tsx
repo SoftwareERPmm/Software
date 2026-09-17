@@ -58,7 +58,7 @@ export function AddReorderPointForm({
               </select>
             </div>
             <div className="field">
-              <label htmlFor="location_id">Location</label>
+              <label htmlFor="location_id">Warehouse</label>
               <select id="location_id" name="location_id" required>
                 {locations.map((l) => (
                   <option key={l.id} value={l.id}>{l.code} · {l.name}</option>
@@ -68,7 +68,7 @@ export function AddReorderPointForm({
             <div className="field">
               <label htmlFor="min_qty">Reorder point</label>
               <input id="min_qty" name="min_qty" type="number" min="0" step="any" required placeholder="50" />
-              <span className="hint">Flag this item at this location once on hand drops below this.</span>
+              <span className="hint">Flag this item at this warehouse once on hand drops below this.</span>
             </div>
           </div>
 

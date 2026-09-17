@@ -19,6 +19,7 @@ type Row = {
   brand_name: string | null; barcode: string | null;
   uom_code: string; qty_on_hand: string; value_on_hand: string; is_stocked: boolean;
   last_purchase_price: string | null;
+  last_purchase_document_id: string | null;
   last_purchase_doc_no: string | null;
   last_purchase_date: string | null;
 };
@@ -154,6 +155,7 @@ export default async function Stock({
       valueOnHand: i.valueOnHand,
       lastCost: i.last_purchase_price,
       lastCostDocNo: i.last_purchase_doc_no,
+      lastCostDocId: i.last_purchase_document_id,
       lastCostDate: i.last_purchase_date ? shortDate(i.last_purchase_date) : null,
       consignors,
       warehouses: warehousesOf(i.id),
@@ -190,11 +192,11 @@ export default async function Stock({
 
       {reorderableLocations.length > 1 && (
         <AccountPicker
-          accounts={[{ id: "all", code: "—", name: "All locations" }, ...reorderableLocations]}
+          accounts={[{ id: "all", code: "—", name: "All warehouses" }, ...reorderableLocations]}
           selectedId={selectedLocationId}
           basePath="/items/stock"
           paramName="location"
-          label="Location"
+          label="Warehouse"
         />
       )}
 
@@ -229,7 +231,7 @@ export default async function Stock({
               {lowStock.length}
             </span>
             <span className="kpi-note">
-              item/location pair{lowStock.length === 1 ? "" : "s"} out of stock or below reorder point
+              item/warehouse pair{lowStock.length === 1 ? "" : "s"} out of stock or below reorder point
             </span>
           </span>
         </div>
@@ -244,7 +246,7 @@ export default async function Stock({
           <span className="kpi-body">
             <span className="kpi-label">Incoming</span>
             <span className="kpi-value">{incoming.length}</span>
-            <span className="kpi-note">item/location pair{incoming.length === 1 ? "" : "s"} on an open purchase order</span>
+            <span className="kpi-note">item/warehouse pair{incoming.length === 1 ? "" : "s"} on an open purchase order</span>
           </span>
         </div>
 
@@ -258,7 +260,7 @@ export default async function Stock({
           <span className="kpi-body">
             <span className="kpi-label">Reserved</span>
             <span className="kpi-value">{reserved.length}</span>
-            <span className="kpi-note">item/location pair{reserved.length === 1 ? "" : "s"} committed to an open sales order</span>
+            <span className="kpi-note">item/warehouse pair{reserved.length === 1 ? "" : "s"} committed to an open sales order</span>
           </span>
         </div>
 
@@ -275,8 +277,8 @@ export default async function Stock({
               <Link href="/inventory/consignment" style={{ color: "inherit" }}>{consignedHere.length}</Link>
             </span>
             <span className="kpi-note">
-              item/location/consignor combination{consignedHere.length === 1 ? "" : "s"} on hand but not owned
-              {!allLocations && " at this location"}
+              item/warehouse/consignor combination{consignedHere.length === 1 ? "" : "s"} on hand but not owned
+              {!allLocations && " at this warehouse"}
             </span>
           </span>
         </div>
@@ -287,13 +289,13 @@ export default async function Stock({
           <div className="card">
             <div className="card-head">
               <h2>Low stock</h2>
-              <span className="page-sub">out of stock, or below the reorder point set on that item and location</span>
+              <span className="page-sub">out of stock, or below the reorder point set on that item and warehouse</span>
             </div>
             <div className="tablewrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Code</th><th>Item</th><th>Location</th><th>Status</th>
+                    <th>Code</th><th>Item</th><th>Warehouse</th><th>Status</th>
                     <th className="r">On hand</th><th className="r">Reorder point</th>
                   </tr>
                 </thead>
@@ -339,7 +341,7 @@ export default async function Stock({
               <table>
                 <thead>
                   <tr>
-                    <th>Code</th><th>Item</th><th>Location</th>
+                    <th>Code</th><th>Item</th><th>Warehouse</th>
                     <th className="r">Reorder point</th><th />
                   </tr>
                 </thead>
@@ -397,7 +399,7 @@ export default async function Stock({
                 { key: "value_on_hand", label: "Value (MMK)", sortable: true, align: "r" },
               ]}
               footerCells={{
-                span: <>Total stock value{!allLocations ? " at this location" : ""}</>,
+                span: <>Total stock value{!allLocations ? " at this warehouse" : ""}</>,
                 cells: { value_on_hand: money(totalValue) },
               }}
             />

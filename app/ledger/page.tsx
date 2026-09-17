@@ -41,6 +41,7 @@ export default async function TrialBalance({
 }: {
   searchParams: Promise<{
     asOf?: string; location?: string; type?: string; account?: string; back?: string;
+    voided?: string;
   }>;
 }) {
   const p = await searchParams;
@@ -50,6 +51,7 @@ export default async function TrialBalance({
   const [rows, health, finance, unassigned] = await Promise.all([
     getTrialBalanceAsOf(company.id, {
       asOf: p.asOf, locationId: p.location, accountType: p.type,
+      showVoided: p.voided === "1",
     }) as Promise<any[]>,
     getHealth(company.id),
     getFinanceData(),
@@ -139,6 +141,18 @@ export default async function TrialBalance({
               <label htmlFor="type">Account type</label>
               <select id="type" name="type" defaultValue={p.type ?? ""}>
                 {TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              {/* Off by default. A void writes a mirror of what it undid, so
+                  both sit in the ledger and the movement columns count a
+                  cancelled entry twice over. The balances are right either
+                  way — the pair nets to nothing — so this changes what the
+                  report shows, never what it says the accounts are worth. */}
+              <label htmlFor="voided">Voided entries</label>
+              <select id="voided" name="voided" defaultValue={p.voided ?? ""}>
+                <option value="">Hidden</option>
+                <option value="1">Shown</option>
               </select>
             </div>
             <div className="field">

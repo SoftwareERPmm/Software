@@ -275,7 +275,11 @@ export async function getInvoiceList(companyId: string, docType: "SALES_INVOICE"
             d.status as doc_status, null as payment_status, null::int as days_overdue
        from document d
        join business_partner p on p.id = d.partner_id
-      where d.company_id = ${companyId} and d.doc_type = ${docType} and d.status <> 'POSTED'
+      -- Drafts only. This half used to admit anything not POSTED, which in
+      -- practice meant REVERSED — a voided invoice and the mirror that undid
+      -- it, both listed, for a sale that no longer stands. Voided documents
+      -- belong in the history log, which is the one place that shows them.
+      where d.company_id = ${companyId} and d.doc_type = ${docType} and d.status = 'DRAFT'
 
      order by posting_date desc, doc_no desc`;
 }
@@ -324,6 +328,13 @@ export async function getDocuments(companyId: string, docType?: string, openGrir
      where d.company_id = ${companyId}
        ${docType ? sql`and d.doc_type = ${docType}` : sql``}
        ${openGrirOnly ? sql`and exists (select 1 from v_grir_balance g where g.document_id = d.id)` : sql``}
+       -- Neither half of a void. The document that was undone is not a
+       -- transaction any more, and the mirror that undid it is not one
+       -- either — nobody raised it, and listing both makes one cancelled
+       -- sale look like two entries. The history log shows them; this is
+       -- the list of what stands.
+       and d.status <> 'REVERSED'
+       and d.reverses_document_id is null
      -- Newest first, by the date the document carries, then by when it was
      -- actually entered.
      --
@@ -1597,6 +1608,7 @@ export async function getItems(companyId: string) {
            coalesce(s.qty, 0) as qty_on_hand, coalesce(s.val, 0) as value_on_hand,
            sp.price as sale_price,
            lp.unit_price as last_purchase_price,
+           lp.id        as last_purchase_document_id,
            lp.doc_no    as last_purchase_doc_no,
            to_char(lp.doc_date, 'YYYY-MM-DD') as last_purchase_date
       from item i
@@ -1639,7 +1651,7 @@ export async function getItems(companyId: string) {
       -- Never stored. A purchase price kept on the item master is a second
       -- source of truth that goes stale the next time the supplier changes it.
       left join lateral (
-            select dl.unit_price, d.doc_no, d.doc_date
+            select dl.unit_price, d.id, d.doc_no, d.doc_date
               from document_line dl
               join document d on d.id = dl.document_id
              where dl.item_id = i.id
@@ -2842,6 +2854,41 @@ export const UNASSIGNED_BRANCH = "none";
 
 function branchFilter(branchId?: string | null) {
   return branchFilterOn(sql`jl`, branchId);
+}
+
+/**
+ * Journal lines belonging to a void, left out of a ledger report.
+ *
+ * A void writes a mirror of the document it undoes, so the ledger carries
+ * both: the original entry and an equal, opposite one. The balances are right
+ * either way — the pair nets to nothing — but the debit and credit columns
+ * count a 5,000 expense that no longer stands as 10,000 of movement, and the
+ * account reads as three entries where one transaction happened.
+ *
+ * The pair is excluded together or not at all. Dropping one side alone would
+ * leave debits unequal to credits, which is not an untidy report but a broken
+ * one, and it is the hole migration 0023 closed from the other direction:
+ * hiding a document without hiding what offsets it puts two reports out of
+ * step and neither looks wrong.
+ *
+ * Which is why the dates must match. A document voided after its period
+ * closed gets a reversal dated today (see lib/void.ts), so the two sit in
+ * different periods: hiding both would rewrite a closed period's figures,
+ * which is the one thing closing a period is for. When the dates differ, both
+ * stay — the original where it always was, and the reversal in the period
+ * that actually undid it.
+ */
+function liveEntriesOnly(showVoided?: boolean) {
+  if (showVoided) return sql``;
+  return sql`
+    and not exists (
+      select 1
+        from document d0
+        join document d1
+          on d1.id = coalesce(d0.reversed_by_document_id, d0.reverses_document_id)
+       where d0.id = je.source_id
+         and d0.posting_date = d1.posting_date
+    )`;
 }
 
 /**
@@ -4182,6 +4229,8 @@ export type TrialBalanceFilters = {
   asOf?: string;
   locationId?: string;
   accountType?: string;
+  /** Put the two halves of every void back on the report. */
+  showVoided?: boolean;
 };
 
 /**
@@ -4209,6 +4258,7 @@ export async function getTrialBalanceAsOf(companyId: string, f: TrialBalanceFilt
      where jl.company_id = ${companyId}
        ${f.asOf ? sql`and je.entry_date <= ${f.asOf}::date` : sql``}
        ${branchFilter(f.locationId)}
+       ${liveEntriesOnly(f.showVoided)}
        ${f.accountType ? sql`and a.account_type = ${f.accountType}` : sql``}
      group by a.id, a.code, a.name, a.account_type, sec.name
      -- An account that moved and came back to nil is still part of the
@@ -4230,7 +4280,7 @@ export async function getTrialBalanceAsOf(companyId: string, f: TrialBalanceFilt
  */
 export async function getAccountLedgerFiltered(
   companyId: string, accountId: string,
-  f: { from?: string; to?: string; branchId?: string | null } = {},
+  f: { from?: string; to?: string; branchId?: string | null; showVoided?: boolean } = {},
 ) {
   return sql`
     select je.entry_no, je.entry_date, je.memo, je.source_type,
@@ -4250,6 +4300,7 @@ export async function getAccountLedgerFiltered(
        ${f.from ? sql`and je.entry_date >= ${f.from}::date` : sql``}
        ${f.to ? sql`and je.entry_date <= ${f.to}::date` : sql``}
        ${branchFilter(f.branchId)}
+       ${liveEntriesOnly(f.showVoided)}
      order by je.entry_date, je.entry_no, jl.line_no`;
 }
 
@@ -4260,7 +4311,7 @@ export async function getAccountLedgerFiltered(
  */
 export async function getAccountSummary(
   companyId: string, accountId: string,
-  f: { from?: string; to?: string; branchId?: string | null } = {},
+  f: { from?: string; to?: string; branchId?: string | null; showVoided?: boolean } = {},
 ) {
   const [row] = await sql`
     select
@@ -4279,7 +4330,8 @@ export async function getAccountSummary(
       from journal_line jl
       join journal_entry je on je.id = jl.journal_entry_id
      where jl.company_id = ${companyId} and jl.account_id = ${accountId}
-       ${branchFilter(f.branchId)}`;
+       ${branchFilter(f.branchId)}
+       ${liveEntriesOnly(f.showVoided)}`;
   return {
     opening: Number(row?.opening ?? 0),
     debits: Number(row?.debits ?? 0),

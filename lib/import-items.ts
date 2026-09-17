@@ -30,16 +30,50 @@
 
 export const IMPORT_COLUMNS = [
   "No", "Barcode", "Stock ID", "Stock Name", "Category", "Sub Category", "Brand", "Unit",
+  "Selling price",
 ] as const;
 
 /**
  * Columns a row cannot do without. "No" is a convenience for the reader,
- * "Brand" is genuinely optional, and "Stock ID" is optional in both senses —
- * the column may be absent and a cell may be blank, in which case the next
- * number in that category is assigned, which is what the importer did before
- * the column existed.
+ * "Brand" and "Selling price" are genuinely optional.
+ *
+ * Neither identifier is here. A barcode belongs to the goods and plenty of
+ * goods have none — loose rice, own-packed sacks, anything sold by weight,
+ * and every service — so requiring one made those items unimportable. A Stock
+ * ID is ours and can always be assigned. What a row cannot do without is
+ * *one of the two*, which is a rule about rows rather than about columns and
+ * is enforced as such below.
  */
-const REQUIRED_COLUMNS = ["Barcode", "Stock Name", "Category", "Unit"];
+const REQUIRED_COLUMNS = ["Stock Name", "Category", "Unit"];
+
+/** At least one of these must be a column, or no row can carry an identifier. */
+const IDENTIFIER_COLUMNS = ["Barcode", "Stock ID"];
+
+/**
+ * What other systems call our columns.
+ *
+ * A customer arriving from an incumbent system has a spreadsheet already, and
+ * its headings are whatever that system called them. Rejecting the file until
+ * they are renamed is a chore that teaches nothing — the file is right, the
+ * words differ. These are the names those columns actually carry in the wild:
+ * "UOM" for Unit, "Item Group" for Category, "Product Name" for Stock Name.
+ *
+ * An alias is only consulted when the real column is absent, and taking one
+ * is always said out loud in the warnings. Reading somebody's "Description"
+ * column as the item's name without telling them is how an import quietly
+ * does the wrong thing to four hundred rows.
+ */
+const HEADER_ALIASES: Record<string, string[]> = {
+  "Stock ID": ["item code", "stock code", "product code", "sku", "item no", "item number", "code"],
+  "Stock Name": ["item name", "product name", "name", "item", "product", "description"],
+  "Barcode": ["bar code", "ean", "upc", "gtin", "barcode no"],
+  "Category": ["item group", "product group", "item category", "group"],
+  "Sub Category": ["sub group", "subcategory", "sub-category", "item sub group", "sub item group"],
+  "Brand": ["make", "manufacturer"],
+  "Unit": ["uom", "unit of measure", "base unit", "stock uom", "base uom"],
+  "Selling price": ["price", "sale price", "sales price", "unit price", "rate",
+                    "standard rate", "mrp", "retail price"],
+};
 
 export type MasterData = {
   items: { id: string; code: string; serial: string; name: string; barcode: string | null;
@@ -96,6 +130,16 @@ export type PlannedRow = {
   serial: string;
   code: string;
   serialAssigned: boolean;      // true when the sheet did not say
+  /**
+   * What this item sells for, if the sheet said. Written to the first price
+   * level exactly as the new-item form writes it, so an imported catalogue
+   * arrives priced instead of arriving as eight hundred blanks nobody can
+   * fill in from any screen.
+   *
+   * Null where the column is absent or the cell is empty — an item with no
+   * price is legitimate, and is what every imported item was until now.
+   */
+  salePrice: number | null;
   // Carried for the preview, so the screen can show what the file means
   // without looking anything up a second time.
   unitName: string;
@@ -243,11 +287,70 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
   const indexOf = new Map<string, number>();
   header.forEach((h, i) => indexOf.set(norm(h), i));
 
+  // ---- headings this sheet calls something else ---------------------------
+  const canonical = new Set(IMPORT_COLUMNS.map((c) => norm(c)));
+  const aliasOf = new Map<string, string>();
+  for (const [name, list] of Object.entries(HEADER_ALIASES)) {
+    for (const a of list) aliasOf.set(norm(a), name);
+  }
+
+  // Headings that are not one of ours, in the order they appear.
+  const unknownHeadings = header.filter((h) => h && !canonical.has(norm(h)));
+
+  // Which unknown headings lay claim to which of our columns. Collected before
+  // any is accepted, because two headings claiming one column is a question
+  // rather than a race.
+  const claims = new Map<string, string[]>();
+  for (const h of unknownHeadings) {
+    const target = aliasOf.get(norm(h));
+    if (!target) continue;
+    if (indexOf.has(norm(target))) continue;   // the real column is here; the alias is not needed
+    claims.set(target, [...(claims.get(target) ?? []), h]);
+  }
+
+  for (const [target, headings] of claims) {
+    if (headings.length > 1) {
+      return empty([{
+        row: 1,
+        message:
+          `"${headings.join('" and "')}" both look like the ${target} column, and only one of `
+          + `them can be it. Rename or remove the one that is not.`,
+      }], warnings);
+    }
+    indexOf.set(norm(target), header.indexOf(headings[0]));
+    warnings.push({
+      row: 1,
+      column: headings[0],
+      message: `"${headings[0]}" is being read as ${target}.`,
+    });
+  }
+
   const missingColumns = REQUIRED_COLUMNS.filter((c) => !indexOf.has(norm(c)));
   if (missingColumns.length > 0) {
+    const spare = unknownHeadings.filter((h) => !aliasOf.has(norm(h)));
+    const hint = missingColumns
+      .map((c) => {
+        const near = suggest(c, spare.map((h) => ({ name: h })));
+        return near ? `"${near}" may be your ${c} column` : null;
+      })
+      .filter(Boolean);
     return empty([{
       row: 1,
-      message: `Missing column${missingColumns.length === 1 ? "" : "s"}: ${missingColumns.join(", ")}`,
+      message:
+        `Missing column${missingColumns.length === 1 ? "" : "s"}: ${missingColumns.join(", ")}.`
+        + (hint.length > 0
+            ? ` ${hint.join("; ")} — rename the heading and upload again.`
+            : ""),
+    }], warnings);
+  }
+
+  if (IDENTIFIER_COLUMNS.every((c) => !indexOf.has(norm(c)))) {
+    return empty([{
+      row: 1,
+      message:
+        "The sheet needs a Barcode column or a Stock ID column — without one there is "
+        + "nothing to tell an item apart from another, or to match a row against an item "
+        + "already here. Either will do, and a row may use whichever it has.",
     }], warnings);
   }
 
@@ -361,18 +464,25 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
     const subText = has("Sub Category") ? cell(r, "Sub Category") : "";
     const brandText = has("Brand") ? cell(r, "Brand") : "";
     const unitText = cell(r, "Unit");
+    const priceText = has("Selling price") ? cell(r, "Selling price") : "";
+
+    // ---- the identifier ---------------------------------------------------
+    // One of the two, not both. Which one is the company's business: a tin of
+    // milk has a barcode from the factory and probably no code of its own; a
+    // sack of rice packed here has a code and no barcode at all.
+    if (!barcode && !stockId) {
+      add("This row has neither a Barcode nor a Stock ID. One of them is needed — it is "
+        + "what tells this item apart from every other, and what matches a row against an "
+        + "item already here.", "Stock ID");
+    }
 
     // ---- barcode ----------------------------------------------------------
-    if (!barcode) {
-      add("Barcode is empty. Every row needs one — it is what tells this item apart "
-        + "from every other, and what matches a row to an item already here.", "Barcode");
-    }
-    else if (scientificNotation(barcode)) {
+    if (barcode && scientificNotation(barcode)) {
       add(
         `Barcode reads "${barcode}" — Excel has stored it as a number and lost digits. ` +
         `Format the Barcode column as Text and re-enter it.`, "Barcode"
       );
-    } else if (!/^[0-9A-Za-z._-]+$/.test(barcode)) {
+    } else if (barcode && !/^[0-9A-Za-z._-]+$/.test(barcode)) {
       add(`Barcode "${barcode}" contains characters that are not allowed.`, "Barcode");
     }
 
@@ -452,18 +562,43 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
           `changes what every quantity of this item means. Add it under Units first.`, "Unit");
     }
 
+    // ---- selling price ----------------------------------------------------
+    // Commas stripped because a spreadsheet writes 1,200 and means one number.
+    // Refused rather than rounded or ignored: a price is the one field here
+    // that turns into money on an invoice.
+    let salePrice: number | null = null;
+    if (priceText) {
+      const n = Number(priceText.replace(/,/g, ""));
+      if (!Number.isFinite(n)) {
+        add(`Selling price "${priceText}" is not a number.`, "Selling price");
+      } else if (n < 0) {
+        add(`Selling price "${priceText}" is below zero.`, "Selling price");
+      } else if (n > 0) {
+        salePrice = n;
+      }
+    }
+
     // ---- the item this row refers to --------------------------------------
-    const existing = barcode ? itemByBarcode.get(barcode) : undefined;
+    // Barcode first, because it is the identifier the trade already agrees on
+    // and cannot be two items at once. Falling back to the code the Stock ID
+    // composes is what lets a barcode-less catalogue be re-imported without
+    // making a second copy of everything: both are unique per company, so
+    // either is a sound key, and a row carrying only one still matches.
+    const byCodeKey = !barcode && stockId && group ? norm(`${group.code}${stockId}`) : null;
+    const existing = (barcode ? itemByBarcode.get(barcode) : undefined)
+      ?? (byCodeKey ? itemByCode.get(byCodeKey) : undefined);
+
     if (existing) {
+      const named = barcode ? `Barcode ${barcode}` : `Stock ID ${stockId} in ${group!.name}`;
       if (norm(existing.name) !== norm(name) && name) {
         add(
-          `Barcode ${barcode} already belongs to "${existing.name}". ` +
+          `${named} already belongs to "${existing.name}". ` +
           `Correct the sheet, or rename the item first if it really has changed.`, "Stock Name"
         );
       } else {
         warnings.push({
           row: rowNo,
-          message: `Barcode ${barcode} already exists — "${existing.name}" is left as it is.`,
+          message: `${named} already exists — "${existing.name}" is left as it is.`,
         });
       }
     }
@@ -481,6 +616,9 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
         seenBarcode.set(barcode, rowNo);
       }
     }
+    // The same check for the other identifier. A sheet with no barcodes would
+    // otherwise be free to list one item twice, and the two rows would only
+    // collide later on the code they compose.
 
     // A Stock ID that disagrees with an item already carrying that barcode is
     // worth saying out loud. The item is left alone either way — an import
@@ -540,6 +678,7 @@ export function planImport(rowsIn: string[][], master: MasterData): ImportPlan {
       serial,
       code,
       serialAssigned: assigned,
+      salePrice,
       unitName: uom!.name,
       categoryName: category ? category.name : group!.name,
       subCategoryName: sub ? sub.name : null,
