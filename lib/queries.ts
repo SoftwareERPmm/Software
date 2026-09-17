@@ -1091,6 +1091,26 @@ export async function getJournalForDocument(journalEntryId: string | null) {
      order by line_no`;
 }
 
+/**
+ * A voucher's lines as the correction editor needs them: the account id, not
+ * just its code.
+ *
+ * v_journal_line carries the code and the name because that is what a reader
+ * wants; a correction has to repost, and reposting needs the id. Signed the
+ * way the engine takes them — positive debit, negative credit — so what comes
+ * out of here goes straight back in.
+ */
+export async function getVoucherLines(journalEntryId: string | null) {
+  if (!journalEntryId) return [];
+  return sql`
+    select jl.account_id, a.code as account_code, a.name as account_name,
+           jl.base_amount as amount, jl.memo
+      from journal_line jl
+      join account a on a.id = jl.account_id
+     where jl.journal_entry_id = ${journalEntryId}
+     order by jl.line_no`;
+}
+
 export async function getDownstream(documentId: string) {
   return sql`
     select id, doc_type, doc_no, posting_date, status, gross_total

@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useActionState } from "react";
-import { Boxes, Building2, CalendarDays, Landmark, Users, Wallet } from "lucide-react";
+import { Boxes, Building2, CalendarDays, Landmark, TriangleAlert, Users, Wallet } from "lucide-react";
 import { money } from "@/lib/format";
 import type { ActionResult } from "@/lib/actions";
 
@@ -64,6 +64,8 @@ export function OpeningSetup({
   accounts: Account[];
   today: string;
 }) {
+  /** Second press, not second thought: the confirm step this screen needs. */
+  const [confirming, setConfirming] = useState(false);
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     action as never, null,
   );
@@ -143,7 +145,14 @@ export function OpeningSetup({
   );
 
   return (
-    <form action={formAction} className="form wide">
+    <form
+      action={formAction}
+      className="form wide"
+      /* Enter in a field must not walk past the confirmation. The button is
+         the only way in, and this is what makes that true rather than
+         merely apparent. */
+      onSubmit={(e) => { if (!confirming) e.preventDefault(); }}
+    >
       {state && "error" in state && <div className="alert">{state.error}</div>}
       <input type="hidden" name="payload" value={JSON.stringify(payload)} />
 
@@ -396,10 +405,46 @@ export function OpeningSetup({
         </div>
       </section>
 
+      {/* Asked before, not explained after.
+          A company opens its books once: the engine refuses a second batch,
+          and a posted one cannot be edited — only reversed document by
+          document, which for a cutover means unwinding stock layers, customer
+          debts and supplier debts one at a time. That is a different day's
+          work from fixing a typo, and the screen that lets somebody start it
+          with one click should say so first. */}
+      {confirming && (
+        <div className="alert" style={{ marginBottom: "0.75rem" }}>
+          <TriangleAlert size={15} aria-hidden="true" />
+          <div>
+            <strong>This is posted once, and cannot be edited afterwards.</strong>
+            <div className="hint" style={{ marginTop: "0.25rem" }}>
+              {rows} line{rows === 1 ? "" : "s"} will post as at {cutover}, writing
+              opening stock, what customers owe, what you owe suppliers and the
+              balancing entry to Opening Balance Equity. A company gets one
+              opening batch, so there is no second attempt: putting it right
+              afterwards means reversing each document it wrote, not re-opening
+              this screen. Check the figures above before confirming.
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="actions form-commit">
-        <button type="submit" disabled={pending || rows === 0}>
-          {pending ? "Posting…" : `Post opening balances (${rows} line${rows === 1 ? "" : "s"})`}
-        </button>
+        {confirming ? (
+          <>
+            <button type="submit" disabled={pending || rows === 0}>
+              {pending ? "Posting…" : "Yes — post the opening balances"}
+            </button>
+            <button type="button" className="ghost" disabled={pending}
+                    onClick={() => setConfirming(false)}>
+              Go back and check
+            </button>
+          </>
+        ) : (
+          <button type="button" disabled={rows === 0} onClick={() => setConfirming(true)}>
+            {`Post opening balances (${rows} line${rows === 1 ? "" : "s"})`}
+          </button>
+        )}
         <span className="page-sub">
           Posted once. A company can have one opening batch, so this cannot be
           entered twice by accident.

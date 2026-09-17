@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { CloseOrder } from "@/components/close-order";
 import { CorrectOrder, type CorrectableLine } from "@/components/correct-order";
+import { CorrectVoucher } from "@/components/correct-voucher";
 import { VersionBadge, VersionTrail, type DocumentVersion }
   from "@/components/version-history";
 import { TransactionOrigin } from "@/components/transaction-origin";
@@ -22,6 +23,8 @@ import {
   voidDocumentAction, linkReceiptToOrder, closeOrderAction,
   previewOrderCorrection, correctOrder,
   previewInvoiceCorrection, correctInvoice, applyAdvanceAction,
+  correctVoucher,
+  getFinanceData,
 } from "@/lib/actions";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -57,6 +60,7 @@ import {
   getBillsRaisedFromOrders,
   getReturnedAgainst,
   getOrderCancellation,
+  getVoucherLines,
 } from "@/lib/queries";
 import {
   createDelivery, createGoodsReceipt, replaceConsignmentSettlement,
@@ -565,6 +569,33 @@ export default async function DocumentPage({
     && !doc.superseded_by_document_id;
   const orderBehind = stageDoc["PURCHASE_ORDER"] ?? stageDoc["SALES_ORDER"] ?? null;
 
+  /**
+   * A voucher is corrected the same way, and can always be: nothing is ever
+   * raised from one, so there is never anything built on top to unwind first.
+   * Offered only while this version is the live one — an older version is a
+   * record of what was, and is corrected by correcting the current one.
+   */
+  const isVoucher = ["CASH_VOUCHER", "BANK_VOUCHER", "JOURNAL_VOUCHER"]
+    .includes(doc.doc_type) && doc.status === "POSTED"
+    && !doc.superseded_by_document_id;
+  const voucherCorrection = isVoucher ? (
+    <CorrectVoucher
+      action={correctVoucher}
+      documentId={doc.id}
+      docNo={doc.doc_no ?? ""}
+      version={Number(doc.version ?? 1)}
+      docType={doc.doc_type}
+      memo={(doc.memo as string) ?? null}
+      accounts={(await getFinanceData()).accounts as never}
+      lines={((await getVoucherLines(doc.journal_entry_id)) as Record<string, unknown>[])
+        .map((l) => ({
+          accountId: String(l.account_id),
+          amount: Number(l.amount),
+          memo: (l.memo as string) ?? null,
+        }))}
+    />
+  ) : null;
+
   const correctInvoiceAction = isLiveInvoice && !orderBehind ? (
     <CorrectOrder
       noun="invoice"
@@ -914,6 +945,7 @@ export default async function DocumentPage({
           returnLabel={returnRoute?.label ?? null}
         >
           {correctInvoiceAction}
+          {voucherCorrection}
         </VoidDocument>
       )}
 
