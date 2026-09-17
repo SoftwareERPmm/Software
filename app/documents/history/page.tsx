@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { getCompany, getDocumentHistory } from "@/lib/queries";
 import { money, shortDate, dateTime } from "@/lib/format";
+import { HelpHint } from "@/components/help-hint";
 
 /** Same shape the document pages use — a local one-liner rather than a
  *  shared import, which is how the other pages here do it too. */
@@ -28,14 +29,14 @@ export default async function DocumentHistory() {
       <div className="page-head">
         <span className="eyebrow">Documents</span>
         <h1>History log</h1>
-        <span className="page-sub">
+        <HelpHint>
           Every document that has been voided or edited. Nothing here was
           deleted: a voided document keeps its number, its lines and its
           journal entry, and the reversal that cancelled it sits beside it in
           the ledger. This is the record of what was done and when &mdash; so
           a document disappearing from a list is never the same thing as one
           that was never entered.
-        </span>
+        </HelpHint>
       </div>
 
       <section>

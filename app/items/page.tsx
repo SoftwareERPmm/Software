@@ -5,6 +5,7 @@ import { updateItem, deactivateItem, activateItem, deleteItem } from "@/lib/acti
 import { ItemRow } from "@/components/item-row";
 import { DataTable, type DataRow } from "@/components/data-table";
 import { ItemFilters } from "@/components/item-filters";
+import { HelpHint } from "@/components/help-hint";
 
 type Row = {
   id: string; code: string; name: string; name_my: string | null;
@@ -13,6 +14,7 @@ type Row = {
   parent_group_id: string | null; parent_group_name: string | null;
   brand_name: string | null; is_stocked: boolean; is_active: boolean;
   uom_code: string; sale_price: string | null;
+  photo_version: string | null;
   last_purchase_price: string | null;
   last_purchase_doc_no: string | null;
   last_purchase_date: string | null;
@@ -83,13 +85,23 @@ export default async function Items({
       last_purchase_price: Number(i.last_purchase_price ?? 0),
       is_active: i.is_active ? 1 : 0,
     },
-    csv: [
-      i.code, i.name, i.name_my ?? "", categoryName(i), subName(i),
-      i.brand_name ?? "", i.uom_code,
-      i.sale_price ?? "", i.last_purchase_price ?? "",
-      i.last_purchase_doc_no ?? "", i.last_purchase_date ?? "",
-      i.is_active ? "active" : "inactive",
-    ],
+    // Keyed by column, so hiding a column on screen drops it from the file
+    // too. The four keys with no column of their own are export-only, listed
+    // in csvExtra below.
+    csv: {
+      code: i.code,
+      name: i.name,
+      name_my: i.name_my ?? "",
+      category: categoryName(i),
+      subcategory: subName(i),
+      brand_name: i.brand_name ?? "",
+      uom_code: i.uom_code,
+      sale_price: i.sale_price ?? "",
+      last_purchase_price: i.last_purchase_price ?? "",
+      last_purchase_doc_no: i.last_purchase_doc_no ?? "",
+      last_purchase_date: i.last_purchase_date ?? "",
+      status: i.is_active ? "active" : "inactive",
+    },
     node: (
       <ItemRow
         item={i}
@@ -110,12 +122,12 @@ export default async function Items({
       <div className="page-head">
         <span className="eyebrow">Master data</span>
         <h1>Items</h1>
-        <span className="page-sub">
+        <HelpHint>
           Every product and service in the catalogue. Filed under a category
           (and sub category, if it has one), with an optional brand. How many
           there are and what they are worth lives under Inventory &mdash; an
           item is what the thing <em>is</em>, not how much of it is on a shelf.
-        </span>
+        </HelpHint>
       </div>
 
       <div className="actions">
@@ -161,12 +173,18 @@ export default async function Items({
               searchPlaceholder="Search items…"
               defaultSort={{ key: "code", dir: "asc" }}
               csvFilename="items.csv"
-              csvHeader={[
-                "Code", "Name", "Name (Burmese)", "Category", "Sub category",
-                "Brand", "Unit", "Selling price", "Latest purchase price",
-                "From invoice", "Invoice date", "Status",
+              storageKey="items"
+              // Never on screen, always in the file: a Burmese name and a
+              // status are wanted in a spreadsheet and would only widen a
+              // table that already has ten columns.
+              csvExtra={[
+                { key: "name_my", label: "Name (Burmese)" },
+                { key: "last_purchase_doc_no", label: "From invoice" },
+                { key: "last_purchase_date", label: "Invoice date" },
+                { key: "status", label: "Status" },
               ]}
               columns={[
+                { key: "photo", label: "" },
                 { key: "code", label: "Code", sortable: true },
                 { key: "name", label: "Name", sortable: true },
                 { key: "category", label: "Category", sortable: true },

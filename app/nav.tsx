@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useState } from "react";
+import { setSidebarCollapsed, useSidebarCollapsed } from "@/components/sidebar-collapse";
 
 export function NavLink({
   href,
@@ -78,6 +79,7 @@ export function NavGroup({
   const pathname = usePathname();
   const contains = match.some((m) => (m === "/" ? pathname === "/" : pathname.startsWith(m)));
   const [open, setOpen] = useState<boolean | null>(null);
+  const collapsed = useSidebarCollapsed();
 
   const isOpen = open ?? (contains || Boolean(defaultOpen));
 
@@ -86,13 +88,27 @@ export function NavGroup({
       <button
         type="button"
         className="navhead"
-        onClick={() => setOpen(!isOpen)}
+        /* Collapsed, the list this would open is not on screen, so toggling it
+           is a click that does nothing visible. It opens the rail instead and
+           shows the group — which is what somebody clicking an icon on a rail
+           of icons is asking for. */
+        onClick={() => {
+          if (collapsed) {
+            setSidebarCollapsed(false);
+            setOpen(true);
+            return;
+          }
+          setOpen(!isOpen);
+        }}
         aria-expanded={isOpen}
         data-inside={contains}
+        /* The icon is the whole label on a rail. Only then is a tooltip worth
+           having; beside the word itself it is noise. */
+        title={collapsed ? label : undefined}
       >
         <span className="navhead-label">
           {icon}
-          {label}
+          <span className="navhead-text">{label}</span>
         </span>
         <span className="navcaret" data-open={isOpen}>›</span>
       </button>

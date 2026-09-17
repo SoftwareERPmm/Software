@@ -1,5 +1,6 @@
 import { createPartner } from "@/lib/actions";
 import { SimpleForm } from "@/components/simple-form";
+import { HelpHint } from "@/components/help-hint";
 
 export default function NewPartner() {
   return (
@@ -7,10 +8,10 @@ export default function NewPartner() {
       <div className="page-head">
         <span className="eyebrow">Master data</span>
         <h1>New business partner</h1>
-        <span className="page-sub">
+        <HelpHint>
           A partner can be a customer, a supplier, or both — here the same company
           often is.
-        </span>
+        </HelpHint>
       </div>
 
       <SimpleForm action={createPartner} submitLabel="Save partner">

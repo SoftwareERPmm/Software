@@ -4,6 +4,7 @@ import { getFinanceData, getFormData, createOpeningBatch } from "@/lib/actions";
 import { getCompany, getOpeningBatch } from "@/lib/queries";
 import { money } from "@/lib/db";
 import { OpeningSetup } from "@/components/opening-setup";
+import { HelpHint } from "@/components/help-hint";
 
 /**
  * The cutover screen.
@@ -26,10 +27,10 @@ export default async function OpeningSetupPage() {
         <div className="page-head">
           <span className="eyebrow">Accounting</span>
           <h1>Opening balances</h1>
-          <span className="page-sub">
+          <HelpHint>
             Posted as at {batch.cutover_date}. What the business held on the day
             it started using this system.
-          </span>
+          </HelpHint>
         </div>
 
         <div className="tb-verdict ok" style={{ marginBottom: "1rem" }}>
@@ -99,12 +100,12 @@ export default async function OpeningSetupPage() {
       <div className="page-head">
         <span className="eyebrow">Accounting</span>
         <h1>Opening balances</h1>
-        <span className="page-sub">
+        <HelpHint>
           What the business already had on the day it starts using this system:
           stock on the shelf, customers who owe you, suppliers you owe, and the
           cash and other balances. Entered once, together, so the stock ledger
           and the accounts start out agreeing.
-        </span>
+        </HelpHint>
       </div>
 
       <OpeningSetup

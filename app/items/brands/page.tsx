@@ -3,6 +3,7 @@ import { createBrand, updateBrand, deactivateBrand, activateBrand, deleteBrand }
 import { AddBrandForm } from "@/components/brand-form";
 import { BrandRow } from "@/components/brand-row";
 import { DataTable, type DataRow } from "@/components/data-table";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function Brands() {
   const [co] = await sql`select id from company order by created_at limit 1`;
@@ -36,11 +37,11 @@ export default async function Brands() {
       <div className="page-head">
         <span className="eyebrow">Master data</span>
         <h1>Brands</h1>
-        <span className="page-sub">
+        <HelpHint>
           A flat list, on purpose &mdash; the same brand shows up under many
           different categories, so it doesn&rsquo;t belong on the category
           tree itself.
-        </span>
+        </HelpHint>
       </div>
 
       <AddBrandForm action={createBrand} />

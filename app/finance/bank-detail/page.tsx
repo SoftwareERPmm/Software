@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getFinanceData, getAccountLedger } from "@/lib/actions";
 import { money } from "@/lib/db";
 import { AccountPicker } from "@/components/account-picker";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function BankDetail({
   searchParams,
@@ -24,10 +25,10 @@ export default async function BankDetail({
       <div className="page-head">
         <span className="eyebrow">Cash &amp; Bank</span>
         <h1>Bank book</h1>
-        <span className="page-sub">
+        <HelpHint>
           Every movement on the account with a running balance, whatever document
           caused it.
-        </span>
+        </HelpHint>
       </div>
 
       {list.length === 0 ? (

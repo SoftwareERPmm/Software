@@ -301,6 +301,21 @@ export default async function DocumentPage({
   // the action then refuses.
   const voidPlan = doc.status === "POSTED" ? await planVoid(doc.id) : null;
 
+  /**
+   * What voiding this would put back on the shelf. Only a counter sale has
+   * any: it composed the delivery that took the stock out, so undoing the
+   * sale undoes that too — and nobody should be able to do it without saying
+   * the goods are actually there.
+   */
+  const [restores] = doc.status === "POSTED"
+    ? (await sql`
+        select coalesce(sum(-sm.qty), 0)::float as units
+          from stock_movement sm
+          join document child on child.id = sm.document_id
+         where child.lifecycle_owner_id = ${doc.id}
+           and child.status = 'POSTED' and sm.qty < 0`) as unknown as { units: number }[]
+    : [{ units: 0 }];
+
   // What this document is genuinely linked to, in both directions. Shown
   // alongside the workflow pipeline rather than instead of it: the pipeline
   // is the shape a sale usually takes and carries the "create the next one"
@@ -977,6 +992,8 @@ export default async function DocumentPage({
              the reader could confuse a void with. */
           returnHref={returnRoute?.href ?? null}
           returnLabel={returnRoute?.label ?? null}
+          restoresUnits={Number(restores?.units ?? 0)}
+          salesReturnHref={`/sales/returns/new?source=${doc.id}`}
         >
           {correctInvoiceAction}
           {voucherCorrection}
@@ -1185,34 +1202,31 @@ export default async function DocumentPage({
         <div className="card">
           <div className="card-head"><h2>Document</h2><span className={`pill ${doc.status.toLowerCase()}`}>{doc.status}</span></div>
           <div className="card-body">
-            <dl className="kv">
-              <dt>Number</dt><dd className="m">{doc.doc_no ?? "—"}</dd>
-              <dt>Date</dt><dd>{shortDate(doc.doc_date)}</dd>
-              <dt>Posting</dt><dd>{shortDate(doc.posting_date)}</dd>
-              <dt>Due</dt><dd>{doc.due_date ? shortDate(doc.due_date) : "—"}</dd>
-              <dt>Partner</dt><dd>{doc.partner_name ? `${doc.partner_code} · ${doc.partner_name}` : "—"}</dd>
-              <dt>Location</dt><dd>{doc.location_code ? `${doc.location_code} · ${doc.location_name}` : "—"}</dd>
-              <dt>Currency</dt><dd className="m">{doc.currency} @ {Number(doc.exchange_rate)}</dd>
+            {/* Pairs rather than a flat list of dt/dd.
+                Flat, the value column took whatever the card was wide — a
+                document number sat in a thousand pixels of nothing, and the
+                eye had to travel the width of the screen to read a date. In
+                pairs the panel fills the space it occupies, and each value
+                sits on a rule that says where the field ends. */}
+            <dl className="kv ruled">
+              <div><dt>Number</dt><dd className="m">{doc.doc_no ?? "—"}</dd></div>
+              <div><dt>Partner</dt><dd>{doc.partner_name ? `${doc.partner_code} · ${doc.partner_name}` : "—"}</dd></div>
+              <div><dt>Date</dt><dd>{shortDate(doc.doc_date)}</dd></div>
+              <div><dt>Location</dt><dd>{doc.location_code ? `${doc.location_code} · ${doc.location_name}` : "—"}</dd></div>
+              <div><dt>Posting</dt><dd>{shortDate(doc.posting_date)}</dd></div>
+              <div><dt>Currency</dt><dd className="m">{doc.currency} @ {Number(doc.exchange_rate)}</dd></div>
+              <div><dt>Due</dt><dd>{doc.due_date ? shortDate(doc.due_date) : "—"}</dd></div>
+              {doc.payment_type
+                ? <div><dt>Payment</dt><dd><span className="pill">{doc.payment_type}</span></dd></div>
+                : <div><dt>Payment</dt><dd>—</dd></div>}
               {doc.salesman_name && (
-                <>
-                  <dt>Salesman</dt>
-                  <dd>{doc.salesman_code} · {doc.salesman_name}</dd>
-                </>
-              )}
-              {doc.payment_type && (
-                <>
-                  <dt>Payment</dt>
-                  <dd><span className="pill">{doc.payment_type}</span></dd>
-                </>
+                <div><dt>Salesman</dt><dd>{doc.salesman_code} · {doc.salesman_name}</dd></div>
               )}
               {doc.reference && (
-                <>
-                  <dt>Reference</dt>
-                  <dd className="m">{doc.reference}</dd>
-                </>
+                <div><dt>Reference</dt><dd className="m">{doc.reference}</dd></div>
               )}
               {isSi && (
-                <>
+                <div>
                   <dt>Fulfilment</dt>
                   <dd>
                     {/* Which way this invoice was raised, and whether the
@@ -1228,20 +1242,22 @@ export default async function DocumentPage({
                       <span className="pill ok">Taken now</span>
                     )}
                   </dd>
-                </>
+                </div>
               )}
+              <div>
+                <dt>Source</dt>
+                <dd>
+                  {doc.source_doc_no
+                    ? <Link href={`/documents/${doc.source_id}`} className="m" style={{ color: "var(--brand)" }}>{doc.source_doc_no}</Link>
+                    : "—"}
+                </dd>
+              </div>
+              {/* Last and across both columns: a remark is a sentence, not a
+                  field, and squeezing it into half the width wraps it into a
+                  column of three-word lines. */}
               {doc.memo && (
-                <>
-                  <dt>Remark</dt>
-                  <dd className="wrap">{doc.memo}</dd>
-                </>
+                <div className="kv-wide"><dt>Remark</dt><dd className="wrap">{doc.memo}</dd></div>
               )}
-              <dt>Source</dt>
-              <dd>
-                {doc.source_doc_no
-                  ? <Link href={`/documents/${doc.source_id}`} className="m" style={{ color: "var(--brand)" }}>{doc.source_doc_no}</Link>
-                  : "—"}
-              </dd>
             </dl>
           </div>
         </div>

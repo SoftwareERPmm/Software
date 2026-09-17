@@ -4,6 +4,7 @@ import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { StockTransferForm } from "@/components/stock-transfer-form";
 import { ErpCrumbs } from "@/components/erp-worklist";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function NewStockTransfer() {
   const d = await getFormData();
@@ -37,13 +38,13 @@ export default async function NewStockTransfer() {
       ]} />
       <div className="page-head">
         <h1>Stock transfer</h1>
-        <span className="page-sub">
+        <HelpHint>
           Move stock between two of the company&rsquo;s own warehouses — the
           company-wide total never changes, only which location holds it.{" "}
           <Link href="/documents?type=STOCK_TRANSFER" style={{ color: "var(--brand)" }}>
             Past transfers
           </Link>
-        </span>
+        </HelpHint>
       </div>
 
       <StockTransferForm

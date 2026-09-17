@@ -1,16 +1,20 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { Layers, Home, Users } from "lucide-react";
 import { DataTable, type DataRow, type Column } from "./data-table";
 
+type Scope = "all" | "owned" | "consigned";
+
 /**
- * Wraps DataTable with a Normal/Consignment toggle. Both ticked — the
- * default — is "all"; there is no third "all" checkbox because that is
- * already what both together mean.
+ * Wraps DataTable with the ownership picker.
  *
- * Takes a plain string[] rather than a Set for the same reason DataTable
- * takes pre-rendered nodes: what crosses the server/client boundary here
- * should be the dullest possible data.
+ * Two checkboxes said the same thing three ways: both ticked, neither ticked,
+ * one ticked. Neither ticked is a table showing nothing, which is a state
+ * worth having only if somebody wants it, and nobody does. Three exclusive
+ * tabs carry the same choices with one fewer, and each one says how many rows
+ * it holds before it is picked — a Consignment tab reading 0 answers the
+ * question without being clicked.
  */
 export function StockTable({
   rows,
@@ -19,7 +23,7 @@ export function StockTable({
   searchPlaceholder,
   defaultSort,
   emptyLabel,
-  footer,
+  footerCells,
 }: {
   rows: DataRow[];
   /** Row keys (item ids) that currently carry consigned stock. */
@@ -28,37 +32,61 @@ export function StockTable({
   searchPlaceholder?: string;
   defaultSort?: { key: string; dir: "asc" | "desc" };
   emptyLabel?: string;
-  footer?: React.ReactNode;
+  footerCells?: { span: React.ReactNode; cells: Record<string, React.ReactNode> };
 }) {
-  const [showNormal, setShowNormal] = useState(true);
-  const [showConsignment, setShowConsignment] = useState(true);
+  const [scope, setScope] = useState<Scope>("all");
 
   const consigned = useMemo(() => new Set(consignmentItemIds), [consignmentItemIds]);
 
+  const counts = {
+    all: rows.length,
+    consigned: rows.filter((r) => consigned.has(r.key)).length,
+    owned: rows.filter((r) => !consigned.has(r.key)).length,
+  };
+
   const filtered = useMemo(
-    () => rows.filter((r) => (consigned.has(r.key) ? showConsignment : showNormal)),
-    [rows, consigned, showNormal, showConsignment]
+    () => rows.filter((r) =>
+      scope === "all" ? true : consigned.has(r.key) ? scope === "consigned" : scope === "owned"),
+    [rows, consigned, scope]
   );
+
+  const tabs: { key: Scope; label: string; icon: React.ReactNode }[] = [
+    { key: "all", label: "All stock", icon: <Layers size={14} aria-hidden="true" /> },
+    { key: "owned", label: "Company-owned", icon: <Home size={14} aria-hidden="true" /> },
+    { key: "consigned", label: "Consignment", icon: <Users size={14} aria-hidden="true" /> },
+  ];
 
   return (
     <>
-      <div style={{ display: "flex", gap: "1.25rem", margin: "0 0 0.75rem" }}>
-        <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", cursor: "pointer" }}>
-          <input type="checkbox" checked={showNormal} onChange={(e) => setShowNormal(e.target.checked)} />
-          Normal items
-        </label>
-        <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", cursor: "pointer" }}>
-          <input type="checkbox" checked={showConsignment} onChange={(e) => setShowConsignment(e.target.checked)} />
-          Consignment items
-        </label>
+      <div className="scopetabs" role="group" aria-label="Ownership">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            className="scopetab"
+            data-active={scope === t.key}
+            aria-pressed={scope === t.key}
+            onClick={() => setScope(t.key)}
+          >
+            {t.icon}
+            {t.label}
+            <span className="scopetab-n">{counts[t.key]}</span>
+          </button>
+        ))}
       </div>
       <DataTable
         rows={filtered}
         columns={columns}
         searchPlaceholder={searchPlaceholder}
         defaultSort={defaultSort}
-        emptyLabel={showNormal || showConsignment ? emptyLabel : "Tick a box to show items"}
-        footer={footer}
+        emptyLabel={
+          scope === "consigned" ? "Nothing on hand from a consignor"
+            : scope === "owned" ? "Nothing company-owned on hand"
+              : emptyLabel
+        }
+        footerCells={footerCells}
+        tableClassName="stocktable"
+        storageKey="stock"
       />
     </>
   );

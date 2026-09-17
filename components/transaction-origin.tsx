@@ -63,90 +63,102 @@ export function TransactionOrigin({
         <strong>Started from {startedFrom}</strong>
       </div>
 
+      {/* Pairs, so the four facts sit two-up instead of stacking down the
+          left with the rest of the strip empty. Same reason the Document
+          panel below is paired: a value given the whole width is mostly
+          width. */}
       <dl className="origin-list">
-        <dt>Order</dt>
-        <dd>
-          {order.state === "NOT_USED" ? (
-            <span className="origin-skip">
-              Not used
-              <span className="origin-why">
-                {" "}— this {sales ? "sale" : "purchase"} did not go through one
-              </span>
-            </span>
-          ) : order.state === "USED" ? (
-            <Link href={`/documents/${order.doc.id}`}>{order.doc.doc_no}</Link>
-          ) : (
-            <>
-              {/* All of them. Goods from one receipt can answer two orders,
-                  and naming one reads as the whole answer. */}
-              {order.docs.map((o, i) => (
-                <span key={o.id}>
-                  {i > 0 && " · "}
-                  <Link href={`/documents/${o.id}`}>{o.doc_no}</Link>
-                </span>
-              ))}
-              <span className="origin-why">
-                {" "}· linked {order.docs.length === 1 ? "later" : "later"}, not where this began
-              </span>
-            </>
-          )}
-        </dd>
-
-        <dt>{moveWord}</dt>
-        <dd>
-          {fulfilment.state === "NOT_REQUIRED" ? (
-            <span className="origin-skip">
-              Not required
-              <span className="origin-why"> — nothing physical to {sales ? "deliver" : "receive"}</span>
-            </span>
-          ) : fulfilment.state === "PENDING" ? (
-            <span className="origin-wait">
-              Pending
-              <span className="origin-why">
-                {" "}— the goods have not {sales ? "gone out" : "arrived"} yet
-              </span>
-            </span>
-          ) : (
-            <>
-              {fulfilmentDocs.map((d, i) => (
-                <span key={d.id}>
-                  {i > 0 && " · "}
-                  <Link href={`/documents/${d.id}`}>{d.doc_no}</Link>
-                </span>
-              ))}
-              {fulfilment.state === "DONE" ? (
+        <div>
+          <dt>Order</dt>
+          <dd>
+            {order.state === "NOT_USED" ? (
+              <span className="origin-skip">
+                Not used
                 <span className="origin-why">
-                  {" "}· fully {sales ? "delivered" : "received"}
+                  {" "}— this {sales ? "sale" : "purchase"} did not go through one
                 </span>
-              ) : (
-                <span className="origin-wait">
-                  {" "}· {qty(String(fulfilment.outstanding))}
-                  {fulfilment.unit ? ` ${fulfilment.unit}` : ""} still to come
-                </span>
-              )}
-            </>
-          )}
-        </dd>
-
-        <dt>Payment</dt>
-        <dd>{PAYMENT_WORD[payment]}</dd>
-
-        <dt>Correct at</dt>
-        <dd>
-          {correctAt.kind === "ORDER" ? (
-            <>
-              <Link href={`/documents/${correctAt.doc.id}`}>{correctAt.doc.doc_no}</Link>
-              <span className="origin-why">
-                {" "}— the price was agreed there, so it is corrected there
               </span>
-            </>
-          ) : (
-            <>
-              This invoice
-              <span className="origin-why"> — nothing upstream priced it</span>
-            </>
-          )}
-        </dd>
+            ) : order.state === "USED" ? (
+              <Link href={`/documents/${order.doc.id}`}>{order.doc.doc_no}</Link>
+            ) : (
+              <>
+                {/* All of them. Goods from one receipt can answer two orders,
+                    and naming one reads as the whole answer. */}
+                {order.docs.map((o, i) => (
+                  <span key={o.id}>
+                    {i > 0 && " · "}
+                    <Link href={`/documents/${o.id}`}>{o.doc_no}</Link>
+                  </span>
+                ))}
+                <span className="origin-why">
+                  {" "}· linked {order.docs.length === 1 ? "later" : "later"}, not where this began
+                </span>
+              </>
+            )}
+          </dd>
+        </div>
+
+        <div>
+          <dt>{moveWord}</dt>
+          <dd>
+            {fulfilment.state === "NOT_REQUIRED" ? (
+              <span className="origin-skip">
+                Not required
+                <span className="origin-why"> — nothing physical to {sales ? "deliver" : "receive"}</span>
+              </span>
+            ) : fulfilment.state === "PENDING" ? (
+              <span className="origin-wait">
+                Pending
+                <span className="origin-why">
+                  {" "}— the goods have not {sales ? "gone out" : "arrived"} yet
+                </span>
+              </span>
+            ) : (
+              <>
+                {fulfilmentDocs.map((d, i) => (
+                  <span key={d.id}>
+                    {i > 0 && " · "}
+                    <Link href={`/documents/${d.id}`}>{d.doc_no}</Link>
+                  </span>
+                ))}
+                {fulfilment.state === "DONE" ? (
+                  <span className="origin-why">
+                    {" "}· fully {sales ? "delivered" : "received"}
+                  </span>
+                ) : (
+                  <span className="origin-wait">
+                    {" "}· {qty(String(fulfilment.outstanding))}
+                    {fulfilment.unit ? ` ${fulfilment.unit}` : ""} still to come
+                  </span>
+                )}
+              </>
+            )}
+          </dd>
+        </div>
+
+        <div>
+          <dt>Payment</dt>
+          <dd>{PAYMENT_WORD[payment]}</dd>
+        </div>
+
+        <div>
+          <dt>Correct at</dt>
+          <dd>
+            {correctAt.kind === "ORDER" ? (
+              <>
+                <Link href={`/documents/${correctAt.doc.id}`}>{correctAt.doc.doc_no}</Link>
+                <span className="origin-why">
+                  {" "}— the price was agreed there, so it is corrected there
+                </span>
+              </>
+            ) : (
+              <>
+                This invoice
+                <span className="origin-why"> — nothing upstream priced it</span>
+              </>
+            )}
+          </dd>
+        </div>
       </dl>
 
       {/* The route as one line, where there is more than one step to it. */}

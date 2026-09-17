@@ -28,7 +28,7 @@ type Blocker = { reason: string; docNo?: string; docId?: string };
  */
 export function VoidDocument({
   action, documentId, docNo, canVoid, blockers, effects, children,
-  returnHref, returnLabel,
+  returnHref, returnLabel, restoresUnits, salesReturnHref,
 }: {
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   documentId: string;
@@ -55,6 +55,15 @@ export function VoidDocument({
    * physical return erase the fact it happened.
    */
   returnHref?: string | null;
+  /**
+   * How many units this void would put back on the shelf, when it would put
+   * any back at all — a counter sale, which took the stock out as part of
+   * itself. Nothing restores stock without somebody saying it is there, so
+   * this turns the confirmation on rather than deciding anything by itself.
+   */
+  restoresUnits?: number | null;
+  /** Where the sales return lives, for when the customer still has the goods. */
+  salesReturnHref?: string | null;
   /** What that return will actually do — it differs once a bill exists. */
   returnLabel?: string | null;
 }) {
@@ -72,9 +81,13 @@ export function VoidDocument({
     return (
       <div className="docactions voidlock">
         {children}
-        <button type="button" className="btn ghost tiny" onClick={() => setOpen(!open)}
+        {/* The same size as the button it stands in for. A refusal rendered
+            smaller than the action reads as a note about the page rather than
+            as the answer to "can I undo this" — and on a purchase invoice it
+            sat between two full-size buttons at two other heights. */}
+        <button type="button" className="ghost" onClick={() => setOpen(!open)}
                 aria-expanded={open}>
-          <Lock size={13} aria-hidden="true" /> Cannot be voided
+          <Lock size={14} aria-hidden="true" /> Cannot be voided
         </button>
         {open && (
           <div className="voidlock-why">
@@ -114,6 +127,59 @@ export function VoidDocument({
    * defaulting to "never arrived" would make the commoner, safer-looking
    * option the one nobody reads.
    */
+  /**
+   * The same question the receipt asks, from the other end of the warehouse.
+   *
+   * Voiding a counter sale puts stock back, and the system cannot see a
+   * shelf. Keyed in error with the goods still on the counter is one thing;
+   * voided after the customer carried them out is another, and restoring the
+   * stock then makes the books claim something that is not there.
+   *
+   * The second answer is not a void at all. If the customer has the goods the
+   * sale happened, and what records them coming back — with the credit that
+   * belongs to it — is a return.
+   */
+  if (restoresUnits && restoresUnits > 0 && arrived === null) {
+    return (
+      <div className="card" style={{ marginTop: "0.75rem" }}>
+        <div className="card-head">
+          <h2>Void {docNo}</h2>
+          <span className="actions">
+            <button type="button" className="ghost tiny" onClick={() => setOpen(false)}>Cancel</button>
+          </span>
+        </div>
+        <div className="card-body">
+          <p className="page-sub" style={{ marginBottom: "0.9rem" }}>
+            This sale took {restoresUnits} unit{restoresUnits === 1 ? "" : "s"} out of
+            the warehouse. Where are they now?
+          </p>
+          <div className="modes">
+            <button type="button" className="mode" onClick={() => setArrived(true)}>
+              <span className="mode-icon"><FileX size={18} aria-hidden="true" /></span>
+              <span className="mode-text">
+                <strong>Back on the shelf</strong>
+                <span className="mode-lead">Keyed in error — the goods never left.</span>
+                <span className="mode-note">
+                  Voids the sale and puts the {restoresUnits} back
+                </span>
+              </span>
+            </button>
+            <a className="mode" href={salesReturnHref ?? "/sales/returns/new"}>
+              <span className="mode-icon"><Undo2 size={18} aria-hidden="true" /></span>
+              <span className="mode-text">
+                <strong>The customer has them</strong>
+                <span className="mode-lead">The sale happened. They are bringing them back.</span>
+                <span className="mode-note">
+                  Records a customer return, with the credit that goes with it
+                </span>
+              </span>
+            </a>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (returnHref && arrived === null) {
     return (
       <div className="card" style={{ marginTop: "0.75rem" }}>
@@ -170,6 +236,12 @@ export function VoidDocument({
         <form action={formAction} className="form">
           <input type="hidden" name="id" value={documentId} />
           <input type="hidden" name="idempotency_key" value={attemptKey} />
+          {/* Reaching this step in the sales flow means somebody answered
+              "back on the shelf". The engine refuses to restore stock without
+              it, so this is the answer travelling rather than a default. */}
+          {restoresUnits && restoresUnits > 0 && arrived === true && (
+            <input type="hidden" name="goods_back" value="on" />
+          )}
           <div className="field">
             <label htmlFor="reason">Why</label>
             <input id="reason" name="reason" type="text" autoFocus

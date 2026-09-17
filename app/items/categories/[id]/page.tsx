@@ -12,6 +12,7 @@ import { AddCategoryForm } from "@/components/level-form";
 import { ItemForm } from "@/components/item-form";
 import { CategoryRow } from "@/components/category-row";
 import { Restructure } from "@/components/restructure";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function CategoryLevel({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -68,12 +69,12 @@ export default async function CategoryLevel({ params }: { params: Promise<{ id: 
           ))}
         </span>
         <h1>{here.name}</h1>
-        <span className="page-sub">
+        <HelpHint>
           <span className="m">{here.code}</span>
           {here.name_my ? ` · ${here.name_my}` : ""}
           {" · "}{levelLabel(depth).toLowerCase()}
           {" · "}{kids.length} inside, {items.length} item{items.length === 1 ? "" : "s"} here
-        </span>
+        </HelpHint>
       </div>
 
       {depth < MAX_CATEGORY_DEPTH && (

@@ -8,6 +8,7 @@ import {
 import { createReorderPoint, updateReorderPoint, deleteReorderPoint } from "@/lib/actions";
 import { type DataRow } from "@/components/data-table";
 import { StockTable } from "@/components/stock-table";
+import { StockRow, type StockRowItem } from "@/components/stock-row";
 import { AddReorderPointForm } from "@/components/reorder-point-form";
 import { ReorderPointRow } from "@/components/reorder-point-row";
 import { AccountPicker } from "@/components/account-picker";
@@ -15,6 +16,7 @@ import { AccountPicker } from "@/components/account-picker";
 type Row = {
   id: string; code: string; name: string; name_my: string | null;
   item_group_id: string; group_name: string; parent_group_name: string | null;
+  brand_name: string | null; barcode: string | null;
   uom_code: string; qty_on_hand: string; value_on_hand: string; is_stocked: boolean;
   last_purchase_price: string | null;
   last_purchase_doc_no: string | null;
@@ -48,7 +50,7 @@ export default async function Stock({
       item_id: string; location_id: string; qty_on_hand: string; value_on_hand: string;
     }>>,
     getConsignedStockOnHand(company.id) as unknown as Promise<Array<{
-      item_id: string; location_id: string; on_hand: string;
+      item_id: string; location_id: string; on_hand: string; consignor_name: string;
     }>>,
   ]);
 
@@ -96,92 +98,94 @@ export default async function Stock({
   });
   const totalValue = stocked.reduce((s, i) => s + i.valueOnHand, 0);
 
-  const rows: DataRow[] = stocked.map((i) => ({
-    key: i.id,
-    searchText: [i.code, i.name, i.name_my, i.group_name, i.parent_group_name].filter(Boolean).join(" "),
-    sort: {
+  /** Which consignors an item's held-but-unowned stock belongs to. */
+  const consignorsOf = (itemId: string) =>
+    Array.from(new Set(
+      consignedHere.filter((r) => r.item_id === itemId).map((r) => r.consignor_name)
+    ));
+
+  /**
+   * Where an item actually sits. Only warehouses holding some of it, and only
+   * the chosen one when a location is picked — a panel listing every empty
+   * warehouse is a longer answer to a shorter question.
+   */
+  const warehousesOf = (itemId: string) =>
+    stockByLocation
+      .filter((r) =>
+        r.item_id === itemId
+        && (allLocations || r.location_id === selectedLocationId)
+        && Number(r.qty_on_hand) !== 0)
+      .map((r) => {
+        const loc = locations.find((l) => l.id === r.location_id);
+        return {
+          locationId: r.location_id,
+          code: loc?.code ?? "—",
+          name: loc?.name ?? "",
+          onHand: Number(r.qty_on_hand),
+          reserved: Number(
+            reserved.find((x) => x.item_id === itemId && x.location_id === r.location_id)
+              ?.reserved_qty ?? 0),
+        };
+      })
+      .sort((a, b) => a.code.localeCompare(b.code));
+
+  const STOCK_COLUMNS = 12;
+
+  const rows: DataRow[] = stocked.map((i) => {
+    const consignors = consignorsOf(i.id);
+    const category = i.parent_group_name ? `${i.parent_group_name} / ${i.group_name}` : i.group_name;
+
+    const rowItem: StockRowItem = {
+      id: i.id,
       code: i.code,
       name: i.name,
-      group_name: i.parent_group_name ? `${i.parent_group_name} / ${i.group_name}` : i.group_name,
-      uom_code: i.uom_code,
+      nameMy: i.name_my,
+      itemGroupId: i.item_group_id,
+      category,
+      uomCode: i.uom_code,
+      barcode: i.barcode,
+      brandName: i.brand_name,
       onHand: i.onHand,
       consignedQty: i.consignedQty,
       reservedQty: i.reservedQty,
       available: i.available,
       incomingQty: i.incomingQty,
       projected: i.projected,
-      value_on_hand: i.valueOnHand,
-      last_cost: Number(i.last_purchase_price ?? 0),
-    },
-    node: (
-      <tr>
-        <td className="code">
-          <Link href={`/items/categories/${i.item_group_id}`} style={{ color: "var(--brand)" }}>
-            {i.code}
-          </Link>
-        </td>
-        <td className="wrap">
-          {i.name}
-          {i.name_my && (
-            <div className="subline">{i.name_my}</div>
-          )}
-        </td>
-        <td style={{ color: "var(--muted)" }}>
-          {i.parent_group_name ? `${i.parent_group_name} / ${i.group_name}` : i.group_name}
-        </td>
-        <td className="code">{i.uom_code}</td>
-        <td className="r">{qty(String(i.onHand))}</td>
-        <td className="r">
-          {i.consignedQty > 0 ? (
-            <Link href="/inventory/consignment" style={{ color: "var(--brand)" }}>
-              {qty(String(i.consignedQty))}
-            </Link>
-          ) : "—"}
-        </td>
-        <td className="r" style={{ color: i.reservedQty > 0 ? "var(--warn)" : undefined }}>
-          {i.reservedQty > 0 ? qty(String(i.reservedQty)) : "—"}
-        </td>
-        <td className="r" style={{ fontWeight: 600 }}>
-          {qty(String(i.available))}
-        </td>
-        <td className="r" style={{ color: i.incomingQty > 0 ? "var(--ok)" : undefined }}>
-          {i.incomingQty > 0 ? qty(String(i.incomingQty)) : "—"}
-        </td>
-        <td className="r">{qty(String(i.projected))}</td>
-        <td className="r">
-          {/* What the last one cost, not what the ones on hand are carried
-              at — a receipt at a new price does not restate the FIFO layers
-              already on the shelf. Shown with the document it came from, so
-              it reads as a fact with a date rather than "the" cost. */}
-          {i.last_purchase_price ? money(i.last_purchase_price) : "—"}
-          {i.last_purchase_doc_no && (
-            <div className="subline" style={{ color: "var(--muted)" }}
-                 title={`${i.last_purchase_doc_no}${i.last_purchase_date ? " · " + i.last_purchase_date : ""}`}>
-              {i.last_purchase_date ? shortDate(i.last_purchase_date) : i.last_purchase_doc_no}
-            </div>
-          )}
-        </td>
-        <td className="r">{money(i.valueOnHand)}</td>
-      </tr>
-    ),
-  }));
+      valueOnHand: i.valueOnHand,
+      lastCost: i.last_purchase_price,
+      lastCostDocNo: i.last_purchase_doc_no,
+      lastCostDate: i.last_purchase_date ? shortDate(i.last_purchase_date) : null,
+      consignors,
+      warehouses: warehousesOf(i.id),
+    };
+
+    return {
+      key: i.id,
+      searchText: [i.code, i.name, i.name_my, i.group_name, i.parent_group_name, i.barcode,
+                   ...consignors].filter(Boolean).join(" "),
+      sort: {
+        code: i.code,
+        name: i.name,
+        ownership: consignors.length > 0 ? `Consignment ${consignors.join(" ")}` : "Company-owned",
+        group_name: category,
+        uom_code: i.uom_code,
+        onHand: i.onHand,
+        reservedQty: i.reservedQty,
+        available: i.available,
+        incomingQty: i.incomingQty,
+        projected: i.projected,
+        value_on_hand: i.valueOnHand,
+        last_cost: Number(i.last_purchase_price ?? 0),
+      },
+      node: <StockRow item={rowItem} columnCount={STOCK_COLUMNS} />,
+    };
+  });
 
   return (
     <>
       <div className="page-head">
         <span className="eyebrow">Master data</span>
         <h1>Stock</h1>
-        <span className="page-sub">
-          On hand is summed live from the stock ledger — nothing here is a
-          stored column that could drift. Reserved and Incoming come from
-          open orders and unfulfilled deliveries; Available and Projected are
-          both derived, never stored. Consigned is stock physically on hand
-          but owned by a consignor, not the company — it carries no value
-          here and is never added into On hand or Available. Last cost is the
-          most recent purchase price with the document it came from; Value is
-          what the stock on hand is actually carried at, which is the FIFO
-          layers behind it, not the last price paid.
-        </span>
       </div>
 
       {reorderableLocations.length > 1 && (
@@ -194,39 +198,86 @@ export default async function Stock({
         />
       )}
 
-      <div className="kpis">
+      {/* Each figure gets its own tinted mark. Five tiles of identical grey
+          text is five things to read; a colour and a shape per tile is one
+          thing to recognise. */}
+      <div className="kpis kpis-tiled">
         <div className="kpi">
-          <span className="kpi-label"><Boxes size={13} /> Stock value</span>
-          <span className="kpi-value">{money(totalValue)}</span>
-          <span className="kpi-note">{stocked.length} stocked item{stocked.length === 1 ? "" : "s"}</span>
-        </div>
-        <div className="kpi">
-          <span className="kpi-label"><AlertTriangle size={13} /> Low stock</span>
-          <span className="kpi-value" style={{ color: lowStock.length > 0 ? "var(--bad)" : undefined }}>
-            {lowStock.length}
+          <span className="kpi-icon" style={{
+            color: "var(--brand)",
+            background: "color-mix(in srgb, var(--brand) 12%, transparent)",
+          }}>
+            <Boxes size={17} aria-hidden="true" />
           </span>
-          <span className="kpi-note">
-            item/location pair{lowStock.length === 1 ? "" : "s"} out of stock or below reorder point
+          <span className="kpi-body">
+            <span className="kpi-label">Stock value</span>
+            <span className="kpi-value">{money(totalValue)}</span>
+            <span className="kpi-note">{stocked.length} stocked item{stocked.length === 1 ? "" : "s"}</span>
           </span>
         </div>
+
         <div className="kpi">
-          <span className="kpi-label"><PackageCheck size={13} /> Incoming</span>
-          <span className="kpi-value">{incoming.length}</span>
-          <span className="kpi-note">item/location pair{incoming.length === 1 ? "" : "s"} on an open purchase order</span>
-        </div>
-        <div className="kpi">
-          <span className="kpi-label"><TrendingDown size={13} /> Reserved</span>
-          <span className="kpi-value">{reserved.length}</span>
-          <span className="kpi-note">item/location pair{reserved.length === 1 ? "" : "s"} committed to an open sales order</span>
-        </div>
-        <div className="kpi">
-          <span className="kpi-label"><HandCoins size={13} /> Consigned</span>
-          <span className="kpi-value">
-            <Link href="/inventory/consignment" style={{ color: "inherit" }}>{consignedHere.length}</Link>
+          <span className="kpi-icon" style={{
+            color: "var(--warn)",
+            background: "color-mix(in srgb, var(--warn) 14%, transparent)",
+          }}>
+            <AlertTriangle size={17} aria-hidden="true" />
           </span>
-          <span className="kpi-note">
-            item/location/consignor combination{consignedHere.length === 1 ? "" : "s"} on hand but not owned
-            {!allLocations && " at this location"}
+          <span className="kpi-body">
+            <span className="kpi-label">Low stock</span>
+            <span className="kpi-value" style={{ color: lowStock.length > 0 ? "var(--bad)" : undefined }}>
+              {lowStock.length}
+            </span>
+            <span className="kpi-note">
+              item/location pair{lowStock.length === 1 ? "" : "s"} out of stock or below reorder point
+            </span>
+          </span>
+        </div>
+
+        <div className="kpi">
+          <span className="kpi-icon" style={{
+            color: "#3B6FD4",
+            background: "color-mix(in srgb, #3B6FD4 12%, transparent)",
+          }}>
+            <PackageCheck size={17} aria-hidden="true" />
+          </span>
+          <span className="kpi-body">
+            <span className="kpi-label">Incoming</span>
+            <span className="kpi-value">{incoming.length}</span>
+            <span className="kpi-note">item/location pair{incoming.length === 1 ? "" : "s"} on an open purchase order</span>
+          </span>
+        </div>
+
+        <div className="kpi">
+          <span className="kpi-icon" style={{
+            color: "#C2610A",
+            background: "color-mix(in srgb, #C2610A 12%, transparent)",
+          }}>
+            <TrendingDown size={17} aria-hidden="true" />
+          </span>
+          <span className="kpi-body">
+            <span className="kpi-label">Reserved</span>
+            <span className="kpi-value">{reserved.length}</span>
+            <span className="kpi-note">item/location pair{reserved.length === 1 ? "" : "s"} committed to an open sales order</span>
+          </span>
+        </div>
+
+        <div className="kpi">
+          <span className="kpi-icon" style={{
+            color: "#6C5CE0",
+            background: "color-mix(in srgb, #6C5CE0 12%, transparent)",
+          }}>
+            <HandCoins size={17} aria-hidden="true" />
+          </span>
+          <span className="kpi-body">
+            <span className="kpi-label">Consigned</span>
+            <span className="kpi-value">
+              <Link href="/inventory/consignment" style={{ color: "inherit" }}>{consignedHere.length}</Link>
+            </span>
+            <span className="kpi-note">
+              item/location/consignor combination{consignedHere.length === 1 ? "" : "s"} on hand but not owned
+              {!allLocations && " at this location"}
+            </span>
           </span>
         </div>
       </div>
@@ -331,25 +382,24 @@ export default async function Stock({
               searchPlaceholder="Search stock…"
               defaultSort={{ key: "code", dir: "asc" }}
               columns={[
+                // No label: the chevron column is a control, not a field.
+                { key: "expand", label: "" },
                 { key: "code", label: "Code", sortable: true },
-                { key: "name", label: "Name", sortable: true },
+                { key: "name", label: "Item", sortable: true },
+                { key: "ownership", label: "Ownership", sortable: true },
                 { key: "group_name", label: "Category", sortable: true },
                 { key: "uom_code", label: "Unit", sortable: true },
                 { key: "onHand", label: "On hand", sortable: true, align: "r" },
-                { key: "consignedQty", label: "Consigned", sortable: true, align: "r" },
                 { key: "reservedQty", label: "Reserved", sortable: true, align: "r" },
                 { key: "available", label: "Available", sortable: true, align: "r" },
                 { key: "incomingQty", label: "Incoming", sortable: true, align: "r" },
                 { key: "projected", label: "Projected", sortable: true, align: "r" },
-                { key: "last_cost", label: "Last cost", sortable: true, align: "r" },
-                { key: "value_on_hand", label: "Value", sortable: true, align: "r" },
+                { key: "value_on_hand", label: "Value (MMK)", sortable: true, align: "r" },
               ]}
-              footer={
-                <tr>
-                  <td colSpan={11}>Total stock value{!allLocations ? " at this location" : ""}</td>
-                  <td className="r">{money(totalValue)}</td>
-                </tr>
-              }
+              footerCells={{
+                span: <>Total stock value{!allLocations ? " at this location" : ""}</>,
+                cells: { value_on_hand: money(totalValue) },
+              }}
             />
           )}
         </div>

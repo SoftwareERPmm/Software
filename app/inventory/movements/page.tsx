@@ -3,6 +3,7 @@ import { money, qty, shortDate } from "@/lib/db";
 import { getCompany, getItems, getStockMovements } from "@/lib/queries";
 import { AccountPicker } from "@/components/account-picker";
 import { DataTable, type DataRow } from "@/components/data-table";
+import { HelpHint } from "@/components/help-hint";
 
 const label = (t: string) => t.replace(/_/g, " ").toLowerCase();
 
@@ -68,12 +69,12 @@ export default async function StockMovements({
       <div className="page-head">
         <span className="eyebrow">Inventory</span>
         <h1>Stock movements</h1>
-        <span className="page-sub">
+        <HelpHint>
           Every receipt, delivery, transfer, and adjustment against one item,
           in order, with a running balance — a stock card. Nothing here is
           stored separately; it&rsquo;s the same append-only ledger the Stock
           page sums.
-        </span>
+        </HelpHint>
       </div>
 
       {items.length === 0 ? (

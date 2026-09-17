@@ -55,8 +55,16 @@ export function AdvanceLedger({
       applied: r.applied,
       remaining: r.remaining,
     },
-    csv: [r.doc_date, r.doc_no, r.partner_code, r.partner_name, r.branch ?? "",
-      r.taken, r.applied, r.remaining],
+    csv: {
+      doc_date: r.doc_date,
+      doc_no: r.doc_no,
+      partner_code: r.partner_code,
+      partner_name: r.partner_name,
+      branch: r.branch ?? "",
+      taken: r.taken,
+      applied: r.applied,
+      remaining: r.remaining,
+    },
     node: (
       <>
         <tr>

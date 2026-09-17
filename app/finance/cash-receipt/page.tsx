@@ -3,6 +3,7 @@ import { getFinanceData, peekVoucherNo, createCashVoucher } from "@/lib/actions"
 import { getCompany } from "@/lib/queries";
 import { VoucherForm } from "@/components/voucher-form";
 import { VoucherHelp } from "@/components/voucher-help";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function CashReceipt() {
   const { accounts, accountTree, cashAccounts, branches } = await getFinanceData();
@@ -27,11 +28,11 @@ export default async function CashReceipt() {
       <div className="page-head">
         <span className="eyebrow">Cash &amp; Bank</span>
         <h1>Cash receipt</h1>
-        <span className="page-sub">
+        <HelpHint>
           Money received into the till that isn&rsquo;t against a customer invoice — use{" "}
           <Link href="/receivables/receive" style={{ color: "var(--brand)" }}>Receive payment</Link> for that.{" "}
           <Link href="/finance/cash-detail" style={{ color: "var(--brand)" }}>View the cash book</Link>
-        </span>
+        </HelpHint>
         <Link href="/finance/cash-receipt/import" className="btn ghost">Import from Excel</Link>
       <span className="actions">
         <VoucherHelp kind="cash" />

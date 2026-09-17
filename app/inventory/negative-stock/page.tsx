@@ -3,6 +3,7 @@ import { getCompany, getNegativeStock } from "@/lib/queries";
 import { reconcileNegativeStockAction } from "@/lib/actions";
 import { ReconcileStock } from "@/components/reconcile-stock";
 import { money } from "@/lib/format";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function NegativeStock() {
   const company = await getCompany();
@@ -19,12 +20,12 @@ export default async function NegativeStock() {
       <div className="page-head">
         <span className="eyebrow">Inventory</span>
         <h1>Negative stock &mdash; pending reconciliation</h1>
-        <span className="page-sub">
+        <HelpHint>
           Goods that went out before anything recorded them arriving. The stock
           was physically there; the paperwork was not, and someone confirmed
           that at the time. Each line is waiting for a receipt, or for the
           count below to bring the record back up to what is on the shelf.
-        </span>
+        </HelpHint>
       </div>
 
       {rows.length === 0 ? (

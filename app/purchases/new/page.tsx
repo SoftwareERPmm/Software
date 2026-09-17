@@ -4,6 +4,7 @@ import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { InvoiceForm } from "@/components/invoice-form";
 import { ErpCrumbs } from "@/components/erp-worklist";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function NewPurchaseInvoice({
   searchParams,
@@ -57,10 +58,10 @@ export default async function NewPurchaseInvoice({
       ]} />
       <div className="page-head">
         <h1>New purchase invoice</h1>
-        <span className="page-sub">
+        <HelpHint>
           Stock arrives at the price paid and the supplier balance opens. Each
           receipt becomes its own FIFO cost layer.
-        </span>
+        </HelpHint>
       </div>
 
       <InvoiceForm

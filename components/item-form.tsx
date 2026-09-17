@@ -3,6 +3,7 @@
 import { useActionState, useState, useTransition } from "react";
 import type { ActionResult } from "@/lib/actions";
 import { createBrandInline, type PickerBrand } from "@/lib/actions";
+import { ItemPhotoField } from "./item-photo-field";
 
 type Node = {
   id: string; code: string; segment: string; name: string;
@@ -245,6 +246,8 @@ export function ItemForm({
               <input id="sale_price" name="sale_price" type="number" min="0" step="any" />
               <span className="hint">Optional, in MMK</span>
             </div>
+
+            <ItemPhotoField />
           </div>
 
           <label className="check" htmlFor="is_stocked" style={{ marginTop: "1rem" }}>

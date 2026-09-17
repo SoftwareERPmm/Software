@@ -4,6 +4,7 @@ import { sql } from "@/lib/db";
 import { getUntouchedOpenOrders } from "@/lib/queries";
 import { OrderForm } from "@/components/order-form";
 import { ErpCrumbs } from "@/components/erp-worklist";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function NewPurchaseOrder() {
   const d = await getFormData();
@@ -39,10 +40,10 @@ export default async function NewPurchaseOrder() {
       ]} />
       <div className="page-head">
         <h1>New purchase order</h1>
-        <span className="page-sub">
+        <HelpHint>
           A commitment to the supplier. Receive against it later — stock
           arrives and cost posts only on goods receipt, never here.
-        </span>
+        </HelpHint>
       </div>
 
       <OrderForm

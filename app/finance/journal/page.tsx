@@ -3,6 +3,7 @@ import { getCompany } from "@/lib/queries";
 import { VoucherForm } from "@/components/voucher-form";
 import { VoucherHelp } from "@/components/voucher-help";
 import { ErpCrumbs } from "@/components/erp-worklist";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function JournalVoucher() {
   const { accounts, accountTree, cashAccounts, bankAccounts, branches } = await getFinanceData();
@@ -35,9 +36,9 @@ export default async function JournalVoucher() {
       ]} />
       <div className="page-head">
         <h1>Journal voucher</h1>
-        <span className="page-sub">
+        <HelpHint>
           Record depreciation, accruals and other accounting adjustments.
-        </span>
+        </HelpHint>
       <span className="actions">
         <VoucherHelp kind="journal" />
       </span>

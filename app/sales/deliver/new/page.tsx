@@ -10,6 +10,7 @@ import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { DeliveryForm } from "@/components/delivery-form";
 import { ErpCrumbs } from "@/components/erp-worklist";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function NewDelivery({
   searchParams,
@@ -82,14 +83,14 @@ export default async function NewDelivery({
       ]} />
       <div className="page-head">
         <h1>Deliver goods</h1>
-        <span className="page-sub">
+        <HelpHint>
           For stock leaving with nothing raised beforehand &mdash; goods
           dropped at a shop to be billed later, or samples given away with no
           sale at all. An order is optional: if there is one open, delivering
           against it keeps track of what is still owed. Stock leaves at its
           FIFO cost and the cost is recognised; revenue and the receivable
           belong to the invoice, whenever it is raised.
-        </span>
+        </HelpHint>
         <Link href="/sales/deliver" className="btn ghost">Back to deliveries</Link>
       </div>
 

@@ -4,6 +4,7 @@ import { allCategories, childrenOf, levelCounts, branchIds } from "@/lib/tree";
 import { AddCategoryForm } from "@/components/level-form";
 import { CategoryRow } from "@/components/category-row";
 import { DataTable, type DataRow } from "@/components/data-table";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function CategoriesRoot() {
   const [co] = await sql`select id from company order by created_at limit 1`;
@@ -38,10 +39,10 @@ export default async function CategoriesRoot() {
       <div className="page-head">
         <span className="eyebrow">Master data</span>
         <h1>Categories</h1>
-        <span className="page-sub">
+        <HelpHint>
           The top of your product tree. Open one to add categories inside it,
           then keep going until you reach the products themselves.
-        </span>
+        </HelpHint>
       </div>
 
       <AddCategoryForm

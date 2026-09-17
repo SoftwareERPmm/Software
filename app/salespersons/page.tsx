@@ -3,6 +3,7 @@ import { createSalesman, updateSalesman, deleteSalesman, deactivateSalesman, act
 import { AddSalesmanForm } from "@/components/salesman-form";
 import { SalesmanRow } from "@/components/salesman-row";
 import { DataTable, type DataRow } from "@/components/data-table";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function Salespersons() {
   const company = await getCompany();
@@ -47,10 +48,10 @@ export default async function Salespersons() {
       <div className="page-head">
         <span className="eyebrow">Master data</span>
         <h1>Salespersons</h1>
-        <span className="page-sub">
+        <HelpHint>
           Staff who get credited on a sale. Commission is reported on here,
           not paid automatically &mdash; paying it out is a payroll matter.
-        </span>
+        </HelpHint>
       </div>
 
       <AddSalesmanForm action={createSalesman} locations={locations} />

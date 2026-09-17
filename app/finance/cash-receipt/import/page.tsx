@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getCompany, getImportBatches } from "@/lib/queries";
 import { runVoucherImport } from "@/lib/actions";
 import { VoucherImport } from "@/components/voucher-import";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function ImportCashReceipts() {
   const company = await getCompany();
@@ -17,12 +18,12 @@ export default async function ImportCashReceipts() {
       <div className="page-head">
         <span className="eyebrow">Cash &amp; bank</span>
         <h1>Import cash receipts</h1>
-        <span className="page-sub">
+        <HelpHint>
           A spreadsheet of receipts, posted as cash vouchers — the same two lines the
           receipt screen writes, so an imported receipt and a typed one are
           indistinguishable once posted. Nothing is written until you confirm,
           and then every row posts or none does.
-        </span>
+        </HelpHint>
         <Link href="/finance/cash-receipt" className="btn ghost">Enter one by hand</Link>
       </div>
 
