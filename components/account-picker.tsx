@@ -22,6 +22,7 @@ export function AccountPicker({
   paramName = "account",
   label = "Account",
   tree = [],
+  keep,
 }: {
   accounts: Option[];
   selectedId: string;
@@ -32,6 +33,9 @@ export function AccountPicker({
    *  headings Master data draws. Without it the list stays flat, which is
    *  what every non-account caller of this picker wants. */
   tree?: TreeNode[];
+  /** Other query parameters to carry through, so choosing here does not
+   *  silently reset a filter set somewhere else on the page. */
+  keep?: Record<string, string | undefined>;
 }) {
   const router = useRouter();
 
@@ -46,7 +50,11 @@ export function AccountPicker({
         <select
           id="acct"
           value={selectedId}
-          onChange={(e) => router.push(`${basePath}?${paramName}=${e.target.value}`)}
+          onChange={(e) => {
+            const q = new URLSearchParams({ [paramName]: e.target.value });
+            for (const [k, v] of Object.entries(keep ?? {})) if (v) q.set(k, v);
+            router.push(`${basePath}?${q.toString()}`);
+          }}
         >
           {groups
             ? groups.map(([heading, items]) => (

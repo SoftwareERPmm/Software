@@ -27,9 +27,10 @@ type Row = {
 export default async function Stock({
   searchParams,
 }: {
-  searchParams: Promise<{ location?: string }>;
+  searchParams: Promise<{ location?: string; zeros?: string }>;
 }) {
-  const { location } = await searchParams;
+  const { location, zeros } = await searchParams;
+  const showZeros = zeros === "1";
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
@@ -98,20 +99,20 @@ export default async function Stock({
     return { ...i, onHand, valueOnHand, reservedQty, incomingQty, consignedQty, available, projected };
   });
   /**
-   * Which items this view is about.
+   * Which items this view is about: the ones with a stock position.
    *
-   * Every stocked item, when the question is "what does the company hold" —
-   * an item at zero everywhere is the whole point of a Low stock tile, and
-   * dropping it would hide exactly the row somebody is looking for.
+   * Held, reserved, on its way, or standing on consignment — any of those is
+   * a position. None of them is one, and a row of zeroes across every column
+   * is not an answer to "what is in stock", it is the catalogue restated. The
+   * catalogue is a screen of its own.
    *
-   * But a warehouse is a narrower question. Asked what is in Mandalay, the
-   * answer is not the entire catalogue with zeroes against the things that
-   * have never been there: that listed all seven items under all three
-   * choices, so picking a warehouse appeared to do nothing at all. Held,
-   * reserved, on its way, or there on consignment — any of those is presence
-   * at that warehouse. None of them is absence.
+   * The same rule whichever warehouse is chosen, including all of them. An
+   * earlier version kept the zeroes on the company-wide view on the grounds
+   * that they feed Low stock — they do not. That tile runs its own query off
+   * the reorder points and has its own section on this page, so an item that
+   * has run out is reported there, by name, with the point it fell below.
    */
-  const visible = allLocations
+  const visible = showZeros
     ? stocked
     : stocked.filter((i) =>
         i.onHand !== 0 || i.reservedQty !== 0 || i.incomingQty !== 0 || i.consignedQty !== 0);
@@ -209,15 +210,36 @@ export default async function Stock({
         <h1>Stock</h1>
       </div>
 
-      {reorderableLocations.length > 1 && (
-        <AccountPicker
-          accounts={[{ id: "all", code: "—", name: "All warehouses" }, ...reorderableLocations]}
-          selectedId={selectedLocationId}
-          basePath="/items/stock"
-          paramName="location"
-          label="Warehouse"
-        />
-      )}
+      {/* Both filters on one line: each narrows the same list, and a warehouse
+          chosen here must not silently discard the other one. */}
+      <div className="row" style={{ maxWidth: 640, alignItems: "flex-end" }}>
+        {reorderableLocations.length > 1 && (
+          <AccountPicker
+            accounts={[{ id: "all", code: "—", name: "All warehouses" }, ...reorderableLocations]}
+            selectedId={selectedLocationId}
+            basePath="/items/stock"
+            paramName="location"
+            label="Warehouse"
+            keep={{ zeros: showZeros ? "1" : undefined }}
+          />
+        )}
+        <div className="field">
+          <label>Items</label>
+          {/* Links rather than a control with state: the page is already
+              addressable by its query, and this way the choice survives a
+              reload and can be bookmarked like the warehouse beside it. */}
+          <div className="scopetabs" style={{ margin: 0 }}>
+            <Link className="scopetab" data-active={!showZeros}
+                  href={`/items/stock${allLocations ? "" : `?location=${selectedLocationId}`}`}>
+              In stock
+            </Link>
+            <Link className="scopetab" data-active={showZeros}
+                  href={`/items/stock?${allLocations ? "" : `location=${selectedLocationId}&`}zeros=1`}>
+              All items
+            </Link>
+          </div>
+        </div>
+      </div>
 
       {/* Each figure gets its own tinted mark. Five tiles of identical grey
           text is five things to read; a colour and a shape per tile is one
@@ -233,7 +255,7 @@ export default async function Stock({
           <span className="kpi-body">
             <span className="kpi-label">Stock value</span>
             <span className="kpi-value">{money(totalValue)}</span>
-            <span className="kpi-note">{visible.length} stocked item{visible.length === 1 ? "" : "s"}</span>
+            <span className="kpi-note">{visible.length} item{visible.length === 1 ? "" : "s"} in stock</span>
           </span>
         </div>
 
@@ -385,8 +407,8 @@ export default async function Stock({
           <div className="card-head">
             <h2>Stock position</h2>
             <span className="page-sub">
-              {visible.length} stocked item{visible.length === 1 ? "" : "s"}
-              {!allLocations && ` here · ${reorderableLocations.find((l) => l.id === selectedLocationId)?.name ?? ""}`}
+              {visible.length} item{visible.length === 1 ? "" : "s"} in stock
+              {!allLocations && ` · ${reorderableLocations.find((l) => l.id === selectedLocationId)?.name ?? ""}`}
             </span>
           </div>
 
@@ -394,13 +416,17 @@ export default async function Stock({
             <div className="empty">
               {allLocations ? (
                 <>
-                  No stocked items yet.{" "}
-                  <Link href="/items" style={{ color: "var(--brand)" }}>Add an item</Link>
+                  Nothing in stock. An item appears here once goods are received
+                  against it.{" "}
+                  <Link href="/items/stock?zeros=1" style={{ color: "var(--brand)" }}>
+                    Show all items
+                  </Link>
                 </>
               ) : (
                 <>
                   Nothing held, reserved or on its way at this warehouse.{" "}
-                  <Link href="/items/stock" style={{ color: "var(--brand)" }}>See all warehouses</Link>
+                  <Link href={`/items/stock?location=${selectedLocationId}&zeros=1`}
+                        style={{ color: "var(--brand)" }}>Show all items</Link>
                 </>
               )}
             </div>
