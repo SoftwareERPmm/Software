@@ -40,6 +40,16 @@ export type InvoiceLine = {
   source?: "OWNED" | "CONSIGNMENT";
   /** Whose consigned goods. Only read when source is CONSIGNMENT. */
   consignorId?: string | null;
+
+  /**
+   * The units being sold, where the item keeps an identity per unit.
+   *
+   * Carried on the invoice because that is where a counter sale is written —
+   * one act, and the delivery it composes is not somewhere anybody types. The
+   * invoice hands them on; the delivery is where they are checked against the
+   * shelf and recorded as gone.
+   */
+  serials?: string[];
 };
 
 export type InvoiceInput = {
@@ -131,6 +141,18 @@ export type FulfillmentLine = {
   focReasonId?: string | null;
   unitCost?: number;
   sourceLineId?: string | null;
+
+  /**
+   * The units themselves, for an item whose every unit has an identity — a
+   * handset's IMEI, a machine's serial. Required for such an item and
+   * refused for any other: a line of twelve biscuits has nothing to name, and
+   * accepting twelve strings for it would invite somebody to invent them.
+   *
+   * One per unit, so the count is the quantity. Not a convenience: a receipt
+   * for twelve handsets with eleven IMEIs has lost a phone, and the moment to
+   * discover that is while the box is open.
+   */
+  serials?: string[];
 
   /**
    * The order line these goods also fulfil, when the document itself names
@@ -1360,13 +1382,81 @@ async function planConsignmentConsumption(
  * actual time stock arrived, not just the document's date) — falls back to
  * midnight on the document date otherwise, same as before this existed.
  */
+/**
+ * Which of these items keep an identity per unit, and the rule that follows.
+ *
+ * Asked once per posting rather than per line, because a receipt of twenty
+ * lines would otherwise ask twenty times for an answer that does not change.
+ */
+async function serialTracking(tx: TransactionSql, itemIds: string[]) {
+  if (itemIds.length === 0) return new Set<string>();
+  const rows = await tx`
+    select id from item where id = any(${itemIds}) and tracks_serial`;
+  return new Set((rows as unknown as { id: string }[]).map((r) => r.id));
+}
+
+/**
+ * A line's serials must match its quantity exactly, and only where the item
+ * asks for them.
+ *
+ * Both directions are refusals, and both matter. Too few is a unit nobody can
+ * account for — a receipt for twelve handsets carrying eleven IMEIs has lost
+ * a phone, and the moment to find that out is while the carton is open rather
+ * than at a stock count in March. Too many is a keying slip that would
+ * otherwise put a phantom handset on the shelf.
+ *
+ * And serials on an untracked item are refused rather than ignored. Silently
+ * dropping them would let somebody believe their biscuits are traceable.
+ */
+function assertSerials(
+  lines: { itemId: string; qty: number; serials?: string[] }[],
+  tracked: Set<string>,
+  verb: string
+) {
+  const seen = new Map<string, number>();
+  lines.forEach((l, i) => {
+    const given = (l.serials ?? []).map((x) => x.trim()).filter(Boolean);
+    if (!tracked.has(l.itemId)) {
+      if (given.length > 0) {
+        throw new Error(
+          `Line ${i + 1}: this item does not keep a serial for each unit, so it `
+          + `cannot ${verb} named ones.`
+        );
+      }
+      return;
+    }
+    if (given.length !== l.qty) {
+      throw new Error(
+        `Line ${i + 1}: ${l.qty} unit${l.qty === 1 ? "" : "s"} to ${verb}, but `
+        + `${given.length} serial${given.length === 1 ? "" : "s"} given. Every unit `
+        + `of this item is identified by its own.`
+      );
+    }
+    for (const sn of given) {
+      const at = seen.get(sn);
+      if (at !== undefined) {
+        throw new Error(
+          `${sn} appears twice on this document — on line ${at + 1} and line ${i + 1}. `
+          + `A serial identifies one unit.`
+        );
+      }
+      seen.set(sn, i);
+    }
+  });
+  return seen;
+}
+
 async function createFifoLot(
   tx: TransactionSql, companyId: string, itemId: string, locationId: string,
   receivedAt: string, unitCost: number, qty: number, stockMovementId: string
 ) {
-  await tx`
+  // Returns the layer it made, for the one caller that needs to hang unit
+  // identities off it. Every other caller ignores it, as before.
+  const [lot] = await tx`
     insert into stock_lot (company_id, item_id, location_id, received_date, unit_cost, qty_received, stock_movement_id)
-    values (${companyId}, ${itemId}, ${locationId}, ${receivedAt}::timestamptz, ${unitCost}, ${qty}, ${stockMovementId})`;
+    values (${companyId}, ${itemId}, ${locationId}, ${receivedAt}::timestamptz, ${unitCost}, ${qty}, ${stockMovementId})
+    returning id`;
+  return lot.id as string;
 }
 
 /**
@@ -1936,6 +2026,40 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
   if (input.lines.length === 0) throw new Error("A delivery needs at least one line");
   assertLines(input.lines);
 
+  /**
+   * Which units are leaving, where the item is identified unit by unit.
+   *
+   * Checked against what is actually on the shelf, not merely against the
+   * format: a serial nobody received, one that belongs to a different item,
+   * one in another warehouse, or one that has already gone out — each is a
+   * different mistake and each is refused here, before a movement is written.
+   */
+  const serialTracked = await serialTracking(tx, input.lines.map((l) => l.itemId));
+  assertSerials(input.lines, serialTracked, "issue");
+  const issuing = new Map<string, { id: string; itemId: string }>();
+  for (const line of input.lines) {
+    if (!serialTracked.has(line.itemId)) continue;
+    for (const raw of line.serials ?? []) {
+      const sn = raw.trim();
+      const [found] = await tx`
+        select serial_id, item_id, location_id
+          from v_stock_serial_available
+         where company_id = ${input.companyId} and serial_no = ${sn}`;
+      if (!found) {
+        throw new Error(
+          `${sn} is not on the shelf. It was never received, or it has already gone out.`
+        );
+      }
+      if (found.item_id !== line.itemId) {
+        throw new Error(`${sn} belongs to a different item.`);
+      }
+      if (found.location_id !== input.locationId) {
+        throw new Error(`${sn} is at another location.`);
+      }
+      issuing.set(sn, { id: found.serial_id as string, itemId: line.itemId });
+    }
+  }
+
   const { companyId, partnerId, locationId, docDate } = input;
 
   const fyRows = await tx`select fn_fiscal_year_for(${companyId}, ${docDate}::date) as fy`;
@@ -2146,6 +2270,20 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
     }
 
     await recordFifoConsumption(tx, companyId, movement.id, plan, expenseAccountId);
+
+    // And which units these were. Written against the movement rather than the
+    // document, so the record survives everything the document goes through:
+    // an issue stops counting when its document is reversed, which is what
+    // puts a handset back on the shelf when a sale is voided.
+    if (serialTracked.has(line.itemId)) {
+      for (const raw of line.serials ?? []) {
+        const unit = issuing.get(raw.trim());
+        if (!unit) continue;
+        await tx`
+          insert into stock_serial_issue (company_id, serial_id, stock_movement_id)
+          values (${companyId}, ${unit.id}, ${movement.id})`;
+      }
+    }
     // Whatever no layer covered goes on the reconciliation worklist, with the
     // cost it was charged out at, so the receipt that eventually arrives can
     // true it up rather than leaving an unexplained negative balance.
@@ -2782,6 +2920,10 @@ export async function postSaleWithDelivery(input: SalesInvoiceInput, outer?: Tra
           // The invoice's choice of pool travels to the delivery it creates,
           // which is the document that actually moves the goods.
           source: l.source, consignorId: l.consignorId,
+          // And which units. Forwarded for the same reason the negative-stock
+          // reason is: the delivery is the half that moves the goods, so it
+          // is the half that has to know which ones.
+          serials: l.serials,
         })),
       });
       deliveryId = delivery.id;
@@ -2815,6 +2957,11 @@ export async function postSaleWithDelivery(input: SalesInvoiceInput, outer?: Tra
 async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
   if (input.lines.length === 0) throw new Error("A goods receipt needs at least one line");
   assertLines(input.lines);
+
+  // Refused before anything is written, so a carton with a missing IMEI is
+  // rejected whole rather than half-received.
+  const serialTracked = await serialTracking(tx, input.lines.map((l) => l.itemId));
+  assertSerials(input.lines, serialTracked, "receive");
 
   const { companyId, partnerId, locationId, docDate } = input;
   const receivedAt = input.receivedAt || docDate;
@@ -2925,8 +3072,44 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
       tx, companyId, doc.id, line.itemId, locationId, line.qty, unitCost, movement.id
     );
     const toShelf = round4(line.qty - covered);
+    let lotId: string | null = null;
     if (toShelf > 0.0001) {
-      await createFifoLot(tx, companyId, line.itemId, locationId, receivedAt, unitCost, toShelf, movement.id);
+      lotId = await createFifoLot(tx, companyId, line.itemId, locationId, receivedAt, unitCost, toShelf, movement.id);
+    }
+
+    /**
+     * The units, where this item keeps one identity per unit.
+     *
+     * Hung off the lot, so a serial is an identity attached to a layer that
+     * already knows what it cost — costing is untouched by any of this, which
+     * is the point. A unit covering negative stock gets none: it never
+     * reached the shelf, and there is no layer for it to belong to. That is
+     * a corner worth refusing rather than guessing at.
+     */
+    if (serialTracked.has(line.itemId)) {
+      const given = (line.serials ?? []).map((x) => x.trim()).filter(Boolean);
+      if (covered > 0.0001) {
+        throw new Error(
+          "These goods were sold before they were recorded as arriving, and an "
+          + "item identified unit by unit cannot be settled that way — the units "
+          + "that left were never named. Record the receipt first."
+        );
+      }
+      const clash = await tx`
+        select serial_no from stock_serial
+         where company_id = ${companyId} and serial_no = any(${given})`;
+      if (clash.length > 0) {
+        throw new Error(
+          `${(clash as unknown as { serial_no: string }[])[0].serial_no} is already `
+          + `recorded. A serial identifies one unit, and that one has arrived before.`
+        );
+      }
+      for (const sn of given) {
+        await tx`
+          insert into stock_serial
+            (company_id, item_id, serial_no, stock_lot_id, stock_movement_id)
+          values (${companyId}, ${line.itemId}, ${sn}, ${lotId}, ${movement.id})`;
+      }
     }
 
     const inventory = await tx`
