@@ -5,6 +5,7 @@ import { createCategory, updateCategory, deactivateCategory, activateCategory, d
 import { AddCategoryForm } from "@/components/level-form";
 import { CategoryRow } from "@/components/category-row";
 import { DataTable, type DataRow } from "@/components/data-table";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function Subcategories() {
   const [co] = await sql`select id from company order by created_at limit 1`;
@@ -49,11 +50,11 @@ export default async function Subcategories() {
       <div className="page-head">
         <span className="eyebrow">Master data</span>
         <h1>Sub categories</h1>
-        <span className="page-sub">
+        <HelpHint>
           Every sub category across the whole catalogue, in one flat list —
           the tree view groups them by category; this jumps straight to any of
           them.
-        </span>
+        </HelpHint>
       </div>
 
       <AddCategoryForm

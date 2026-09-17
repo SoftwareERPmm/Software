@@ -3,6 +3,7 @@ import { createUnit, updateUnit, deactivateUnit, activateUnit, deleteUnit } from
 import { AddUnitForm } from "@/components/unit-form";
 import { UnitRow } from "@/components/unit-row";
 import { DataTable, type DataRow } from "@/components/data-table";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function Units() {
   const [co] = await sql`select id from company order by created_at limit 1`;
@@ -39,13 +40,13 @@ export default async function Units() {
       <div className="page-head">
         <span className="eyebrow">Master data</span>
         <h1>Units</h1>
-        <span className="page-sub">
+        <HelpHint>
           What quantities are counted in. Each item is stored in one base unit
           and every quantity of it &mdash; on hand, received, sold &mdash; is
           held in that unit, so a unit is settled when the item is created and
           not changed underneath it afterwards. Retiring one takes it off the
           pickers and leaves every existing item counting exactly as before.
-        </span>
+        </HelpHint>
       </div>
 
       <AddUnitForm action={createUnit} />

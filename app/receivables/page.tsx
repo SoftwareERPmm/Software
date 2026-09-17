@@ -2,6 +2,7 @@ import Link from "next/link";
 import { money, moneyOrTrace } from "@/lib/db";
 import { getCompany, getPartnerBalances } from "@/lib/queries";
 import { DataTable, type DataRow } from "@/components/data-table";
+import { HelpHint } from "@/components/help-hint";
 
 const TABS: Array<["" | "current" | "overdue" | "partial", string]> = [
   ["", "All"],
@@ -70,11 +71,11 @@ export default async function Receivables({
       <div className="page-head">
         <span className="eyebrow">Sales</span>
         <h1>Receivables</h1>
-        <span className="page-sub">
+        <HelpHint>
           What each customer owes, rolled up from their open invoices — not a
           balance kept on the customer, so it can never drift from the invoices
           behind it.
-        </span>
+        </HelpHint>
       </div>
 
       <div className="kpis">

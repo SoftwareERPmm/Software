@@ -132,7 +132,6 @@ export default async function Dashboard() {
 
   const items = topItems as unknown as
     { id: string; name: string; qty: number | string; revenue: number | string }[];
-  const topRevenue = items.reduce((m, i) => Math.max(m, n(i.revenue)), 0);
 
   const urgent = actions.reduce((t, a) => t + a.n, 0);
 
@@ -372,7 +371,12 @@ export default async function Dashboard() {
             <span className="dash-chip">Revenue · 6 months</span>
           </div>
           <div className="dash-figure">
-            <span className="dash-figure-value">{cur(revenueTotal)}</span>
+            {/* Six months of sales net of returns can land below zero, and
+                when it does the minus sign is the whole message — easy to
+                read past in a figure this size, and not at all in red. */}
+            <span className="dash-figure-value" data-negative={revenueTotal < 0}>
+              {cur(revenueTotal)}
+            </span>
             {change !== null && (
               <span className="dash-badge" style={{
                 color: change >= 0 ? "var(--ok)" : "var(--bad)",
@@ -415,12 +419,6 @@ export default async function Dashboard() {
                       <span className="dash-kpi-note">{money(it.qty)} units</span>
                     </span>
                     <span style={{ fontWeight: 700, whiteSpace: "nowrap" }}>{cur(it.revenue)}</span>
-                    <span className="dash-rank-bar">
-                      <span className="dash-rank-fill" style={{
-                        width: topRevenue > 0
-                          ? `${Math.max(4, (n(it.revenue) / topRevenue) * 100)}%` : "0%",
-                      }} />
-                    </span>
                   </div>
                 ))}
               </div>

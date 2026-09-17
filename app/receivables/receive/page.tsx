@@ -3,6 +3,7 @@ import { getSettlementData, createCustomerReceipt } from "@/lib/actions";
 import { getCompany, getBranches } from "@/lib/queries";
 import { SettlementForm } from "@/components/settlement-form";
 import { ErpCrumbs } from "@/components/erp-worklist";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function ReceiveFromCustomer({
   searchParams,
@@ -43,10 +44,10 @@ export default async function ReceiveFromCustomer({
       ]} />
       <div className="page-head">
         <h1>Receive from a customer</h1>
-        <span className="page-sub">
+        <HelpHint>
           Choose a customer to see their open invoices, then apply what they have paid against each one.{" "}
           <Link href="/receivables" style={{ color: "var(--brand)" }}>See everything outstanding</Link>
-        </span>
+        </HelpHint>
       </div>
 
       <SettlementForm

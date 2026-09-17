@@ -3,6 +3,7 @@ import { getFinanceData, peekVoucherNo, createBankVoucher } from "@/lib/actions"
 import { getCompany } from "@/lib/queries";
 import { VoucherForm } from "@/components/voucher-form";
 import { VoucherHelp } from "@/components/voucher-help";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function BankReceipt() {
   const { accounts, accountTree, bankAccounts, branches } = await getFinanceData();
@@ -27,11 +28,11 @@ export default async function BankReceipt() {
       <div className="page-head">
         <span className="eyebrow">Cash &amp; Bank</span>
         <h1>Bank receipt</h1>
-        <span className="page-sub">
+        <HelpHint>
           Money received into a bank account that isn&rsquo;t against a customer invoice — use{" "}
           <Link href="/receivables/receive" style={{ color: "var(--brand)" }}>Receive payment</Link> for that.{" "}
           <Link href="/finance/bank-detail" style={{ color: "var(--brand)" }}>View the bank book</Link>
-        </span>
+        </HelpHint>
         <Link href="/finance/bank-receipt/import" className="btn ghost">Import from Excel</Link>
       <span className="actions">
         <VoucherHelp kind="bank" />

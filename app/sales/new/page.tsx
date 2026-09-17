@@ -4,6 +4,7 @@ import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { SalesVoucher } from "@/components/sales-voucher";
 import { ErpCrumbs } from "@/components/erp-worklist";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function NewSalesInvoice({
   searchParams,
@@ -59,13 +60,13 @@ export default async function NewSalesInvoice({
       ]} />
       <div className="page-head">
         <h1>Sales voucher</h1>
-        <span className="page-sub">
+        <HelpHint>
           ကုန်ပစ္စည်းများသည် FIFO ကုန်ကျစရိတ်ဖြင့် ထွက်ခွာပြီး၊ ဝင်ငွေကို
           အသိအမှတ်ပြုကာ လက်ကျန်ငွေကို ဤ Invoice တွင် ဖွင့်ပေးပါသည်။
           <div className="subline" style={{ marginTop: "0.15rem" }}>
             Stock leaves at its FIFO cost, revenue is recognised, and the balance opens against this invoice.
           </div>
-        </span>
+        </HelpHint>
       </div>
 
       <SalesVoucher

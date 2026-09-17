@@ -1,5 +1,6 @@
 import { getCompany, getAdvanceLedger } from "@/lib/queries";
 import { AdvanceLedger } from "@/components/advance-ledger";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function SupplierAdvances({
   searchParams,
@@ -17,11 +18,11 @@ export default async function SupplierAdvances({
       <div className="page-head">
         <span className="eyebrow">Purchases</span>
         <h1>Supplier advances</h1>
-        <span className="page-sub">
+        <HelpHint>
           Money paid to suppliers before they billed for anything — what they
           still owe us in goods, and which bills the rest has gone to. It is an
           asset until it is applied, never a payable.
-        </span>
+        </HelpHint>
       </div>
 
       <AdvanceLedger side="SUPPLIER" advances={advances} status={status} />

@@ -1585,6 +1585,11 @@ export async function getItems(companyId: string) {
   return sql`
     select i.id, i.code, i.name, i.name_my, i.item_group_id, i.brand_id,
            i.base_uom_id, i.is_stocked, i.is_active,
+           -- Not the picture — just whether there is one and when it changed.
+           -- The bytes are served from their own URL, keyed by this; selecting
+           -- them here would put every photo in the catalogue into one query.
+           to_char(i.photo_updated_at, 'YYYYMMDDHH24MISSMS') as photo_version,
+           i.barcode,
            g.name as group_name, g.parent_id as group_parent_id,
            pg.id as parent_group_id, pg.name as parent_group_name,
            b.name as brand_name,

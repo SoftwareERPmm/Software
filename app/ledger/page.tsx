@@ -10,6 +10,7 @@ import {
   getUnassignedBranchActivity, UNASSIGNED_BRANCH,
 } from "@/lib/queries";
 import { getFinanceData } from "@/lib/actions";
+import { HelpHint } from "@/components/help-hint";
 
 /**
  * The trial balance: every account that moved, and the two columns agreeing.
@@ -97,10 +98,10 @@ export default async function TrialBalance({
             : "Accounting"}
         </span>
         <h1>Trial balance</h1>
-        <span className="page-sub">
+        <HelpHint>
           Summary of debit and credit balances, read from the ledger and never
           from the documents.
-        </span>
+        </HelpHint>
         <span className="actions">
           <Link href={glHref()} className="btn ghost tiny">
             <BookOpen size={13} aria-hidden="true" /> General ledger

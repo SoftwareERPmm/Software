@@ -5,6 +5,7 @@ import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { ReturnForm } from "@/components/return-form";
 import { ErpCrumbs } from "@/components/erp-worklist";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function NewSalesReturn() {
   const d = await getFormData();
@@ -40,11 +41,11 @@ export default async function NewSalesReturn() {
       ]} />
       <div className="page-head">
         <h1>Customer return</h1>
-        <span className="page-sub">
+        <HelpHint>
           Goods come back and the customer owes less — one document for
           both.{" "}
           <Link href="/documents?type=SALES_RETURN" style={{ color: "var(--brand)" }}>Past returns</Link>
-        </span>
+        </HelpHint>
       </div>
 
       <ReturnForm

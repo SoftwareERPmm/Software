@@ -6,6 +6,7 @@ import {
 } from "@/lib/format";
 import { getCompany, getOrderList } from "@/lib/queries";
 import { DataTable, type DataRow } from "@/components/data-table";
+import { HelpHint } from "@/components/help-hint";
 
 const toTime = (v: unknown) => (v ? new Date(v as string).getTime() : 0);
 
@@ -104,10 +105,10 @@ export default async function PurchaseOrders({
       <div className="page-head">
         <span className="eyebrow">Purchases</span>
         <h1>Purchase Orders</h1>
-        <span className="page-sub">
+        <HelpHint>
           What has been ordered from suppliers. An order posts nothing on its
           own — stock and payables move on the goods receipt and invoice that follow it.
-        </span>
+        </HelpHint>
       </div>
 
       <div className="actions">

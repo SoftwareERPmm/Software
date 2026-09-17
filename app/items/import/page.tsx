@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getCompany, getImportBatches } from "@/lib/queries";
 import { runItemImport } from "@/lib/actions";
 import { ItemImport } from "@/components/item-import";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function ImportItems() {
   const company = await getCompany();
@@ -17,7 +18,7 @@ export default async function ImportItems() {
       <div className="page-head">
         <span className="eyebrow">Master data</span>
         <h1>Import items</h1>
-        <span className="page-sub">
+        <HelpHint>
           The item master, from a spreadsheet — what the items <em>are</em>, not
           how many there are. Quantity and cost are the result of stock
           documents, so they are not on this sheet; a new item exists with no
@@ -27,7 +28,7 @@ export default async function ImportItems() {
           here is refused rather than creating one, because two spellings of the
           same category is the mess an importer is supposed to prevent. Nothing
           is written until you confirm, and then all of it is written or none.
-        </span>
+        </HelpHint>
         <Link href="/items" className="btn ghost">Back to items</Link>
       </div>
 

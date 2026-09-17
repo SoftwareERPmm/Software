@@ -4,6 +4,7 @@ import { createItem } from "@/lib/actions";
 import { allCategories } from "@/lib/tree";
 import { getBrands } from "@/lib/queries";
 import { ItemForm } from "@/components/item-form";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function NewItem() {
   const [co] = await sql`select id from company order by created_at limit 1`;
@@ -37,10 +38,10 @@ export default async function NewItem() {
       <div className="page-head">
         <span className="eyebrow">Master data</span>
         <h1>New item</h1>
-        <span className="page-sub">
+        <HelpHint>
           Pick the category at each level. The item&rsquo;s code is built from the
           ones above it, so the code alone tells you where a product sits.
-        </span>
+        </HelpHint>
       </div>
 
       <ItemForm

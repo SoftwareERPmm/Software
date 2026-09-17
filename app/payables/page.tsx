@@ -2,6 +2,7 @@ import Link from "next/link";
 import { money, moneyOrTrace } from "@/lib/db";
 import { getCompany, getPartnerBalances } from "@/lib/queries";
 import { DataTable, type DataRow } from "@/components/data-table";
+import { HelpHint } from "@/components/help-hint";
 
 const TABS: Array<["" | "current" | "overdue" | "partial", string]> = [
   ["", "All"],
@@ -68,11 +69,11 @@ export default async function Payables({
       <div className="page-head">
         <span className="eyebrow">Purchases</span>
         <h1>Payables</h1>
-        <span className="page-sub">
+        <HelpHint>
           What you owe each supplier, rolled up from their open bills — not a
           balance kept on the supplier, so it can never drift from the invoices
           behind it.
-        </span>
+        </HelpHint>
       </div>
 
       <div className="kpis">

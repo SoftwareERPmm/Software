@@ -2,6 +2,7 @@ import Link from "next/link";
 import { money, shortDate } from "@/lib/db";
 import { getCompany, getDocuments } from "@/lib/queries";
 import { DataTable, type DataRow } from "@/components/data-table";
+import { HelpHint } from "@/components/help-hint";
 
 const toTime = (v: unknown) => (v ? new Date(v as string).getTime() : 0);
 
@@ -40,9 +41,9 @@ export default async function CustomerReturns() {
       <div className="page-head">
         <span className="eyebrow">Sales</span>
         <h1>Customer Returns</h1>
-        <span className="page-sub">
+        <HelpHint>
           Stock comes back in and revenue reverses against the invoice it came from.
-        </span>
+        </HelpHint>
       </div>
 
       <div className="actions">

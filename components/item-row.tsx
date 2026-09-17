@@ -5,6 +5,8 @@ import { useActionState, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
 import { ConfirmDelete } from "./confirm-delete";
 import { RowMenu } from "./row-menu";
+import { ItemPhotoField } from "./item-photo-field";
+import { ItemThumb } from "./item-thumb";
 
 // lib/db.ts opens a real Postgres connection at import time — never import
 // it into a client component. Same formatting as money() there, kept local.
@@ -16,6 +18,7 @@ type Item = {
   item_group_id: string; brand_id: string | null; base_uom_id: string;
   group_name: string; parent_group_name: string | null; brand_name: string | null;
   uom_code: string; is_stocked: boolean; is_active: boolean; sale_price: string | null;
+  photo_version?: string | null;
   last_purchase_price?: string | null;
   last_purchase_doc_no?: string | null;
   last_purchase_date?: string | null;
@@ -62,7 +65,7 @@ export function ItemRow({
   if (editing) {
     return (
       <tr>
-        <td colSpan={9}>
+        <td colSpan={10}>
           <form action={formAction} className="form" style={{ padding: "0.5rem 0" }}>
             {state && "error" in state && <div className="alert">{state.error}</div>}
             <input type="hidden" name="id" value={item.id} />
@@ -96,6 +99,15 @@ export function ItemRow({
                 </select>
               </div>
             </div>
+            <div className="row" style={{ marginTop: "0.4rem" }}>
+              <ItemPhotoField
+                currentSrc={
+                  item.photo_version
+                    ? `/items/${item.id}/photo?v=${item.photo_version}`
+                    : null
+                }
+              />
+            </div>
             <div style={{ display: "flex", gap: "1rem", marginTop: "0.4rem" }}>
               <label className="check">
                 <input name="is_stocked" type="checkbox" defaultChecked={item.is_stocked} />
@@ -118,6 +130,12 @@ export function ItemRow({
 
   return (
     <tr>
+      <td className="thumbcell">
+        <ItemThumb
+          src={item.photo_version ? `/items/${item.id}/photo?v=${item.photo_version}` : null}
+          name={item.name}
+        />
+      </td>
       <td className="code">
         <Link href={`/items/categories/${item.item_group_id}`} style={{ color: "var(--brand)" }}>
           {item.code}

@@ -2,6 +2,7 @@ import { getCompany, getLocations } from "@/lib/queries";
 import { createLocation, updateLocation, deleteLocation, deactivateLocation, activateLocation } from "@/lib/actions";
 import { AddLocationForm } from "@/components/location-form";
 import { LocationRow } from "@/components/location-row";
+import { HelpHint } from "@/components/help-hint";
 
 export type Location = {
   id: string; code: string; name: string; name_my: string | null;
@@ -57,13 +58,13 @@ export default async function Warehouses() {
       <div className="page-head">
         <span className="eyebrow">Master data</span>
         <h1>Branches &amp; warehouses</h1>
-        <span className="page-sub">
+        <HelpHint>
           Branches and the warehouses inside them, shown as one tree. A
           branch is a site that doesn&rsquo;t hold stock itself; each one can
           hold many warehouses, and every warehouse belongs to a single
           branch. Stock lives in warehouses, and the branch it rolls up to is
           what the branch-by-branch financial reports are grouped by.
-        </span>
+        </HelpHint>
       </div>
 
       <AddLocationForm action={createLocation} locations={nodes} />

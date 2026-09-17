@@ -4,6 +4,7 @@ import { createVolumeDiscount, deactivateVolumeDiscount, activateVolumeDiscount 
 import { VolumeDiscountForm } from "@/components/volume-discount-form";
 import { VolumeDiscountRow } from "@/components/volume-discount-row";
 import { money } from "@/lib/format";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function Discounts() {
   const company = await getCompany();
@@ -54,14 +55,14 @@ export default async function Discounts() {
       <div className="page-head">
         <span className="eyebrow">Sales</span>
         <h1>Volume discounts</h1>
-        <span className="page-sub">
+        <HelpHint>
           Discounts the order earns, as opposed to the one a seller types on a
           line. A quantity band is read against what a line buys; an invoice
           band against the whole bill. <strong>Both can apply</strong> &mdash;
           a hundred units earning 5%, and the invoice passing ten million
           earning another 3% on what that leaves. Each is recorded on the
           invoice separately, so a line can say which rule gave which part.
-        </span>
+        </HelpHint>
       </div>
 
       <VolumeDiscountForm action={createVolumeDiscount} items={items as never} groups={groups as never} />

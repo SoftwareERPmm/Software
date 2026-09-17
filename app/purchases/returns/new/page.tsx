@@ -5,6 +5,7 @@ import { sql } from "@/lib/db";
 import { getReturnablePurchases } from "@/lib/queries";
 import { ReturnForm } from "@/components/return-form";
 import { ErpCrumbs } from "@/components/erp-worklist";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function NewPurchaseReturn({
   searchParams,
@@ -87,10 +88,10 @@ export default async function NewPurchaseReturn({
       ]} />
       <div className="page-head">
         <h1>Supplier return</h1>
-        <span className="page-sub">
+        <HelpHint>
           Goods go back and what&rsquo;s owed drops — one document for both.{" "}
           <Link href="/documents?type=PURCHASE_RETURN" style={{ color: "var(--brand)" }}>Past returns</Link>
-        </span>
+        </HelpHint>
       </div>
 
       <ReturnForm

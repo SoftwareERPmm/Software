@@ -1,6 +1,7 @@
 import { getFinanceData, createCashTransfer } from "@/lib/actions";
 import { TransferForm } from "@/components/transfer-form";
 import { ErpCrumbs } from "@/components/erp-worklist";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function InterbranchTransfer() {
   const { cashAccounts, bankAccounts, branches } = await getFinanceData();
@@ -36,11 +37,11 @@ export default async function InterbranchTransfer() {
       ]} />
       <div className="page-head">
         <h1>Interbranch transfer</h1>
-        <span className="page-sub">
+        <HelpHint>
           Money between two of your own accounts &mdash; one branch&rsquo;s till to
           another, or the till to the bank. Its own document type, so branch cash
           movements are never mistaken for income or expense.
-        </span>
+        </HelpHint>
       </div>
 
       <TransferForm

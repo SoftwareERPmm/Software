@@ -4,6 +4,7 @@ import { sql } from "@/lib/db";
 import { getUntouchedOpenOrders } from "@/lib/queries";
 import { OrderForm } from "@/components/order-form";
 import { ErpCrumbs } from "@/components/erp-worklist";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function NewSalesOrder() {
   const d = await getFormData();
@@ -39,10 +40,10 @@ export default async function NewSalesOrder() {
       ]} />
       <div className="page-head">
         <h1>New sales order</h1>
-        <span className="page-sub">
+        <HelpHint>
           A commitment from the customer. Deliver against it later — stock
           leaves and cost posts only on delivery, never here.
-        </span>
+        </HelpHint>
       </div>
 
       <OrderForm

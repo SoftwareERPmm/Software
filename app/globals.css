@@ -2524,7 +2524,9 @@ dialog.drawer .drawer-panel {
 }
 .dash-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
 .dash-kpi-value {
-  font-size: var(--t-2xl); font-weight: 700;
+  /* A step below the 20px ceiling. Five cards of kyat at full size read as
+     five headlines; at 18px they are still the loudest thing on the card. */
+  font-size: var(--t-xl); font-weight: 700;
   letter-spacing: -0.02em; line-height: 1.15;
   /* Figures wrap rather than overflow: MMK 1,234,567,890 is a real number in
      kyat and must not push the card wider than its column. */
@@ -2614,7 +2616,10 @@ dialog.drawer .drawer-panel {
 .dash-figure-value {
   font-size: var(--t-2xl); font-weight: 700; letter-spacing: var(--track-tight);
 }
-.dash-rank { display: flex; flex-direction: column; gap: 1.1rem; }
+/* Money below zero, in the one place a six-month total can get there. The
+   minus sign alone is easy to read past at this size. */
+.dash-figure-value[data-negative="true"] { color: var(--bad); }
+.dash-rank { display: flex; flex-direction: column; gap: 0.85rem; }
 .dash-rank-row { display: grid; grid-template-columns: auto 1fr auto; gap: 0.75rem; align-items: baseline; }
 .dash-rank-n {
   width: 26px; height: 26px; border-radius: 50%;
@@ -2622,11 +2627,6 @@ dialog.drawer .drawer-panel {
   background: color-mix(in srgb, var(--line) 40%, transparent);
   font-size: var(--t-xs); color: var(--ink-soft); font-weight: 500;
 }
-.dash-rank-bar {
-  grid-column: 2 / -1; height: 4px; border-radius: 999px;
-  background: color-mix(in srgb, var(--line) 50%, transparent); margin-top: 0.45rem;
-}
-.dash-rank-fill { height: 100%; border-radius: 999px; background: var(--brand); }
 
 /* Health ---------------------------------------------------------------- */
 .dash-health {
@@ -2978,4 +2978,275 @@ dialog.drawer .drawer-panel {
 
 @media (min-width: 821px) and (prefers-reduced-motion: no-preference) {
   .shell .sidebar { transition: width 160ms ease; }
+}
+
+/* ------------------------------------------------------ item photos ----- */
+
+/* One size, whether there is a picture or not. A column of 25px boxes that
+   becomes 25px, 40px, 25px as photos of different shapes arrive is a column
+   that shifts every row below it while the page settles. */
+.item-thumb {
+  width: 25px;
+  height: 25px;
+  flex: none;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--line-soft, #F1F4F2);
+  /* Covers the square rather than being squeezed into it: a tall photo loses
+     a little top and bottom, and nothing is ever stretched out of shape. */
+  object-fit: cover;
+  object-position: center;
+  display: block;
+}
+.item-thumb-empty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  opacity: 0.4;
+}
+/* The narrowest the table will make it — a thumbnail column has one job and
+   no text to wrap. */
+.thumbcell { width: 25px; padding-right: 0 !important; }
+
+/* The picker: what there is now, and the two things you can do about it. */
+.photofield { display: flex; align-items: center; gap: 0.7rem; }
+.photofield-preview {
+  width: 44px; height: 44px; flex: none;
+  border-radius: 8px;
+  border: 1px dashed var(--line);
+  background: var(--line-soft, #F1F4F2);
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--muted);
+  overflow: hidden;
+}
+.photofield-preview img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.photofield-controls {
+  display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;
+  min-width: 0;
+}
+.photofield-controls .hint { flex-basis: 100%; }
+
+/* --------------------------------------------------- stock overview ----- */
+
+/* The same five figures, each behind its own mark. A row of identical grey
+   captions is five things to read before you know which is which; a colour
+   and a shape per tile is one thing to recognise. Scoped to .kpis-tiled so
+   every other page's KPI row is untouched. */
+.kpis-tiled { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+.kpis-tiled .kpi { flex-direction: row; align-items: flex-start; gap: 0.7rem; }
+.kpi-icon {
+  width: 34px; height: 34px; flex: none;
+  border-radius: 9px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.kpi-body { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
+/* The mark carries the recognition now, so the caption stops shouting: plain
+   sentence case beside an icon, rather than mono caps that read as a label
+   for a label. */
+.kpis-tiled .kpi-label {
+  font-family: inherit; font-size: var(--t-sm); letter-spacing: 0;
+  text-transform: none; color: var(--ink); font-weight: 500;
+}
+
+/* ------ the ownership picker ------ */
+
+/* Three exclusive tabs where there were two checkboxes, each carrying its own
+   count so an empty Consignment answers the question before it is clicked. */
+.scopetabs { display: flex; gap: 0.5rem; margin: 0 0 0.85rem; flex-wrap: wrap; }
+.scopetab {
+  display: inline-flex; align-items: center; gap: 0.45rem;
+  padding: 0.45rem 0.8rem;
+  border: 1px solid var(--line); border-radius: 9px;
+  background: var(--surface); color: var(--ink-soft, var(--ink));
+  font-size: var(--t-sm); font-weight: 500; cursor: pointer;
+}
+.scopetab:hover { background: var(--line-soft); }
+.scopetab[data-active="true"] {
+  background: color-mix(in srgb, var(--brand) 10%, var(--surface));
+  border-color: color-mix(in srgb, var(--brand) 40%, var(--line));
+  color: var(--brand);
+}
+.scopetab-n {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 20px; height: 20px; padding: 0 0.35rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--line) 55%, transparent);
+  font-size: var(--t-2xs); font-variant-numeric: tabular-nums;
+}
+.scopetab[data-active="true"] .scopetab-n {
+  background: color-mix(in srgb, var(--brand) 18%, transparent);
+}
+
+/* ------ ownership, per row ------ */
+
+.ownpill {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  padding: 0.15rem 0.45rem; border-radius: 6px;
+  font-size: var(--t-xs); white-space: nowrap;
+}
+.ownpill[data-kind="owned"] {
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: color-mix(in srgb, var(--ok) 80%, #000);
+}
+.ownpill[data-kind="consigned"] {
+  background: color-mix(in srgb, #6C5CE0 12%, transparent);
+  color: #5A49CC;
+}
+
+/* ------ the row that opens ------ */
+
+/* No zebra here. A row that opens inserts a second <tr>, and :nth-child
+   counts it — so every stripe below an open row inverted, and the table
+   appeared to reshuffle itself on a click that changed nothing. Rules out
+   striping rather than fighting it; the row borders already separate rows.
+   Written table.stocktable to match the specificity of the striping rule it
+   overrides, which is four types and two pseudo-classes. */
+table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
+
+.expandcell { width: 28px; padding-right: 0 !important; }
+/* Enough for a product name on one line. Without it the twelve columns share
+   the width evenly and the one column carrying words gets the same slice as
+   the ones carrying three digits. */
+.stockrow > td.wrap { min-width: 10rem; }
+/* Two columns carry text of no fixed length, and left alone an auto table
+   gives each whatever it asks for — a long category name was taking 242px
+   and pushing the figures off the right-hand edge. Capped, they wrap. */
+/* white-space: normal is the part that matters: every td in this app is
+   nowrap by default (see the base `th, td` rule), which makes max-width and
+   overflow-wrap inert — the text simply ran out of the cell and printed over
+   the column beside it. Capping the width only helps once wrapping is on. */
+.stockrow > td.catcell {
+  max-width: 10rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.stockrow > td.codecell {
+  max-width: 7.5rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.rowexpand {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0;
+  background: none; border: 0; border-radius: 6px;
+  color: var(--muted); cursor: pointer;
+}
+.rowexpand:hover { background: var(--line-soft); color: var(--ink); }
+.rowexpand svg { transition: transform 150ms; }
+.stockrow[data-open] .rowexpand svg { transform: rotate(90deg); }
+/* Open, the row and its detail read as one block rather than as a row and a
+   stray panel that happens to follow it. */
+.stockrow[data-open] > td { background: var(--line-soft); }
+.stockdetail-row > td {
+  background: var(--line-soft);
+  padding: 0 0 var(--s3) !important;
+}
+
+/* Pinned to the left of the scroll viewport rather than laid across the full
+   width of the table. A td spanning twelve columns is as wide as all twelve,
+   and a panel that inherited that width had its third card off-screen from
+   the moment it opened — on a table narrow enough not to scroll, sticky costs
+   nothing and this behaves as an ordinary block. */
+.stockdetail {
+  position: sticky;
+  left: 0;
+  /* Tracks the visible width of the scroll area rather than the table's, so
+     the three panels fill the row when nothing is scrolling and still fit
+     inside the viewport when the table is wider than it. */
+  width: min(100%, max(320px, calc(100vw - 17rem)));
+  display: grid; gap: var(--s3);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  padding: var(--s3);
+}
+.stockpanel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: var(--s3);
+  min-width: 0;
+}
+.stockpanel h3 {
+  font-size: var(--t-base); font-weight: 600; margin: 0 0 0.7rem;
+  letter-spacing: var(--track-tight);
+}
+/* Label left, figure right, ruled between — the shape a reader already knows
+   from the document panels. */
+.stockpanel-kv { margin: 0; display: flex; flex-direction: column; }
+.stockpanel-kv > div {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 1rem; padding: 0.3rem 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.stockpanel-kv > div:last-child { border-bottom: 0; }
+.stockpanel-kv dt { color: var(--muted); font-size: var(--t-sm); flex: none; }
+.stockpanel-kv dd {
+  margin: 0; text-align: right; min-width: 0; overflow-wrap: anywhere;
+  font-size: var(--t-sm);
+}
+.stockpanel-table { width: 100%; border-collapse: collapse; font-size: var(--t-sm); }
+.stockpanel-table th, .stockpanel-table td { padding: 0.3rem 0.4rem; }
+.stockpanel-table thead th {
+  text-align: left; color: var(--muted); font-weight: 500;
+  border-bottom: 1px solid var(--line);
+}
+.stockpanel-table th.r, .stockpanel-table td.r { text-align: right; }
+.stockpanel-table tfoot td {
+  border-top: 1px solid var(--line); font-weight: 600;
+}
+
+/* ------------------------------------------------- table toolbar & pager -- */
+
+.dt-bar {
+  display: flex; align-items: center; gap: 0.5rem;
+  flex-wrap: wrap; margin-bottom: 0.75rem;
+}
+/* Search and filters left, actions right, whatever sits between them. */
+.dt-spacer { flex: 1 1 auto; }
+
+/* ------ which columns are shown ------ */
+
+.dt-cols { position: relative; }
+.dt-cols-n {
+  margin-left: 0.35rem; padding: 0 0.35rem;
+  border-radius: 999px; font-size: var(--t-2xs);
+  background: color-mix(in srgb, var(--brand) 14%, transparent);
+  color: var(--brand);
+}
+/* Catches the click that closes the menu. Invisible, and behind it. */
+.dt-cols-scrim { position: fixed; inset: 0; z-index: 30; }
+.dt-cols-menu {
+  position: absolute; top: calc(100% + 0.35rem); right: 0; z-index: 31;
+  min-width: 13rem; max-height: 60vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 0.1rem;
+  padding: 0.4rem;
+  background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.12);
+}
+.dt-cols-item {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.35rem 0.45rem; border-radius: 7px;
+  font-size: var(--t-sm); cursor: pointer; white-space: nowrap;
+}
+.dt-cols-item:hover { background: var(--line-soft); }
+.dt-cols-reset { margin-top: 0.25rem; align-self: flex-start; }
+
+/* ------ paging ------ */
+
+.dt-pager {
+  display: flex; align-items: center; gap: 0.6rem;
+  flex-wrap: wrap; padding: 0.75rem 0 0.25rem;
+  font-size: var(--t-sm); color: var(--muted);
+}
+.dt-pager-count { font-variant-numeric: tabular-nums; }
+.dt-pager-size select { width: auto; padding-block: 0.25rem; font-size: var(--t-sm); }
+.dt-pager-nav { display: inline-flex; align-items: center; gap: 0.3rem; }
+.dt-pager-page {
+  min-width: 3.5rem; text-align: center;
+  font-variant-numeric: tabular-nums; color: var(--ink);
 }

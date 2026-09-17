@@ -4,6 +4,7 @@ import { getCompany, getChartOfAccounts } from "@/lib/queries";
 import { createAccount, updateAccount, deactivateAccount, activateAccount, deleteAccount } from "@/lib/actions";
 import { AddAccountForm } from "@/components/account-form";
 import { AccountRow, type CoaAccount } from "@/components/account-row";
+import { HelpHint } from "@/components/help-hint";
 
 const TABS: [string, string][] = [["", "All"], ["active", "Active"], ["inactive", "Deactivated"]];
 
@@ -94,13 +95,13 @@ export default async function ChartOfAccounts({
       <div className="page-head">
         <span className="eyebrow">Settings</span>
         <h1>Chart of accounts</h1>
-        <span className="page-sub">
+        <HelpHint>
           Created with the company and yours to customise. Accounts nest to any
           depth; a heading exists to group and cannot be posted to, only its
           children can. Anything the posting engine resolves by role is marked
           and protected &mdash; retiring one would turn a routine sale into an
           error.
-        </span>
+        </HelpHint>
       </div>
 
       <AddAccountForm action={createAccount} accounts={accounts} currencies={currencies} />

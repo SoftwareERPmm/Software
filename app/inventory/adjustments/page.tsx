@@ -4,6 +4,7 @@ import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { AdjustmentForm } from "@/components/adjustment-form";
 import { ErpCrumbs } from "@/components/erp-worklist";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function NewStockAdjustment() {
   const d = await getFormData();
@@ -37,13 +38,13 @@ export default async function NewStockAdjustment() {
       ]} />
       <div className="page-head">
         <h1>Stock adjustment</h1>
-        <span className="page-sub">
+        <HelpHint>
           Correct a count — damage, shrinkage, or what the shelf actually
           holds versus what the ledger says.{" "}
           <Link href="/documents?type=STOCK_ADJUSTMENT" style={{ color: "var(--brand)" }}>
             Past adjustments
           </Link>
-        </span>
+        </HelpHint>
       </div>
 
       <AdjustmentForm

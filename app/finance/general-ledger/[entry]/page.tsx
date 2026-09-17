@@ -3,6 +3,7 @@ import { ArrowLeft, FileText, BookOpen } from "lucide-react";
 import { notFound } from "next/navigation";
 import { getCompany, getJournalEntry, getRelatedDocuments } from "@/lib/queries";
 import { money } from "@/lib/db";
+import { HelpHint } from "@/components/help-hint";
 
 /**
  * One entry, in full: what it debited, what it credited, and what wrote it.
@@ -68,11 +69,11 @@ export default async function JournalEntryDetail({
           </Link>
         </span>
         <h1>{entry.entry_no}</h1>
-        <span className="page-sub">
+        <HelpHint>
           {label}
           {entry.partner_name && ` · ${entry.partner_name}`}
           {" · "}{entry.entry_date}
-        </span>
+        </HelpHint>
         <span className="actions">
           {entry.status && <span className={`pill ${entry.status.toLowerCase()}`}>{entry.status}</span>}
         </span>

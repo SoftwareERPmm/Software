@@ -6,6 +6,7 @@ import {
 } from "@/lib/format";
 import { getCompany, getInvoiceList } from "@/lib/queries";
 import { DataTable, type DataRow } from "@/components/data-table";
+import { HelpHint } from "@/components/help-hint";
 
 const toTime = (v: unknown) => (v ? new Date(v as string).getTime() : 0);
 
@@ -102,7 +103,7 @@ export default async function PurchaseInvoices({
       <div className="page-head">
         <span className="eyebrow">Purchases</span>
         <h1>Purchase Invoices</h1>
-        <span className="page-sub">
+        <HelpHint>
           {supplierName ? (
             <>
               Filtered to <strong>{supplierName}</strong>.{" "}
@@ -111,7 +112,7 @@ export default async function PurchaseInvoices({
           ) : (
             "Manage purchase invoices."
           )}
-        </span>
+        </HelpHint>
       </div>
 
       <div className="actions">

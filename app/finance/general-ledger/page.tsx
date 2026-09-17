@@ -11,6 +11,7 @@ import { AutoApply } from "@/components/auto-apply";
 import { AccountPicker } from "@/components/account-picker";
 import { JournalEntryList, type Entry } from "@/components/journal-entry-list";
 import { ErpCrumbs } from "@/components/erp-worklist";
+import { HelpHint } from "@/components/help-hint";
 
 /**
  * One ledger, read two ways.
@@ -110,11 +111,11 @@ export default async function GeneralLedger({
       ]} />
       <div className="page-head">
         <h1>General ledger</h1>
-        <span className="page-sub">
+        <HelpHint>
           Every posted entry, whatever document wrote it. Read it in date
           order to find something, or one account at a time to reconcile a
           balance.
-        </span>
+        </HelpHint>
         <span className="actions">
           {/* The period and branch travel with the link, and `back` brings
               the reader to this same view rather than an unfiltered ledger. */}

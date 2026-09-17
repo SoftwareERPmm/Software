@@ -3,6 +3,7 @@ import { getSettlementData, createSupplierPayment } from "@/lib/actions";
 import { getCompany, getBranches } from "@/lib/queries";
 import { SettlementForm } from "@/components/settlement-form";
 import { ErpCrumbs } from "@/components/erp-worklist";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function PaySupplier({
   searchParams,
@@ -43,10 +44,10 @@ export default async function PaySupplier({
       ]} />
       <div className="page-head">
         <h1>Pay a supplier</h1>
-        <span className="page-sub">
+        <HelpHint>
           Choose a supplier to see their open bills, then apply what you are paying against each one.{" "}
           <Link href="/payables" style={{ color: "var(--brand)" }}>See everything outstanding</Link>
-        </span>
+        </HelpHint>
       </div>
 
       <SettlementForm

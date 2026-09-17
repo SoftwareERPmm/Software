@@ -3,6 +3,7 @@ import { getCompany, getPartners } from "@/lib/queries";
 import { updatePartner, deactivatePartner, activatePartner, deletePartner } from "@/lib/actions";
 import { PartnerRow } from "@/components/partner-row";
 import { DataTable, type DataRow } from "@/components/data-table";
+import { HelpHint } from "@/components/help-hint";
 
 export default async function Partners({
   searchParams,
@@ -51,11 +52,11 @@ export default async function Partners({
       <div className="page-head">
         <span className="eyebrow">Master data</span>
         <h1>{role === "customer" ? "Customers" : role === "supplier" ? "Suppliers" : "Business partners"}</h1>
-        <span className="page-sub">
+        <HelpHint>
           {role
             ? "A filtered view of the same partner table — one record can be both a customer and a supplier."
             : "One table with roles rather than separate customer and supplier lists — here the same company is routinely both."}
-        </span>
+        </HelpHint>
       </div>
 
       <section>

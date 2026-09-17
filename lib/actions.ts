@@ -9,6 +9,7 @@ import { planVoucherImport, voucherColumns, type VoucherMasterData, type Voucher
   from "./import-vouchers";
 import { getImportMasterData, getVoucherImportMasterData, getPendingDeliveryLines } from "./queries";
 import { scaffoldCompany } from "./setup";
+import { encodeItemPhoto } from "./item-photo";
 import {
   postSalesInvoice, postPurchaseInvoice, postSaleWithDelivery, postPurchaseWithReceipt,
   postSalesOrder, postPurchaseOrder, postDelivery, postGoodsReceipt,
@@ -53,6 +54,22 @@ async function companyId(): Promise<string> {
   const [c] = await sql`select id from company order by created_at limit 1`;
   if (!c) throw new Error("No company is set up");
   return c.id;
+}
+
+/**
+ * What the photo picker asked for, if anything.
+ *
+ * Three states, and the third is the common one: a new picture, an explicit
+ * removal, or a form that never touched the field. Only the first two write,
+ * so saving a name never disturbs a photo that was already there.
+ */
+type PhotoChange = { set: { bytes: Buffer; mime: string } } | { clear: true } | null;
+
+async function photoFrom(fd: FormData): Promise<PhotoChange> {
+  const data = str(fd, "photo_data");
+  if (data) return { set: await encodeItemPhoto(data) };
+  if (str(fd, "photo_remove") === "1") return { clear: true };
+  return null;
 }
 
 /** Redirects with a one-shot confirmation the destination page pops as a toast. */
@@ -525,6 +542,11 @@ export async function createItem(_prev: unknown, fd: FormData): Promise<ActionRe
     }
 
 
+    // Before the transaction: re-encoding is the slow part and the part most
+    // likely to be refused, and an unreadable file should fail the save rather
+    // than hold a write open while sharp works.
+    const photo = await photoFrom(fd);
+
     await sql.begin(async (tx) => {
       const [item] = await tx`
         insert into item
@@ -533,6 +555,14 @@ export async function createItem(_prev: unknown, fd: FormData): Promise<ActionRe
           (${co}, ${groupId}, ${brandId}, ${serial}, ${fullCode}, ${name}, ${str(fd, "name_my") || null},
            ${uomId}, ${fd.get("is_stocked") !== null})
         returning id`;
+
+      if (photo && "set" in photo) {
+        await tx`
+          update item
+             set photo = ${photo.set.bytes}, photo_mime = ${photo.set.mime},
+                 photo_updated_at = now()
+           where id = ${item.id}`;
+      }
 
       if (salePrice > 0) {
         const [level] = await tx`
@@ -575,13 +605,32 @@ export async function updateItem(_prev: unknown, fd: FormData): Promise<ActionRe
     if (!name) return { error: "Name is required" };
     if (!uomId) return { error: "Choose a unit" };
 
-    await sql`
-      update item set
-        name = ${name}, name_my = ${str(fd, "name_my") || null},
-        brand_id = ${str(fd, "brand_id") || null}, base_uom_id = ${uomId},
-        is_stocked = ${fd.get("is_stocked") !== null},
-        is_active = ${fd.get("is_active") === "on"}
-      where id = ${id} and company_id = ${co}`;
+    const photo = await photoFrom(fd);
+
+    await sql.begin(async (tx) => {
+      await tx`
+        update item set
+          name = ${name}, name_my = ${str(fd, "name_my") || null},
+          brand_id = ${str(fd, "brand_id") || null}, base_uom_id = ${uomId},
+          is_stocked = ${fd.get("is_stocked") !== null},
+          is_active = ${fd.get("is_active") === "on"}
+        where id = ${id} and company_id = ${co}`;
+
+      // Left alone unless the picker said otherwise. A form submitted with
+      // the field untouched carries neither key, and the photo stays put.
+      if (photo && "set" in photo) {
+        await tx`
+          update item
+             set photo = ${photo.set.bytes}, photo_mime = ${photo.set.mime},
+                 photo_updated_at = now()
+           where id = ${id} and company_id = ${co}`;
+      } else if (photo) {
+        await tx`
+          update item
+             set photo = null, photo_mime = null, photo_updated_at = null
+           where id = ${id} and company_id = ${co}`;
+      }
+    });
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
