@@ -37,7 +37,7 @@ const sql = postgres(url, { ssl: local ? false : "require",
 // One suite at a time: these share a database and empty it, so a second
 // runner is refused rather than left to collide. See scripts/test-lock.mjs.
 await takeTestLock(sql, "test-manual-journal.mjs");
-const { postJournalVoucher, postCashVoucher, postAccountOpening } =
+const { postJournalVoucher, postCashVoucher, postAccountOpening, amendVoucher } =
   await import("../lib/posting.ts");
 
 let bad = 0;
@@ -191,6 +191,72 @@ try {
   check("a raw insert to receivables is refused even with a partner named",
     rawMsg !== null && rawMsg.includes("customer subledger"),
     rawMsg ? rawMsg.slice(0, 72) : "INSERTED — it should not have");
+
+  // ---- correcting one ----------------------------------------------------
+  //
+  // A voucher is the one document with nothing built on top of it, so a
+  // correction is always available. What it must not be is a second voucher:
+  // the number is kept, the original is reversed, and the reason is recorded
+  // against both halves.
+
+  console.log("\n  correcting a voucher\n");
+
+  const wrong = await postJournalVoucher({
+    companyId: co.id, docDate: today, locationId: branch.id, memo: "rent, mistyped",
+    lines: [{ accountId: expenses[0].id, amount: 50000 },
+            { accountId: cash.id, amount: -50000 }],
+  });
+
+  const fixed = await amendVoucher({
+    companyId: co.id, documentId: wrong.id,
+    reason: "Rent was 65,000, not 50,000",
+    voucher: {
+      docDate: today, locationId: branch.id, memo: "rent, corrected",
+      lines: [{ accountId: expenses[0].id, amount: 65000 },
+              { accountId: cash.id, amount: -65000 }],
+    },
+  });
+
+  const versions = await sql`
+    select version, status, gross_total::numeric total
+      from document where company_id = ${co.id} and doc_no = ${wrong.docNo}
+     order by version`;
+  check("the correction keeps the voucher's number", versions.length === 2, wrong.docNo);
+  check("  the original is reversed, not altered",
+    versions[0]?.status === "REVERSED" && Number(versions[0]?.total) === 50000,
+    `v1 ${versions[0]?.status} at ${Number(versions[0]?.total)}`);
+  check("  and v2 carries the corrected figure",
+    versions[1]?.status === "POSTED" && Number(versions[1]?.total) === 65000,
+    `v2 ${versions[1]?.status} at ${Number(versions[1]?.total)}`);
+
+  const [net] = await sql`
+    select coalesce(sum(jl.base_amount), 0) n from journal_line jl
+      join journal_entry je on je.id = jl.journal_entry_id
+      join document d on d.journal_entry_id = je.id
+     where d.doc_no = ${wrong.docNo}`;
+  check("  every version together nets to nothing but the correction",
+    Math.abs(Number(net.n)) < 0.0001, String(Number(net.n)));
+
+  const why = await sql`
+    select dh.reason from document_history dh
+      join document d on d.id = dh.document_id
+     where d.doc_no = ${wrong.docNo} and dh.action = 'AMEND'`;
+  check("  the reason is kept with the version",
+    why.some((r) => String(r.reason).includes("65,000")),
+    why[0]?.reason ?? "(none)");
+
+  // A version that has been superseded is history, not a document to edit.
+  let staleMsg = null;
+  try {
+    await amendVoucher({
+      companyId: co.id, documentId: wrong.id, reason: "again",
+      voucher: { docDate: today, locationId: branch.id, memo: "third go",
+        lines: [{ accountId: expenses[0].id, amount: 100 },
+                { accountId: cash.id, amount: -100 }] },
+    });
+  } catch (e) { staleMsg = e.message; }
+  check("  an already-corrected version cannot be corrected again",
+    staleMsg !== null, staleMsg ? staleMsg.slice(0, 64) : "AMENDED — it should not have");
 
   // ---- the invariants still hold -----------------------------------------
 

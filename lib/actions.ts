@@ -19,6 +19,7 @@ import {
   amendmentFingerprint, StalePlan, applyAdvance,
   type AmendmentPlan,
   postCashTransfer, postAccountOpening, postOpeningBatch, resettleConsignmentSale,
+  amendVoucher,
   postStockAdjustment, postStockTransfer,
   importItems, importVouchers, voidDocument, reconcileNegativeStock,
   postSalesReturn, postPurchaseReturn, postConsignmentReceipt,
@@ -2184,6 +2185,61 @@ export async function previewInvoiceCorrection(
  * is right. An invoice raised directly agreed its price here, so here is
  * where it is corrected.
  */
+/**
+ * Correct a voucher — cash, bank or journal.
+ *
+ * The date and the branch are the original's and are not offered for editing.
+ * Moving a correction to another date would put the reversal and its
+ * replacement in different periods, which is a different operation from
+ * fixing a figure and should not be reachable by accident; the branch decides
+ * which books carry it, and changing it silently would move money between
+ * branches under the same document number.
+ */
+export async function correctVoucher(
+  _prev: unknown, fd: FormData,
+): Promise<ActionResult> {
+  let landOn: string;
+  try {
+    const co = await companyId();
+    const documentId = str(fd, "document_id");
+    if (!documentId) return { error: "No voucher given" };
+    const reason = str(fd, "reason");
+    if (!reason.trim()) return { error: "Say why this is being corrected" };
+
+    const lines = parseVoucherLines(fd);
+    if (lines.length < 2) return { error: "A voucher needs at least two lines that balance" };
+    const net = lines.reduce((t, l) => t + l.amount, 0);
+    if (Math.abs(net) > 0.0001) {
+      return { error: `Debits and credits differ by ${Math.abs(net).toLocaleString()}` };
+    }
+
+    const [orig] = await sql`
+      select to_char(doc_date, 'YYYY-MM-DD') as doc_date, location_id, reference
+        from document where id = ${documentId} and company_id = ${co}`;
+    if (!orig) return { error: "That voucher no longer exists" };
+
+    const posted = await postOnce(co, attemptKey(fd), (tx) =>
+      amendVoucher({
+        companyId: co,
+        documentId,
+        reason,
+        voucher: {
+          docDate: String(orig.doc_date),
+          locationId: (orig.location_id as string) ?? null,
+          memo: str(fd, "memo") || null,
+          reference: str(fd, "reference") || (orig.reference as string) || null,
+          lines,
+        },
+      }, tx).then((done) => ({ ...done, id: done.replacementId, docNo: done.docNo ?? "" })));
+    landOn = posted.id;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  financeRevalidate();
+  revalidatePath("/documents", "layout");
+  redirectWithToast(`/documents/${landOn}`, "Correction posted");
+}
+
 export async function correctInvoice(
   _prev: unknown, fd: FormData,
 ): Promise<CorrectionResult> {

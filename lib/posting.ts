@@ -5502,6 +5502,14 @@ export type VoucherInput = {
   memo?: string | null;
   reference?: string | null;
   locationId?: string | null;
+  /**
+   * Set only when this posting replaces an existing voucher: it keeps that
+   * voucher's number and takes the next version under it. The same field the
+   * orders and invoices carry, for the same reason — a correction that got a
+   * new number would read as a second voucher rather than a second version of
+   * one.
+   */
+  amendOf?: AmendIdentity | null;
 };
 
 type VoucherDocType =
@@ -5588,10 +5596,8 @@ async function _postVoucher(
           })()
         : null;
 
-    const noRows = await tx`
-      select fn_next_document_no(${companyId}, ${docType}, ${docDate}::date,
-                                 ${direction}) as no`;
-    const docNo = noRows[0].no;
+    const { docNo, version } = await documentNumberFor(
+      tx, companyId, docType, docDate, input.amendOf, direction);
 
     // The document total is the debit side, which is what people expect a
     // voucher to be "for" — a 50,000 payment reads as 50,000, not 100,000.
@@ -5599,11 +5605,11 @@ async function _postVoucher(
 
     const [doc] = await tx`
       insert into document
-        (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
+        (company_id, doc_type, doc_no, version, fiscal_year_id, doc_date, posting_date,
          location_id, currency, exchange_rate, status, voucher_direction,
          net_total, tax_total, gross_total, memo, reference, posted_at)
       values
-        (${companyId}, ${docType}, ${docNo}, ${fiscalYear}, ${docDate}::date, ${docDate}::date,
+        (${companyId}, ${docType}, ${docNo}, ${version}, ${fiscalYear}, ${docDate}::date, ${docDate}::date,
          ${input.locationId ?? null}, 'MMK', 1, 'POSTED', ${direction},
          ${total}, 0, ${total}, ${input.memo ?? null}, ${input.reference ?? null}, now())
       returning id`;
@@ -7271,6 +7277,48 @@ async function orderBehindInvoice(
  * a correction would otherwise leave money pointing at a document that no
  * longer stands.
  */
+/**
+ * Correct a voucher — cash, bank or journal.
+ *
+ * The simplest correction there is, because a voucher has nothing built on
+ * top of it: no stock moved, no subledger allocated, nothing raised from it.
+ * A wrong account or a wrong figure is a wrong account or a wrong figure, and
+ * the fix is the same void-and-replace every other correction is, keeping the
+ * number and taking the next version under it.
+ *
+ * Which means the document type is carried over rather than passed in. A cash
+ * voucher corrected into a journal voucher would be a different document
+ * wearing the first one's number, and the direction is re-derived from the
+ * corrected lines — a payment edited into a receipt is a legitimate fix, and
+ * the number has already been issued either way.
+ */
+export async function amendVoucher(input: {
+  companyId: string;
+  documentId: string;
+  reason: string;
+  voucher: Omit<VoucherInput, "amendOf" | "companyId">;
+}, tx?: TransactionSql) {
+  return amendDocument({
+    companyId: input.companyId,
+    documentId: input.documentId,
+    reason: input.reason,
+    repost: async (tx, identity) => {
+      const [orig] = await tx`
+        select doc_type from document where id = ${input.documentId}`;
+      const docType = String(orig.doc_type) as VoucherDocType;
+      if (!["CASH_VOUCHER", "BANK_VOUCHER", "JOURNAL_VOUCHER",
+            "CASH_TRANSFER", "OPENING_BALANCE"].includes(docType)) {
+        throw new Error(`${docType} is not a voucher and is not corrected this way`);
+      }
+      return _postVoucher(
+        tx,
+        { ...input.voucher, companyId: input.companyId, amendOf: identity },
+        docType
+      );
+    },
+  }, tx);
+}
+
 export async function amendInvoice(input: {
   companyId: string;
   documentId: string;
