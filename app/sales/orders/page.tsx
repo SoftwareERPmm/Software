@@ -26,7 +26,6 @@ const TABS: Array<["" | OrderDisplayStatus | typeof OVERDUE, string]> = [
   ["PARTIALLY_FULFILLED", "Partially Fulfilled"],
   [OVERDUE, "Overdue"],
   ["FULFILLED", "Fulfilled"],
-  ["CANCELLED", "Cancelled"],
 ];
 
 /** Still owed something, and the date it was wanted by has gone. */

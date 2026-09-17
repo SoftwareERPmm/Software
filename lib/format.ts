@@ -128,7 +128,12 @@ export function invoiceDisplayStatus(row: {
 
 export const INVOICE_STATUS_LABEL: Record<InvoiceDisplayStatus, string> = {
   DRAFT: "Draft",
-  CANCELLED: "Cancelled",
+  // "Voided" rather than "Cancelled": it is the word on the button that
+  // produces this state, and three words for one thing (void / reversed /
+  // cancelled) is what made it hard to explain. CANCELLED is a status the
+  // schema allows and nothing in this app ever writes — what actually
+  // happens is REVERSED, which lands here.
+  CANCELLED: "Voided",
   PAID: "Paid",
   OVERDUE: "Overdue",
   PARTIALLY_PAID: "Partially Paid",
@@ -174,7 +179,7 @@ export function orderDisplayStatus(row: {
 
 export const ORDER_STATUS_LABEL: Record<OrderDisplayStatus, string> = {
   DRAFT: "Draft",
-  CANCELLED: "Cancelled",
+  CANCELLED: "Voided",
   FULFILLED: "Fulfilled",
   PARTIALLY_FULFILLED: "Partially Fulfilled",
   OPEN: "Open",

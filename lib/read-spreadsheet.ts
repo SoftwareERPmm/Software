@@ -70,7 +70,7 @@ export async function xlsxToRows(base64: string): Promise<string[][]> {
 }
 
 /** Column widths that make the template readable without fiddling. */
-const TEMPLATE_WIDTHS = [5, 20, 14, 34, 20, 20, 18, 14];
+const TEMPLATE_WIDTHS = [5, 20, 14, 34, 20, 20, 18, 14, 14];
 
 /**
  * A blank import workbook with the Barcode column already formatted as Text.
@@ -86,7 +86,8 @@ export async function buildImportTemplate(): Promise<string> {
   wb.creator = "ERP";
   const ws = wb.addWorksheet("Items");
 
-  const header = ["No", "Barcode", "Stock ID", "Stock Name", "Category", "Sub Category", "Brand", "Unit"];
+  const header = ["No", "Barcode", "Stock ID", "Stock Name", "Category", "Sub Category",
+                  "Brand", "Unit", "Selling price"];
   ws.addRow(header);
   ws.getRow(1).font = { bold: true };
   ws.views = [{ state: "frozen", ySplit: 1 }];
@@ -99,12 +100,16 @@ export async function buildImportTemplate(): Promise<string> {
   ws.getColumn(2).numFmt = "@";
   ws.getColumn(3).numFmt = "@";
 
+  // Between them the three rows show every shape a row may take: a full one,
+  // one with no price, and one with no barcode at all — because a row needs
+  // only one of Barcode and Stock ID, and a sack packed here has no barcode
+  // to give.
   const examples = [
-    [1, "8851234567890", "Item001", "Coca-Cola 300ml", "Beverages", "Soft Drinks", "Coca-Cola", "Bottle"],
-    [2, "8851234567891", "Item002", "Sprite 300ml", "Beverages", "Soft Drinks", "Sprite", "Bottle"],
-    // Stock ID and Sub Category both left blank: the item is filed under the
-    // category itself, and given the next number in it.
-    [3, "10001", "", "T-Shirt Black L", "Clothing", "", "", "Piece"],
+    [1, "8851234567890", "Item001", "Coca-Cola 300ml", "Beverages", "Soft Drinks", "Coca-Cola", "Bottle", 1200],
+    [2, "8851234567891", "Item002", "Sprite 300ml", "Beverages", "Soft Drinks", "Sprite", "Bottle", ""],
+    // Sub Category and Barcode both left blank: the item is filed under the
+    // category itself, and identified by its Stock ID alone.
+    [3, "", "RICE-25", "Rice 25kg (own packing)", "Grocery", "", "", "Bag", 78000],
   ];
   for (const e of examples) {
     const r = ws.addRow(e);

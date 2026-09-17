@@ -15,7 +15,7 @@ type Registrable = {
 };
 type PlannedRow = {
   row: number; barcode: string; name: string; itemId: string | null; isNew: boolean;
-  serial: string; code: string; serialAssigned: boolean;
+  serial: string; code: string; serialAssigned: boolean; salePrice: number | null;
   unitName: string; categoryName: string; subCategoryName: string | null;
   brandName: string | null;
 };
@@ -27,7 +27,7 @@ type Plan = {
   summary: { rows: number; newItems: number; existingItems: number };
 };
 
-const TEMPLATE_HEADER = "No,Barcode,Stock ID,Stock Name,Category,Sub Category,Brand,Unit";
+const TEMPLATE_HEADER = "No,Barcode,Stock ID,Stock Name,Category,Sub Category,Brand,Unit,Selling price";
 const TEMPLATE_EXAMPLE = [
   '1,8851234567890,Item001,Coca-Cola 300ml,Beverages,Soft Drinks,Coca-Cola,Bottle',
   '2,8851234567891,Item002,Sprite 300ml,Beverages,Soft Drinks,Sprite,Bottle',
@@ -315,14 +315,15 @@ export function ItemImport({ action }: {
                       <tr>
                         <th>Row</th><th>Barcode</th><th>Stock ID</th><th>Code</th>
                         <th>Stock name</th><th>Category</th><th>Sub category</th>
-                        <th>Brand</th><th>Unit</th><th />
+                        <th>Brand</th><th>Unit</th>
+                        <th className="r">Selling price</th><th />
                       </tr>
                     </thead>
                     <tbody>
                       {plan.rows.map((r) => (
-                        <tr key={r.barcode}>
+                        <tr key={r.row}>
                           <td className="code">{r.row}</td>
-                          <td className="code">{r.barcode}</td>
+                          <td className="code">{r.barcode || "—"}</td>
                           <td className="code">
                             {r.serial}
                             {r.serialAssigned && (
@@ -335,6 +336,14 @@ export function ItemImport({ action }: {
                           <td style={{ color: "var(--muted)" }}>{r.subCategoryName ?? "—"}</td>
                           <td style={{ color: "var(--muted)" }}>{r.brandName ?? "—"}</td>
                           <td className="code">{r.unitName}</td>
+                          {/* Shown because it is the one column that becomes
+                              money later, and the preview is the last chance
+                              to notice a price that reads wrong. */}
+                          <td className="r">
+                            {r.salePrice === null
+                              ? <span style={{ color: "var(--muted)" }}>—</span>
+                              : r.salePrice.toLocaleString("en-US")}
+                          </td>
                           <td>
                             <span className={`pill ${r.isNew ? "" : "ok"}`}>
                               {r.isNew ? "new" : "existing"}

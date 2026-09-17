@@ -6125,6 +6125,8 @@ export type ImportRow = {
   /** The item's own piece of the code. `code` is composed from it by trigger
    *  and is never written here — see migration 0012. */
   serial: string;
+  /** What it sells for, where the sheet said. Null is an unpriced item. */
+  salePrice?: number | null;
 };
 
 /**
@@ -6182,11 +6184,29 @@ export async function importItems(input: {
       // into the next free number by the validator, which is also what the
       // preview showed — so this writes what was approved rather than
       // deciding it a second time and possibly differently.
-      await tx`
+      const [item] = await tx`
         insert into item (company_id, item_group_id, serial, name, barcode,
                           brand_id, base_uom_id, is_stocked, import_batch_id)
-        values (${companyId}, ${r.categoryId}, ${r.serial}, ${r.name}, ${r.barcode},
-                ${r.brandId}, ${r.uomId}, true, ${batch.id})`;
+        values (${companyId}, ${r.categoryId}, ${r.serial}, ${r.name}, ${r.barcode || null},
+                ${r.brandId}, ${r.uomId}, true, ${batch.id})
+        returning id`;
+
+      // The same write the new-item form makes, for the same reason: a price
+      // belongs to a price level, and the first level by sort_order is the
+      // one a company that has never thought about levels is using. Doing it
+      // here rather than leaving the column to a later screen is the point —
+      // there is no later screen, and an item created without a price has no
+      // way to be given one.
+      if (r.salePrice && r.salePrice > 0) {
+        const [level] = await tx`
+          select id from price_level where company_id = ${companyId} order by sort_order limit 1`;
+        if (level) {
+          await tx`
+            insert into item_price
+              (company_id, item_id, price_level_id, uom_id, currency, price)
+            values (${companyId}, ${item.id}, ${level.id}, ${r.uomId}, 'MMK', ${r.salePrice})`;
+        }
+      }
 
       created++;
     }
@@ -6777,7 +6797,7 @@ export async function amendDocumentIn<T>(tx: TransactionSql, input: AmendInput<T
     // refuse at commit with an error nobody could act on.
     const [orig] = await tx`
       select id, company_id, doc_no, doc_type, version, status, gross_total,
-             superseded_by_document_id, journal_entry_id
+             superseded_by_document_id, journal_entry_id, reverses_document_id
         from document
        where id = ${input.documentId} and company_id = ${input.companyId}
        for update`;
@@ -6790,6 +6810,19 @@ export async function amendDocumentIn<T>(tx: TransactionSql, input: AmendInput<T
     }
     if (orig.superseded_by_document_id) {
       throw new Error(`${orig.doc_no} has already been replaced`);
+    }
+    // A reversal is not somebody's document to correct. It was written by the
+    // system to undo another one, its figures are that document negated, and
+    // "correcting" it means posting a v2 that no longer carries
+    // reverses_document_id — so it stops being recognised as a reversal, the
+    // pair it belonged to comes apart, and the ledger shows a mirror entry
+    // with nothing to mirror. Whatever is actually wrong is wrong with the
+    // document underneath it.
+    if (orig.reverses_document_id) {
+      throw new Error(
+        `${orig.doc_no} is the entry that voided another document, not a document of ` +
+        `its own. Correct the one it reversed instead.`
+      );
     }
 
     // Only where a reversal is possible at all. An order has no entry to

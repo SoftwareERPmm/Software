@@ -33,6 +33,7 @@ const { xlsxToRows, buildImportTemplate } = await import("../lib/read-spreadshee
 const { createMissingMasterData } = await import("../lib/actions.ts");
 const ExcelJS = (await import("exceljs")).default;
 const { importItems } = await import("../lib/posting.ts");
+const { IMPORT_COLUMNS } = await import("../lib/import-items.ts");
 
 const url = process.env.DATABASE_URL;
 const local = url.includes("localhost") || url.includes("127.0.0.1");
@@ -145,7 +146,10 @@ try {
   // Two different kinds of missing: the column absent from the sheet
   // altogether, and the column present but the cell blank. Both have to be
   // caught, and neither may fall through into a row that gets imported.
-  for (const column of ["Barcode", "Stock Name", "Category", "Unit"]) {
+  // Barcode is deliberately absent from this list. It is no longer a required
+  // column — a row needs one of Barcode and Stock ID, which is a rule about
+  // rows and is checked on its own below.
+  for (const column of ["Stock Name", "Category", "Unit"]) {
     const cols = HEADER.split(",");
     const keep = cols.filter((c) => c !== column);
     const idx = cols.indexOf(column);
@@ -164,6 +168,99 @@ try {
     check(`a blank ${column} cell is refused`,
       withBlank.errors.length > 0 && withBlank.rows.length === 0,
       withBlank.errors[0]?.message?.slice(0, 55) ?? "no error raised");
+  }
+
+  // ---- the identifier: one of two, not a particular one -------------------
+  {
+    const neither = planImport(
+      parseCsv(`No,Stock Name,Category,Unit\n1,No Identifier,${grp.name},${uom.name}`),
+      await master());
+    check("a sheet with neither Barcode nor Stock ID column is refused",
+      neither.errors.some((e) => /needs a Barcode column or a Stock ID column/.test(e.message)),
+      neither.errors[0]?.message?.slice(0, 55) ?? "no error raised");
+
+    const bothBlank = planImport(
+      parseCsv(`No,Barcode,Stock ID,Stock Name,Category,Unit\n1,,,Nothing To Go On,${grp.name},${uom.name}`),
+      await master());
+    check("a row leaving both identifiers blank is refused",
+      bothBlank.errors.some((e) => /neither a Barcode nor a Stock ID/.test(e.message))
+        && bothBlank.rows.length === 0,
+      bothBlank.errors[0]?.message?.slice(0, 55) ?? "no error raised");
+
+    // The case the old rule made impossible: goods packed here, with a code
+    // of the company's own and no barcode from anybody.
+    const idOnly = planImport(
+      parseCsv(`No,Stock ID,Stock Name,Category,Unit\n1,RICE${stamp},Rice 25kg Own Packing,${grp.name},${uom.name}`),
+      await master());
+    check("a sheet with a Stock ID and no Barcode column at all is accepted",
+      idOnly.errors.length === 0 && idOnly.rows.length === 1,
+      idOnly.errors[0]?.message?.slice(0, 60) ?? `code ${idOnly.rows[0]?.code}`);
+    check("  and the row carries no barcode rather than an invented one",
+      idOnly.rows[0]?.barcode === "", JSON.stringify(idOnly.rows[0]?.barcode));
+  }
+
+  // ---- headings under another system's names ------------------------------
+  {
+    const erp = planImport(
+      parseCsv(`Item Code,Item Name,Item Group,UOM,Standard Rate\n`
+        + `ALI${stamp}A,Erp Shaped,${grp.name},${uom.name},2500`),
+      await master());
+    check("a sheet using another system's column names is read, not refused",
+      erp.errors.length === 0 && erp.rows.length === 1,
+      erp.errors[0]?.message?.slice(0, 60) ?? `price ${erp.rows[0]?.salePrice}`);
+    check("  and every heading it reinterpreted is said out loud",
+      ["Item Code", "Item Name", "Item Group", "UOM", "Standard Rate"].every((h) =>
+        erp.warnings.some((w) => w.message === `"${h}" is being read as ` +
+          ({ "Item Code": "Stock ID", "Item Name": "Stock Name", "Item Group": "Category",
+             "UOM": "Unit", "Standard Rate": "Selling price" })[h] + ".")),
+      erp.warnings.filter((w) => /being read as/.test(w.message)).length + " notices");
+    check("  and the price came through the alias",
+      erp.rows[0]?.salePrice === 2500, String(erp.rows[0]?.salePrice));
+
+    // The real column always wins; an alias is only ever a fallback.
+    const both = planImport(
+      parseCsv(`Stock ID,Stock Name,Product Name,Category,Unit\n`
+        + `ALI${stamp}B,Real Name,Ignored Alias,${grp.name},${uom.name}`),
+      await master());
+    check("an alias is ignored when the real column is also present",
+      both.rows[0]?.name === "Real Name", both.rows[0]?.name);
+
+    // Two headings for one column is a question, not a race.
+    const ambiguous = planImport(
+      parseCsv(`Item Code,Item Name,Product Name,Item Group,UOM\n`
+        + `ALI${stamp}C,One,Two,${grp.name},${uom.name}`),
+      await master());
+    check("two headings claiming one column are refused rather than guessed",
+      ambiguous.errors.some((e) => /both look like the Stock Name column/.test(e.message)),
+      ambiguous.errors[0]?.message?.slice(0, 60) ?? "no error raised");
+
+    // A heading that is no alias at all, but is nearly a real one.
+    const typo = planImport(
+      parseCsv(`Stock ID,Stok Name,Category,Unit\nALI${stamp}D,Typo,${grp.name},${uom.name}`),
+      await master());
+    check("a misspelled heading is named as the likely column",
+      typo.errors.some((e) => /"Stok Name" may be your Stock Name column/.test(e.message)),
+      typo.errors[0]?.message?.slice(0, 70) ?? "no error raised");
+  }
+
+  // ---- a price the sheet carries ------------------------------------------
+  {
+    const priced = planImport(
+      parseCsv(`No,Stock ID,Stock Name,Category,Unit,Selling price\n`
+        + `1,PRC${stamp}A,Priced,${grp.name},${uom.name},"1,200"\n`
+        + `2,PRC${stamp}B,Unpriced,${grp.name},${uom.name},\n`
+        + `3,PRC${stamp}C,Not A Number,${grp.name},${uom.name},abc\n`
+        + `4,PRC${stamp}D,Below Zero,${grp.name},${uom.name},-5`),
+      await master());
+    check("a selling price with a thousands separator is read as one number",
+      priced.rows.find((r) => /A$/.test(r.serial))?.salePrice === 1200,
+      String(priced.rows.find((r) => /A$/.test(r.serial))?.salePrice));
+    check("a blank selling price is an unpriced item, not a zero",
+      priced.rows.find((r) => /B$/.test(r.serial))?.salePrice === null);
+    check("a selling price that is not a number is refused",
+      priced.errors.some((e) => /"abc" is not a number/.test(e.message)));
+    check("a selling price below zero is refused",
+      priced.errors.some((e) => /below zero/.test(e.message)));
   }
 
   // Brand is the one optional column, so dropping it entirely is legal.
@@ -570,8 +667,13 @@ try {
 
     const head = [];
     ws.getRow(1).eachCell({ includeEmpty: true }, (c) => head.push(String(c.value ?? "")));
-    check("the template's columns match what the importer expects",
-      head.slice(0, 8).join(",") === HEADER, head.slice(0, 8).join(","));
+    // The whole header, not the first eight of it. Comparing a prefix let the
+    // template gain or lose a trailing column without anything noticing, and
+    // the template and the importer disagreeing about columns is precisely
+    // the failure this check exists to catch.
+    check("the template's columns are exactly the columns the importer reads",
+      head.join(",") === IMPORT_COLUMNS.join(","),
+      `template: ${head.join(",")} | importer: ${IMPORT_COLUMNS.join(",")}`);
     check("the template carries no Qty, Unit Cost or Location column",
       !/Qty|Unit Cost|Location/.test(head.join(",")), head.join(","));
 

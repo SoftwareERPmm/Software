@@ -67,7 +67,7 @@ export default async function GeneralLedger({
 }: {
   searchParams: Promise<{
     view?: string; account?: string; from?: string; to?: string;
-    location?: string; type?: string; doc?: string; q?: string;
+    location?: string; type?: string; doc?: string; q?: string; voided?: string;
   }>;
 }) {
   const p = await searchParams;
@@ -294,7 +294,7 @@ async function AccountView({
   if (list.length === 0) return <div className="empty">No accounts are set up.</div>;
 
   const selected = list.find((a) => a.id === p.account) ?? list[0];
-  const f = { from: p.from, to: p.to, branchId: p.location };
+  const f = { from: p.from, to: p.to, branchId: p.location, showVoided: p.voided === "1" };
   const rows = (await getAccountLedgerFiltered(companyId, selected.id, f)) as any[];
   const sum = await getAccountSummary(companyId, selected.id, f);
   const branchName = p.location === UNASSIGNED_BRANCH
@@ -335,6 +335,18 @@ async function AccountView({
               </select>
             </div>
             <div className="field">
+              {/* Off by default. A voided entry and the mirror that undid it
+                  both sit in the ledger, so the account reads as three
+                  movements where one transaction happened, and the debit and
+                  credit columns count the cancelled one twice. The running
+                  balance is the same either way. */}
+              <label htmlFor="a-voided">Voided entries</label>
+              <select id="a-voided" name="voided" defaultValue={p.voided ?? ""}>
+                <option value="">Hidden</option>
+                <option value="1">Shown</option>
+              </select>
+            </div>
+            <div className="field">
               {/* No label of its own, but the column needs one: without it
                   this sits a line lower than the boxes it belongs to, on any
                   row where another field carries a hint underneath. */}
@@ -342,7 +354,7 @@ async function AccountView({
               <div className="actions">
                 <AutoApply />
                 <button type="submit" className="tiny" data-apply>Apply</button>
-                {(p.from || p.to || p.location) && (
+                {(p.from || p.to || p.location || p.voided) && (
                   <Link href={carry({ from: undefined, to: undefined, location: undefined })}
                         className="btn ghost tiny">Clear</Link>
                 )}

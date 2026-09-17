@@ -17,7 +17,6 @@ const TABS: Array<["" | InvoiceDisplayStatus, string]> = [
   ["PARTIALLY_PAID", "Partially Paid"],
   ["PAID", "Paid"],
   ["OVERDUE", "Overdue"],
-  ["CANCELLED", "Cancelled"],
 ];
 
 export default async function SalesInvoices({
