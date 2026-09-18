@@ -6640,13 +6640,23 @@ async function voidDocumentIn(
      * only the FIFO position moves, and for a document being undone rather
      * than aged that is immaterial.
      *
-     * Reached only for a document the void is carrying — a counter sale's own
-     * delivery. An issue somebody raised is still refused by planVoidIn,
-     * because goods that genuinely went out do not come back by paperwork.
+     * Reached for any delivery the void rules allowed through: one the engine
+     * composed for a counter sale, and one somebody raised that nothing has
+     * been issued behind. planVoidIn decides which — goods that genuinely
+     * went out, with trade done on top of them, still do not come back by
+     * paperwork.
      */
-    if (doc.doc_type === "DELIVERY" && doc.lifecycle_owner_id) {
+    if (doc.doc_type === "DELIVERY") {
+      // received_date comes too: the layer goes back where it was in the
+      // queue, not to the back of it. For a counter sale undone in the same
+      // breath the difference was immaterial, which is why this used the
+      // reversal date and said so. For a delivery undone an hour or a day
+      // later it is not: a lot received in between would otherwise sit ahead
+      // of the units being restored, and the next issue would draw the wrong
+      // one. planVoidIn has already refused the case where something was
+      // issued in between; this keeps the queue honest for everything after.
       const consumed = await tx`
-        select c.qty, c.unit_cost, l.item_id, l.location_id
+        select c.qty, c.unit_cost, l.item_id, l.location_id, l.received_date
           from stock_lot_consumption c
           join stock_movement sm on sm.id = c.stock_movement_id
           join stock_lot l on l.id = c.lot_id
@@ -6655,6 +6665,7 @@ async function voidDocumentIn(
 
       for (const slice of consumed as unknown as {
         qty: string; unit_cost: string; item_id: string; location_id: string;
+        received_date: string;
       }[]) {
         const qty = Number(slice.qty);
         const unitCost = Number(slice.unit_cost);
@@ -6670,8 +6681,9 @@ async function voidDocumentIn(
           returning id`;
 
         await createFifoLot(tx, doc.company_id as string, slice.item_id,
-                            slice.location_id, plan.reversalDate, unitCost, qty,
-                            back.id as string);
+                            slice.location_id,
+                            new Date(slice.received_date).toISOString(),
+                            unitCost, qty, back.id as string);
       }
     }
 
