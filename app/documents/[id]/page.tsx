@@ -302,18 +302,34 @@ export default async function DocumentPage({
   const voidPlan = doc.status === "POSTED" ? await planVoid(doc.id) : null;
 
   /**
-   * What voiding this would put back on the shelf. Only a counter sale has
-   * any: it composed the delivery that took the stock out, so undoing the
-   * sale undoes that too — and nobody should be able to do it without saying
-   * the goods are actually there.
+   * What voiding this would put back on the shelf, and therefore whether the
+   * question has to be asked at all.
+   *
+   * Two documents can have units to restore. A counter sale composed the
+   * delivery that took the stock out, so undoing the sale undoes that too.
+   * And a delivery raised on its own issued the stock itself — which the void
+   * rules now allow back while nothing has been issued behind it.
+   *
+   * Either way nobody should be able to do it without saying where the goods
+   * actually are, because the answer decides which document this should be:
+   * a void if they never left, a return if the customer has them.
    */
   const [restores] = doc.status === "POSTED"
     ? (await sql`
-        select coalesce(sum(-sm.qty), 0)::float as units
-          from stock_movement sm
-          join document child on child.id = sm.document_id
-         where child.lifecycle_owner_id = ${doc.id}
-           and child.status = 'POSTED' and sm.qty < 0`) as unknown as { units: number }[]
+        select coalesce(sum(units), 0)::float as units from (
+          -- stock a document this one composed took out
+          select sum(-sm.qty) as units
+            from stock_movement sm
+            join document child on child.id = sm.document_id
+           where child.lifecycle_owner_id = ${doc.id}
+             and child.status = 'POSTED' and sm.qty < 0
+          union all
+          -- stock this document took out itself
+          select sum(-sm.qty) as units
+            from stock_movement sm
+           where sm.document_id = ${doc.id} and sm.qty < 0
+             and ${doc.doc_type} = 'DELIVERY'
+        ) restorable`) as unknown as { units: number }[]
     : [{ units: 0 }];
 
   // What this document is genuinely linked to, in both directions. Shown

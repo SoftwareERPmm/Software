@@ -278,11 +278,63 @@ export async function planVoidIn(db: Db, documentId: string): Promise<VoidPlan> 
   // half of one act, and undoing that act undoes both halves. The lots it
   // consumed are re-created at the cost they left at, which voidDocumentIn
   // does and a customer return already did before it.
+  /**
+   * An issue may be undone, but only inside the window where undoing it and
+   * recomputing history give the same answer.
+   *
+   * Putting issued stock back means re-creating the layers it consumed, at
+   * the cost and the position they had — which the engine does, and which a
+   * customer return has always done. What decides whether that is honest is
+   * what happened afterwards.
+   *
+   *   Day 1  lot A, 10 @ 1,000
+   *   Day 2  this delivery takes all ten
+   *   Day 3  lot B, 10 @ 1,400
+   *   Day 4  something is issued — and draws B at 1,400, because A was empty
+   *
+   * Undo the delivery now and A is back, dated Day 1, ahead of B in the
+   * queue. But Day 4 already drew from B. Had the units been there it would
+   * have drawn A at 1,000, so its cost is wrong and nothing can put that
+   * right without rewriting it — which is the one thing this ledger refuses.
+   *
+   * So the test is not "did anything consume the layers we would restore".
+   * It is "has anything been issued at all since", because any later issue
+   * would have chosen differently. Outside that window a return is the honest
+   * record: the goods came back on a later date, and they join the queue
+   * there.
+   *
+   * A delivery the engine composed is exempt because it is undone in the same
+   * breath as the invoice that made it — no time passes, and nothing can have
+   * drawn in between.
+   */
   if (mv && mv.issues > 0 && !doc.lifecycle_owner_id) {
-    blockers.push({
-      reason: "This document issued stock. Putting issued stock back means re-creating the " +
-              "cost layers it consumed, which is not built yet — use a return instead.",
-    });
+    const [later] = await db`
+      select count(*)::int as n
+        from stock_movement m
+       where m.company_id = ${doc.company_id}
+         and m.qty < 0
+         and m.document_id is distinct from ${documentId}
+         -- Same item and warehouse as something this document issued: a sale
+         -- of a different product cannot have been affected by these units.
+         and exists (
+               select 1 from stock_movement mine
+                where mine.document_id = ${documentId}
+                  and mine.qty < 0
+                  and mine.item_id = m.item_id
+                  and mine.location_id = m.location_id
+                  and (m.movement_date > mine.movement_date
+                       or (m.movement_date = mine.movement_date
+                           and m.created_at > mine.created_at))
+             )`;
+
+    if (Number(later?.n ?? 0) > 0) {
+      blockers.push({
+        reason:
+          `Stock has been issued since ${doc.doc_no} went out, and those issues drew from `
+          + `what was left after it. Putting these units back now would change what they `
+          + `should have cost. Record the goods coming back with a return instead.`,
+      });
+    }
   }
   if (mv && mv.n > 0 && mv.issues === 0) {
     /**
