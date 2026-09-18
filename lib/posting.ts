@@ -4995,10 +4995,40 @@ export async function postSalesReturn(input: ReturnInput, outer?: TransactionSql
       }
     }
 
+    /**
+     * Where the credit goes depends on whether it belongs to an invoice.
+     *
+     * Against one, it reduces that invoice: receivables control drops, and
+     * v_open_item subtracts the return from what the invoice still owes. The
+     * two agree because they are describing the same thing.
+     *
+     * With no invoice named — which the return screen offers deliberately,
+     * for goods bought months ago across several bills nobody can now pick
+     * apart — crediting receivables put the control account out of step with
+     * the subledger: the ledger knew the customer owed less, and no open item
+     * said so. The two reports disagreed and neither looked broken, which is
+     * the failure 0023 exists to prevent.
+     *
+     * So an unattached credit goes where unattached money already goes: the
+     * customer's advance account, as a credit on account. It is applied to an
+     * invoice later through the machinery that already does that, and until
+     * then it shows as what it is — the company owing the customer, not a
+     * receivable that quietly shrank.
+     */
     if (netTotal !== 0) {
-      const ar = await tx`
-        select fn_resolve_control_account(${companyId}, 'AR_CONTROL', ${partnerId}) as a`;
-      journal.push({ accountId: ar[0].a, amount: -netTotal, partnerId });
+      const role = input.sourceDocumentId ? "AR_CONTROL" : "CUSTOMER_ADVANCE";
+      const credit = input.sourceDocumentId
+        ? await tx`select fn_resolve_control_account(${companyId}, 'AR_CONTROL', ${partnerId}) as a`
+        : await tx`select account_id as a from system_account
+                    where company_id = ${companyId} and role = 'CUSTOMER_ADVANCE'`;
+      if (!credit[0]?.a) {
+        throw new Error(
+          `This return names no invoice, so its credit belongs on the customer's `
+          + `account — and no account is set up for ${role}. Set one under `
+          + `Settings, or return against the invoice it came from.`
+        );
+      }
+      journal.push({ accountId: credit[0].a as string, amount: -netTotal, partnerId });
     }
 
     const entryId = await writeJournal(
