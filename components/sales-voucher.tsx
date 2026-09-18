@@ -903,13 +903,27 @@ export function SalesVoucher({
                 const short = !toDeliver && !matchedDeliveryId && item?.is_stocked && Number(l.qty) + free > onHandHere(l.itemId);
                 const promo = promoFor(l.itemId);
 
+                /* Why these units are free, which is not always a promotion.
+                   Free quantity has two sources — earned from a buy-N-get-M
+                   band, and typed on the line by whoever is selling — and the
+                   second is independent of any promotion, as givenFree says.
+                   This read `promo!.code`, asserting a promotion the line
+                   need not have: typing a free quantity against an item with
+                   no band made it null, and the whole voucher screen died
+                   with "Application error" the moment the number was
+                   entered. */
+                const freeBadge =
+                  earnedFree(l) > 0 && promo
+                    ? promo.code
+                    : (focReasons.find((r) => r.id === l.focReasonId)?.code ?? "FREE");
+
                 const freeRow =
                   free > 0 && item ? (
                     <tr key={`${l.key}-free`}>
                       <td style={{ paddingLeft: "1.6rem" }}>
                         <span style={{ color: "var(--ghost)" }}>└ </span>
                         <span className="m">{item.code}</span>{" "}
-                        <span className="pill warn">{promo!.code}</span>
+                        <span className="pill warn">{freeBadge}</span>
                       </td>
                       {!toDeliver && !matchedDeliveryId && anyConsigned && <td />}
                       <td className="r" style={{ color: "var(--muted)" }}>free</td>
