@@ -76,6 +76,10 @@ export default async function AgingPage({
 
   const arTotal = sum(ar), apTotal = sum(ap);
   const arOverdue = overdue(ar);
+  /* The payables side had a total and a what's-coming figure but nothing for
+     what is already late — so the one number that says "we are the ones in
+     default" was the only one missing from the row. */
+  const apOverdue = overdue(ap);
   const partnerCount = (b: Bucket[]) => b.reduce((t, x) => t + x.invoices, 0);
 
   const pct = (part: number, whole: number) =>
@@ -170,7 +174,7 @@ export default async function AgingPage({
         </HelpHint>
       </div>
 
-      <div className="kpis kpis-tiled">
+      <div className="kpis kpis-tiled kpis-five">
         <div className="kpi">
           <span className="kpi-icon" style={{
             color: "#3B6FD4", background: "color-mix(in srgb, #3B6FD4 12%, transparent)",
@@ -207,6 +211,19 @@ export default async function AgingPage({
             <span className="kpi-note">
               {partnerCount(ap)} open bill{partnerCount(ap) === 1 ? "" : "s"}
             </span>
+          </span>
+        </div>
+
+        <div className="kpi">
+          <span className="kpi-icon" style={{
+            color: "var(--bad)", background: "color-mix(in srgb, var(--bad) 12%, transparent)",
+          }}><AlertTriangle size={17} aria-hidden="true" /></span>
+          <span className="kpi-body">
+            <span className="kpi-label">Overdue payables</span>
+            <span className="kpi-value" style={{ color: apOverdue > 0 ? "var(--bad)" : undefined }}>
+              {money(apOverdue)}
+            </span>
+            <span className="kpi-note">{pct(apOverdue, apTotal)} of total payables</span>
           </span>
         </div>
 
