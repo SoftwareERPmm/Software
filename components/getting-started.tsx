@@ -128,7 +128,14 @@ export function GettingStarted({ status }: { status: Status }) {
 }
 
 /** Setup is finished once nothing is blocking posting and real work has begun. */
+/**
+ * Temporarily off (2026-09-21). The panel and its logic are untouched —
+ * flip this back to false and it returns exactly as it was.
+ */
+const TEMPORARILY_HIDDEN = true;
+
 export function needsGettingStarted(status: Status) {
+  if (TEMPORARILY_HIDDEN) return false;
   const readyToPost = status.categories > 0 && status.items > 0
     && status.customers > 0 && status.suppliers > 0;
   const openedProperly = status.openings > 0 && status.stockRows > 0;
