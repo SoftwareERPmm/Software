@@ -163,8 +163,12 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 <NavLink href="/finance/income-statement" sub>Income Statement</NavLink>
                 <NavLink href="/finance/balance-sheet" sub>Balance Sheet</NavLink>
                 <NavLink href="/finance/cash-flow" sub>Cash Flow</NavLink>
-                <NavLink href="/finance/aging" sub>AR / AP Aging</NavLink>
               </NavSubGroup>
+              {/* Not under Financial Reports. Aging answers "who owes us and
+                  how late", which is a working question asked while chasing
+                  money — not a statement drawn up at a period end beside the
+                  income statement and the balance sheet. */}
+              <NavLink href="/finance/aging">AR / AP Aging</NavLink>
             </NavGroup>
 
             <NavGroup label="Inventory" icon={<Boxes size={14} />} match={["/items/stock", "/inventory"]}>
