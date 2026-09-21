@@ -177,7 +177,6 @@ export function SalesVoucher({
   const [dueDate, setDueDate] = useState("");
   const [paymentType, setPaymentType] = useState<"CASH" | "CREDIT">("CREDIT");
   const [cashIn, setCashIn] = useState("");
-  const [showRemark, setShowRemark] = useState(false);
   const [toDeliver, setToDeliver] = useState(false);
   /**
    * Whether the goods have gone, are going, or go later.
@@ -1220,6 +1219,20 @@ export function SalesVoucher({
               </table>
             </div>
           )}
+
+          {/* Under the tabs rather than in a card of its own.
+              A card holding one textarea spanned the full width for a line of
+              text and pushed the submit button 150px further down; this card
+              is shorter than the one beside it and had the room going spare.
+              Still always visible, which was the point of taking it out from
+              behind a button. */}
+          <div className="card-body" style={{ paddingTop: 0 }}>
+            <div className="field">
+              <label htmlFor="memo">Remark</label>
+              <textarea id="memo" name="memo" rows={2}
+                        placeholder="Optional — English or Myanmar" />
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1263,18 +1276,6 @@ export function SalesVoucher({
         <div className="alert">Cash in is more than the invoice total.</div>
       )}
 
-      {showRemark ? (
-        <div className="field">
-          <label htmlFor="memo">Remark</label>
-          <textarea id="memo" name="memo" rows={2} autoFocus placeholder="Note for this voucher — English or Myanmar" />
-        </div>
-      ) : (
-        <div className="actions">
-          <button type="button" className="ghost" onClick={() => setShowRemark(true)}>
-            Add remark
-          </button>
-        </div>
-      )}
 
       {/* Carried to the engine, which refuses negative stock without it. The
           flag comes from answering the dialog, never from the shortage

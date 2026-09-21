@@ -1177,7 +1177,11 @@ tbody tr.coa-section > td { padding-top: 10px; padding-bottom: 10px; }
    invoice began by scrolling past the part already filled in.
    So the header is deliberately quieter and denser than the table: smaller
    controls, tighter rows, a sunken ground, and no heading of its own. */
-.doc-meta { background: var(--line-soft); }
+/* No grey fill. The card's own hairline already groups these fields, and a
+   filled band on top of a form of white cards read as a heavier, taller
+   section than the plain ones under it — weight the eye pays for before it
+   reaches the part being filled in. */
+.doc-meta { background: var(--surface); }
 .doc-meta .card-body { padding: var(--s2) var(--s3) 0.85rem; }
 .doc-meta .row {
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));

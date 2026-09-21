@@ -750,10 +750,17 @@ export function InvoiceForm({
         </div>
       )}
 
+      {/* Paid now and the rest of the paperwork, side by side. Stacked they
+          were three blocks down the page — a card, a lone reference field,
+          then a note — and the submit button fell below the fold on a laptop
+          for a form whose last two fields are optional. The sales voucher
+          already pairs its footer cards this way; this is the same grid,
+          which collapses to one column under 320px per card. */}
+      <div className="grid2">
       {!isSales && (
         <div className="card" style={{ marginTop: "0.5rem" }}>
           <div className="card-head">
-            <h2>Paid now</h2>
+            <h2>Payment</h2>
           </div>
           <div className="card-body">
             <div className="row">
@@ -786,24 +793,32 @@ export function InvoiceForm({
         </div>
       )}
 
-      <div className="row">
-        <div className="field">
-          <label htmlFor="reference">Ref / order ID</label>
-          <input id="reference" name="reference" type="text"
-                 value={reference} onChange={(e) => setReference(e.target.value)}
-                 placeholder={isSales ? "Sales order or customer PO" : "Purchase order or supplier invoice no"} />
-          {initialGoodsReceiptId && reference && (
-            <span className="hint">
-              The order this {isSales ? "delivery" : "receipt"} came from. Type over it for the
-              {isSales ? " customer's" : " supplier's"} own number.
-            </span>
-          )}
-        </div>
-      </div>
+        <div className="card" style={{ marginTop: "0.5rem" }}>
+          <div className="card-head">
+            <h2>Additional information</h2>
+          </div>
+          <div className="card-body">
+            <div className="row">
+              <div className="field">
+                <label htmlFor="reference">Ref / order ID</label>
+                <input id="reference" name="reference" type="text"
+                       value={reference} onChange={(e) => setReference(e.target.value)}
+                       placeholder={isSales ? "Sales order or customer PO" : "Purchase order or supplier invoice no"} />
+                {initialGoodsReceiptId && reference && (
+                  <span className="hint">
+                    The order this {isSales ? "delivery" : "receipt"} came from. Type over it for the
+                    {isSales ? " customer's" : " supplier's"} own number.
+                  </span>
+                )}
+              </div>
 
-      <div className="field">
-        <label htmlFor="memo">Note</label>
-        <textarea id="memo" name="memo" rows={2} placeholder="Optional — English or Myanmar" />
+              <div className="field">
+                <label htmlFor="memo">Note</label>
+                <textarea id="memo" name="memo" rows={2} placeholder="Optional — English or Myanmar" />
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="actions form-commit">
