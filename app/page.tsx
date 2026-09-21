@@ -142,7 +142,6 @@ export default async function Dashboard() {
   /** A KPI's badge: what this figure is doing, said from the figure itself. */
   const kpiCards = [
     {
-      tone: "var(--brand)",
       label: "Inventory value",
       value: cur(kpis.stock.value),
       note: `${money(kpis.stock.qty)} units on hand`,
@@ -151,7 +150,6 @@ export default async function Dashboard() {
         : { text: "Nothing in stock", tint: "var(--muted)" },
     },
     {
-      tone: "#3B6FD4",
       label: "Receivables",
       value: cur(kpis.ar.total),
       note: n(kpis.ar.n) === 0
@@ -164,7 +162,6 @@ export default async function Dashboard() {
           : { text: "None overdue", tint: "#3B6FD4" },
     },
     {
-      tone: "var(--warn)",
       label: "Payables",
       value: cur(kpis.ap.total),
       note: n(kpis.ap.n) === 0
@@ -177,7 +174,6 @@ export default async function Dashboard() {
           : { text: "None overdue", tint: "var(--warn)" },
     },
     {
-      tone: "#6C5CE0",
       label: "Cash balance",
       value: cur(kpis.cash.total),
       note: "Cash + bank accounts",
@@ -192,7 +188,6 @@ export default async function Dashboard() {
   // is some, so it does not pad the row with a zero.
   if (n(kpis.advances.customer) > 0 || n(kpis.advances.supplier) > 0) {
     kpiCards.push({
-      tone: "#0E8A8A",
       label: "On account",
       value: cur(n(kpis.advances.customer) + n(kpis.advances.supplier)),
       note: "Paid before invoicing",
@@ -281,10 +276,11 @@ export default async function Dashboard() {
       <div className="dash-cards">
         {kpiCards.map((k) => (
           <div key={k.label} className="dash-card dash-card-pad dash-kpi">
-            <span className="dash-kpi-label">
-              <span className="dash-dot" style={{ background: k.tone }} aria-hidden="true" />
-              {k.label}
-            </span>
+            {/* No colour dot. Five of them made a row of markers that keyed
+                to nothing — no legend, no chart, no repeat anywhere else on
+                the page — so the eye read them as meaning something and found
+                they meant only "this is a card". The label says what it is. */}
+            <span className="dash-kpi-label">{k.label}</span>
             <span className="dash-kpi-value">{k.value}</span>
             <span className="dash-kpi-note">{k.note}</span>
             <span className="dash-badge" style={{

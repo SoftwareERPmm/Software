@@ -147,6 +147,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <NavGroup label="Accounting" icon={<BookOpen size={14} />} match={[
               "/finance/journal", "/finance/opening", "/finance/general-ledger", "/ledger",
               "/finance/income-statement", "/finance/balance-sheet", "/finance/cash-flow",
+              "/finance/aging",
             ]}>
               <NavSubGroup label="Transactions" match={["/finance/journal", "/finance/opening"]}>
                 <NavLink href="/finance/journal" sub>Journal Voucher</NavLink>
@@ -162,6 +163,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 <NavLink href="/finance/income-statement" sub>Income Statement</NavLink>
                 <NavLink href="/finance/balance-sheet" sub>Balance Sheet</NavLink>
                 <NavLink href="/finance/cash-flow" sub>Cash Flow</NavLink>
+                <NavLink href="/finance/aging" sub>AR / AP Aging</NavLink>
               </NavSubGroup>
             </NavGroup>
 

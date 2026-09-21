@@ -2537,7 +2537,6 @@ dialog.drawer .drawer-panel {
   display: flex; align-items: center; gap: 0.5rem;
   font-size: var(--t-base); font-weight: 500; color: var(--ink);
 }
-.dash-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
 .dash-kpi-value {
   /* A step below the 20px ceiling. Five cards of kyat at full size read as
      five headlines; at 18px they are still the loudest thing on the card. */
@@ -3265,3 +3264,35 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
   min-width: 3.5rem; text-align: center;
   font-variant-numeric: tabular-nums; color: var(--ink);
 }
+
+/* ------------------------------------------------------- AR / AP aging -- */
+
+/* The proportional bar. Segments grow by amount rather than by count, so the
+   width is the share of what is owed — which is the only thing a bar adds
+   over the five figures printed under it. */
+.agingbar {
+  display: flex; gap: 2px;
+  height: 22px; margin-bottom: var(--s3);
+  border-radius: 5px; overflow: hidden;
+}
+.agingbar-seg { display: block; min-width: 4px; }
+.agingbar-empty { background: var(--line-soft); }
+
+/* Five columns on a wide card, wrapping to two or one as it narrows rather
+   than squeezing a figure until it wraps mid-number. */
+.aginglist {
+  margin: 0; display: grid; gap: var(--s3) var(--s4);
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+}
+.aginglist > div { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+.aginglist dt {
+  display: flex; align-items: center; gap: 0.35rem;
+  font-size: var(--t-xs); color: var(--muted); white-space: nowrap;
+}
+.aginglist dd { margin: 0; display: flex; flex-direction: column; gap: 0.1rem; }
+.agingdot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.aging-amt {
+  font-family: var(--mono); font-variant-numeric: tabular-nums;
+  font-size: var(--t-md); font-weight: 600; overflow-wrap: anywhere;
+}
+.aging-pct { font-size: var(--t-2xs); color: var(--muted); }

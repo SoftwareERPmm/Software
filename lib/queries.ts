@@ -235,17 +235,73 @@ export async function getHealth(companyId: string) {
   };
 }
 
-export async function getAging(companyId: string) {
+export type AgingSide = "SALES_INVOICE" | "PURCHASE_INVOICE";
+
+/** The five buckets, in order, for one side of the ledger. */
+export async function getAging(
+  companyId: string, docType: AgingSide = "SALES_INVOICE",
+) {
   return sql`
     select aging_bucket,
            count(*)::int          as invoices,
            sum(outstanding)       as total
       from v_open_item
-     where company_id = ${companyId} and doc_type = 'SALES_INVOICE'
+     where company_id = ${companyId} and doc_type = ${docType}
      group by aging_bucket
      order by case aging_bucket
        when 'CURRENT' then 0 when '1-30' then 1 when '31-60' then 2
        when '61-90' then 3 else 4 end`;
+}
+
+/**
+ * One row per partner, spread across the same five buckets.
+ *
+ * Every figure comes from v_open_item, so it is the same arithmetic the
+ * receivables and payables screens use and cannot drift from them — the
+ * bucket is decided by the invoice's own due date, and what is still owed is
+ * gross less what has been allocated and returned.
+ *
+ * Partners with nothing outstanding do not appear: an aging report is a list
+ * of what is owed, and a customer who has paid is not part of the answer.
+ */
+export async function getPartnerAging(
+  companyId: string, docType: AgingSide = "SALES_INVOICE",
+) {
+  return sql`
+    select partner_id, partner_code, partner_name,
+           count(*)::int as open_invoices,
+           sum(outstanding) as total,
+           sum(outstanding) filter (where aging_bucket = 'CURRENT') as current_amt,
+           sum(outstanding) filter (where aging_bucket = '1-30')    as d1_30,
+           sum(outstanding) filter (where aging_bucket = '31-60')   as d31_60,
+           sum(outstanding) filter (where aging_bucket = '61-90')   as d61_90,
+           sum(outstanding) filter (where aging_bucket = '90+')     as d90,
+           max(days_overdue) as worst_days,
+           to_char(max(due_date), 'YYYY-MM-DD') as latest_due
+      from v_open_item
+     where company_id = ${companyId} and doc_type = ${docType}
+     group by partner_id, partner_code, partner_name
+     order by sum(outstanding) desc`;
+}
+
+/**
+ * What falls due in the next seven days and is not already late.
+ *
+ * Separate from the buckets rather than derived from CURRENT, which holds
+ * everything not yet due however far off. The question this answers is what
+ * has to be found money for this week.
+ */
+export async function getDueWithin(
+  companyId: string, docType: AgingSide, days = 7,
+) {
+  const [row] = await sql`
+    select coalesce(sum(outstanding), 0) as total, count(*)::int as invoices
+      from v_open_item
+     where company_id = ${companyId} and doc_type = ${docType}
+       and due_date is not null
+       and due_date >= current_date
+       and due_date <= current_date + ${days}::int`;
+  return { total: Number(row?.total ?? 0), invoices: Number(row?.invoices ?? 0) };
 }
 
 /**
