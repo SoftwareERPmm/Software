@@ -19,6 +19,8 @@ export type Period = {
   label: string;
   /** Inside a sentence: "this month", "the last 6 months", "August 2026". */
   phrase: string;
+  /** For a picker sitting inside a card header, where space is short. */
+  short: string;
   /** Inclusive first day, exclusive last day, both YYYY-MM-DD. */
   from: string;
   to: string;
@@ -34,11 +36,11 @@ const firstOf = (y: number, m: number) => new Date(Date.UTC(y, m, 1));
 const monthName = (y: number, m: number) =>
   firstOf(y, m).toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
 
-const SPANS: Record<string, { months: number; label: string; phrase: string }> = {
-  "1m": { months: 1, label: "This month", phrase: "this month" },
-  "3m": { months: 3, label: "Last 3 months", phrase: "the last 3 months" },
-  "6m": { months: 6, label: "Last 6 months", phrase: "the last 6 months" },
-  "12m": { months: 12, label: "Last 12 months", phrase: "the last 12 months" },
+const SPANS: Record<string, { months: number; label: string; phrase: string; short: string }> = {
+  "1m": { months: 1, label: "This month", phrase: "this month", short: "1M" },
+  "3m": { months: 3, label: "Last 3 months", phrase: "the last 3 months", short: "3M" },
+  "6m": { months: 6, label: "Last 6 months", phrase: "the last 6 months", short: "6M" },
+  "12m": { months: 12, label: "Last 12 months", phrase: "the last 12 months", short: "12M" },
 };
 
 /** The spans the picker offers, in order. */
@@ -59,6 +61,7 @@ export function resolvePeriod(spec: string | undefined, today = new Date()): Per
         key: `${named[1]}-${named[2]}`,
         label: monthName(yy, mm),
         phrase: monthName(yy, mm),
+        short: firstOf(yy, mm).toLocaleDateString("en-GB", { month: "short", timeZone: "UTC" }),
         from: iso(firstOf(yy, mm)),
         to: iso(firstOf(yy, mm + 1)),
         // Six months of context around the month chosen, so a single bar is
@@ -77,6 +80,7 @@ export function resolvePeriod(spec: string | undefined, today = new Date()): Per
     key,
     label: span.label,
     phrase: span.phrase,
+    short: span.short,
     from: iso(firstOf(y, m - (span.months - 1))),
     to: iso(firstOf(y, m + 1)),
     // A single month still gets half a year of bars behind it.

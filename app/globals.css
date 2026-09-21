@@ -3468,29 +3468,23 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
 }
 
 /* Period picker ---------------------------------------------------------- *
- * Four spans as one segmented control, so the choice and the current answer
- * are the same object. A month chosen off the chart appears beside it with a
- * way back, rather than leaving all four looking unselected. */
-.dash-period {
-  display: inline-flex; align-items: center; gap: 0.15rem;
-  padding: 0.15rem; border-radius: var(--r-md);
+ * One per card, in the card's own header, next to the figure it changes.
+ * Small enough to sit beside a heading without competing with it: this is a
+ * control the reader reaches for occasionally, not the subject of the card. */
+.card-period {
+  display: inline-flex; align-items: center; gap: 0.1rem;
+  padding: 0.12rem; border-radius: var(--r-sm);
   background: color-mix(in srgb, var(--ink) 4%, transparent);
   border: 1px solid var(--line);
-  flex-wrap: wrap;
+  flex: 0 0 auto;
 }
-.dash-period-opt {
-  padding: 0.3rem 0.6rem; border-radius: calc(var(--r-md) - 0.15rem);
-  font-size: var(--t-xs); color: var(--muted); text-decoration: none;
-  white-space: nowrap;
+.card-period-opt {
+  padding: 0.2rem 0.42rem; border-radius: calc(var(--r-sm) - 0.1rem);
+  font-size: 0.7rem; font-weight: 500; letter-spacing: 0.01em;
+  color: var(--muted); text-decoration: none; white-space: nowrap;
 }
-.dash-period-opt:hover { color: var(--ink); }
-.dash-period-opt.on {
+.card-period-opt:hover { color: var(--ink); }
+.card-period-opt.on {
   background: var(--card); color: var(--ink); font-weight: 600;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
-.dash-chip.on {
-  display: inline-flex; align-items: center; gap: 0.45rem;
-  color: var(--brand); border-color: color-mix(in srgb, var(--brand) 35%, transparent);
-  background: color-mix(in srgb, var(--brand) 8%, transparent);
-}
-.dash-chip.on a { color: inherit; text-decoration: none; font-size: 1rem; line-height: 1; }

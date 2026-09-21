@@ -95,11 +95,14 @@ export function RankedBarChart({
  * what happened.
  */
 export function RevenueBars({
-  data, selected,
+  data, selected, hrefs,
 }: {
   data: { month: string; revenue: number | string }[];
-  /** The month the page is currently reporting on, as YYYY-MM. */
+  /** The month this card is currently reporting on, as YYYY-MM. */
   selected?: string | null;
+  /** Where each bar goes — built on the server so a click keeps whatever
+   *  the other cards' pickers are set to. */
+  hrefs?: Record<string, string>;
 }) {
   const router = useRouter();
   const rows = data.map((d) => ({
@@ -131,8 +134,8 @@ export function RevenueBars({
           dataKey="revenue" radius={[6, 6, 0, 0]} maxBarSize={46}
           cursor="pointer"
           onClick={(_data: unknown, index: number) => {
-            const row = rows[index];
-            if (row) router.push(`/?period=${row.ym}`);
+            const href = hrefs?.[rows[index]?.ym ?? ""];
+            if (href) router.push(href);
           }}
         >
           {rows.map((_, i) => (

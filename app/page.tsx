@@ -10,7 +10,8 @@ import {
   getOnboardingStatus,
 } from "@/lib/queries";
 import { RevenueBars, ShareDonut } from "@/components/charts";
-import { resolvePeriod, PERIOD_SPANS, DEFAULT_PERIOD } from "@/lib/period";
+import { resolvePeriod, DEFAULT_PERIOD } from "@/lib/period";
+import { PeriodPicker } from "@/components/period-picker";
 
 import { GettingStarted, needsGettingStarted } from "@/components/getting-started";
 import {
@@ -20,17 +21,36 @@ import {
 export default async function Dashboard({
   searchParams,
 }: {
-  searchParams: Promise<{ period?: string }>;
+  searchParams: Promise<Record<string, string | undefined>>;
 }) {
   const company = await getCompany();
   if (!company) return <div className="empty">No company found. Run <span className="m">npm run db:seed</span>.</div>;
 
-  /* Which stretch of time the period cards are about. Balances — receivables,
-     payables, stock, cash — are deliberately not filtered: what is owed is
-     owed today, and a figure that answered "what was outstanding in March"
-     next to one answering "what is outstanding now" is how a dashboard
+  /* One window per card, not one for the page: revenue over a year and top
+     sellers over this month is a normal thing to want, and a single filter
+     made every card answer whichever question the last one asked.
+
+     Balances stay out of it entirely — receivables, payables, stock and cash
+     are what they are today, and a figure answering "what was outstanding in
+     March" beside one answering "what is outstanding now" is how a dashboard
      starts lying quietly. */
-  const period = resolvePeriod((await searchParams).period);
+  const sp = await searchParams;
+  const period = {
+    rev: resolvePeriod(sp.rev),
+    items: resolvePeriod(sp.items),
+    cat: resolvePeriod(sp.cat),
+    reg: resolvePeriod(sp.reg),
+  };
+  /* Changing one card's window leaves the other three where the reader put
+     them, so the URL carries all four and each link edits one key. */
+  const hrefWith = (key: string, value: string) => {
+    const next: Record<string, string> = {};
+    for (const [k, v] of Object.entries(sp)) if (v) next[k] = v;
+    if (value === DEFAULT_PERIOD) delete next[key];
+    else next[key] = value;
+    const q = new URLSearchParams(next).toString();
+    return q ? `/?${q}` : "/";
+  };
 
   const [kpis, health, aging, docs, stock, actionItems, revenueTrend, topItems, topCategories,
          regionRevenue, onboarding, negativeStock, lowStock] = await Promise.all([
@@ -40,10 +60,10 @@ export default async function Dashboard({
     getDocuments(company.id),
     getStock(company.id),
     getActionItems(company.id),
-    getRevenueTrend(company.id, period.chartMonths, period.chartAnchor),
-    getTopItems(company.id, period.from, period.to),
-    getTopCategories(company.id, period.from, period.to),
-    getRevenueByRegion(company.id, period.from, period.to),
+    getRevenueTrend(company.id, period.rev.chartMonths, period.rev.chartAnchor),
+    getTopItems(company.id, period.items.from, period.items.to),
+    getTopCategories(company.id, period.cat.from, period.cat.to),
+    getRevenueByRegion(company.id, period.reg.from, period.reg.to),
     getOnboardingStatus(company.id),
     getNegativeStock(company.id),
     getLowStock(company.id),
@@ -183,7 +203,8 @@ export default async function Dashboard({
   /* The chart can reach further back than the period asked for — a single
      chosen month is drawn against the five before it — so the total counts
      only the months inside the window, never every bar on screen. */
-  const inWindow = (ym: string) => ym >= period.from.slice(0, 7) && ym < period.to.slice(0, 7);
+  const inWindow = (ym: string) =>
+    ym >= period.rev.from.slice(0, 7) && ym < period.rev.to.slice(0, 7);
   const windowRows = trend.filter((r) => inWindow(r.month));
   const revenueTotal = windowRows.reduce((t, r) => t + n(r.revenue), 0);
   // Month on month, as the reference labels it. Null where there is no
@@ -348,33 +369,8 @@ export default async function Dashboard({
           </span>
         </div>
         <div className="dash-actions">
-          {/* This was a label for a long time, because a control that filters
-              nothing is worse than a caption that is true. It filters now:
-              revenue, the bars, top-selling items and both donuts. */}
-          <nav className="dash-period" aria-label="Period">
-            {PERIOD_SPANS.map((k) => {
-              const p = resolvePeriod(k);
-              const on = period.key === k;
-              return (
-                <Link
-                  key={k}
-                  href={k === DEFAULT_PERIOD ? "/" : `/?period=${k}`}
-                  className={`dash-period-opt${on ? " on" : ""}`}
-                  aria-current={on ? "page" : undefined}
-                >
-                  {p.label}
-                </Link>
-              );
-            })}
-          </nav>
-          {/* A month picked off the chart is not one of the four spans, so it
-              says so rather than leaving every option looking unselected. */}
-          {period.month && (
-            <span className="dash-chip on">
-              {period.label}
-              <Link href="/" aria-label="Back to the last 6 months">×</Link>
-            </span>
-          )}
+          {/* No page-wide period any more — each card carries its own, in its
+              own header, next to the figure it changes. */}
           <Link href="/documents" className="dash-chip solid">
             New document <ChevronRight size={14} aria-hidden="true" />
           </Link>
@@ -464,8 +460,14 @@ export default async function Dashboard({
       <div className="dash-split">
         <div className="dash-card dash-card-pad">
           <div className="dash-section-head">
-            <h2>Revenue</h2>
-            <span className="dash-chip">{period.label}</span>
+            <div>
+              <h2>Revenue</h2>
+              <span className="dash-sub">{period.rev.label}</span>
+            </div>
+            <PeriodPicker
+              current={period.rev} label="revenue"
+              hrefFor={(k) => hrefWith("rev", k)}
+            />
           </div>
           <div className="dash-figure">
             {/* Six months of sales net of returns can land below zero, and
@@ -476,7 +478,9 @@ export default async function Dashboard({
             </span>
           </div>
           <span className="dash-kpi-note">
-            {period.month ? `Total for ${period.label}` : `Total for ${period.phrase}`}
+            {period.rev.month
+              ? `Total for ${period.rev.label}`
+              : `Total for ${period.rev.phrase}`}
           </span>
 
           <div className="dash-figure" style={{ marginTop: "0.75rem" }}>
@@ -502,8 +506,14 @@ export default async function Dashboard({
           </span>
           <div style={{ marginTop: "1.25rem" }}>
             {revenueTotal === 0
-              ? <div className="empty">No revenue posted in {period.phrase}.</div>
-              : <RevenueBars data={trend} selected={period.month} />}
+              ? <div className="empty">No revenue posted in {period.rev.phrase}.</div>
+              : <RevenueBars
+                  data={trend}
+                  selected={period.rev.month}
+                  hrefs={Object.fromEntries(
+                    trend.map((r) => [r.month, hrefWith("rev", r.month)]),
+                  )}
+                />}
           </div>
         </div>
 
@@ -511,8 +521,12 @@ export default async function Dashboard({
           <div className="dash-section-head">
             <div>
               <h2>Top-selling items</h2>
-              <span className="dash-sub">{period.label}, by revenue</span>
+              <span className="dash-sub">{period.items.label}, by revenue</span>
             </div>
+            <PeriodPicker
+              current={period.items} label="top-selling items"
+              hrefFor={(k) => hrefWith("items", k)}
+            />
           </div>
           {items.length === 0 ? (
             <div className="empty">No sales invoices yet.</div>
@@ -547,9 +561,13 @@ export default async function Dashboard({
             <div>
               <h2>Revenue by category</h2>
               <span className="dash-sub">
-                Sales in {period.phrase}, by how each item is filed
+                Sales in {period.cat.phrase}, by how each item is filed
               </span>
             </div>
+            <PeriodPicker
+              current={period.cat} label="revenue by category"
+              hrefFor={(k) => hrefWith("cat", k)}
+            />
           </div>
           <ShareDonut
             data={topCategories as unknown as
@@ -563,9 +581,13 @@ export default async function Dashboard({
             <div>
               <h2>Revenue by state / region</h2>
               <span className="dash-sub">
-                Sales in {period.phrase}, by where the customer is
+                Sales in {period.reg.phrase}, by where the customer is
               </span>
             </div>
+            <PeriodPicker
+              current={period.reg} label="revenue by state or region"
+              hrefFor={(k) => hrefWith("reg", k)}
+            />
           </div>
           {/* One slice reading "Region not set" is a chart of nothing. Until
               somebody has said where a customer is, the card asks for that
