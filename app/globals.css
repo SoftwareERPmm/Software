@@ -3419,3 +3419,50 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
     padding-top: 0.9rem;
   }
 }
+
+/* The month figure under the six-month total: clearly the smaller statement
+   of the two, but still a figure rather than a caption. */
+.dash-month-value {
+  font-size: var(--t-lg); font-weight: 600;
+  letter-spacing: var(--track-tight); font-variant-numeric: tabular-nums;
+}
+
+/* Revenue by category ---------------------------------------------------- *
+ * Chart left, legend right. The legend is the readable half — a donut can
+ * show that one slice dominates, but only the figures beside it say by how
+ * much and of what. */
+.donut-wrap { display: flex; gap: 1.75rem; align-items: center; flex-wrap: wrap; }
+.donut-chart { position: relative; flex: 0 0 200px; width: 200px; }
+.donut-centre {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; pointer-events: none; gap: 0.1rem;
+}
+.donut-centre-label { font-size: var(--t-xs); color: var(--muted); }
+.donut-centre-value {
+  font-size: var(--t-md); font-weight: 700; letter-spacing: var(--track-tight);
+  font-variant-numeric: tabular-nums;
+}
+.donut-legend {
+  flex: 1 1 210px; min-width: 0; list-style: none; margin: 0; padding: 0;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 0.15rem 1.5rem;
+}
+.donut-legend li {
+  display: grid; grid-template-columns: 10px minmax(0, 1fr) auto auto;
+  align-items: center; gap: 0.6rem;
+  padding: 0.45rem 0; border-bottom: 1px solid var(--line-soft);
+  font-size: var(--t-sm);
+}
+.donut-dot { width: 10px; height: 10px; border-radius: 3px; }
+.donut-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.donut-share { color: var(--muted); font-variant-numeric: tabular-nums; }
+.donut-value { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+@media (max-width: 520px) {
+  .donut-chart { flex-basis: 100%; width: 100%; }
+}
+
+/* Two cards of equal weight in one row — the pair of share charts. */
+.dash-duo {
+  display: grid; gap: var(--dash-gap); margin-bottom: var(--dash-gap);
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+}

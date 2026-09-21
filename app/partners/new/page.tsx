@@ -1,6 +1,7 @@
 import { createPartner } from "@/lib/actions";
 import { SimpleForm } from "@/components/simple-form";
 import { HelpHint } from "@/components/help-hint";
+import { REGION_GROUPS } from "@/lib/regions";
 
 export default function NewPartner() {
   return (
@@ -70,6 +71,21 @@ export default function NewPartner() {
                 <label htmlFor="credit_limit">Credit limit</label>
                 <input id="credit_limit" name="credit_limit" type="number" min="0" step="any" />
                 <span className="hint">Optional, in MMK</span>
+              </div>
+              {/* Region groups for reporting; township stays the address
+                  line it has always been. Two different jobs, which is why
+                  one is a fixed list and the other is free text. */}
+              <div className="field">
+                <label htmlFor="region">Region / State</label>
+                <select id="region" name="region" defaultValue="">
+                  <option value="">Not set</option>
+                  {REGION_GROUPS.map((g) => (
+                    <optgroup key={g.label} label={g.label}>
+                      {g.options.map((r) => <option key={r} value={r}>{r}</option>)}
+                    </optgroup>
+                  ))}
+                </select>
+                <span className="hint">Groups revenue on the dashboard</span>
               </div>
               <div className="field">
                 <label htmlFor="township">Township</label>

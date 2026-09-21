@@ -6,9 +6,10 @@ import { money } from "@/lib/db";
 import {
   getCompany, getKpis, getHealth, getAging, getDocuments, getStock, getActionItems,
   getNegativeStock, getLowStock,
-  getRevenueTrend, getTopItems, getTopCustomers, getOnboardingStatus,
+  getRevenueTrend, getTopItems, getTopCategories, getRevenueByRegion,
+  getOnboardingStatus,
 } from "@/lib/queries";
-import { RevenueBars } from "@/components/charts";
+import { RevenueBars, ShareDonut } from "@/components/charts";
 
 import { GettingStarted, needsGettingStarted } from "@/components/getting-started";
 import {
@@ -19,8 +20,8 @@ export default async function Dashboard() {
   const company = await getCompany();
   if (!company) return <div className="empty">No company found. Run <span className="m">npm run db:seed</span>.</div>;
 
-  const [kpis, health, aging, docs, stock, actionItems, revenueTrend, topItems, topCustomers,
-         onboarding, negativeStock, lowStock] = await Promise.all([
+  const [kpis, health, aging, docs, stock, actionItems, revenueTrend, topItems, topCategories,
+         regionRevenue, onboarding, negativeStock, lowStock] = await Promise.all([
     getKpis(company.id),
     getHealth(company.id),
     getAging(company.id),
@@ -29,7 +30,8 @@ export default async function Dashboard() {
     getActionItems(company.id),
     getRevenueTrend(company.id),
     getTopItems(company.id),
-    getTopCustomers(company.id),
+    getTopCategories(company.id),
+    getRevenueByRegion(company.id),
     getOnboardingStatus(company.id),
     getNegativeStock(company.id),
     getLowStock(company.id),
@@ -173,6 +175,17 @@ export default async function Dashboard() {
   const thisMonth = n(trend.at(-1)?.revenue);
   const lastMonth = n(trend.at(-2)?.revenue);
   const change = lastMonth > 0 ? ((thisMonth - lastMonth) / lastMonth) * 100 : null;
+  /* The percentage is month on month, and the figure above it is six months.
+     Beside each other with nothing naming either period, the badge read as
+     the movement in the big number — so both periods say which they are, and
+     the month-on-month line carries the month's own figure with it. */
+  const monthName = (ym: string | undefined) =>
+    ym ? new Date(`${ym}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long" }) : "";
+  const thisMonthName = monthName(trend.at(-1)?.month);
+  const lastMonthName = monthName(trend.at(-2)?.month);
+
+  const regions = regionRevenue as unknown as
+    { id: string; name: string; revenue: number | string }[];
 
   const items = topItems as unknown as
     { id: string; name: string; qty: number | string; revenue: number | string }[];
@@ -420,6 +433,13 @@ export default async function Dashboard() {
             <span className="dash-figure-value" data-negative={revenueTotal < 0}>
               {cur(revenueTotal)}
             </span>
+          </div>
+          <span className="dash-kpi-note">Total for the six months charted below</span>
+
+          <div className="dash-figure" style={{ marginTop: "0.75rem" }}>
+            <span className="dash-month-value">
+              {thisMonthName} {cur(thisMonth)}
+            </span>
             {change !== null && (
               <span className="dash-badge" style={{
                 color: change >= 0 ? "var(--ok)" : "var(--bad)",
@@ -434,8 +454,8 @@ export default async function Dashboard() {
           </div>
           <span className="dash-kpi-note">
             {change === null
-              ? "No earlier month to compare with"
-              : "Compared with previous month"}
+              ? `${lastMonthName || "The earlier month"} had no revenue to compare with`
+              : `Against ${lastMonthName} · ${cur(lastMonth)}`}
           </span>
           <div style={{ marginTop: "1.25rem" }}>
             {revenueTotal === 0
@@ -469,6 +489,48 @@ export default async function Dashboard() {
                 View item performance <ArrowRight size={14} style={{ verticalAlign: "-2px" }} />
               </Link>
             </>
+          )}
+        </div>
+      </div>
+
+      {/* Two halves of the same question — what sold, and where it sold.
+          Side by side rather than one full-width card each, which left a
+          240px donut marooned in a 1,140px box. */}
+      <div className="dash-duo">
+        <div className="dash-card dash-card-pad">
+          <div className="dash-section-head">
+            <div>
+              <h2>Revenue by category</h2>
+              <span className="dash-sub">Six months of sales, by how each item is filed</span>
+            </div>
+          </div>
+          <ShareDonut
+            data={topCategories as unknown as
+              { id: string; name: string; revenue: number | string }[]}
+            currency={company.base_currency}
+          />
+        </div>
+
+        <div className="dash-card dash-card-pad">
+          <div className="dash-section-head">
+            <div>
+              <h2>Revenue by state / region</h2>
+              <span className="dash-sub">Six months of sales, by where the customer is</span>
+            </div>
+          </div>
+          {/* One slice reading "Region not set" is a chart of nothing. Until
+              somebody has said where a customer is, the card asks for that
+              instead of drawing a circle around the whole company. */}
+          {regions.length === 1 && regions[0].id === "none" ? (
+            <div className="empty">
+              No customer has a state or region yet.{" "}
+              <Link href="/partners" style={{ color: "var(--brand)" }}>
+                Set one on a customer
+              </Link>{" "}
+              to see where revenue comes from.
+            </div>
+          ) : (
+            <ShareDonut data={regions} currency={company.base_currency} />
           )}
         </div>
       </div>
