@@ -42,12 +42,14 @@ const bucketOf = (b: string) => BUCKETS.find((x) => x.bucket === b);
  * show a figure that disagrees with the row above it.
  */
 export function AgingRow({
-  partner, columnCount, backTo,
+  partner, columnCount, backTo, owedToUs,
 }: {
   partner: AgingPartner;
   columnCount: number;
   /** Where the document's back arrow should return to. */
   backTo: string;
+  /** True on the customer side. Decides which way round the debt runs. */
+  owedToUs: boolean;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -98,7 +100,14 @@ export function AgingRow({
           <td colSpan={columnCount}>
             <div className="stockdetail" style={{ gridTemplateColumns: "1fr" }}>
               <section className="stockpanel">
-                <h3>What {partner.partnerName} owes</h3>
+                {/* Which way the money runs. A customer owes us; we owe a
+                    supplier, and saying "what Delivery Fee Supplier owes"
+                    above a list of their bills had the debt backwards. */}
+                <h3>
+                  {owedToUs
+                    ? `What ${partner.partnerName} owes`
+                    : `What we owe ${partner.partnerName}`}
+                </h3>
                 <table className="stockpanel-table">
                   <thead>
                     <tr>

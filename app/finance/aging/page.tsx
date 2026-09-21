@@ -138,7 +138,8 @@ export default async function AgingPage({
       ...Object.fromEntries(BUCKETS.map((b) => [b.key, p.buckets[b.bucket] ?? 0])),
       total: p.total, open_invoices: p.invoices.length,
     },
-    node: <AgingRow partner={p} columnCount={AGING_COLUMNS} backTo={backTo} />,
+    node: <AgingRow partner={p} columnCount={AGING_COLUMNS} backTo={backTo}
+                    owedToUs={!showAp} />,
   }));
 
   const tab = (isAp: boolean) => (
