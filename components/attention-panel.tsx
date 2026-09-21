@@ -45,7 +45,7 @@ export function AttentionPanel({
   return (
     <div className={`attn${open ? " attn-open" : ""}`}>
       <div className="attn-head">
-        <span className="attn-mark" aria-hidden="true"><AlertTriangle size={16} /></span>
+        <span className="attn-mark" aria-hidden="true"><AlertTriangle size={17} /></span>
         <div className="attn-headtext">
           <strong>
             {open

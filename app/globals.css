@@ -3330,10 +3330,15 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
 }
 .attn-open { padding-bottom: 1.15rem; }
 .attn-head { display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap; }
+/* The same mark the worklist summaries and the aging KPIs use: a soft tint
+   carrying a coloured glyph. Filled solid with a white glyph, it was the one
+   saturated shape on the page and read louder than the figures it sits
+   above. */
 .attn-mark {
-  width: 30px; height: 30px; border-radius: 50%; flex: 0 0 auto;
+  width: 34px; height: 34px; border-radius: 50%; flex: 0 0 auto;
   display: flex; align-items: center; justify-content: center;
-  background: var(--warn); color: var(--brand-fg);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: var(--warn);
 }
 .attn-headtext { display: flex; flex-direction: column; min-width: 0; }
 .attn-headtext strong { font-weight: 600; }
