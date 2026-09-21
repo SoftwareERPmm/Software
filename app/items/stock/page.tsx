@@ -130,27 +130,55 @@ export default async function Stock({
    * the chosen one when a location is picked — a panel listing every empty
    * warehouse is a longer answer to a shorter question.
    */
-  const warehousesOf = (itemId: string) =>
-    stockByLocation
-      .filter((r) =>
-        r.item_id === itemId
-        && (allLocations || r.location_id === selectedLocationId)
-        && Number(r.qty_on_hand) !== 0)
-      .map((r) => {
-        const loc = locations.find((l) => l.id === r.location_id);
+  const warehousesOf = (itemId: string) => {
+    const here = (locId: string) => allLocations || locId === selectedLocationId;
+
+    /**
+     * Every warehouse holding any of this item, owned or not.
+     *
+     * Consigned stock was missing, so a consignor's goods sitting on the shelf
+     * produced "this item has never been held anywhere" — said about twelve
+     * units somebody could walk over and touch. It is not the company's stock
+     * and never joins On hand, but where it physically is is exactly what this
+     * panel is for.
+     */
+    const ids = new Set<string>();
+    for (const r of stockByLocation) {
+      if (r.item_id === itemId && here(r.location_id) && Number(r.qty_on_hand) !== 0) {
+        ids.add(r.location_id);
+      }
+    }
+    for (const c of consignedHere) {
+      if (c.item_id === itemId && here(c.location_id) && Number(c.on_hand) !== 0) {
+        ids.add(c.location_id);
+      }
+    }
+
+    return [...ids]
+      .map((locationId) => {
+        const loc = locations.find((l) => l.id === locationId);
         return {
-          locationId: r.location_id,
+          locationId,
           code: loc?.code ?? "—",
           name: loc?.name ?? "",
-          onHand: Number(r.qty_on_hand),
+          onHand: Number(
+            stockByLocation.find((r) => r.item_id === itemId && r.location_id === locationId)
+              ?.qty_on_hand ?? 0),
+          consigned: consignedHere
+            .filter((c) => c.item_id === itemId && c.location_id === locationId)
+            .reduce((t, c) => t + Number(c.on_hand), 0),
           reserved: Number(
-            reserved.find((x) => x.item_id === itemId && x.location_id === r.location_id)
+            reserved.find((x) => x.item_id === itemId && x.location_id === locationId)
               ?.reserved_qty ?? 0),
         };
       })
       .sort((a, b) => a.code.localeCompare(b.code));
+  };
 
-  const STOCK_COLUMNS = 12;
+  // A column nobody can put a number in is a column that costs width for
+  // nothing — and thirteen is where this table stops fitting.
+  const anyConsigned = stocked.some((i) => i.consignedQty > 0);
+  const STOCK_COLUMNS = anyConsigned ? 13 : 12;
 
   const rows: DataRow[] = visible.map((i) => {
     const consignors = consignorsOf(i.id);
@@ -192,6 +220,7 @@ export default async function Stock({
         group_name: category,
         uom_code: i.uom_code,
         onHand: i.onHand,
+        consignedQty: i.consignedQty,
         reservedQty: i.reservedQty,
         available: i.available,
         incomingQty: i.incomingQty,
@@ -199,7 +228,7 @@ export default async function Stock({
         value_on_hand: i.valueOnHand,
         last_cost: Number(i.last_purchase_price ?? 0),
       },
-      node: <StockRow item={rowItem} columnCount={STOCK_COLUMNS} />,
+      node: <StockRow item={rowItem} columnCount={STOCK_COLUMNS} showConsigned={anyConsigned} />,
     };
   });
 
@@ -446,6 +475,9 @@ export default async function Stock({
                 { key: "group_name", label: "Category", sortable: true },
                 { key: "uom_code", label: "Unit", sortable: true },
                 { key: "onHand", label: "On hand", sortable: true, align: "r" },
+                ...(anyConsigned
+                  ? [{ key: "consignedQty", label: "Consigned", sortable: true, align: "r" as const }]
+                  : []),
                 { key: "reservedQty", label: "Reserved", sortable: true, align: "r" },
                 { key: "available", label: "Available", sortable: true, align: "r" },
                 { key: "incomingQty", label: "Incoming", sortable: true, align: "r" },

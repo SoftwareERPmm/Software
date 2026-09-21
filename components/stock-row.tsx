@@ -24,6 +24,8 @@ export type StockWarehouseRow = {
   code: string;
   name: string;
   onHand: number;
+  /** Held here but owned by a consignor. Never part of onHand. */
+  consigned: number;
   reserved: number;
 };
 
@@ -61,9 +63,15 @@ const qty = (v: number) =>
 
 const DASH = "—";
 
-export function StockRow({ item, columnCount }: { item: StockRowItem; columnCount: number }) {
+export function StockRow(
+  { item, columnCount, showConsigned }:
+  { item: StockRowItem; columnCount: number; showConsigned: boolean }
+) {
   const [open, setOpen] = useState(false);
   const consigned = item.consignors.length > 0;
+  // Only where there is some: a fifth column of dashes on a 380px panel costs
+  // more than it tells anyone.
+  const anyConsigned = item.warehouses.some((w) => w.consigned > 0);
 
   // Value divided by units, not a column anyone stores: what the FIFO layers
   // behind this item average out to. Meaningless with nothing on hand, and
@@ -119,6 +127,26 @@ export function StockRow({ item, columnCount }: { item: StockRowItem; columnCoun
         <td className="catcell" style={{ color: "var(--muted)" }}>{item.category}</td>
         <td className="code">{item.uomCode}</td>
         <td className="r">{qty(item.onHand)}</td>
+        {/* Held but not owned, so it is deliberately absent from On hand and
+            from Value — a consignor's goods are not the company's stock and
+            must not be counted as either. Without a column of its own the
+            quantity had nowhere to appear at all: a row with twelve units on
+            the shelf read as zero of everything, which is worse than not
+            listing it.
+
+            Only where the company holds consigned goods at all. A trading
+            company that has never taken any would otherwise carry a thirteenth
+            column of dashes, and thirteen is the width at which this table
+            stops fitting. */}
+        {showConsigned && (
+          <td className="r">
+            {item.consignedQty > 0 ? (
+              <Link href="/inventory/consignment" style={{ color: "var(--brand)" }}>
+                {qty(item.consignedQty)}
+              </Link>
+            ) : DASH}
+          </td>
+        )}
         <td className="r" style={{ color: item.reservedQty > 0 ? "var(--warn)" : undefined }}>
           {item.reservedQty > 0 ? qty(item.reservedQty) : DASH}
         </td>
@@ -156,6 +184,7 @@ export function StockRow({ item, columnCount }: { item: StockRowItem; columnCoun
                       <tr>
                         <th>Warehouse</th>
                         <th className="r">On hand</th>
+                        {anyConsigned && <th className="r">Consigned</th>}
                         <th className="r">Reserved</th>
                         <th className="r">Available</th>
                       </tr>
@@ -165,6 +194,9 @@ export function StockRow({ item, columnCount }: { item: StockRowItem; columnCoun
                         <tr key={w.locationId}>
                           <td className="code">{w.code}</td>
                           <td className="r">{qty(w.onHand)}</td>
+                          {anyConsigned && (
+                            <td className="r">{w.consigned > 0 ? qty(w.consigned) : DASH}</td>
+                          )}
                           <td className="r" style={{ color: w.reserved > 0 ? "var(--warn)" : undefined }}>
                             {w.reserved > 0 ? qty(w.reserved) : DASH}
                           </td>
@@ -179,6 +211,9 @@ export function StockRow({ item, columnCount }: { item: StockRowItem; columnCoun
                       <tr>
                         <td>Total</td>
                         <td className="r">{qty(item.onHand)}</td>
+                        {anyConsigned && (
+                          <td className="r">{qty(item.consignedQty)}</td>
+                        )}
                         <td className="r">{item.reservedQty > 0 ? qty(item.reservedQty) : DASH}</td>
                         <td className="r">{qty(item.available)}</td>
                       </tr>

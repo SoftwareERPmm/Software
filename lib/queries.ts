@@ -97,13 +97,32 @@ export async function getActionItems(companyId: string) {
   // nothing is waiting while that page lists an invoice with 900 units still
   // to ship. "Any delivery exists" was never the question; "anything left to
   // deliver" is.
-  const pd = { n: (await getPendingDeliveryLines(companyId)).length };
+  const pendingRows = await getPendingDeliveryLines(companyId);
+  const pd = { n: pendingRows.length };
+
+  /**
+   * Billed, owed for, and still in the warehouse after too long.
+   *
+   * Same line GR/IR draws: invoicing a day before the van leaves is the
+   * normal shape of "deliver later", so only the ones that have sat past
+   * GRIR_AGE_DAYS are worth calling out. Below that it is business in
+   * progress, not a customer paying for goods they never got.
+   */
+  const pdAgeDays = (r: { doc_date: unknown }) =>
+    Math.floor((Date.now() - new Date(r.doc_date as string).getTime()) / 86400000);
+  const pdAgedRows = (pendingRows as unknown as { doc_date: unknown }[])
+    .filter((r) => pdAgeDays(r) > GRIR_AGE_DAYS);
 
   // Same both-directions check as getOpenDeliveries — a delivery already
   // linked to an invoice either way (composed atomically, or fulfilling a
   // "deliver later" invoice afterward) isn't waiting on anything.
   const [openDeliv] = await sql`
-    select count(*)::int as n
+    select count(*)::int as n,
+           count(*) filter (
+             where current_date - d.doc_date > ${GRIR_AGE_DAYS})::int as aged,
+           coalesce(sum(d.gross_total) filter (
+             where current_date - d.doc_date > ${GRIR_AGE_DAYS}), 0) as aged_total,
+           coalesce(max(current_date - d.doc_date), 0)::int as oldest_days
       from document d
      where d.company_id = ${companyId} and d.doc_type = 'DELIVERY' and d.status = 'POSTED'
        and not exists (
@@ -133,7 +152,10 @@ export async function getActionItems(companyId: string) {
       join currency c on c.code = oi.currency
      where oi.company_id = ${companyId}
        and oi.doc_type = ${docType}
-       and oi.aging_bucket <> 'CURRENT'
+       -- Overdue means a deadline was missed. An invoice with no due date
+       -- has missed nothing; it is unknown, not late, and counting it here
+       -- would put a figure nobody agreed into the overdue total.
+       and oi.aging_bucket not in ('CURRENT', 'NO_DUE_DATE')
        and abs(oi.outstanding) >= 0.5 / power(10, c.decimal_places)`;
 
   const [custOverdue] = await overdueFor("SALES_INVOICE");
@@ -173,6 +195,17 @@ export async function getActionItems(companyId: string) {
     },
     pendingDeliveryInvoices: pd.n as number,
     openDeliveries: openDeliv.n as number,
+    // The aged subsets the dashboard alerts on, kept beside the plain counts
+    // the work-in-progress panel shows — the same documents, one asking for
+    // action and one just saying what is in flight.
+    deliveriesUninvoiced: {
+      n: Number(openDeliv.aged), total: Math.abs(Number(openDeliv.aged_total)),
+      oldestDays: Number(openDeliv.oldest_days),
+    },
+    invoicesUndelivered: {
+      n: pdAgedRows.length,
+      oldestDays: pdAgedRows.reduce((m, r) => Math.max(m, pdAgeDays(r)), 0),
+    },
     customerInvoicesOverdue: { n: Number(custOverdue.n), total: Number(custOverdue.total) },
     supplierBillsOverdue: { n: Number(supOverdue.n), total: Number(supOverdue.total) },
     goodsReceipts: grirRow("GOODS_RECEIPT"),
@@ -235,17 +268,74 @@ export async function getHealth(companyId: string) {
   };
 }
 
-export async function getAging(companyId: string) {
+export type AgingSide = "SALES_INVOICE" | "PURCHASE_INVOICE";
+
+/** The five buckets, in order, for one side of the ledger. */
+export async function getAging(
+  companyId: string, docType: AgingSide = "SALES_INVOICE",
+) {
   return sql`
     select aging_bucket,
            count(*)::int          as invoices,
            sum(outstanding)       as total
       from v_open_item
-     where company_id = ${companyId} and doc_type = 'SALES_INVOICE'
+     where company_id = ${companyId} and doc_type = ${docType}
      group by aging_bucket
      order by case aging_bucket
        when 'CURRENT' then 0 when '1-30' then 1 when '31-60' then 2
-       when '61-90' then 3 else 4 end`;
+       when '61-90' then 3 when '90+' then 4 else 5 end`;
+}
+
+/**
+ * One row per partner, spread across the same five buckets.
+ *
+ * Every figure comes from v_open_item, so it is the same arithmetic the
+ * receivables and payables screens use and cannot drift from them — the
+ * bucket is decided by the invoice's own due date, and what is still owed is
+ * gross less what has been allocated and returned.
+ *
+ * Partners with nothing outstanding do not appear: an aging report is a list
+ * of what is owed, and a customer who has paid is not part of the answer.
+ */
+export async function getPartnerAging(
+  companyId: string, docType: AgingSide = "SALES_INVOICE",
+) {
+  return sql`
+    select partner_id, partner_code, partner_name,
+           count(*)::int as open_invoices,
+           sum(outstanding) as total,
+           sum(outstanding) filter (where aging_bucket = 'CURRENT') as current_amt,
+           sum(outstanding) filter (where aging_bucket = '1-30')    as d1_30,
+           sum(outstanding) filter (where aging_bucket = '31-60')   as d31_60,
+           sum(outstanding) filter (where aging_bucket = '61-90')   as d61_90,
+           sum(outstanding) filter (where aging_bucket = '90+')     as d90,
+           sum(outstanding) filter (where aging_bucket = 'NO_DUE_DATE') as no_due,
+           max(days_overdue) as worst_days,
+           to_char(max(due_date), 'YYYY-MM-DD') as latest_due
+      from v_open_item
+     where company_id = ${companyId} and doc_type = ${docType}
+     group by partner_id, partner_code, partner_name
+     order by sum(outstanding) desc`;
+}
+
+/**
+ * What falls due in the next seven days and is not already late.
+ *
+ * Separate from the buckets rather than derived from CURRENT, which holds
+ * everything not yet due however far off. The question this answers is what
+ * has to be found money for this week.
+ */
+export async function getDueWithin(
+  companyId: string, docType: AgingSide, days = 7,
+) {
+  const [row] = await sql`
+    select coalesce(sum(outstanding), 0) as total, count(*)::int as invoices
+      from v_open_item
+     where company_id = ${companyId} and doc_type = ${docType}
+       and due_date is not null
+       and due_date >= current_date
+       and due_date <= current_date + ${days}::int`;
+  return { total: Number(row?.total ?? 0), invoices: Number(row?.invoices ?? 0) };
 }
 
 /**
@@ -305,7 +395,7 @@ export async function getPartnerBalances(companyId: string, docType: "SALES_INVO
 
 export async function getOpenItems(companyId: string, docType: string) {
   return sql`
-    select document_id, doc_no, partner_name, posting_date, due_date,
+    select document_id, doc_no, partner_id, partner_name, posting_date, due_date,
            gross_total, allocated, outstanding, aging_bucket, days_overdue
       from v_open_item
      where company_id = ${companyId} and doc_type = ${docType}

@@ -110,6 +110,7 @@ const BACK_FROM: Record<string, string> = {
   "/sales/orders/new": "New sales order",
   "/sales/deliver/new": "New delivery",
   "/finance/general-ledger": "General ledger",
+  "/finance/aging": "AR / AP aging",
 };
 
 export default async function DocumentPage({

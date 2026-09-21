@@ -26,9 +26,26 @@ const toTime = (v: unknown) => (v ? new Date(v as string).getTime() : 0);
 export default async function Deliver({
   searchParams,
 }: {
-  searchParams: Promise<{ order?: string }>;
+  searchParams: Promise<{ order?: string; open?: string }>;
 }) {
-  const { order } = await searchParams;
+  const { order, open } = await searchParams;
+  /**
+   * Only the deliveries that have gone out and never been billed.
+   *
+   * The dashboard counts these because they are goods given away: stock left,
+   * cost of sale was booked, and no receivable was ever raised — so the
+   * customer owes nothing, appears on no aging report, and nothing about the
+   * books looks wrong. A count is only useful if clicking it lands on those
+   * deliveries rather than on every delivery ever recorded.
+   */
+  const onlyUnbilled = open === "uninvoiced";
+  /**
+   * The mirror: invoices raised as “to deliver” whose goods never went out.
+   * The customer owes the money and has nothing to show for it, which surfaces
+   * as a complaint rather than as anything wrong in the ledger.
+   */
+  const onlyUndelivered = open === "undelivered";
+  const focused = onlyUnbilled || onlyUndelivered;
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
@@ -181,7 +198,11 @@ export default async function Deliver({
       .map((o) => [o.locationCode!, o.locationName ?? o.locationCode!])
   ).entries()].map(([value, label]) => ({ value, label }));
 
-  const rows: DataRow[] = history.map((d) => {
+  const shown = onlyUnbilled
+    ? history.filter((d) => d.status === "POSTED" && unbilled.has(d.id))
+    : history;
+
+  const rows: DataRow[] = shown.map((d) => {
     const voided = d.status !== "POSTED";
     const short = unbilled.has(d.id);
     return {
@@ -260,59 +281,69 @@ export default async function Deliver({
       <ErpPageHead
         eyebrow="Sales"
         title="Deliveries"
-        lead="Record stock leaving your warehouse."
+        lead={
+          onlyUnbilled ? "One thing only: goods that went out and were never billed."
+          : onlyUndelivered ? "One thing only: invoices whose goods never went out."
+          : "Record stock leaving your warehouse."}
       />
 
-      <ErpSection
-        title="Sales orders awaiting delivery"
-        count={orders.size}
-        lead="Choose an order to record the quantities sent."
-        action={
-          <Link href="/sales/deliver/new" className="erp-hbtn">
-            <Plus size={15} aria-hidden="true" /> Deliver without a sales order
-          </Link>
-        }
-        foot={
-          orders.size > 0
-            ? <span>Check quantities against what is on hand before posting.</span>
-            : undefined
-        }
-      >
-        {orders.size === 0 ? (
-          <div className="empty">
-            Nothing outstanding.{" "}
-            <Link href="/sales/orders/new" style={{ color: "var(--brand)" }}>New sales order</Link>
-            {" "}to start one, or{" "}
-            <Link href="/sales/deliver/new" style={{ color: "var(--brand)" }}>deliver without one</Link>
-            {" "}if the goods have already gone.
-          </div>
-        ) : (
-          <DataTable
-            rows={awaiting}
-            columns={[
-              { key: "order_no", label: "Sales order", sortable: true },
-              { key: "partner_name", label: "Customer", sortable: true },
-              { key: "due_date", label: "Promised by", sortable: true },
-              { key: "warehouse", label: "Warehouse" },
-              { key: "remaining", label: "Remaining", sortable: true, align: "r" as const },
-              { key: "action", label: "Action" },
-            ]}
-            filters={[{ key: "warehouse", allLabel: "All warehouses", options: warehouses }]}
-            searchPlaceholder="Search SO number or customer"
-            defaultSort={{ key: "due_date", dir: "asc" }}
-            emptyLabel="No order matches that."
-          />
-        )}
-      </ErpSection>
+      {!focused && (
+        <ErpSection
+          title="Sales orders awaiting delivery"
+          count={orders.size}
+          lead="Choose an order to record the quantities sent."
+          action={
+            <Link href="/sales/deliver/new" className="erp-hbtn">
+              <Plus size={15} aria-hidden="true" /> Deliver without a sales order
+            </Link>
+          }
+          foot={
+            orders.size > 0
+              ? <span>Check quantities against what is on hand before posting.</span>
+              : undefined
+          }
+        >
+          {orders.size === 0 ? (
+            <div className="empty">
+              Nothing outstanding.{" "}
+              <Link href="/sales/orders/new" style={{ color: "var(--brand)" }}>New sales order</Link>
+              {" "}to start one, or{" "}
+              <Link href="/sales/deliver/new" style={{ color: "var(--brand)" }}>deliver without one</Link>
+              {" "}if the goods have already gone.
+            </div>
+          ) : (
+            <DataTable
+              rows={awaiting}
+              columns={[
+                { key: "order_no", label: "Sales order", sortable: true },
+                { key: "partner_name", label: "Customer", sortable: true },
+                { key: "due_date", label: "Promised by", sortable: true },
+                { key: "warehouse", label: "Warehouse" },
+                { key: "remaining", label: "Remaining", sortable: true, align: "r" as const },
+                { key: "action", label: "Action" },
+              ]}
+              filters={[{ key: "warehouse", allLabel: "All warehouses", options: warehouses }]}
+              searchPlaceholder="Search SO number or customer"
+              defaultSort={{ key: "due_date", dir: "asc" }}
+              emptyLabel="No order matches that."
+            />
+          )}
+        </ErpSection>
+      )}
 
       {/* Invoices raised before the goods went out. The purchase side has no
           equivalent — a bill arriving before its goods is a GR/IR balance,
           not a queue of things to do — so this card is sales-only. */}
-      {pending.length > 0 && (
+      {pending.length > 0 && !onlyUnbilled && (
         <ErpSection
-          title="Invoiced, waiting on delivery"
+          title={onlyUndelivered ? "Invoiced, not yet delivered" : "Invoiced, waiting on delivery"}
           count={pending.length}
-          lead="These were billed as “to deliver”. The stock has not left yet."
+          lead={onlyUndelivered
+            ? "Billed and owed for, but the goods are still in the warehouse — the customer is paying for something they have not received."
+            : "These were billed as “to deliver”. The stock has not left yet."}
+          foot={onlyUndelivered
+            ? <Link href="/sales/deliver">Show the whole deliveries page</Link>
+            : undefined}
         >
           <div className="tablewrap">
             <table>
@@ -343,44 +374,55 @@ export default async function Deliver({
         <ErpSummary stats={summary} />
       </ErpSection>
 
-      <ErpSection
-        title="Delivery history"
-        lead="Previously recorded deliveries."
-        foot={
-          posted.length > 0 ? (
-            <>
-              <span>{posted.length} posted deliver{posted.length === 1 ? "y" : "ies"}</span>
-              <span>Total <strong>{company.base_currency} {money(deliveredValue)}</strong></span>
-            </>
-          ) : undefined
-        }
-      >
-        <DataTable
-          rows={rows}
-          columns={[
-            { key: "doc_no", label: "Delivery", sortable: true },
-            { key: "doc_date", label: "Delivered date", sortable: true },
-            { key: "partner_name", label: "Customer", sortable: true },
-            { key: "location_code", label: "Warehouse", sortable: true },
-            { key: "source_no", label: "Source", sortable: true },
-            { key: "gross_total", label: `Value (${company.base_currency})`,
-              sortable: true, align: "r" as const },
-            { key: "invoiced", label: "Invoice status", sortable: true },
-          ]}
-          filters={[{
-            key: "status",
-            allLabel: "All statuses",
-            options: [
-              { value: "invoiced", label: "Fully invoiced" },
-              { value: "awaiting", label: "Awaiting invoice" },
-              { value: "voided", label: "Voided" },
-            ],
-          }]}
-          searchPlaceholder="Search delivery number, customer or SO"
-          defaultSort={{ key: "doc_date", dir: "desc" }}
-          emptyLabel="Nothing has been delivered yet."
-        />
-      </ErpSection>
+      {!onlyUndelivered && (
+        <ErpSection
+          title={onlyUnbilled ? "Delivered, not yet invoiced" : "Delivery history"}
+          lead={onlyUnbilled
+            ? "Goods that have left the warehouse with no invoice raised against them — the customer has them and owes nothing."
+            : "Previously recorded deliveries."}
+          foot={
+            onlyUnbilled ? (
+              <>
+                <span>
+                  {rows.length} deliver{rows.length === 1 ? "y" : "ies"} awaiting an invoice
+                </span>
+                <Link href="/sales/deliver">Show every delivery</Link>
+              </>
+            ) : posted.length > 0 ? (
+              <>
+                <span>{posted.length} posted deliver{posted.length === 1 ? "y" : "ies"}</span>
+                <span>Total <strong>{company.base_currency} {money(deliveredValue)}</strong></span>
+              </>
+            ) : undefined
+          }
+        >
+          <DataTable
+            rows={rows}
+            columns={[
+              { key: "doc_no", label: "Delivery", sortable: true },
+              { key: "doc_date", label: "Delivered date", sortable: true },
+              { key: "partner_name", label: "Customer", sortable: true },
+              { key: "location_code", label: "Warehouse", sortable: true },
+              { key: "source_no", label: "Source", sortable: true },
+              { key: "gross_total", label: `Value (${company.base_currency})`,
+                sortable: true, align: "r" as const },
+              { key: "invoiced", label: "Invoice status", sortable: true },
+            ]}
+            filters={[{
+              key: "status",
+              allLabel: "All statuses",
+              options: [
+                { value: "invoiced", label: "Fully invoiced" },
+                { value: "awaiting", label: "Awaiting invoice" },
+                { value: "voided", label: "Voided" },
+              ],
+            }]}
+            searchPlaceholder="Search delivery number, customer or SO"
+            defaultSort={{ key: "doc_date", dir: "desc" }}
+            emptyLabel="Nothing has been delivered yet."
+          />
+        </ErpSection>
+      )}
     </div>
   );
 }

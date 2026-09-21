@@ -5,17 +5,22 @@ import {
 import { money } from "@/lib/db";
 import {
   getCompany, getKpis, getHealth, getAging, getDocuments, getStock, getActionItems,
+  getNegativeStock, getLowStock,
   getRevenueTrend, getTopItems, getTopCustomers, getOnboardingStatus,
 } from "@/lib/queries";
 import { RevenueBars } from "@/components/charts";
 
 import { GettingStarted, needsGettingStarted } from "@/components/getting-started";
+import {
+  AttentionPanel, type AttentionGroup, type AttentionItem,
+} from "@/components/attention-panel";
 
 export default async function Dashboard() {
   const company = await getCompany();
   if (!company) return <div className="empty">No company found. Run <span className="m">npm run db:seed</span>.</div>;
 
-  const [kpis, health, aging, docs, stock, actionItems, revenueTrend, topItems, topCustomers, onboarding] = await Promise.all([
+  const [kpis, health, aging, docs, stock, actionItems, revenueTrend, topItems, topCustomers,
+         onboarding, negativeStock, lowStock] = await Promise.all([
     getKpis(company.id),
     getHealth(company.id),
     getAging(company.id),
@@ -26,6 +31,8 @@ export default async function Dashboard() {
     getTopItems(company.id),
     getTopCustomers(company.id),
     getOnboardingStatus(company.id),
+    getNegativeStock(company.id),
+    getLowStock(company.id),
   ]);
 
   const healthy = health.unbalanced === 0 && health.inventoryBreaks === 0 && health.trialBalance === 0;
@@ -37,79 +44,116 @@ export default async function Dashboard() {
   // has passed with something still outstanding. Same reasoning for GR/IR:
   // sitting open a few days is how the pattern works, not a problem — only
   // the aged subset (GRIR_AGE_DAYS in getActionItems) counts here.
-  const actions = [
+  // Already fetched for the aging strip; no second query for one number.
+  const noDueDate = (aging as unknown as { aging_bucket: string; invoices: number }[])
+    .find((b) => b.aging_bucket === "NO_DUE_DATE")?.invoices ?? 0;
+
+  const actions = ([
     {
       n: actionItems.goodsReceipts.aged,
-      label: `goods receipt${actionItems.goodsReceipts.aged === 1 ? "" : "s"}, supplier invoice missing`,
+      label: "Goods receipts awaiting bill",
       detail: `oldest ${actionItems.goodsReceipts.oldestDays}d · ${money(actionItems.goodsReceipts.agedTotal)}`,
       href: "/documents?type=GOODS_RECEIPT&open=grir",
+      group: "purchases", tone: "warn",
     },
     {
       n: actionItems.purchaseInvoicesAwaitingGoods.aged,
-      label: `supplier invoice${actionItems.purchaseInvoicesAwaitingGoods.aged === 1 ? "" : "s"}, goods overdue to arrive`,
+      label: "Supplier invoices awaiting goods",
       detail: `oldest ${actionItems.purchaseInvoicesAwaitingGoods.oldestDays}d · ${money(actionItems.purchaseInvoicesAwaitingGoods.agedTotal)}`,
       href: "/documents?type=PURCHASE_INVOICE&open=grir",
+      group: "purchases", tone: "warn",
     },
     {
       n: actionItems.customerInvoicesOverdue.n,
-      label: `customer invoice${actionItems.customerInvoicesOverdue.n === 1 ? "" : "s"} overdue`,
+      label: "Overdue receivables",
       detail: money(actionItems.customerInvoicesOverdue.total),
-      href: "/receivables?status=overdue",
+      href: "/finance/aging",
+      group: "sales", tone: "bad",
     },
     {
       n: actionItems.supplierBillsOverdue.n,
-      label: `supplier bill${actionItems.supplierBillsOverdue.n === 1 ? "" : "s"} overdue`,
+      label: "Supplier bills overdue",
       detail: money(actionItems.supplierBillsOverdue.total),
-      href: "/payables?status=overdue",
+      href: "/finance/aging?side=ap",
+      group: "purchases", tone: "bad",
     },
     // These pointed at every order ever raised, which answers a different
     // question than the one being asked. "Two are overdue" and then a list
     // of two hundred is not a link to the two.
     {
       n: actionItems.salesOrders.overdue,
-      label: `sales order${actionItems.salesOrders.overdue === 1 ? "" : "s"} overdue`,
+      label: "Sales orders overdue",
       detail: "past its own Needed-by date",
       href: "/sales/orders?status=overdue",
+      group: "sales", tone: "warn",
     },
     {
       n: actionItems.purchaseOrders.overdue,
-      label: `purchase order${actionItems.purchaseOrders.overdue === 1 ? "" : "s"} overdue`,
+      label: "Purchase orders overdue",
       detail: "past its own Needed-by date",
       href: "/purchases/orders?status=overdue",
+      group: "purchases", tone: "warn",
     },
-  ].filter((a) => a.n > 0);
-
-  // Work in progress is the neutral counterpart — normal open business, no
-  // threshold, nothing implying anyone forgot anything.
-  // "Open" is not used here, deliberately. On the order lists it is a status
-  // with a narrower meaning — nothing fulfilled at all — while this panel
-  // counts every order with goods still to come, partly received ones
-  // included. Saying "2 purchase orders open" next to a list showing none of
-  // them as Open is the same word meaning two things, and it reads as a bug
-  // in the figure rather than in the wording. These say what they count.
-  const orderSplit = (o: { notStarted: number; partial: number }) =>
-    o.notStarted > 0 && o.partial > 0
-      ? `${o.notStarted} not started · ${o.partial} partly done`
-      : o.partial > 0 ? "partly done" : "none started yet";
-
-  const wip = [
+    /* Stock the books say is below zero. Not a paperwork problem: either goods
+       left that were never received, or a receipt is missing, and until it is
+       settled the cost of everything sold from that item is a guess. */
     {
-      n: actionItems.salesOrders.open,
-      label: "sales orders awaiting delivery",
-      detail: orderSplit(actionItems.salesOrders),
-      href: "/documents?type=SALES_ORDER",
+      n: (negativeStock as unknown as unknown[]).length,
+      label: "Items at negative stock",
+      detail: "a receipt is missing, or goods left twice",
+      href: "/inventory/negative-stock",
+      group: "inventory", tone: "bad",
     },
-    { n: actionItems.openDeliveries, label: "deliveries pending invoice", href: "/documents?type=DELIVERY" },
+    /* Out of stock, or under the reorder point somebody set for it. The one
+       alert here that is about the future rather than a mistake already made. */
     {
-      n: actionItems.purchaseOrders.open,
-      label: "purchase orders awaiting goods",
-      detail: orderSplit(actionItems.purchaseOrders),
-      href: "/documents?type=PURCHASE_ORDER",
+      n: (lowStock as unknown as unknown[]).length,
+      label: "Out of stock or below reorder",
+      detail: "counted per item and warehouse",
+      href: "/items/stock",
+      group: "inventory", tone: "warn",
     },
-    { n: actionItems.goodsReceipts.open, label: "goods receipts pending invoice", href: "/documents?type=GOODS_RECEIPT&open=grir" },
-    { n: Number(kpis.ar.n), label: "unpaid customer invoices", href: "/receivables" },
-    { n: Number(kpis.ap.n), label: "unpaid supplier bills", href: "/payables" },
-  ];
+    /* Goods that left and were never billed. Stock is gone, the cost of sale
+       is booked, and no receivable was ever raised — so the customer owes
+       nothing, appears on no aging report, and nothing in the books looks
+       wrong. It is a giveaway that nobody decided to make. */
+    {
+      n: actionItems.deliveriesUninvoiced.n,
+      label: "Delivered not invoiced",
+      detail: `oldest ${actionItems.deliveriesUninvoiced.oldestDays}d · ${money(actionItems.deliveriesUninvoiced.total)} given away unbilled`,
+      href: "/sales/deliver?open=uninvoiced",
+      group: "sales", tone: "warn",
+    },
+    /* The mirror: billed, owed for, and still on the shelf. The ledger is
+       right and the customer is the one who finds out. */
+    {
+      n: actionItems.invoicesUndelivered.n,
+      label: "Invoiced not delivered",
+      detail: `oldest ${actionItems.invoicesUndelivered.oldestDays}d · goods still in the warehouse`,
+      href: "/sales/deliver?open=undelivered",
+      group: "sales", tone: "warn",
+    },
+    /* An invoice nobody agreed terms on. It cannot be chased, because there is
+       no date it was supposed to be paid by — and it sits in aging under "No
+       due date" rather than pretending to be current. */
+    {
+      n: noDueDate,
+      label: "Missing due dates",
+      detail: "no terms agreed, so nothing can be called overdue",
+      href: "/finance/aging",
+      group: "sales", tone: "info",
+    },
+  ] as (AttentionItem & { group: string })[]).filter((a) => a.n > 0);
+
+  /* Grouped the way the reader works rather than the way the checks were
+     written: everything about selling in one column, buying in the next,
+     and stock only when it has something to say. */
+  const attentionGroups: AttentionGroup[] = [
+    { key: "sales", title: "Sales", sub: "Customer invoices and deliveries", icon: "sales" as const },
+    { key: "purchases", title: "Purchases", sub: "Supplier orders, deliveries and bills", icon: "purchases" as const },
+    { key: "inventory", title: "Inventory", sub: "Stock levels and reorder points", icon: "inventory" as const },
+  ].map((g) => ({ ...g, items: actions.filter((a) => a.group === g.key) }))
+   .filter((g) => g.items.length > 0);
 
   // ---- figures the design shows, all derived from the data above ---------
 
@@ -142,7 +186,6 @@ export default async function Dashboard() {
   /** A KPI's badge: what this figure is doing, said from the figure itself. */
   const kpiCards = [
     {
-      tone: "var(--brand)",
       label: "Inventory value",
       value: cur(kpis.stock.value),
       note: `${money(kpis.stock.qty)} units on hand`,
@@ -151,7 +194,6 @@ export default async function Dashboard() {
         : { text: "Nothing in stock", tint: "var(--muted)" },
     },
     {
-      tone: "#3B6FD4",
       label: "Receivables",
       value: cur(kpis.ar.total),
       note: n(kpis.ar.n) === 0
@@ -164,7 +206,6 @@ export default async function Dashboard() {
           : { text: "None overdue", tint: "#3B6FD4" },
     },
     {
-      tone: "var(--warn)",
       label: "Payables",
       value: cur(kpis.ap.total),
       note: n(kpis.ap.n) === 0
@@ -177,7 +218,6 @@ export default async function Dashboard() {
           : { text: "None overdue", tint: "var(--warn)" },
     },
     {
-      tone: "#6C5CE0",
       label: "Cash balance",
       value: cur(kpis.cash.total),
       note: "Cash + bank accounts",
@@ -192,7 +232,6 @@ export default async function Dashboard() {
   // is some, so it does not pad the row with a zero.
   if (n(kpis.advances.customer) > 0 || n(kpis.advances.supplier) > 0) {
     kpiCards.push({
-      tone: "#0E8A8A",
       label: "On account",
       value: cur(n(kpis.advances.customer) + n(kpis.advances.supplier)),
       note: "Paid before invoicing",
@@ -200,7 +239,17 @@ export default async function Dashboard() {
     });
   }
 
-  /** The two pipelines, each stage counted from what is actually open. */
+  /**
+   * The two pipelines, each stage counted from what is actually open — and
+   * mirrored, stage for stage, so the same shape reads the same way on both
+   * sides: order placed, goods moved, document raised against goods that have
+   * not moved, money outstanding.
+   *
+   * Stages only. "Overdue" appears nowhere here: the strip above owns every
+   * exception, and Collection used to repeat its customer-invoices-overdue
+   * figure exactly — the same number twice on one screen, pointing at two
+   * different pages.
+   */
   const purchaseFlow = [
     { n: actionItems.purchaseOrders.open, name: "Orders", sub: "Awaiting goods",
       href: "/documents?type=PURCHASE_ORDER" },
@@ -215,9 +264,9 @@ export default async function Dashboard() {
       href: "/documents?type=SALES_ORDER" },
     { n: actionItems.openDeliveries, name: "Delivery", sub: "Awaiting invoice",
       href: "/documents?type=DELIVERY" },
-    { n: n(kpis.ar.n), name: "Invoicing", sub: "Unpaid invoices", href: "/receivables" },
-    { n: actionItems.customerInvoicesOverdue.n, name: "Collection", sub: "Overdue",
-      href: "/receivables?status=overdue" },
+    { n: actionItems.pendingDeliveryInvoices, name: "Invoicing",
+      sub: "Awaiting delivery", href: "/sales/deliver?open=undelivered" },
+    { n: n(kpis.ar.n), name: "Collection", sub: "Unpaid invoices", href: "/receivables" },
   ];
 
   const checks = [
@@ -281,10 +330,11 @@ export default async function Dashboard() {
       <div className="dash-cards">
         {kpiCards.map((k) => (
           <div key={k.label} className="dash-card dash-card-pad dash-kpi">
-            <span className="dash-kpi-label">
-              <span className="dash-dot" style={{ background: k.tone }} aria-hidden="true" />
-              {k.label}
-            </span>
+            {/* No colour dot. Five of them made a row of markers that keyed
+                to nothing — no legend, no chart, no repeat anywhere else on
+                the page — so the eye read them as meaning something and found
+                they meant only "this is a card". The label says what it is. */}
+            <span className="dash-kpi-label">{k.label}</span>
             <span className="dash-kpi-value">{k.value}</span>
             <span className="dash-kpi-note">{k.note}</span>
             <span className="dash-badge" style={{
@@ -297,26 +347,19 @@ export default async function Dashboard() {
         ))}
       </div>
 
-      <div className={`dash-banner${urgent > 0 ? " warn" : ""}`}>
-        <span className="dash-banner-mark" aria-hidden="true">
-          {urgent > 0 ? <AlertTriangle size={16} /> : <Check size={16} />}
-        </span>
-        <div>
-          <strong>
-            {urgent > 0
-              ? `${urgent} thing${urgent === 1 ? "" : "s"} need${urgent === 1 ? "s" : ""} attention`
-              : "No urgent actions"}
-          </strong>
-          <span className="dash-sub" style={{ display: "block", color: "var(--muted)" }}>
-            {urgent > 0
-              ? actions.map((a) => `${a.n} ${a.label}`).join(" · ")
-              : "Invoices, orders and inventory checks are up to date."}
-          </span>
+      {urgent > 0 ? (
+        <AttentionPanel total={urgent} groups={attentionGroups} />
+      ) : (
+        <div className="dash-banner">
+          <span className="dash-banner-mark" aria-hidden="true"><Check size={16} /></span>
+          <div>
+            <strong>No urgent actions</strong>
+            <span className="dash-sub" style={{ display: "block", color: "var(--muted)" }}>
+              Invoices, orders and inventory checks are up to date.
+            </span>
+          </div>
         </div>
-        <Link href="/documents" className="dash-banner-link">
-          View all alerts <ArrowRight size={14} style={{ verticalAlign: "-2px" }} />
-        </Link>
-      </div>
+      )}
 
       {/* Setup is the exception to the reference layout: it only exists until
           the company is trading, so it sits under the figures rather than

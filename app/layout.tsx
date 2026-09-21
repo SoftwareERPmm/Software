@@ -147,6 +147,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <NavGroup label="Accounting" icon={<BookOpen size={14} />} match={[
               "/finance/journal", "/finance/opening", "/finance/general-ledger", "/ledger",
               "/finance/income-statement", "/finance/balance-sheet", "/finance/cash-flow",
+              "/finance/aging",
             ]}>
               <NavSubGroup label="Transactions" match={["/finance/journal", "/finance/opening"]}>
                 <NavLink href="/finance/journal" sub>Journal Voucher</NavLink>
@@ -163,6 +164,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 <NavLink href="/finance/balance-sheet" sub>Balance Sheet</NavLink>
                 <NavLink href="/finance/cash-flow" sub>Cash Flow</NavLink>
               </NavSubGroup>
+              {/* Not under Financial Reports. Aging answers "who owes us and
+                  how late", which is a working question asked while chasing
+                  money — not a statement drawn up at a period end beside the
+                  income statement and the balance sheet. */}
+              <NavLink href="/finance/aging">AR / AP Aging</NavLink>
             </NavGroup>
 
             <NavGroup label="Inventory" icon={<Boxes size={14} />} match={["/items/stock", "/inventory"]}>
