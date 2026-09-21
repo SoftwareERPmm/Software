@@ -506,7 +506,7 @@ export default async function Dashboard({
           </span>
           <div style={{ marginTop: "1.25rem" }}>
             {revenueTotal === 0
-              ? <div className="empty">No revenue posted in {period.rev.phrase}.</div>
+              ? <div className="empty">No revenue posted {period.rev.sentence}.</div>
               : <RevenueBars
                   data={trend}
                   selected={period.rev.month}
@@ -561,7 +561,7 @@ export default async function Dashboard({
             <div>
               <h2>Revenue by category</h2>
               <span className="dash-sub">
-                Sales in {period.cat.phrase}, by how each item is filed
+                Sales {period.cat.sentence}, by how each item is filed
               </span>
             </div>
             <PeriodPicker
@@ -581,7 +581,7 @@ export default async function Dashboard({
             <div>
               <h2>Revenue by state / region</h2>
               <span className="dash-sub">
-                Sales in {period.reg.phrase}, by where the customer is
+                Sales {period.reg.sentence}, by where the customer is
               </span>
             </div>
             <PeriodPicker

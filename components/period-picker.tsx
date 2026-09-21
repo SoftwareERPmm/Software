@@ -28,6 +28,12 @@ export function PeriodPicker({
           <Link
             key={k}
             href={hrefFor(k)}
+            /* Next scrolls to the top of the page on every navigation, which
+               is right when you are going somewhere and wrong here: this
+               link re-renders one card in place. On a phone, where the
+               donuts sit well down the page, it threw the reader back to the
+               KPI cards every time they changed a period. */
+            scroll={false}
             className={`card-period-opt${on ? " on" : ""}`}
             aria-current={on ? "page" : undefined}
             aria-label={resolvePeriod(k).label}

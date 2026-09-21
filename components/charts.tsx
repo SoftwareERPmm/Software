@@ -135,7 +135,8 @@ export function RevenueBars({
           cursor="pointer"
           onClick={(_data: unknown, index: number) => {
             const href = hrefs?.[rows[index]?.ym ?? ""];
-            if (href) router.push(href);
+            // Same reason as the period links: the chart stays where it is.
+            if (href) router.push(href, { scroll: false });
           }}
         >
           {rows.map((_, i) => (
