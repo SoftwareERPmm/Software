@@ -133,7 +133,10 @@ export async function getActionItems(companyId: string) {
       join currency c on c.code = oi.currency
      where oi.company_id = ${companyId}
        and oi.doc_type = ${docType}
-       and oi.aging_bucket <> 'CURRENT'
+       -- Overdue means a deadline was missed. An invoice with no due date
+       -- has missed nothing; it is unknown, not late, and counting it here
+       -- would put a figure nobody agreed into the overdue total.
+       and oi.aging_bucket not in ('CURRENT', 'NO_DUE_DATE')
        and abs(oi.outstanding) >= 0.5 / power(10, c.decimal_places)`;
 
   const [custOverdue] = await overdueFor("SALES_INVOICE");
@@ -250,7 +253,7 @@ export async function getAging(
      group by aging_bucket
      order by case aging_bucket
        when 'CURRENT' then 0 when '1-30' then 1 when '31-60' then 2
-       when '61-90' then 3 else 4 end`;
+       when '61-90' then 3 when '90+' then 4 else 5 end`;
 }
 
 /**
@@ -276,6 +279,7 @@ export async function getPartnerAging(
            sum(outstanding) filter (where aging_bucket = '31-60')   as d31_60,
            sum(outstanding) filter (where aging_bucket = '61-90')   as d61_90,
            sum(outstanding) filter (where aging_bucket = '90+')     as d90,
+           sum(outstanding) filter (where aging_bucket = 'NO_DUE_DATE') as no_due,
            max(days_overdue) as worst_days,
            to_char(max(due_date), 'YYYY-MM-DD') as latest_due
       from v_open_item
@@ -361,7 +365,7 @@ export async function getPartnerBalances(companyId: string, docType: "SALES_INVO
 
 export async function getOpenItems(companyId: string, docType: string) {
   return sql`
-    select document_id, doc_no, partner_name, posting_date, due_date,
+    select document_id, doc_no, partner_id, partner_name, posting_date, due_date,
            gross_total, allocated, outstanding, aging_bucket, days_overdue
       from v_open_item
      where company_id = ${companyId} and doc_type = ${docType}

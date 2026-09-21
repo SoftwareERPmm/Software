@@ -3296,3 +3296,22 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
   font-size: var(--t-md); font-weight: 600; overflow-wrap: anywhere;
 }
 .aging-pct { font-size: var(--t-2xs); color: var(--muted); }
+
+/* The band an invoice sits in, said on the invoice's own row. Tinted from the
+   band colour rather than filled with it: a solid swatch beside a figure
+   competes with the figure. */
+.agingpill {
+  display: inline-block; padding: 0.1rem 0.4rem;
+  border-radius: 5px; font-size: var(--t-2xs); white-space: nowrap;
+}
+
+/* The date the aging bands are measured against. Stated rather than assumed:
+   the table shows issued and due, and "90+ days" is checkable only against a
+   third date the reader can see. */
+.asof {
+  font-family: var(--mono); font-size: var(--t-2xs);
+  letter-spacing: var(--track-caps); text-transform: uppercase;
+  color: var(--muted);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: 0.25rem 0.55rem;
+}

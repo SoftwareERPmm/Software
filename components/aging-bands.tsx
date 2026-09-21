@@ -9,7 +9,7 @@ import { money } from "@/lib/format";
  * each band, for a figure that has to stay legible against white.
  */
 export const BUCKETS = [
-  { key: "current_amt", field: "current_amt", bucket: "CURRENT", label: "Current",
+  { key: "current_amt", field: "current_amt", bucket: "CURRENT", label: "Not yet due",
     band: "#7FBF9B", ink: "#2F6B4F" },
   { key: "d1_30",  field: "d1_30",  bucket: "1-30",  label: "1–30 days",
     band: "#F2D06B", ink: "#8A6A00" },
@@ -19,6 +19,12 @@ export const BUCKETS = [
     band: "#E8879B", ink: "#A33049" },
   { key: "d90",    field: "d90",    bucket: "90+",   label: "90+ days",
     band: "#D9566B", ink: "#B4283C" },
+  /* Last, and deliberately outside the ramp. Grey because it is not a
+     position on the scale from healthy to hopeless — it is an absence of one.
+     Given green it read as settled; given red it would read as overdue, and
+     it is neither. Somebody simply has to find out what was agreed. */
+  { key: "no_due",  field: "no_due",  bucket: "NO_DUE_DATE", label: "No due date",
+    band: "#B9C2CC", ink: "#5B6672" },
 ] as const;
 
 type Bucket = { aging_bucket: string; invoices: number; total: string };

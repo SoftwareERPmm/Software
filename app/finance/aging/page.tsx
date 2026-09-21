@@ -1,23 +1,39 @@
 import Link from "next/link";
 import { Users, AlertTriangle, CreditCard, CalendarClock } from "lucide-react";
 import { money } from "@/lib/db";
+import { sql } from "@/lib/db";
 import {
-  getCompany, getAging, getPartnerAging, getDueWithin, type AgingSide,
+  getCompany, getAging, getDueWithin, getOpenItems, type AgingSide,
 } from "@/lib/queries";
 import { DataTable, type DataRow } from "@/components/data-table";
 import { HelpHint } from "@/components/help-hint";
 import { AgingBands, BUCKETS } from "@/components/aging-bands";
+import { AgingRow, type AgingPartner } from "@/components/aging-row";
 
 type Bucket = { aging_bucket: string; invoices: number; total: string };
-type PartnerRow = {
-  partner_id: string; partner_code: string; partner_name: string;
-  open_invoices: number; total: string;
-  current_amt: string | null; d1_30: string | null; d31_60: string | null;
-  d61_90: string | null; d90: string | null;
-  worst_days: number | null; latest_due: string | null;
+type OpenItem = {
+  document_id: string; doc_no: string; partner_id: string; partner_name: string;
+  partner_code: string | null; posting_date: string | null; due_date: string | null;
+  gross_total: string; outstanding: string; aging_bucket: string;
+  days_overdue: number | null;
 };
 
 const n = (v: unknown) => Number(v ?? 0);
+
+/**
+ * A plain YYYY-MM-DD, whatever the driver handed over.
+ *
+ * v_open_item's date columns arrive as Date objects rather than strings —
+ * getOpenItems selects them raw, unlike the queries that to_char them — and a
+ * Date has no localeCompare, so sorting on one throws. Normalised once here
+ * rather than changed in the shared query, which the receivables and payables
+ * screens also read.
+ */
+const isoDay = (v: unknown): string | null => {
+  if (!v) return null;
+  const d = v instanceof Date ? v : new Date(String(v));
+  return Number.isNaN(d.getTime()) ? String(v) : d.toISOString().slice(0, 10);
+};
 
 export default async function AgingPage({
   searchParams,
@@ -31,16 +47,32 @@ export default async function AgingPage({
   const showAp = side === "ap";
   const docType: AgingSide = showAp ? "PURCHASE_INVOICE" : "SALES_INVOICE";
 
-  const [ar, ap, partners, dueSoon] = await Promise.all([
+  /**
+   * The date every band is measured against, read from the database rather
+   * than from this server's clock.
+   *
+   * v_open_item buckets on CURRENT_DATE, so that is the only date the figures
+   * were actually compared with — and a page that printed its own idea of
+   * today could name a different one. It is stated because the arithmetic is
+   * otherwise invisible: the table shows issued and due, and a reader asked to
+   * believe "90+ days" has no third date on screen to check it against.
+   */
+  const [asOfRow] = await sql`select to_char(current_date, 'DD Mon YYYY') as d`;
+  const asOf = String(asOfRow?.d ?? "");
+
+  const [ar, ap, items, dueSoon] = await Promise.all([
     getAging(company.id, "SALES_INVOICE") as unknown as Promise<Bucket[]>,
     getAging(company.id, "PURCHASE_INVOICE") as unknown as Promise<Bucket[]>,
-    getPartnerAging(company.id, docType) as unknown as Promise<PartnerRow[]>,
+    getOpenItems(company.id, docType) as unknown as Promise<OpenItem[]>,
     getDueWithin(company.id, "PURCHASE_INVOICE"),
   ]);
 
   const sum = (b: Bucket[]) => b.reduce((t, x) => t + n(x.total), 0);
+  // Overdue is a missed deadline. Neither the not-yet-due nor the
+  // no-deadline-at-all band has missed one.
   const overdue = (b: Bucket[]) =>
-    b.filter((x) => x.aging_bucket !== "CURRENT").reduce((t, x) => t + n(x.total), 0);
+    b.filter((x) => x.aging_bucket !== "CURRENT" && x.aging_bucket !== "NO_DUE_DATE")
+     .reduce((t, x) => t + n(x.total), 0);
 
   const arTotal = sum(ar), apTotal = sum(ap);
   const arOverdue = overdue(ar);
@@ -49,52 +81,70 @@ export default async function AgingPage({
   const pct = (part: number, whole: number) =>
     whole > 0 ? `${Math.round((part / whole) * 100)}%` : "—";
 
+  /**
+   * One row per partner, with the invoices that make it up carried along.
+   *
+   * Grouped here rather than asked for per partner: the bills are already
+   * loaded to produce the totals, so an opened row costs nothing and can
+   * never show a figure that disagrees with the line above it.
+   */
+  const byPartner = new Map<string, AgingPartner>();
+  for (const it of items) {
+    let p = byPartner.get(it.partner_id);
+    if (!p) {
+      p = {
+        partnerId: it.partner_id,
+        partnerCode: it.partner_code ?? "",
+        partnerName: it.partner_name,
+        buckets: {}, total: 0, worstDays: null, invoices: [],
+      };
+      byPartner.set(it.partner_id, p);
+    }
+    const amount = n(it.outstanding);
+    p.buckets[it.aging_bucket] = (p.buckets[it.aging_bucket] ?? 0) + amount;
+    p.total += amount;
+    if (it.days_overdue !== null && it.days_overdue > (p.worstDays ?? -1)) {
+      p.worstDays = it.days_overdue;
+    }
+    p.invoices.push({
+      documentId: it.document_id, docNo: it.doc_no,
+      postingDate: isoDay(it.posting_date), dueDate: isoDay(it.due_date),
+      grossTotal: n(it.gross_total), outstanding: amount,
+      bucket: it.aging_bucket, daysOverdue: it.days_overdue,
+    });
+  }
+  const partners = [...byPartner.values()].sort((a, b) => b.total - a.total);
+  for (const p of partners) {
+    // Oldest first inside a partner: the one to chase is at the top.
+    p.invoices.sort((a, b) => (a.dueDate ?? "9999").localeCompare(b.dueDate ?? "9999"));
+  }
+
+  // expander + partner + six bands + total + worst
+  const AGING_COLUMNS = 3 + BUCKETS.length + 1;
+  const backTo = `/finance/aging${showAp ? "?side=ap" : ""}`;
+
   const rows: DataRow[] = partners.map((p) => ({
-    key: p.partner_id,
-    searchText: [p.partner_code, p.partner_name].filter(Boolean).join(" "),
+    key: p.partnerId,
+    searchText: [p.partnerCode, p.partnerName, ...p.invoices.map((i) => i.docNo)]
+      .filter(Boolean).join(" "),
     sort: {
-      partner: p.partner_name ?? "",
-      current_amt: n(p.current_amt), d1_30: n(p.d1_30), d31_60: n(p.d31_60),
-      d61_90: n(p.d61_90), d90: n(p.d90), total: n(p.total),
-      worst: n(p.worst_days),
+      partner: p.partnerName ?? "",
+      ...Object.fromEntries(BUCKETS.map((b) => [b.key, p.buckets[b.bucket] ?? 0])),
+      total: p.total,
+      worst: p.worstDays ?? 0,
     },
     csv: {
-      partner_code: p.partner_code, partner: p.partner_name,
-      current_amt: n(p.current_amt), d1_30: n(p.d1_30), d31_60: n(p.d31_60),
-      d61_90: n(p.d61_90), d90: n(p.d90), total: n(p.total),
-      open_invoices: p.open_invoices, latest_due: p.latest_due ?? "",
+      partner_code: p.partnerCode, partner: p.partnerName,
+      ...Object.fromEntries(BUCKETS.map((b) => [b.key, p.buckets[b.bucket] ?? 0])),
+      total: p.total, open_invoices: p.invoices.length,
     },
-    node: (
-      <tr>
-        <td className="wrap">
-          <strong>{p.partner_name}</strong>
-          <div className="m" style={{ color: "var(--muted)" }}>{p.partner_code}</div>
-        </td>
-        {/* A blank cell rather than a zero: nothing is owed in that band, and
-            a column of noughts reads as data somebody has to check. */}
-        {(["current_amt", "d1_30", "d31_60", "d61_90", "d90"] as const).map((k, i) => (
-          <td key={k} className="r"
-              style={{ color: n(p[k]) > 0 && i > 0 ? BUCKETS[i].ink : undefined }}>
-            {n(p[k]) > 0 ? money(n(p[k])) : "—"}
-          </td>
-        ))}
-        <td className="r"><strong>{money(n(p.total))}</strong></td>
-        <td className="r" style={{ color: "var(--muted)" }}>
-          {p.worst_days && p.worst_days > 0 ? `${p.worst_days} d` : "—"}
-        </td>
-        <td className="r">
-          <Link href={showAp ? `/payables` : `/receivables`}
-                style={{ color: "var(--brand)" }}>Open</Link>
-        </td>
-      </tr>
-    ),
+    node: <AgingRow partner={p} columnCount={AGING_COLUMNS} backTo={backTo} />,
   }));
 
   const tab = (isAp: boolean) => (
     <Link className="scopetab" data-active={showAp === isAp}
           href={`/finance/aging${isAp ? "?side=ap" : ""}`}>
       {isAp ? "Supplier aging" : "Customer aging"}
-      <span className="scopetab-n">{isAp ? ap.length : ar.length}</span>
     </Link>
   );
 
@@ -103,9 +153,15 @@ export default async function AgingPage({
       <div className="page-head">
         <span className="eyebrow">Accounting</span>
         <h1>AR / AP aging</h1>
+        <span className="actions">
+          <span className="asof">Measured as at {asOf}</span>
+        </span>
         <HelpHint>
-          What is owed, sorted by how late it is. A bill lands in a band by its
-          own due date — nothing here is entered or stored, so an invoice moves
+          What is owed, sorted by how late it is. A band counts the days from
+          an invoice&rsquo;s due date to today — so a bill issued on the 5th and
+          due on the 14th of April is 160 days late by the 21st of September,
+          and the nine days it was given to pay are not what is being measured.
+          A bill lands in a band by its own due date — nothing here is entered or stored, so an invoice moves
           between bands on its own as the date passes and leaves the moment it
           is paid. Current means not yet due, including bills with no due date
           agreed. The figures are the same ones Receivables and Payables show,
@@ -202,16 +258,15 @@ export default async function AgingPage({
               csvExtra={[
                 { key: "partner_code", label: "Code" },
                 { key: "open_invoices", label: "Open invoices" },
-                { key: "latest_due", label: "Latest due date" },
               ]}
               columns={[
+                { key: "expand", label: "" },
                 { key: "partner", label: showAp ? "Supplier" : "Customer", sortable: true },
                 ...BUCKETS.map((b) => ({
                   key: b.key, label: b.label, sortable: true, align: "r" as const,
                 })),
                 { key: "total", label: "Total", sortable: true, align: "r" },
                 { key: "worst", label: "Worst", sortable: true, align: "r" },
-                { key: "action", label: "" },
               ]}
               footerCells={{
                 span: <>Total {showAp ? "payable" : "receivable"}</>,
@@ -219,10 +274,10 @@ export default async function AgingPage({
                   ...Object.fromEntries(
                     BUCKETS.map((b) => [
                       b.key,
-                      money(partners.reduce((t, p) => t + n(p[b.field as keyof PartnerRow]), 0)),
+                      money(partners.reduce((t, p) => t + (p.buckets[b.bucket] ?? 0), 0)),
                     ])
                   ),
-                  total: money(partners.reduce((t, p) => t + n(p.total), 0)),
+                  total: money(partners.reduce((t, p) => t + p.total, 0)),
                 },
               }}
             />
