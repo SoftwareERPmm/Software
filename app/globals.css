@@ -3316,6 +3316,87 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
   padding: 0.25rem 0.55rem;
 }
 
-/* Each count in the dashboard's alert line is a way in to the thing counted. */
-.dash-alert-link { color: var(--brand); }
-.dash-alert-link:hover { text-decoration: underline; }
+
+/* Needs attention ------------------------------------------------------- *
+ * Closed it is one line; open it is the exceptions grouped by where the
+ * reader would go to deal with them. The amber ground is the same one the
+ * old banner used, so the card keeps its place in the page's hierarchy. */
+.attn {
+  margin-bottom: var(--dash-gap);
+  padding: 1rem 1.35rem;
+  border-radius: var(--dash-radius);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 25%, transparent);
+}
+.attn-open { padding-bottom: 1.15rem; }
+.attn-head { display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap; }
+.attn-mark {
+  width: 30px; height: 30px; border-radius: 50%; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--warn); color: var(--brand-fg);
+}
+.attn-headtext { display: flex; flex-direction: column; min-width: 0; }
+.attn-headtext strong { font-weight: 600; }
+.attn-sub { font-size: var(--t-xs); color: var(--muted); }
+
+.attn-pill {
+  margin-left: auto; padding: 0.3rem 0.65rem; border-radius: var(--r-md);
+  font-size: var(--t-xs); font-weight: 500;
+  color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, transparent);
+}
+.attn-btn {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  font: inherit; font-size: var(--t-sm); font-weight: 500;
+  color: var(--brand); background: none; border: 0; cursor: pointer;
+  padding: 0.35rem 0.2rem; border-radius: var(--r-sm);
+}
+.attn-more { margin-left: auto; }
+.attn-btn:hover { text-decoration: underline; }
+.attn-close {
+  color: var(--muted); padding: 0.3rem;
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+}
+.attn-close:hover { color: var(--ink); text-decoration: none; background: var(--card); }
+
+.attn-groups {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 0 1.35rem; margin-top: 0.9rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid color-mix(in srgb, var(--warn) 22%, transparent);
+}
+.attn-group + .attn-group {
+  border-left: 1px solid color-mix(in srgb, var(--warn) 22%, transparent);
+  padding-left: 1.35rem;
+}
+.attn-grouphead {
+  display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.6rem;
+  color: var(--muted);
+}
+.attn-grouphead strong { display: block; color: var(--ink); font-weight: 600; }
+.attn-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem; }
+.attn-row {
+  display: flex; align-items: center; gap: 0.7rem;
+  padding: 0.5rem 0.7rem; border-radius: var(--r-md);
+  background: var(--card); border: 1px solid var(--line);
+  color: var(--ink); text-decoration: none;
+}
+.attn-row:hover { border-color: color-mix(in srgb, var(--brand) 35%, var(--line)); }
+.attn-n {
+  flex: 0 0 auto; min-width: 2rem; text-align: center;
+  padding: 0.2rem 0.45rem; border-radius: var(--r-sm);
+  font-size: var(--t-sm); font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.attn-n.bad { color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, transparent); }
+.attn-n.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.attn-n.info { color: var(--muted); background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.attn-rowtext { display: flex; flex-direction: column; min-width: 0; font-size: var(--t-sm); }
+.attn-detail { font-size: var(--t-xs); color: var(--muted); }
+.attn-go { margin-left: auto; flex: 0 0 auto; color: var(--muted); }
+
+@media (max-width: 720px) {
+  .attn-group + .attn-group {
+    border-left: 0; padding-left: 0; margin-top: 0.9rem;
+    border-top: 1px solid color-mix(in srgb, var(--warn) 22%, transparent);
+    padding-top: 0.9rem;
+  }
+}
