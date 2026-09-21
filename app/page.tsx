@@ -132,38 +132,6 @@ export default async function Dashboard() {
     },
   ].filter((a) => a.n > 0);
 
-  // Work in progress is the neutral counterpart — normal open business, no
-  // threshold, nothing implying anyone forgot anything.
-  // "Open" is not used here, deliberately. On the order lists it is a status
-  // with a narrower meaning — nothing fulfilled at all — while this panel
-  // counts every order with goods still to come, partly received ones
-  // included. Saying "2 purchase orders open" next to a list showing none of
-  // them as Open is the same word meaning two things, and it reads as a bug
-  // in the figure rather than in the wording. These say what they count.
-  const orderSplit = (o: { notStarted: number; partial: number }) =>
-    o.notStarted > 0 && o.partial > 0
-      ? `${o.notStarted} not started · ${o.partial} partly done`
-      : o.partial > 0 ? "partly done" : "none started yet";
-
-  const wip = [
-    {
-      n: actionItems.salesOrders.open,
-      label: "sales orders awaiting delivery",
-      detail: orderSplit(actionItems.salesOrders),
-      href: "/documents?type=SALES_ORDER",
-    },
-    { n: actionItems.openDeliveries, label: "deliveries pending invoice", href: "/documents?type=DELIVERY" },
-    {
-      n: actionItems.purchaseOrders.open,
-      label: "purchase orders awaiting goods",
-      detail: orderSplit(actionItems.purchaseOrders),
-      href: "/documents?type=PURCHASE_ORDER",
-    },
-    { n: actionItems.goodsReceipts.open, label: "goods receipts pending invoice", href: "/documents?type=GOODS_RECEIPT&open=grir" },
-    { n: Number(kpis.ar.n), label: "unpaid customer invoices", href: "/receivables" },
-    { n: Number(kpis.ap.n), label: "unpaid supplier bills", href: "/payables" },
-  ];
-
   // ---- figures the design shows, all derived from the data above ---------
 
   const n = (v: unknown) => Number(v ?? 0);
@@ -248,7 +216,17 @@ export default async function Dashboard() {
     });
   }
 
-  /** The two pipelines, each stage counted from what is actually open. */
+  /**
+   * The two pipelines, each stage counted from what is actually open — and
+   * mirrored, stage for stage, so the same shape reads the same way on both
+   * sides: order placed, goods moved, document raised against goods that have
+   * not moved, money outstanding.
+   *
+   * Stages only. "Overdue" appears nowhere here: the strip above owns every
+   * exception, and Collection used to repeat its customer-invoices-overdue
+   * figure exactly — the same number twice on one screen, pointing at two
+   * different pages.
+   */
   const purchaseFlow = [
     { n: actionItems.purchaseOrders.open, name: "Orders", sub: "Awaiting goods",
       href: "/documents?type=PURCHASE_ORDER" },
@@ -263,9 +241,9 @@ export default async function Dashboard() {
       href: "/documents?type=SALES_ORDER" },
     { n: actionItems.openDeliveries, name: "Delivery", sub: "Awaiting invoice",
       href: "/documents?type=DELIVERY" },
-    { n: n(kpis.ar.n), name: "Invoicing", sub: "Unpaid invoices", href: "/receivables" },
-    { n: actionItems.customerInvoicesOverdue.n, name: "Collection", sub: "Overdue",
-      href: "/receivables?status=overdue" },
+    { n: actionItems.pendingDeliveryInvoices, name: "Invoicing",
+      sub: "Awaiting delivery", href: "/sales/deliver?open=undelivered" },
+    { n: n(kpis.ar.n), name: "Collection", sub: "Unpaid invoices", href: "/receivables" },
   ];
 
   const checks = [
