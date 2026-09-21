@@ -3315,3 +3315,7 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
   border: 1px solid var(--line); border-radius: var(--r-sm);
   padding: 0.25rem 0.55rem;
 }
+
+/* Each count in the dashboard's alert line is a way in to the thing counted. */
+.dash-alert-link { color: var(--brand); }
+.dash-alert-link:hover { text-decoration: underline; }

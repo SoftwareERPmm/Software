@@ -97,13 +97,32 @@ export async function getActionItems(companyId: string) {
   // nothing is waiting while that page lists an invoice with 900 units still
   // to ship. "Any delivery exists" was never the question; "anything left to
   // deliver" is.
-  const pd = { n: (await getPendingDeliveryLines(companyId)).length };
+  const pendingRows = await getPendingDeliveryLines(companyId);
+  const pd = { n: pendingRows.length };
+
+  /**
+   * Billed, owed for, and still in the warehouse after too long.
+   *
+   * Same line GR/IR draws: invoicing a day before the van leaves is the
+   * normal shape of "deliver later", so only the ones that have sat past
+   * GRIR_AGE_DAYS are worth calling out. Below that it is business in
+   * progress, not a customer paying for goods they never got.
+   */
+  const pdAgeDays = (r: { doc_date: unknown }) =>
+    Math.floor((Date.now() - new Date(r.doc_date as string).getTime()) / 86400000);
+  const pdAgedRows = (pendingRows as unknown as { doc_date: unknown }[])
+    .filter((r) => pdAgeDays(r) > GRIR_AGE_DAYS);
 
   // Same both-directions check as getOpenDeliveries — a delivery already
   // linked to an invoice either way (composed atomically, or fulfilling a
   // "deliver later" invoice afterward) isn't waiting on anything.
   const [openDeliv] = await sql`
-    select count(*)::int as n
+    select count(*)::int as n,
+           count(*) filter (
+             where current_date - d.doc_date > ${GRIR_AGE_DAYS})::int as aged,
+           coalesce(sum(d.gross_total) filter (
+             where current_date - d.doc_date > ${GRIR_AGE_DAYS}), 0) as aged_total,
+           coalesce(max(current_date - d.doc_date), 0)::int as oldest_days
       from document d
      where d.company_id = ${companyId} and d.doc_type = 'DELIVERY' and d.status = 'POSTED'
        and not exists (
@@ -176,6 +195,17 @@ export async function getActionItems(companyId: string) {
     },
     pendingDeliveryInvoices: pd.n as number,
     openDeliveries: openDeliv.n as number,
+    // The aged subsets the dashboard alerts on, kept beside the plain counts
+    // the work-in-progress panel shows — the same documents, one asking for
+    // action and one just saying what is in flight.
+    deliveriesUninvoiced: {
+      n: Number(openDeliv.aged), total: Math.abs(Number(openDeliv.aged_total)),
+      oldestDays: Number(openDeliv.oldest_days),
+    },
+    invoicesUndelivered: {
+      n: pdAgedRows.length,
+      oldestDays: pdAgedRows.reduce((m, r) => Math.max(m, pdAgeDays(r)), 0),
+    },
     customerInvoicesOverdue: { n: Number(custOverdue.n), total: Number(custOverdue.total) },
     supplierBillsOverdue: { n: Number(supOverdue.n), total: Number(supOverdue.total) },
     goodsReceipts: grirRow("GOODS_RECEIPT"),
