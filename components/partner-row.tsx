@@ -3,6 +3,7 @@
 import { useActionState, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
 import { ConfirmDelete } from "./confirm-delete";
+import { REGION_GROUPS } from "@/lib/regions";
 
 // lib/db.ts opens a real Postgres connection at import time — never import
 // it into a client component. Same formatting as money() there, kept local.
@@ -12,6 +13,7 @@ const money = (v: string | number | null | undefined) =>
 type Partner = {
   id: string; code: string; name: string; name_my: string | null; company_name: string | null;
   is_customer: boolean; is_supplier: boolean; is_active: boolean;
+  region: string | null;
   township: string | null; address: string | null; phone: string | null;
   payment_terms_days: number; credit_limit: string | null; outstanding: string;
 };
@@ -73,6 +75,17 @@ export function PartnerRow({
                 <input name="company_name" type="text" defaultValue={partner.company_name ?? ""} />
               </div>
               <div className="field">
+                <label>Region / State</label>
+                <select name="region" defaultValue={partner.region ?? ""}>
+                  <option value="">Not set</option>
+                  {REGION_GROUPS.map((g) => (
+                    <optgroup key={g.label} label={g.label}>
+                      {g.options.map((r) => <option key={r} value={r}>{r}</option>)}
+                    </optgroup>
+                  ))}
+                </select>
+              </div>
+              <div className="field">
                 <label>Township</label>
                 <input name="township" type="text" defaultValue={partner.township ?? ""} />
               </div>
@@ -129,7 +142,12 @@ export function PartnerRow({
         {partner.is_customer && partner.is_supplier && " "}
         {partner.is_supplier && <span className="pill warn">Supplier</span>}
       </td>
-      <td>{partner.township ?? "—"}</td>
+      <td>
+        {partner.region ?? partner.township ?? "—"}
+        {partner.region && partner.township && (
+          <div className="subline">{partner.township}</div>
+        )}
+      </td>
       <td className="r">{partner.payment_terms_days}d</td>
       <td className="r">{Number(partner.outstanding) ? money(partner.outstanding) : "—"}</td>
       <td>{partner.is_active ? <span className="pill ok">active</span> : <span className="pill warn">inactive</span>}</td>

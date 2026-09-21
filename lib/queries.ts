@@ -1670,7 +1670,7 @@ export async function getPartners(companyId: string) {
   return sql`
     select bp.id, bp.code, bp.name, bp.name_my, bp.company_name,
            bp.is_customer, bp.is_supplier, bp.is_active,
-           bp.township, bp.address, bp.phone,
+           bp.region, bp.township, bp.address, bp.phone,
            bp.payment_terms_days, bp.credit_limit,
            coalesce(oi.outstanding, 0) as outstanding
       from business_partner bp
@@ -3122,6 +3122,64 @@ export async function getTopItems(companyId: string, months: number = 6, limit: 
      group by i.id, i.code, i.name
      order by revenue desc
      limit ${limit}`;
+}
+
+/**
+ * The same revenue as getTopItems, gathered by the category each item is
+ * filed under — same document filter, same date window, same basis — so the
+ * pie and the ranked list beside it can never tell different stories about
+ * one month's trading.
+ *
+ * Items filed under nothing are their own slice rather than dropped: a
+ * category chart that silently omits revenue is worse than one that shows
+ * where the filing has not been done.
+ */
+export async function getTopCategories(companyId: string, months: number = 6, limit: number = 6) {
+  return sql`
+    select coalesce(g.id::text, 'none')          as id,
+           coalesce(g.name, 'Uncategorised')     as name,
+           sum(dl.base_qty)                      as qty,
+           sum(dl.net_amount)                    as revenue
+      from document_line dl
+      join document d on d.id = dl.document_id
+      join item i on i.id = dl.item_id
+      left join item_group g on g.id = i.item_group_id
+     where d.company_id = ${companyId}
+       and d.doc_type = 'SALES_INVOICE'
+       and d.status = 'POSTED'
+       and d.posting_date >= date_trunc('month', current_date) - (${months} - 1 || ' months')::interval
+     group by 1, 2
+     having sum(dl.net_amount) > 0
+     order by revenue desc
+     limit ${limit}`;
+}
+
+/**
+ * Revenue by the region the customer is in.
+ *
+ * Invoice totals rather than line amounts, because a region is a property of
+ * the customer rather than of the goods — the whole invoice was sold there,
+ * delivery charge included.
+ *
+ * Customers with no region set are one honest bucket rather than being
+ * dropped: a map of where the money came from that quietly omits half of it
+ * is worse than one that says how much is unaccounted for.
+ */
+export async function getRevenueByRegion(companyId: string, months: number = 6) {
+  return sql`
+    select coalesce(p.region, 'Region not set') as name,
+           coalesce(p.region, 'none')           as id,
+           sum(d.net_total)                     as revenue,
+           count(*)::int                        as invoices
+      from document d
+      join business_partner p on p.id = d.partner_id
+     where d.company_id = ${companyId}
+       and d.doc_type = 'SALES_INVOICE'
+       and d.status = 'POSTED'
+       and d.posting_date >= date_trunc('month', current_date) - (${months} - 1 || ' months')::interval
+     group by 1, 2
+     having sum(d.net_total) > 0
+     order by revenue desc`;
 }
 
 /** Best customers by revenue over the trailing `months` months, sales invoices only. */

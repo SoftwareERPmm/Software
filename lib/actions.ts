@@ -10,6 +10,7 @@ import { planVoucherImport, voucherColumns, type VoucherMasterData, type Voucher
 import { getImportMasterData, getVoucherImportMasterData, getPendingDeliveryLines } from "./queries";
 import { scaffoldCompany } from "./setup";
 import { encodeItemPhoto } from "./item-photo";
+import { asRegion } from "./regions";
 import {
   postSalesInvoice, postPurchaseInvoice, postSaleWithDelivery, postPurchaseWithReceipt,
   postSalesOrder, postPurchaseOrder, postDelivery, postGoodsReceipt,
@@ -141,11 +142,12 @@ export async function createPartner(_prev: unknown, fd: FormData): Promise<Actio
     await sql`
       insert into business_partner
         (company_id, code, name, name_my, company_name, is_customer, is_supplier,
-         township, address, phone, payment_terms_days, credit_limit)
+         region, township, address, phone, payment_terms_days, credit_limit)
       values
         (${co}, ${code}, ${name}, ${str(fd, "name_my") || null},
          ${str(fd, "company_name") || null}, ${isCustomer}, ${isSupplier},
-         ${str(fd, "township") || null}, ${str(fd, "address") || null},
+         ${asRegion(str(fd, "region"))}, ${str(fd, "township") || null},
+         ${str(fd, "address") || null},
          ${str(fd, "phone") || null}, ${num(fd, "payment_terms_days")},
          ${fd.get("credit_limit") ? num(fd, "credit_limit") : null})`;
   } catch (e) {
@@ -182,6 +184,7 @@ export async function updatePartner(_prev: unknown, fd: FormData): Promise<Actio
         code = ${code}, name = ${name}, name_my = ${str(fd, "name_my") || null},
         company_name = ${str(fd, "company_name") || null},
         is_customer = ${isCustomer}, is_supplier = ${isSupplier},
+        region = ${asRegion(str(fd, "region"))},
         township = ${str(fd, "township") || null}, address = ${str(fd, "address") || null},
         phone = ${str(fd, "phone") || null}, payment_terms_days = ${num(fd, "payment_terms_days")},
         credit_limit = ${fd.get("credit_limit") ? num(fd, "credit_limit") : null},
