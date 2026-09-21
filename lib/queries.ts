@@ -3084,10 +3084,22 @@ export async function getIncomeStatement(
  * true trend rather than silently compressing the x-axis to whichever
  * months happened to have activity.
  */
-export async function getRevenueTrend(companyId: string, months: number = 6) {
+/**
+ * Monthly revenue, ending at `anchor`'s month and reaching `months` back.
+ *
+ * The anchor exists so that picking one month to look at does not reduce the
+ * chart to a single bar: the month sits at the right-hand end of half a
+ * year, which is the only way a figure for it means anything.
+ */
+export async function getRevenueTrend(
+  companyId: string, months: number = 6, anchor: string | null = null,
+) {
   return sql`
-    with months as (
-      select date_trunc('month', current_date) - (n || ' months')::interval as month
+    with anchor as (
+      select date_trunc('month', coalesce(${anchor}::date, current_date)) as m
+    ),
+    months as (
+      select (select m from anchor) - (n || ' months')::interval as month
         from generate_series(0, ${months} - 1) as n
     ),
     monthly_revenue as (
@@ -3106,8 +3118,17 @@ export async function getRevenueTrend(companyId: string, months: number = 6) {
      order by m.month`;
 }
 
-/** Best-selling items by revenue over the trailing `months` months, sales invoices only (returns not netted out). */
-export async function getTopItems(companyId: string, months: number = 6, limit: number = 6) {
+/**
+ * Best-selling items by revenue over one window, sales invoices only
+ * (returns not netted out).
+ *
+ * `from` is inclusive and `to` exclusive, both first-of-month, so a month
+ * belongs to exactly one window and no invoice is counted twice at a
+ * boundary.
+ */
+export async function getTopItems(
+  companyId: string, from: string, to: string, limit: number = 6,
+) {
   return sql`
     select i.id, i.code, i.name,
            sum(dl.base_qty) as qty,
@@ -3118,7 +3139,7 @@ export async function getTopItems(companyId: string, months: number = 6, limit: 
      where d.company_id = ${companyId}
        and d.doc_type = 'SALES_INVOICE'
        and d.status = 'POSTED'
-       and d.posting_date >= date_trunc('month', current_date) - (${months} - 1 || ' months')::interval
+       and d.posting_date >= ${from}::date and d.posting_date < ${to}::date
      group by i.id, i.code, i.name
      order by revenue desc
      limit ${limit}`;
@@ -3134,7 +3155,9 @@ export async function getTopItems(companyId: string, months: number = 6, limit: 
  * category chart that silently omits revenue is worse than one that shows
  * where the filing has not been done.
  */
-export async function getTopCategories(companyId: string, months: number = 6, limit: number = 6) {
+export async function getTopCategories(
+  companyId: string, from: string, to: string, limit: number = 6,
+) {
   return sql`
     select coalesce(g.id::text, 'none')          as id,
            coalesce(g.name, 'Uncategorised')     as name,
@@ -3147,7 +3170,7 @@ export async function getTopCategories(companyId: string, months: number = 6, li
      where d.company_id = ${companyId}
        and d.doc_type = 'SALES_INVOICE'
        and d.status = 'POSTED'
-       and d.posting_date >= date_trunc('month', current_date) - (${months} - 1 || ' months')::interval
+       and d.posting_date >= ${from}::date and d.posting_date < ${to}::date
      group by 1, 2
      having sum(dl.net_amount) > 0
      order by revenue desc
@@ -3165,7 +3188,7 @@ export async function getTopCategories(companyId: string, months: number = 6, li
  * dropped: a map of where the money came from that quietly omits half of it
  * is worse than one that says how much is unaccounted for.
  */
-export async function getRevenueByRegion(companyId: string, months: number = 6) {
+export async function getRevenueByRegion(companyId: string, from: string, to: string) {
   return sql`
     select coalesce(p.region, 'Region not set') as name,
            coalesce(p.region, 'none')           as id,
@@ -3176,7 +3199,7 @@ export async function getRevenueByRegion(companyId: string, months: number = 6) 
      where d.company_id = ${companyId}
        and d.doc_type = 'SALES_INVOICE'
        and d.status = 'POSTED'
-       and d.posting_date >= date_trunc('month', current_date) - (${months} - 1 || ' months')::interval
+       and d.posting_date >= ${from}::date and d.posting_date < ${to}::date
      group by 1, 2
      having sum(d.net_total) > 0
      order by revenue desc`;

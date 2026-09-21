@@ -4,6 +4,7 @@ import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid,
   BarChart, Bar, LabelList, Cell, PieChart, Pie,
 } from "recharts";
+import { useRouter } from "next/navigation";
 import { money } from "@/lib/format";
 
 const monthLabel = (ym: string) => {
@@ -94,10 +95,24 @@ export function RankedBarChart({
  * what happened.
  */
 export function RevenueBars({
-  data,
-}: { data: { month: string; revenue: number | string }[] }) {
-  const rows = data.map((d) => ({ month: monthLabel(d.month), revenue: Number(d.revenue) }));
-  const last = rows.length - 1;
+  data, selected, hrefs,
+}: {
+  data: { month: string; revenue: number | string }[];
+  /** The month this card is currently reporting on, as YYYY-MM. */
+  selected?: string | null;
+  /** Where each bar goes — built on the server so a click keeps whatever
+   *  the other cards' pickers are set to. */
+  hrefs?: Record<string, string>;
+}) {
+  const router = useRouter();
+  const rows = data.map((d) => ({
+    ym: d.month, month: monthLabel(d.month), revenue: Number(d.revenue),
+  }));
+  // Whichever month the figures above are about is the one picked out. With
+  // no month chosen that is the newest bar, as it always was.
+  const lit = selected
+    ? rows.findIndex((r) => r.ym === selected)
+    : rows.length - 1;
   return (
     <ResponsiveContainer width="100%" height={210}>
       <BarChart data={rows} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
@@ -112,11 +127,22 @@ export function RevenueBars({
           cursor={{ fill: "color-mix(in srgb, var(--brand) 6%, transparent)" }}
           content={<ChartTooltip />}
         />
-        <Bar dataKey="revenue" radius={[6, 6, 0, 0]} maxBarSize={46}>
+        {/* A bar is the way to ask for that month on its own — the whole
+            dashboard follows, and the month keeps five behind it for
+            context rather than becoming the entire chart. */}
+        <Bar
+          dataKey="revenue" radius={[6, 6, 0, 0]} maxBarSize={46}
+          cursor="pointer"
+          onClick={(_data: unknown, index: number) => {
+            const href = hrefs?.[rows[index]?.ym ?? ""];
+            // Same reason as the period links: the chart stays where it is.
+            if (href) router.push(href, { scroll: false });
+          }}
+        >
           {rows.map((_, i) => (
             <Cell
               key={i}
-              fill={i === last
+              fill={i === lit
                 ? "var(--brand)"
                 : "color-mix(in srgb, var(--brand) 22%, transparent)"}
             />
