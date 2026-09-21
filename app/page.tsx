@@ -10,15 +10,27 @@ import {
   getOnboardingStatus,
 } from "@/lib/queries";
 import { RevenueBars, ShareDonut } from "@/components/charts";
+import { resolvePeriod, PERIOD_SPANS, DEFAULT_PERIOD } from "@/lib/period";
 
 import { GettingStarted, needsGettingStarted } from "@/components/getting-started";
 import {
   AttentionPanel, type AttentionGroup, type AttentionItem,
 } from "@/components/attention-panel";
 
-export default async function Dashboard() {
+export default async function Dashboard({
+  searchParams,
+}: {
+  searchParams: Promise<{ period?: string }>;
+}) {
   const company = await getCompany();
   if (!company) return <div className="empty">No company found. Run <span className="m">npm run db:seed</span>.</div>;
+
+  /* Which stretch of time the period cards are about. Balances — receivables,
+     payables, stock, cash — are deliberately not filtered: what is owed is
+     owed today, and a figure that answered "what was outstanding in March"
+     next to one answering "what is outstanding now" is how a dashboard
+     starts lying quietly. */
+  const period = resolvePeriod((await searchParams).period);
 
   const [kpis, health, aging, docs, stock, actionItems, revenueTrend, topItems, topCategories,
          regionRevenue, onboarding, negativeStock, lowStock] = await Promise.all([
@@ -28,10 +40,10 @@ export default async function Dashboard() {
     getDocuments(company.id),
     getStock(company.id),
     getActionItems(company.id),
-    getRevenueTrend(company.id),
-    getTopItems(company.id),
-    getTopCategories(company.id),
-    getRevenueByRegion(company.id),
+    getRevenueTrend(company.id, period.chartMonths, period.chartAnchor),
+    getTopItems(company.id, period.from, period.to),
+    getTopCategories(company.id, period.from, period.to),
+    getRevenueByRegion(company.id, period.from, period.to),
     getOnboardingStatus(company.id),
     getNegativeStock(company.id),
     getLowStock(company.id),
@@ -168,12 +180,18 @@ export default async function Dashboard() {
    */
   const cur = (v: unknown) => `${company.base_currency} ${money(v as never)}`;
   const trend = revenueTrend as unknown as { month: string; revenue: number | string }[];
-  const revenueTotal = trend.reduce((t, r) => t + n(r.revenue), 0);
+  /* The chart can reach further back than the period asked for — a single
+     chosen month is drawn against the five before it — so the total counts
+     only the months inside the window, never every bar on screen. */
+  const inWindow = (ym: string) => ym >= period.from.slice(0, 7) && ym < period.to.slice(0, 7);
+  const windowRows = trend.filter((r) => inWindow(r.month));
+  const revenueTotal = windowRows.reduce((t, r) => t + n(r.revenue), 0);
   // Month on month, as the reference labels it. Null where there is no
   // previous month to compare with, or where it was zero — a rise from
   // nothing is not a percentage, and "+∞%" is not a figure anybody can use.
-  const thisMonth = n(trend.at(-1)?.revenue);
-  const lastMonth = n(trend.at(-2)?.revenue);
+  const latestIdx = trend.findIndex((r) => r.month === (windowRows.at(-1)?.month ?? ""));
+  const thisMonth = n(trend[latestIdx]?.revenue);
+  const lastMonth = n(trend[latestIdx - 1]?.revenue);
   const change = lastMonth > 0 ? ((thisMonth - lastMonth) / lastMonth) * 100 : null;
   /* The percentage is month on month, and the figure above it is six months.
      Beside each other with nothing naming either period, the badge read as
@@ -181,8 +199,8 @@ export default async function Dashboard() {
      the month-on-month line carries the month's own figure with it. */
   const monthName = (ym: string | undefined) =>
     ym ? new Date(`${ym}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long" }) : "";
-  const thisMonthName = monthName(trend.at(-1)?.month);
-  const lastMonthName = monthName(trend.at(-2)?.month);
+  const thisMonthName = monthName(trend[latestIdx]?.month);
+  const lastMonthName = monthName(trend[latestIdx - 1]?.month);
 
   const regions = regionRevenue as unknown as
     { id: string; name: string; revenue: number | string }[];
@@ -330,10 +348,33 @@ export default async function Dashboard() {
           </span>
         </div>
         <div className="dash-actions">
-          {/* States the period the figures actually cover. The reference
-              draws a dropdown; nothing behind it filters anything yet, and a
-              control that does nothing is worse than a label that is true. */}
-          <span className="dash-chip">Last 6 months</span>
+          {/* This was a label for a long time, because a control that filters
+              nothing is worse than a caption that is true. It filters now:
+              revenue, the bars, top-selling items and both donuts. */}
+          <nav className="dash-period" aria-label="Period">
+            {PERIOD_SPANS.map((k) => {
+              const p = resolvePeriod(k);
+              const on = period.key === k;
+              return (
+                <Link
+                  key={k}
+                  href={k === DEFAULT_PERIOD ? "/" : `/?period=${k}`}
+                  className={`dash-period-opt${on ? " on" : ""}`}
+                  aria-current={on ? "page" : undefined}
+                >
+                  {p.label}
+                </Link>
+              );
+            })}
+          </nav>
+          {/* A month picked off the chart is not one of the four spans, so it
+              says so rather than leaving every option looking unselected. */}
+          {period.month && (
+            <span className="dash-chip on">
+              {period.label}
+              <Link href="/" aria-label="Back to the last 6 months">×</Link>
+            </span>
+          )}
           <Link href="/documents" className="dash-chip solid">
             New document <ChevronRight size={14} aria-hidden="true" />
           </Link>
@@ -424,7 +465,7 @@ export default async function Dashboard() {
         <div className="dash-card dash-card-pad">
           <div className="dash-section-head">
             <h2>Revenue</h2>
-            <span className="dash-chip">Revenue · 6 months</span>
+            <span className="dash-chip">{period.label}</span>
           </div>
           <div className="dash-figure">
             {/* Six months of sales net of returns can land below zero, and
@@ -434,7 +475,9 @@ export default async function Dashboard() {
               {cur(revenueTotal)}
             </span>
           </div>
-          <span className="dash-kpi-note">Total for the six months charted below</span>
+          <span className="dash-kpi-note">
+            {period.month ? `Total for ${period.label}` : `Total for ${period.phrase}`}
+          </span>
 
           <div className="dash-figure" style={{ marginTop: "0.75rem" }}>
             <span className="dash-month-value">
@@ -459,15 +502,17 @@ export default async function Dashboard() {
           </span>
           <div style={{ marginTop: "1.25rem" }}>
             {revenueTotal === 0
-              ? <div className="empty">No revenue posted in the last six months.</div>
-              : <RevenueBars data={trend} />}
+              ? <div className="empty">No revenue posted in {period.phrase}.</div>
+              : <RevenueBars data={trend} selected={period.month} />}
           </div>
         </div>
 
         <div className="dash-card dash-card-pad dash-rank-card">
           <div className="dash-section-head">
-            <h2>Top-selling items</h2>
-            <span className="dash-chip">By revenue</span>
+            <div>
+              <h2>Top-selling items</h2>
+              <span className="dash-sub">{period.label}, by revenue</span>
+            </div>
           </div>
           {items.length === 0 ? (
             <div className="empty">No sales invoices yet.</div>
@@ -501,7 +546,9 @@ export default async function Dashboard() {
           <div className="dash-section-head">
             <div>
               <h2>Revenue by category</h2>
-              <span className="dash-sub">Six months of sales, by how each item is filed</span>
+              <span className="dash-sub">
+                Sales in {period.phrase}, by how each item is filed
+              </span>
             </div>
           </div>
           <ShareDonut
@@ -515,7 +562,9 @@ export default async function Dashboard() {
           <div className="dash-section-head">
             <div>
               <h2>Revenue by state / region</h2>
-              <span className="dash-sub">Six months of sales, by where the customer is</span>
+              <span className="dash-sub">
+                Sales in {period.phrase}, by where the customer is
+              </span>
             </div>
           </div>
           {/* One slice reading "Region not set" is a chart of nothing. Until
