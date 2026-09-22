@@ -56,6 +56,9 @@ type OpenDelivery = {
 
 type Line = {
   key: number; itemId: string; qty: string; unitPrice: string; discountPct: string;
+  /** Which unit the quantity and the price are in. Empty means the item's
+   *  own unit, which is every line for an item with no packs. */
+  uomId?: string;
   /**
    * The delivery line this one bills, when the invoice was raised from a
    * delivery. Recorded so the quantity can be held to what actually went out
@@ -462,12 +465,27 @@ export function SalesVoucher({
   // The same function the posting engine runs, so the figure previewed is the
   // figure posted. Two implementations of "which band applies" is exactly how
   // a voucher comes to show one total and post another.
+  /* How many base units one entered unit is, for a line naming a pack. The
+     same figure the engine resolves, read off the item the picker already
+     carries — so the preview cannot price on one factor while the posting
+     uses another. */
+  const factorOf = (l: Line) => {
+    if (!l.uomId) return 1;
+    const p = (byId(l.itemId)?.packs ?? []).find((x) => x.uomId === l.uomId);
+    return p ? Number(p.factor) || 1 : 1;
+  };
+  /** The quantity in the item's own unit — what stock and bands are about. */
+  const baseQtyOf = (l: Line) => (Number(l.qty) || 0) * factorOf(l);
+
   const chargedLines = lines.filter((l) => l.itemId && Number(l.qty) > 0);
   const pricing = priceLines(
     chargedLines.map((l) => ({
       itemId: l.itemId,
       itemGroupId: byId(l.itemId)?.item_group_id ?? null,
       qty: Number(l.qty) || 0,
+      // A quantity band counts stock, not packaging: five cartons of
+      // twenty-four earns a hundred-unit band and five pieces does not.
+      baseQty: baseQtyOf(l),
       unitPrice: Number(l.unitPrice) || 0,
       discountPct: Number(l.discountPct) || 0,
     })),
@@ -579,6 +597,9 @@ export function SalesVoucher({
             };
         const paid = {
           itemId: l.itemId, qty,
+          // Whatever unit the line names. A free carton is a carton, so the
+          // giveaway lines below carry it too.
+          uomId: l.uomId || null,
           unitPrice: Number(l.unitPrice) || 0,
           discountPct: Number(l.discountPct) || 0,
           taxCodeId: taxCodeId || null,
@@ -601,11 +622,13 @@ export function SalesVoucher({
         const out: unknown[] = [paid];
         if (earned > 0 && promoReason) {
           out.push({ itemId: l.itemId, qty: earned, unitPrice: 0,
+                     uomId: l.uomId || null,
                      focReasonId: promoReason.id, ...pool });
         }
         if (given > 0) {
           const reason = l.focReasonId || promoReason?.id;
           if (reason) out.push({ itemId: l.itemId, qty: given, unitPrice: 0,
+                                 uomId: l.uomId || null,
                                  focReasonId: reason, ...pool });
         }
         return out;
@@ -621,7 +644,11 @@ export function SalesVoucher({
     : lines.filter((l) => {
         if (!l.itemId) return false;
         const item = byId(l.itemId);
-        return item?.is_stocked && Number(l.qty) + freeQty(l) > onHandHere(l.itemId);
+        // Compared in the item's own unit: five cartons is a hundred and
+        // twenty pieces off the shelf, and comparing five against the stock
+        // figure would call a short line comfortable.
+        return item?.is_stocked
+          && (Number(l.qty) + freeQty(l)) * factorOf(l) > onHandHere(l.itemId);
       });
 
   /** What the dialog states, per item, in the words someone can actually
@@ -632,7 +659,7 @@ export function SalesVoucher({
       itemCode: item?.code ?? "",
       itemName: item?.name ?? "",
       uomCode: item?.uom_code ?? "",
-      required: Number(l.qty) + freeQty(l),
+      required: (Number(l.qty) + freeQty(l)) * factorOf(l),
       recorded: onHandHere(l.itemId),
     };
   });
@@ -948,6 +975,7 @@ export function SalesVoucher({
                 <th>Item</th>
                 {!toDeliver && !matchedDeliveryId && anyConsigned && <th>Stock source</th>}
                 <th className="r">On hand</th>
+                <th>Unit</th>
                 <th className="r">Qty</th>
                 <th className="r">Price</th>
                 <th className="r">Disc %</th>
@@ -960,7 +988,8 @@ export function SalesVoucher({
               {lines.flatMap((l) => {
                 const item = byId(l.itemId);
                 const free = freeQty(l);
-                const short = !toDeliver && !matchedDeliveryId && item?.is_stocked && Number(l.qty) + free > onHandHere(l.itemId);
+                const short = !toDeliver && !matchedDeliveryId && item?.is_stocked
+                  && (Number(l.qty) + free) * factorOf(l) > onHandHere(l.itemId);
                 const promo = promoFor(l.itemId);
 
                 /* Why these units are free, which is not always a promotion.
@@ -1058,6 +1087,31 @@ export function SalesVoucher({
                           </div>
                         </>
                       ) : "service"}
+                    </td>
+                    {/* Which unit this line is sold in. Only a picker where
+                        the item has packs; otherwise the item's own unit,
+                        stated rather than chosen. A line billing a delivery
+                        cannot change it — the goods left in whatever they
+                        left in. */}
+                    <td className="narrow">
+                      {(item?.packs ?? []).length > 0 && !l.sourceLineId ? (
+                        <select
+                          value={l.uomId ?? ""}
+                          onChange={(e) => setLine(l.key, { uomId: e.target.value })}
+                          aria-label={`Unit for ${item?.code ?? "line"}`}
+                        >
+                          <option value="">{item?.uom_code}</option>
+                          {(item?.packs ?? []).map((p) => (
+                            <option key={p.uomId} value={p.uomId}>
+                              {p.code} ({Number(p.factor)})
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className="code" style={{ color: "var(--muted)" }}>
+                          {item?.uom_code ?? "—"}
+                        </span>
+                      )}
                     </td>
                     <td className="narrow">
                       {/* What went out, went out. A line billing a delivery
