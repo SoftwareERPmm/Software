@@ -613,6 +613,33 @@ export async function updateItem(_prev: unknown, fd: FormData): Promise<ActionRe
     if (!name) return { error: "Name is required" };
     if (!uomId) return { error: "Choose a unit" };
 
+    /* The packs this item can be bought and sold in. Never a row for the
+       item's own unit: that is the base, its factor is 1 by definition, and
+       storing it would be a second answer to a settled question.
+
+       Replacing the list cannot disturb a posted document — every line
+       carries the factor it used, so a carton that becomes 20s next year
+       leaves last year's receipts saying 24. */
+    let packs: { uomId: string; factor: number }[] = [];
+    const rawPacks = str(fd, "packs");
+    if (rawPacks) {
+      try {
+        packs = (JSON.parse(rawPacks) as any[])
+          .map((p) => ({ uomId: String(p.uomId ?? ""), factor: Number(p.factor) }))
+          .filter((p) => p.uomId && p.uomId !== uomId && p.factor > 0);
+      } catch {
+        return { error: "Could not read the pack sizes" };
+      }
+      const seen = new Set<string>();
+      for (const p of packs) {
+        if (seen.has(p.uomId)) return { error: "The same unit is listed twice" };
+        seen.add(p.uomId);
+        if (p.factor === 1) {
+          return { error: "A pack holding one base unit is the base unit — leave it off the list" };
+        }
+      }
+    }
+
     const photo = await photoFrom(fd);
 
     await sql.begin(async (tx) => {
@@ -623,6 +650,17 @@ export async function updateItem(_prev: unknown, fd: FormData): Promise<ActionRe
           is_stocked = ${fd.get("is_stocked") !== null},
           is_active = ${fd.get("is_active") === "on"}
         where id = ${id} and company_id = ${co}`;
+
+      // Only when the form actually carried the field, so a caller that
+      // does not know about packs cannot wipe them.
+      if (rawPacks) {
+        await tx`delete from item_uom where item_id = ${id}`;
+        for (const p of packs) {
+          await tx`
+            insert into item_uom (company_id, item_id, uom_id, factor)
+            values (${co}, ${id}, ${p.uomId}, ${p.factor})`;
+        }
+      }
 
       // Left alone unless the picker said otherwise. A form submitted with
       // the field untouched carries neither key, and the photo stays put.

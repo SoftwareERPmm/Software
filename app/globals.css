@@ -3539,3 +3539,13 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
   font-size: var(--t-xs); color: var(--muted);
 }
 .batchtrail-exp { color: var(--muted); }
+
+/* One pack size per row: a unit, how many base units it holds, and a way to
+   drop it. Inline because it is a short phrase, not a form. */
+.packrow {
+  display: flex; align-items: center; gap: 0.45rem; margin-bottom: 0.35rem;
+  flex-wrap: wrap;
+}
+.packrow select { min-width: 150px; }
+.packrow input { width: 110px; }
+.packrow-eq { color: var(--muted); font-size: var(--t-sm); }
