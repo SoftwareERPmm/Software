@@ -32,7 +32,19 @@ export type VolumeBand = {
 export type DiscountedLine = {
   itemId: string;
   itemGroupId?: string | null;
+  /** As entered — cartons on a line typed in cartons. The money is this
+   *  multiplied by unitPrice, because the price is per entered unit. */
   qty: number;
+  /**
+   * The same quantity in the item's own unit, for matching quantity bands.
+   *
+   * A band written as "100 or more" is about how much stock moves, not about
+   * how it was packed: five cartons of twenty-four earns it and five pieces
+   * does not, and comparing the entered figure would let the packaging
+   * decide the discount. Left unset it is the entered quantity, which is
+   * what every line without a pack size is.
+   */
+  baseQty?: number;
   unitPrice: number;
   /** Typed on the line by whoever raised it. */
   discountPct: number;
@@ -147,7 +159,9 @@ export function priceLines(
     const itemAmount = r(gross * (itemPct / 100));
     const afterItem = r(gross - itemAmount);
 
-    const band = bandFor(bands, "QUANTITY", l.qty, l.itemId, l.itemGroupId ?? null);
+    // Matched on the base quantity: a quantity band is about units of stock,
+    // and a carton is a number of them rather than one of them.
+    const band = bandFor(bands, "QUANTITY", l.baseQty ?? l.qty, l.itemId, l.itemGroupId ?? null);
     const volPct = band ? num(band.discount_pct) : 0;
     const volAmount = r(afterItem * (volPct / 100));
 

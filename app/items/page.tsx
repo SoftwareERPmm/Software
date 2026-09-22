@@ -29,7 +29,7 @@ export default async function Items({
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
-  const [all, brands, uoms, groups] = await Promise.all([
+  const [all, brands, uoms, groups, packs] = await Promise.all([
     getItems(company.id) as unknown as Promise<Row[]>,
     getBrands(company.id) as unknown as Promise<{ id: string; code: string; name: string }[]>,
     sql`select id, code, name from uom where company_id = ${company.id} and is_active order by code` as unknown as Promise<
@@ -39,6 +39,13 @@ export default async function Items({
          where company_id = ${company.id} order by code` as unknown as Promise<
       { id: string; name: string; parent_id: string | null }[]
     >,
+    // Every pack size in one query rather than one per item: the list is
+    // short, and a hundred round trips to draw a hundred rows is not.
+    sql`select iu.item_id, iu.uom_id, iu.factor
+          from item_uom iu
+          join item i on i.id = iu.item_id
+         where i.company_id = ${company.id}` as unknown as Promise<
+      Array<{ item_id: string; uom_id: string; factor: string }>>,
   ]);
 
   /**
@@ -104,7 +111,12 @@ export default async function Items({
     },
     node: (
       <ItemRow
-        item={i}
+        item={{
+          ...i,
+          packs: packs
+            .filter((p) => p.item_id === i.id)
+            .map((p) => ({ uomId: p.uom_id, factor: Number(p.factor) })),
+        }}
         brands={brands}
         uoms={uoms}
         updateAction={updateItem}

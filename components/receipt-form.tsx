@@ -14,6 +14,8 @@ type Partner = { id: string; code: string; name: string };
 type Location = { id: string; code: string; name: string };
 type Line = {
   key: number; itemId: string; qty: string; unitCost: string;
+  /** Which unit the quantity is in. Empty means the item's own unit. */
+  uomId?: string;
   /** The lot these goods arrived under, for an item that tracks batches. */
   batchNo?: string;
   expiryDate?: string;
@@ -227,6 +229,8 @@ export function ReceiptForm({
   const removeLine = (key: number) =>
     setLines((ls) => (ls.length === 1 ? ls : ls.filter((l) => l.key !== key)));
 
+  // Per entered unit: five cartons at 12,000 is sixty thousand, whatever a
+  // carton holds. The pieces are the engine's business, not this total's.
   const amount = (l: Line) => (Number(l.qty) || 0) * (Number(l.unitCost) || 0);
   const total = lines.reduce((s, l) => s + amount(l), 0);
 
@@ -260,6 +264,7 @@ export function ReceiptForm({
       .filter((l) => l.itemId && Number(l.qty) > 0)
       .map((l) => ({
         itemId: l.itemId, qty: Number(l.qty), unitCost: Number(l.unitCost) || 0,
+        uomId: l.uomId || null,
         sourceLineId: l.sourceLineId ?? null,
         batchNo: l.batchNo?.trim() || null,
         expiryDate: l.expiryDate || null,
@@ -441,7 +446,7 @@ export function ReceiptForm({
               <tr>
                 <th>Item</th>
                 {matchedPi && <th className="r">Billed</th>}
-                <th className="r">Qty</th><th className="r">Unit cost</th>
+                <th>Unit</th><th className="r">Qty</th><th className="r">Unit cost</th>
                 <th className="r">Value</th><th />
               </tr>
             </thead>
@@ -471,6 +476,30 @@ export function ReceiptForm({
                             : "—"}
                       </td>
                     )}
+                    {/* Which unit this quantity is in. Only where the item
+                        has packs — an item bought only in its own unit has
+                        one answer, and a picker with one option is a
+                        question already answered. */}
+                    <td className="narrow">
+                      {(item?.packs ?? []).length > 0 ? (
+                        <select
+                          value={l.uomId ?? ""}
+                          onChange={(e) => setLine(l.key, { uomId: e.target.value })}
+                          aria-label={`Unit for ${item?.code ?? "line"}`}
+                        >
+                          <option value="">{item?.uom_code}</option>
+                          {(item?.packs ?? []).map((p) => (
+                            <option key={p.uomId} value={p.uomId}>
+                              {p.code} ({Number(p.factor)})
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className="code" style={{ color: "var(--muted)" }}>
+                          {item?.uom_code ?? "—"}
+                        </span>
+                      )}
+                    </td>
                     <td className="narrow">
                       <input type="number" min="0" step="any" value={l.qty}
                         onChange={(e) => setLine(l.key, { qty: e.target.value })}
@@ -508,7 +537,7 @@ export function ReceiptForm({
                 const item = byId(l.itemId)!;
                 return (
                   <tr key={`batch-${l.key}`} className="batchrow">
-                    <td colSpan={matchedPi ? 7 : 6}>
+                    <td colSpan={matchedPi ? 8 : 7}>
                       <span className="batchrow-label">
                         {item.code} — which lot?
                       </span>

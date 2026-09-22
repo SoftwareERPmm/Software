@@ -15,7 +15,17 @@ import { priceLines, roundMoney, type VolumeBand, type LineDiscounts } from "./d
 
 export type InvoiceLine = {
   itemId: string;
+  /** As typed, in `uomId` — cartons on a line typed in cartons. */
   qty: number;
+  /** The unit the quantity is in. Left unset it is the item's own unit. */
+  uomId?: string | null;
+  /**
+   * The lot, for a purchase invoice that receives the goods as it posts.
+   * Ignored on a sale — an invoice does not choose which batch leaves, the
+   * delivery does, and it picks by expiry.
+   */
+  batchNo?: string | null;
+  expiryDate?: string | null;
   /**
    * The list price. Discounts are NOT netted into it by the caller — the
    * engine applies them, so the invoice can record which part of a reduction
@@ -155,7 +165,11 @@ export type OrderInput = {
  *  separate purchase invoice line price to fall back on for valuation). */
 export type FulfillmentLine = {
   itemId: string;
+  /** As typed, in `uomId` — cartons on a line typed in cartons. */
   qty: number;
+  /** The unit the quantity is in. Left unset it is the item's own unit,
+   *  which is what every line written before packs existed carries. */
+  uomId?: string | null;
   focReasonId?: string | null;
   unitCost?: number;
   sourceLineId?: string | null;
@@ -1698,6 +1712,51 @@ async function createFifoLot(
   return lot.id as string;
 }
 
+// ------------------------------------------------------------ pack sizes --
+//
+// A distributor buys in cartons and sells in pieces. The stock ledger only
+// ever speaks in the item's own unit — one ledger, one unit, one cost per
+// unit — so a line typed in cartons is converted once, here, and everything
+// downstream sees pieces as it always has.
+//
+// The factor is resolved from item_uom and then written onto the line. That
+// is the same rule as a dated tax rate, for the same reason: a supplier who
+// changes from 24s to 20s next year must not restate what last year's
+// receipts meant. The master says what may be used; the line records what
+// was used.
+
+type PackFactor = { factor: number; uomId: string };
+
+/**
+ * How many base units one entered unit is.
+ *
+ * A line with no unit named, or one naming the item's own unit, is 1 — which
+ * is every line this app wrote before packs existed, so nothing already
+ * posted changes meaning.
+ */
+async function packFactor(
+  tx: TransactionSql, itemId: string, uomId: string | null | undefined,
+  baseUomId: string,
+): Promise<PackFactor> {
+  if (!uomId || uomId === baseUomId) return { factor: 1, uomId: baseUomId };
+  const [row] = await tx`
+    select factor from item_uom where item_id = ${itemId} and uom_id = ${uomId}`;
+  if (!row) {
+    const [u] = await tx`select code from uom where id = ${uomId}`;
+    const [i] = await tx`select code, name from item where id = ${itemId}`;
+    throw new Error(
+      `${i?.code ?? "This item"} has no pack size for ${u?.code ?? "that unit"}. ` +
+      `Add one under the item before buying or selling in it, or enter the ` +
+      `quantity in its own unit.`
+    );
+  }
+  const factor = Number(row.factor);
+  if (!(factor > 0)) {
+    throw new Error("A pack size has to hold more than nothing");
+  }
+  return { factor, uomId };
+}
+
 // ------------------------------------------------------- batch tracking --
 //
 // Per item, and two switches: a batch is traceability (which lot are these
@@ -2481,6 +2540,13 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
     if (!item) throw new Error("Item not found");
     if (!item.is_stocked) throw new Error(`${item.code} (${item.name}) is not stocked and cannot be delivered`);
 
+    /* Cartons in, pieces on the shelf. Everything below this line that
+       touches stock — what is on hand, what is short, which layers are
+       drawn, what the movement records — is in base units; only the
+       document line remembers that somebody typed cartons. */
+    const pack = await packFactor(tx, line.itemId, line.uomId, item.base_uom_id as string);
+    const baseQty = round4(line.qty * pack.factor);
+
     if (line.source === "CONSIGNMENT") {
       // A separate pool, never a fallback for owned stock running short —
       // that would be exactly the silent blending this design exists to
@@ -2492,16 +2558,16 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
       // computed at settlement, from the price this customer is actually
       // being charged, not from anything decided at delivery.
       const plan = await planConsignmentConsumption(
-        tx, companyId, line.itemId, locationId, line.qty, line.consignorId ?? null);
+        tx, companyId, line.itemId, locationId, baseQty, line.consignorId ?? null);
 
       await tx`
         insert into document_line
           (company_id, document_id, line_no, item_id, location_id,
-           entered_qty, entered_uom_id, base_qty, unit_price, net_amount, gross_amount,
-           source_line_id, is_consignment)
+           entered_qty, entered_uom_id, conversion_factor, base_qty, unit_price,
+           net_amount, gross_amount, source_line_id, is_consignment)
         values
           (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
-           ${line.qty}, ${item.base_uom_id}, ${line.qty}, 0, 0, 0,
+           ${line.qty}, ${pack.uomId}, ${pack.factor}, ${baseQty}, 0, 0, 0,
            ${line.sourceLineId ?? null}, true)`;
 
       for (const d of plan.draws) {
@@ -2531,21 +2597,21 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
      * same rule, and a line that turns out not to be short meets no rule at
      * all: the confirmation is required by the shortage, not by the flag.
      */
-    if (onHand < line.qty
+    if (onHand < baseQty
         && input.allowNegativeStock === true
         && !input.negativeStockReason?.trim()) {
       throw new Error(
         `${item.code} (${item.name}) is short at this location — ${onHand} on hand, ` +
-        `${line.qty} going out. Say why the goods are there when the books say ` +
+        `${baseQty} going out. Say why the goods are there when the books say ` +
         `they are not: a confirmation without a reason records that somebody ` +
         `clicked, not what they knew.`
       );
     }
 
-    if (onHand < line.qty && input.allowNegativeStock !== true) {
+    if (onHand < baseQty && input.allowNegativeStock !== true) {
       throw new Error(
         `Not enough ${item.code} (${item.name}) at this location — ` +
-          `${onHand} on hand, ${line.qty} requested`
+          `${onHand} on hand, ${baseQty} requested`
       );
     }
 
@@ -2556,7 +2622,7 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
     // physically exist. Without it this still refuses, so no route reaches
     // negative stock without a person having said so.
     const plan = await planFifoConsumption(
-      tx, companyId, line.itemId, locationId, line.qty, input.allowNegativeStock === true
+      tx, companyId, line.itemId, locationId, baseQty, input.allowNegativeStock === true
     );
     const unitCost = plan.unitCost;
     const totalCost = plan.totalCost;
@@ -2573,11 +2639,11 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
     await tx`
       insert into document_line
         (company_id, document_id, line_no, item_id, location_id,
-         entered_qty, entered_uom_id, base_qty, unit_price, net_amount, gross_amount,
-         foc_reason_id, source_line_id)
+         entered_qty, entered_uom_id, conversion_factor, base_qty, unit_price,
+         net_amount, gross_amount, foc_reason_id, source_line_id)
       values
         (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
-         ${line.qty}, ${item.base_uom_id}, ${line.qty},
+         ${line.qty}, ${pack.uomId}, ${pack.factor}, ${baseQty},
          ${line.focReasonId ? 0 : unitCost}, ${totalCost},
          ${totalCost}, ${line.focReasonId ?? null}, ${line.sourceLineId ?? null})`;
 
@@ -2587,7 +2653,7 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
          unit_cost, total_cost, document_id)
       values
         (${companyId}, ${line.itemId}, ${locationId}, ${docDate}::date,
-         ${-line.qty}, ${unitCost}, ${-totalCost}, ${doc.id})
+         ${-baseQty}, ${unitCost}, ${-totalCost}, ${doc.id})
       returning id`;
     // Resolved before the consumption is written, so the consumption can carry
     // it: the cost of these goods went here, and a correction to that cost has
@@ -2973,11 +3039,24 @@ async function _postSalesInvoice(
   }
 
   const scale = await currencyScale(tx, companyId);
+  /* Pack sizes resolved before pricing, because a quantity band is matched
+     on units of stock: five cartons of twenty-four earns a hundred-unit band
+     and five pieces does not. Resolved once here and reused when the lines
+     are written, so one line cannot be priced at one factor and stored at
+     another. */
+  const packs = new Map<InvoiceLine, PackFactor>();
+  for (const l of input.lines) {
+    const [it] = await tx`select base_uom_id from item where id = ${l.itemId}`;
+    if (!it) throw new Error("Item not found");
+    packs.set(l, await packFactor(tx, l.itemId, l.uomId, it.base_uom_id as string));
+  }
+
   const priced = priceLines(
     charged.map((l) => ({
       itemId: l.itemId,
       itemGroupId: itemGroups.get(l.itemId) ?? null,
       qty: l.qty,
+      baseQty: round4(l.qty * (packs.get(l)?.factor ?? 1)),
       unitPrice: l.unitPrice,
       discountPct: l.discountPct ?? 0,
     })),
@@ -3123,6 +3202,12 @@ async function _postSalesInvoice(
       select id, code, name, is_stocked, base_uom_id from item where id = ${line.itemId}`;
     if (!item) throw new Error("Item not found");
 
+    /* The invoice speaks in whatever was sold — five cartons, not a hundred
+       and twenty pieces — while base_qty keeps the figure every stock and
+       fulfilment check reads. Taken from the map built before pricing, so
+       the factor that earned the discount is the factor that gets stored. */
+    const pack = packs.get(line) ?? { factor: 1, uomId: item.base_uom_id as string };
+    const baseQty = round4(line.qty * pack.factor);
     const d = pricedFor.get(line);
     const t = taxFor.get(line);
     // A free line is free of tax too: there is no consideration to tax.
@@ -3132,14 +3217,14 @@ async function _postSalesInvoice(
     await tx`
       insert into document_line
         (company_id, document_id, line_no, item_id, location_id,
-         entered_qty, entered_uom_id, base_qty, unit_price,
+         entered_qty, entered_uom_id, conversion_factor, base_qty, unit_price,
          discount_pct, discount_amount,
          volume_discount_pct, volume_discount_amount, volume_discount_id,
          invoice_discount_pct, invoice_discount_amount, invoice_discount_id,
          net_amount, tax_code_id, tax_amount, gross_amount, foc_reason_id, source_line_id)
       values
         (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
-         ${line.qty}, ${item.base_uom_id}, ${line.qty},
+         ${line.qty}, ${pack.uomId}, ${pack.factor}, ${baseQty},
          ${line.focReasonId ? 0 : line.unitPrice},
          ${d?.itemDiscountPct ?? 0}, ${d?.itemDiscountAmount ?? 0},
          ${d?.volumeDiscountPct ?? 0}, ${d?.volumeDiscountAmount ?? 0}, ${d?.volumeDiscountId ?? null},
@@ -3323,6 +3408,11 @@ export async function postSaleWithDelivery(input: SalesInvoiceInput, outer?: Tra
         negativeStockReason: input.negativeStockReason,
         lines: toDeliver.map((l) => ({
           itemId: l.itemId, qty: l.qty, focReasonId: l.focReasonId,
+          // And which unit that quantity is in. Without it a line for two
+          // cartons moved two pieces: the invoice said forty-eight and the
+          // shelf lost two, and nothing in the ledger disagreed because a
+          // delivery's own journal is about cost, not count.
+          uomId: l.uomId,
           // The invoice's choice of pool travels to the delivery it creates,
           // which is the document that actually moves the goods.
           source: l.source, consignorId: l.consignorId,
@@ -3450,17 +3540,26 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
     if (!item) throw new Error("Item not found");
     if (!item.is_stocked) throw new Error(`${item.code} (${item.name}) is not stocked and cannot be received`);
 
+    /* A line may be typed in cartons. The price is per carton, the ledger is
+       in pieces, and the cost per piece is what FIFO carries — so the money
+       is worked out from what was entered and the stock from what that comes
+       to. With no pack named the factor is 1 and both are the same number,
+       which is every line written before this existed. */
+    const pack = await packFactor(tx, line.itemId, line.uomId, item.base_uom_id as string);
+    const enteredQty = line.qty;
+    const baseQty = round4(enteredQty * pack.factor);
     const unitCost = line.unitCost ?? 0;
-    const net = round4(line.qty * unitCost);
+    const net = round4(enteredQty * unitCost);
+    const baseUnitCost = pack.factor === 1 ? unitCost : round4(net / baseQty);
 
     await tx`
       insert into document_line
         (company_id, document_id, line_no, item_id, location_id,
-         entered_qty, entered_uom_id, base_qty, unit_price,
+         entered_qty, entered_uom_id, conversion_factor, base_qty, unit_price,
          net_amount, tax_amount, gross_amount, source_line_id)
       values
         (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
-         ${line.qty}, ${item.base_uom_id}, ${line.qty}, ${unitCost},
+         ${enteredQty}, ${pack.uomId}, ${pack.factor}, ${baseQty}, ${unitCost},
          ${net}, 0, ${net}, ${line.sourceLineId ?? null})`;
 
     assertBatchGiven(item as never, tracking.get(line.itemId), line);
@@ -3471,7 +3570,7 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
          unit_cost, total_cost, document_id, batch_no, expiry_date)
       values
         (${companyId}, ${line.itemId}, ${locationId}, ${docDate}::date,
-         ${line.qty}, ${unitCost}, ${net}, ${doc.id},
+         ${baseQty}, ${baseUnitCost}, ${net}, ${doc.id},
          ${line.batchNo?.trim() || null}, ${line.expiryDate || null})
       returning id`;
 
@@ -3480,14 +3579,16 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
     // the shelf, so no layer is made for them — a lot created and instantly
     // consumed would be a fiction with a date on it. Only the remainder
     // becomes stock.
+    // Everything below the line is in base units: what was owed for goods
+    // already gone, what reaches the shelf, and the layer it becomes.
     const { covered, variance, byAccount } = await settleNegativeStock(
-      tx, companyId, doc.id, line.itemId, locationId, line.qty, unitCost, movement.id
+      tx, companyId, doc.id, line.itemId, locationId, baseQty, baseUnitCost, movement.id
     );
-    const toShelf = round4(line.qty - covered);
+    const toShelf = round4(baseQty - covered);
     let lotId: string | null = null;
     if (toShelf > 0.0001) {
       lotId = await createFifoLot(
-        tx, companyId, line.itemId, locationId, receivedAt, unitCost, toShelf, movement.id,
+        tx, companyId, line.itemId, locationId, receivedAt, baseUnitCost, toShelf, movement.id,
         { batchNo: line.batchNo, expiryDate: line.expiryDate });
     }
 
@@ -4516,15 +4617,17 @@ async function _postPurchaseInvoice(
     if (!item) throw new Error("Item not found");
 
     const net = lineNets[lineNo - 1];
+    const pack = await packFactor(tx, line.itemId, line.uomId, item.base_uom_id as string);
+    const baseQty = round4(line.qty * pack.factor);
 
     await tx`
       insert into document_line
         (company_id, document_id, line_no, item_id, location_id,
-         entered_qty, entered_uom_id, base_qty, unit_price,
+         entered_qty, entered_uom_id, conversion_factor, base_qty, unit_price,
          net_amount, tax_code_id, tax_amount, gross_amount, source_line_id)
       values
         (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
-         ${line.qty}, ${item.base_uom_id}, ${line.qty}, ${line.unitPrice},
+         ${line.qty}, ${pack.uomId}, ${pack.factor}, ${baseQty}, ${line.unitPrice},
          ${net}, ${line.taxCodeId ?? splits[lineNo - 1].rate?.id ?? null},
          ${splits[lineNo - 1].tax}, ${roundMoney(net + splits[lineNo - 1].tax, scale)},
          ${line.sourceLineId ?? null})`;
@@ -4848,6 +4951,10 @@ export async function postPurchaseWithReceipt(
         sourceDocumentId: orderId,
         lines: toReceive.map((l) => ({
           itemId: l.itemId, qty: l.qty, unitCost: l.unitPrice,
+          // Same on the buying side: a bill for five cartons has to put a
+          // hundred and twenty pieces on the shelf, not five.
+          uomId: l.uomId,
+          batchNo: l.batchNo, expiryDate: l.expiryDate,
           // Only where the order is what this receipt answers. Without an
           // order these carry nothing, exactly as before.
           sourceLineId: orderId ? l.sourceLineId : undefined,

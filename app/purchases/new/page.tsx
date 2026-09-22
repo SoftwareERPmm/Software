@@ -1,3 +1,5 @@
+import Link from "next/link";
+import { ArrowLeft } from "lucide-react";
 import { getFormData, createPurchaseInvoice } from "@/lib/actions";
 import { getOpenGoodsReceipts, getOpenOrdersAwaitingGoods } from "@/lib/queries";
 import { allCategories } from "@/lib/tree";
@@ -58,6 +60,14 @@ export default async function NewPurchaseInvoice({
       ]} />
       <div className="page-head">
         <h1>New purchase invoice</h1>
+        {/* Raised from one receipt: the way back is that document, not the
+            list of every invoice. The crumb above says the same thing; this
+            is the arrow somebody actually aims at. */}
+        {from && (
+          <Link href={`/documents/${from.id}`} className="btn ghost">
+            <ArrowLeft size={14} aria-hidden="true" /> Back to {from.doc_no}
+          </Link>
+        )}
         <HelpHint>
           Stock arrives at the price paid and the supplier balance opens. Each
           receipt becomes its own FIFO cost layer.

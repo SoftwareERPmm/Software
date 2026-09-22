@@ -19,6 +19,11 @@ type CashAccount = { id: string; code: string; name: string };
 type MatchLine = {
   lineId: string; itemId: string; itemCode: string; itemName: string;
   qty: number; unitPrice: number;
+  /** The unit those goods were received in, and the same remainder counted
+   *  in it — the unit the price belongs to. */
+  uomId?: string | null;
+  factor?: number;
+  enteredQty?: number;
   /** What the purchase order agreed, where the receipt came in against one. */
   orderPrice?: number | null;
   orderId?: string | null;
@@ -38,6 +43,9 @@ type OpenDoc = {
 // at, rather than at an average across every line of the same item.
 type Line = {
   key: number; itemId: string; qty: string; unitPrice: string;
+  /** The unit the quantity and price are in. Empty means the item's own
+   *  unit, which is every line not filled from a packed receipt. */
+  uomId?: string;
   sourceLineId?: string;
   /**
    * The order line this one bills, when the voucher was filled from an open
@@ -162,6 +170,20 @@ export function InvoiceForm({
   const matchedGr = openReceipts.find((d) => d.id === matchedGrId) ?? null;
 
   /**
+   * Opened from one goods receipt's own page rather than from a blank form.
+   *
+   * Everything the receipt already decides is then settled rather than
+   * asked: which supplier, which warehouse, which receipt, and that the
+   * goods are already in. Offering those as questions invites an answer that
+   * contradicts the document the reader is standing on — and a supplier with
+   * three open receipts makes the contradiction easy.
+   */
+  const fromReceipt = Boolean(initialGoodsReceiptId);
+  const sourceGr = (goodsReceipts ?? []).find((d) => d.id === initialGoodsReceiptId) ?? null;
+  const sourcePartner = partners.find((p) => p.id === sourceGr?.partner_id) ?? null;
+  const sourceLocation = locations.find((l) => l.id === sourceGr?.location_id) ?? null;
+
+  /**
    * Orders from this supplier still owed goods. Suppressed once a receipt is
    * matched: that bill is answering goods already in the warehouse, which is
    * the correct path and not the mistake this warns about.
@@ -192,10 +214,14 @@ export function InvoiceForm({
       gr.lines.map((l, idx) => ({
         key: idx + 1,
         itemId: l.itemId,
-        qty: String(l.qty),
+        // Billed in the unit the goods came in, because that is the unit the
+        // price is per: five cartons at 12,000, not a hundred and twenty
+        // pieces at 12,000 apiece.
+        qty: String(l.enteredQty ?? l.qty),
+        uomId: l.uomId ?? undefined,
         unitPrice: String(l.unitPrice),
         sourceLineId: l.lineId,
-        sourceQty: String(l.qty),
+        sourceQty: String(l.enteredQty ?? l.qty),
       }))
     );
     setFromOrderId(null);
@@ -241,6 +267,11 @@ export function InvoiceForm({
     if (!gr) return;
     setPartnerId(gr.partner_id);
     setMatchedGrId(gr.id);
+    /* And says so. Without this the screen offered "Arriving with this bill"
+       with the receipt's own lines already filled in, so posting would have
+       received the same goods a second time — the mode has to follow the
+       document the reader came from. */
+    setReceiveMode("match");
     if (gr.location_id) setLocationId(gr.location_id);
     // Only when the invoice was opened from a receipt — walking the chain is
     // what makes the order relevant. Someone who opened a blank invoice and
@@ -250,10 +281,14 @@ export function InvoiceForm({
       gr.lines.map((l, idx) => ({
         key: idx + 1,
         itemId: l.itemId,
-        qty: String(l.qty),
+        // Billed in the unit the goods came in, because that is the unit the
+        // price is per: five cartons at 12,000, not a hundred and twenty
+        // pieces at 12,000 apiece.
+        qty: String(l.enteredQty ?? l.qty),
+        uomId: l.uomId ?? undefined,
         unitPrice: String(l.unitPrice),
         sourceLineId: l.lineId,
-        sourceQty: String(l.qty),
+        sourceQty: String(l.enteredQty ?? l.qty),
       }))
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -341,6 +376,10 @@ export function InvoiceForm({
       .map((l) => ({
         itemId: l.itemId,
         qty: Number(l.qty),
+        // Which unit that quantity is in. Without it a bill for five cartons
+        // would reach the engine as five pieces — and on the buying side it
+        // would put five on the shelf instead of a hundred and twenty.
+        uomId: l.uomId || null,
         unitPrice: Number(l.unitPrice) || 0,
         taxCodeId: taxCodeId || null,
         // Whichever this line came from. A receipt line and an order line
@@ -401,24 +440,44 @@ export function InvoiceForm({
           <div className="row">
             <div className="field">
               <label htmlFor="partner_id">{isSales ? "Customer" : "Supplier"}</label>
-              <PartnerPicker
-                partners={partners as never}
-                value={partnerId}
-                placeholder={isSales ? "Type a customer…" : "Type a supplier…"}
-                onPick={pickPartner}
-              />
+              {fromReceipt ? (
+                <>
+                  <span className="fixedfield">
+                    {sourcePartner ? `${sourcePartner.code} · ${sourcePartner.name}` : "—"}
+                  </span>
+                  <input type="hidden" name="partner_id" value={partnerId} />
+                  <span className="hint">From {sourceGr?.doc_no}</span>
+                </>
+              ) : (
+                <PartnerPicker
+                  partners={partners as never}
+                  value={partnerId}
+                  placeholder={isSales ? "Type a customer…" : "Type a supplier…"}
+                  onPick={pickPartner}
+                />
+              )}
             </div>
 
             <div className="field">
               <label htmlFor="location_id">Warehouse</label>
-              <select id="location_id" name="location_id" value={locationId}
-                      onChange={(e) => setLocationId(e.target.value)} required>
-                {locations.map((l) => (
-                  <option key={l.id} value={l.id}>
-                    {l.code} · {l.name}
-                  </option>
-                ))}
-              </select>
+              {fromReceipt ? (
+                <>
+                  <span className="fixedfield">
+                    {sourceLocation ? `${sourceLocation.code} · ${sourceLocation.name}` : "—"}
+                  </span>
+                  <input type="hidden" name="location_id" value={locationId} />
+                  <span className="hint">Where the goods were received</span>
+                </>
+              ) : (
+                <select id="location_id" name="location_id" value={locationId}
+                        onChange={(e) => setLocationId(e.target.value)} required>
+                  {locations.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.code} · {l.name}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
 
             <div className="field">
@@ -469,12 +528,15 @@ export function InvoiceForm({
                   icon: <PackageCheck size={18} aria-hidden="true" />,
                   title: "Already received",
                   lead: "A goods receipt recorded them. This bill matches it.",
-                  note: partnerId
-                    ? openReceipts.length > 0
-                      ? `${openReceipts.length} receipt${openReceipts.length === 1 ? "" : "s"} waiting on a bill`
-                      : "Nothing from this supplier is waiting on a bill"
-                    : "Choose a supplier first",
-                  disabled: !partnerId || openReceipts.length === 0,
+                  note: fromReceipt
+                    ? `Chosen for you — you came from ${sourceGr?.doc_no}`
+                    : partnerId
+                      ? openReceipts.length > 0
+                        ? `${openReceipts.length} receipt${openReceipts.length === 1 ? "" : "s"} waiting on a bill`
+                        : "Nothing from this supplier is waiting on a bill"
+                      : "Choose a supplier first",
+                  disabled: !fromReceipt && (!partnerId || openReceipts.length === 0),
+                  why: null,
                 },
                 {
                   key: "now" as const,
@@ -482,7 +544,8 @@ export function InvoiceForm({
                   title: "Arriving with this bill",
                   lead: "No receipt was raised. Posting records the goods in too.",
                   note: "A goods receipt posts alongside the bill",
-                  disabled: false,
+                  disabled: fromReceipt,
+                  why: fromReceipt ? "A goods receipt already recorded these goods" : null,
                 },
                 {
                   key: "later" as const,
@@ -490,7 +553,8 @@ export function InvoiceForm({
                   title: "Not yet arrived",
                   lead: "Bill first. Only what you owe posts now.",
                   note: "Receive them later from Purchases → Goods receipts",
-                  disabled: false,
+                  disabled: fromReceipt,
+                  why: fromReceipt ? "A goods receipt already recorded these goods" : null,
                 },
               ]).map((m) => (
                 <button
@@ -506,7 +570,7 @@ export function InvoiceForm({
                   <span className="mode-text">
                     <strong>{m.title}</strong>
                     <span className="mode-lead">{m.lead}</span>
-                    <span className="mode-note">{m.note}</span>
+                    <span className="mode-note">{m.why ?? m.note}</span>
                   </span>
                 </button>
               ))}
@@ -514,7 +578,22 @@ export function InvoiceForm({
 
             {/* Only under the choice it belongs to. In the header it was a
                 field somebody scrolled past on the way to the lines. */}
-            {receiveMode === "match" && (
+            {receiveMode === "match" && fromReceipt && (
+              <div className="field" style={{ marginTop: "1rem", maxWidth: "32rem" }}>
+                <label>Which goods receipt</label>
+                <span className="fixedfield">
+                  {sourceGr?.doc_no}
+                  {sourceGr?.doc_date ? ` · ${String(sourceGr.doc_date).slice(0, 10)}` : ""}
+                </span>
+                <input type="hidden" name="goods_receipt_id" value={matchedGrId} />
+                <span className="hint">
+                  The receipt you came from. Its lines are below, and posting links
+                  the bill to it.
+                </span>
+              </div>
+            )}
+
+            {receiveMode === "match" && !fromReceipt && (
               <div className="field" style={{ marginTop: "1rem", maxWidth: "32rem" }}>
                 <label htmlFor="goods_receipt_id">Which goods receipt</label>
                 <select id="goods_receipt_id" name="goods_receipt_id" value={matchedGrId}
@@ -609,7 +688,11 @@ export function InvoiceForm({
                 const item = byId(l.itemId);
                 const short = isSales && item?.is_stocked && Number(l.qty) > Number(item.on_hand);
                 const receivedLine = matchedGr?.lines.find((gl) => gl.itemId === l.itemId);
-                const qtyMismatch = matchedGr && receivedLine && Number(l.qty) !== receivedLine.qty;
+                // Compared in the unit the line is written in: five cartons
+                // billed against five cartons received is not a mismatch,
+                // and comparing five to a hundred and twenty would say so.
+                const qtyMismatch = matchedGr && receivedLine
+                  && Number(l.qty) !== (receivedLine.enteredQty ?? receivedLine.qty);
                 // Three figures, not one: what was agreed, what arrived at,
                 // and what the supplier is now asking. They usually match, and
                 // the times they do not are the times somebody has to decide
@@ -660,7 +743,7 @@ export function InvoiceForm({
                     </td>
                     {matchedGr && (
                       <td className="r" style={{ color: qtyMismatch ? "var(--warn)" : undefined }}>
-                        {receivedLine ? fmt(receivedLine.qty) : "—"}
+                        {receivedLine ? fmt(receivedLine.enteredQty ?? receivedLine.qty) : "—"}
                       </td>
                     )}
                     {anyOrdered && (

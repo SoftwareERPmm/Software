@@ -613,6 +613,33 @@ export async function updateItem(_prev: unknown, fd: FormData): Promise<ActionRe
     if (!name) return { error: "Name is required" };
     if (!uomId) return { error: "Choose a unit" };
 
+    /* The packs this item can be bought and sold in. Never a row for the
+       item's own unit: that is the base, its factor is 1 by definition, and
+       storing it would be a second answer to a settled question.
+
+       Replacing the list cannot disturb a posted document — every line
+       carries the factor it used, so a carton that becomes 20s next year
+       leaves last year's receipts saying 24. */
+    let packs: { uomId: string; factor: number }[] = [];
+    const rawPacks = str(fd, "packs");
+    if (rawPacks) {
+      try {
+        packs = (JSON.parse(rawPacks) as any[])
+          .map((p) => ({ uomId: String(p.uomId ?? ""), factor: Number(p.factor) }))
+          .filter((p) => p.uomId && p.uomId !== uomId && p.factor > 0);
+      } catch {
+        return { error: "Could not read the pack sizes" };
+      }
+      const seen = new Set<string>();
+      for (const p of packs) {
+        if (seen.has(p.uomId)) return { error: "The same unit is listed twice" };
+        seen.add(p.uomId);
+        if (p.factor === 1) {
+          return { error: "A pack holding one base unit is the base unit — leave it off the list" };
+        }
+      }
+    }
+
     const photo = await photoFrom(fd);
 
     await sql.begin(async (tx) => {
@@ -623,6 +650,17 @@ export async function updateItem(_prev: unknown, fd: FormData): Promise<ActionRe
           is_stocked = ${fd.get("is_stocked") !== null},
           is_active = ${fd.get("is_active") === "on"}
         where id = ${id} and company_id = ${co}`;
+
+      // Only when the form actually carried the field, so a caller that
+      // does not know about packs cannot wipe them.
+      if (rawPacks) {
+        await tx`delete from item_uom where item_id = ${id}`;
+        for (const p of packs) {
+          await tx`
+            insert into item_uom (company_id, item_id, uom_id, factor)
+            values (${co}, ${id}, ${p.uomId}, ${p.factor})`;
+        }
+      }
 
       // Left alone unless the picker said otherwise. A form submitted with
       // the field untouched carries neither key, and the photo stays put.
@@ -1131,6 +1169,10 @@ export type PickerItem = {
   id: string; code: string; name: string; is_stocked: boolean;
   item_group_id: string; on_hand: string; sale_price: string; next_cost: string;
   uom_code: string;
+  base_uom_id?: string;
+  /** The packs this item is bought and sold in. Empty for an item handled
+   *  only in its own unit, which is most of a catalogue. */
+  packs?: { uomId: string; code: string; factor: string | number }[];
   /** Whether goods of this item arrive in identifiable lots, and whether
    *  those lots have a shelf life. A receipt form asks for what these say. */
   tracks_batch?: boolean; tracks_expiry?: boolean;
@@ -2838,6 +2880,16 @@ export async function getFormData() {
                 -- figure quoted back to the user can carry it rather than
                 -- being a bare number.
                 u.code as uom_code,
+                i.base_uom_id,
+                -- The packs this item can be bought and sold in, so a line
+                -- can offer them without a second round trip per item.
+                coalesce((
+                  select json_agg(json_build_object(
+                           'uomId', iu.uom_id, 'code', pu.code, 'factor', iu.factor)
+                         order by iu.factor)
+                    from item_uom iu join uom pu on pu.id = iu.uom_id
+                   where iu.item_id = i.id
+                ), '[]'::json) as packs,
                 coalesce(s.qty, 0) as on_hand,
                 coalesce((
                   select unit_cost from v_stock_lot_open

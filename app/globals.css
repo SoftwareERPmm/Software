@@ -1550,9 +1550,13 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 }
 
 /* The chosen pool, on the line itself. */
+/* A quiet button on a white surface, so it has to say so: the base button
+   rule paints text in --brand-fg for solid green buttons, and this one only
+   overrode the background. The pool label was white on white — invisible,
+   while the quantity beside it showed because .avail sets its own colour. */
 .sourcebtn {
   display: inline-flex; align-items: center; gap: 0.4rem; width: 100%;
-  padding: 0.3rem 0.5rem; background: var(--surface);
+  padding: 0.3rem 0.5rem; background: var(--surface); color: var(--ink);
   border: 1px solid var(--line); border-radius: var(--r-md);
   font-size: var(--t-sm); text-align: left; cursor: pointer;
 }
@@ -3539,3 +3543,21 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
   font-size: var(--t-xs); color: var(--muted);
 }
 .batchtrail-exp { color: var(--muted); }
+
+/* One pack size per row: a unit, how many base units it holds, and a way to
+   drop it. Inline because it is a short phrase, not a form. */
+.packrow {
+  display: flex; align-items: center; gap: 0.45rem; margin-bottom: 0.35rem;
+  flex-wrap: wrap;
+}
+.packrow select { min-width: 150px; }
+.packrow input { width: 110px; }
+.packrow-eq { color: var(--muted); font-size: var(--t-sm); }
+
+/* A field the document you came from has already decided: shown as the fact
+   it is rather than as a question with one answer. Sits at the height of the
+   inputs beside it so a row of them still reads as a row. */
+.fixedfield {
+  display: inline-flex; align-items: center; min-height: 2.1rem;
+  padding: 0.2rem 0; font-size: var(--t-md); color: var(--ink);
+}

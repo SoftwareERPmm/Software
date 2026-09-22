@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useActionState, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
 import { ConfirmDelete } from "./confirm-delete";
+import { PackSizes } from "./pack-sizes";
 import { RowMenu } from "./row-menu";
 import { ItemPhotoField } from "./item-photo-field";
 import { ItemThumb } from "./item-thumb";
@@ -19,6 +20,9 @@ type Item = {
   group_name: string; parent_group_name: string | null; brand_name: string | null;
   uom_code: string; is_stocked: boolean; is_active: boolean; sale_price: string | null;
   photo_version?: string | null;
+  /** The packs this item is bought and sold in, each holding so many base
+   *  units. Empty for an item handled only in its own unit. */
+  packs?: { uomId: string; factor: number }[];
   last_purchase_price?: string | null;
   last_purchase_doc_no?: string | null;
   last_purchase_date?: string | null;
@@ -97,8 +101,15 @@ export function ItemRow({
                     <option key={u.id} value={u.id}>{u.code} · {u.name}</option>
                   ))}
                 </select>
+                <span className="hint">What stock is counted in</span>
               </div>
             </div>
+
+            <PackSizes
+              uoms={uoms}
+              baseUomId={item.base_uom_id}
+              initial={item.packs ?? []}
+            />
             <div className="row" style={{ marginTop: "0.4rem" }}>
               <ItemPhotoField
                 currentSrc={
