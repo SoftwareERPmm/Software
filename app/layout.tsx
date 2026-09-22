@@ -8,8 +8,7 @@ import { MobileNav } from "@/components/mobile-nav";
 import { SidebarCollapse } from "@/components/sidebar-collapse";
 import { Toast } from "@/components/toast";
 import {
-  LayoutDashboard, ShoppingCart, Package, Wallet, BookOpen, Boxes, Database,
-} from "lucide-react";
+  LayoutDashboard, ShoppingCart, Package, Wallet, BookOpen, Boxes, Database, Truck } from "lucide-react";
 import { DatePickerFix } from "@/components/date-picker-fix";
 
 // Plex was drawn for enterprise data rather than for marketing pages: open
@@ -113,7 +112,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <NavLink href="/sales/invoices" exact>Sales invoices</NavLink>
               <NavLink href="/sales/consignment">Consignment sale</NavLink>
               <NavLink href="/sales/returns" exact>Customer returns</NavLink>
-              <NavLink href="/sales/discounts">Volume discounts</NavLink>
+              <NavLink href="/sales/credit-notes" exact>Credit notes</NavLink>
+              <NavLink href="/sales/discounts" exact>Volume discounts</NavLink>
+              <NavLink href="/sales/discounts-given" exact>Discounts given</NavLink>
               <NavLink href="/receivables" exact>Receivables</NavLink>
               <NavLink href="/receivables/advances">Customer advances</NavLink>
               <NavLink href="/receivables/receive">Receive payment</NavLink>
@@ -124,9 +125,20 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <NavLink href="/purchases/receive" exact>Goods receipts</NavLink>
               <NavLink href="/purchases/invoices" exact>Purchase invoices</NavLink>
               <NavLink href="/purchases/returns" exact>Supplier returns</NavLink>
+              <NavLink href="/purchases/debit-notes" exact>Debit notes</NavLink>
               <NavLink href="/payables" exact>Payables</NavLink>
               <NavLink href="/payables/advances">Supplier advances</NavLink>
               <NavLink href="/payables/pay">Pay supplier</NavLink>
+            </NavGroup>
+
+            {/* Its own group rather than a tail on Sales: a trip is a yard
+                operation with its own masters, and step two adds route plans
+                beside it. */}
+            <NavGroup label="Logistics" icon={<Truck size={14} />} match={["/logistics"]}>
+              <NavLink href="/logistics/routes" exact>Routes</NavLink>
+              <NavLink href="/logistics/trips" exact>Delivery trips</NavLink>
+              <NavLink href="/logistics/vehicles" exact>Vehicles</NavLink>
+              <NavLink href="/logistics/drivers" exact>Drivers</NavLink>
             </NavGroup>
 
             <NavGroup label="Cash &amp; Bank" icon={<Wallet size={14} />} match={[
@@ -141,6 +153,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <NavLink href="/finance/cash-payment">Cash payment</NavLink>
               <NavLink href="/finance/bank-receipt">Bank receipt</NavLink>
               <NavLink href="/finance/bank-payment">Bank payment</NavLink>
+              <NavLink href="/finance/bank-reconciliation">Bank reconciliation</NavLink>
               <NavLink href="/finance/transfer">Interbranch transfer</NavLink>
             </NavGroup>
 
@@ -151,6 +164,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             ]}>
               <NavSubGroup label="Transactions" match={["/finance/journal", "/finance/opening"]}>
                 <NavLink href="/finance/journal" sub>Journal Voucher</NavLink>
+                <NavLink href="/finance/year-end" sub>Year end</NavLink>
                 <NavLink href="/finance/opening" sub>Opening Balances</NavLink>
               </NavSubGroup>
               <NavSubGroup label="Ledgers" match={["/finance/general-ledger", "/ledger"]}>
@@ -183,7 +197,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <NavGroup label="Master data" icon={<Database size={14} />} match={[
               "/partners", "/items", "/warehouses", "/salespersons", "/settings",
             ]}>
-              <NavLink href="/partners" exact clearParams={["role"]}>Partners</NavLink>
+              <NavLink href="/partners" exact clearParams={["role", "category"]}>Partners</NavLink>
+              <NavLink href="/partners/categories" exact>Customer categories</NavLink>
               <NavLink href="/partners?role=customer" sub>Customers</NavLink>
               <NavLink href="/partners?role=supplier" sub>Suppliers</NavLink>
               <NavLink href="/items" exact>Items</NavLink>

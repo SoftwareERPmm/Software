@@ -9,6 +9,10 @@ export default async function NewPartner() {
   const levels = (await sql`
     select id, name from price_level where company_id = ${co.id} order by sort_order`
   ) as unknown as { id: string; name: string }[];
+  const cats = (await sql`
+    select id, name from partner_category
+     where company_id = ${co.id} and is_active order by sort_order, name`
+  ) as unknown as { id: string; name: string }[];
 
   return (
     <>
@@ -82,6 +86,24 @@ export default async function NewPartner() {
                   ))}
                 </select>
                 <span className="hint">Which column of the price list they buy from</span>
+              </div>
+              {/* What kind of shop, for reporting. Deliberately next to the
+                  price level and deliberately not doing its job: the level
+                  decides what they pay, the category only says what they
+                  are. */}
+              <div className="field">
+                <label htmlFor="category_id">Customer category</label>
+                <select id="category_id" name="category_id" defaultValue="">
+                  <option value="">Not categorised</option>
+                  {cats.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+                <span className="hint">
+                  {cats.length === 0
+                    ? "None set up yet — Master data → Customer categories"
+                    : "Groups them on reports. Changes no price or limit."}
+                </span>
               </div>
               <div className="field">
                 <label htmlFor="credit_limit">Credit limit</label>

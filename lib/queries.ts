@@ -402,6 +402,34 @@ export async function getOpenItems(companyId: string, docType: string) {
      order by due_date nulls last`;
 }
 
+/**
+ * Notes of one kind, with the correction they record.
+ *
+ * getDocuments is the generic list and carries neither the category nor the
+ * sentence, which on a note are the two columns worth reading — a list of
+ * note numbers and amounts answers nothing that the invoice did not already
+ * say. Kept separate rather than widening getDocuments, which feeds a dozen
+ * screens that have no adjustment_reason to show.
+ */
+export async function getNotes(companyId: string, kind: "CREDIT_NOTE" | "DEBIT_NOTE") {
+  return sql`
+    select d.id, d.doc_no, d.doc_date, d.posting_date, d.status,
+           d.net_total, d.tax_total, d.gross_total,
+           d.memo, d.adjustment_reason, d.reference, d.posted_at,
+           p.name as partner_name, p.code as partner_code,
+           src.id as source_id, src.doc_no as source_doc_no
+      from document d
+      left join business_partner p on p.id = d.partner_id
+      left join document       src on src.id = d.source_document_id
+     where d.company_id = ${companyId}
+       and d.doc_type = ${kind}
+       -- Same exclusion as every other list: neither half of a void is a
+       -- correction that stands.
+       and d.status <> 'REVERSED'
+       and d.reverses_document_id is null
+     order by d.posting_date desc, d.created_at desc`;
+}
+
 export async function getDocuments(companyId: string, docType?: string, openGrirOnly?: boolean) {
   return sql`
     select d.id, d.doc_type, d.doc_no, d.doc_date, d.posting_date, d.due_date,
@@ -1733,6 +1761,8 @@ export async function getPartners(companyId: string) {
            bp.region, bp.township, bp.address, bp.phone,
            bp.payment_terms_days, bp.credit_limit, bp.price_level_id,
            (select pl.name from price_level pl where pl.id = bp.price_level_id) as price_level_name,
+           bp.category_id,
+           (select pc.name from partner_category pc where pc.id = bp.category_id) as category_name,
            coalesce(oi.outstanding, 0) as outstanding,
            -- What a customer is actually using of their limit, and what is
            -- left. Both come from the same view the posting engine reads, so
@@ -3646,6 +3676,298 @@ export async function getCashFlowStatement(
     beginningCash: Number(beginning[0]?.balance ?? 0),
     endingCash: Number(ending[0]?.balance ?? 0),
   };
+}
+
+// ------------------------------------------------------------ delivery trips --
+
+export async function getVehicles(companyId: string) {
+  return sql`
+    select v.id, v.code, v.plate_no, v.name, v.capacity_note, v.is_active,
+           (select count(*) from delivery_trip t where t.vehicle_id = v.id) as trips
+      from vehicle v
+     where v.company_id = ${companyId}
+     order by v.code`;
+}
+
+export async function getDrivers(companyId: string) {
+  return sql`
+    select d.id, d.code, d.name, d.name_my, d.phone, d.licence_no, d.is_active,
+           (select count(*) from delivery_trip t where t.driver_id = d.id) as trips
+      from driver d
+     where d.company_id = ${companyId}
+     order by d.code`;
+}
+
+// ------------------------------------------------------- discounts given --
+
+/**
+ * What was given away, and to whom.
+ *
+ * The general ledger cannot answer this, and deliberately: sales post net,
+ * so revenue is already the discounted figure and no account holds the
+ * difference. The lines do hold it, which is where this reads from — the
+ * answer the gross method would have given, without the gross method's cost
+ * of restating every sale.
+ */
+export async function getDiscountsGiven(companyId: string, from: string, to: string) {
+  return sql`
+    select * from v_discount_given
+     where company_id = ${companyId}
+       and posting_date >= ${from}::date and posting_date < ${to}::date
+     order by posting_date desc, doc_no desc`;
+}
+
+/** The same thing totalled per customer, which is the question usually meant. */
+export async function getDiscountsByPartner(companyId: string, from: string, to: string) {
+  return sql`
+    select partner_id, partner_name,
+           count(distinct document_id)::int as invoices,
+           sum(line_discount)     as line_discount,
+           sum(volume_discount)   as volume_discount,
+           sum(invoice_discount)  as invoice_discount,
+           sum(total_discount)    as total_discount,
+           sum(gross_before_discount) as gross_before_discount,
+           -- What proportion of what was asked never got collected.
+           case when sum(gross_before_discount) > 0
+                then sum(total_discount) / sum(gross_before_discount) * 100
+                else 0 end as discount_pct
+      from v_discount_given
+     where company_id = ${companyId}
+       and posting_date >= ${from}::date and posting_date < ${to}::date
+     group by partner_id, partner_name
+     order by total_discount desc`;
+}
+
+// -------------------------------------------------------------- year end --
+
+/** Every fiscal year, what it would close, and whether it already has. */
+export async function getYearEndPositions(companyId: string) {
+  return sql`
+    select p.*, d.doc_no as close_doc_no,
+           -- What the close actually moved. Once a year is shut its profit
+           -- and loss accounts read zero — correct, and no use to anybody
+           -- asking what the year made. The closing document is the only
+           -- surviving record of the figure, so the screen reads it there.
+           d.gross_total as closed_result,
+           to_char(d.posting_date, 'YYYY-MM-DD') as closed_on
+      from v_year_end_position p
+      left join document d on d.id = p.closed_by_document_id
+     where p.company_id = ${companyId}
+     order by p.start_date desc`;
+}
+
+// ------------------------------------------------------ bank reconciliation --
+
+export async function getBankStatements(companyId: string) {
+  return sql`
+    select * from v_bank_statement
+     where company_id = ${companyId}
+     order by to_date desc, statement_no desc`;
+}
+
+/** A statement, its lines, and what each matched line is matched to. */
+export async function getBankStatement(companyId: string, statementId: string) {
+  const [statement] = await sql`
+    select * from v_bank_statement
+     where company_id = ${companyId} and id = ${statementId}`;
+  if (!statement) return null;
+
+  const lines = await sql`
+    select l.id, l.line_no, l.txn_date, l.description, l.reference,
+           l.amount, l.balance, l.status, l.ignore_reason,
+           m.id as match_id, m.journal_line_id, m.note as match_note,
+           v.entry_no, v.entry_date, v.doc_no, v.doc_type,
+           v.partner_name, v.memo as ledger_memo, v.amount as ledger_amount,
+           v.document_id
+      from bank_statement_line l
+      left join bank_reconciliation_match m on m.statement_line_id = l.id
+      left join v_bank_ledger_line v on v.journal_line_id = m.journal_line_id
+     where l.statement_id = ${statementId}
+     order by l.line_no`;
+
+  return { statement, lines };
+}
+
+/**
+ * The ledger side: every bank movement in the window that no statement line
+ * has claimed yet.
+ *
+ * Widened past the statement's own dates on purpose. A cheque written on the
+ * 28th and presented on the 3rd is the ordinary case of a reconciling item,
+ * and a candidate list that stopped at the statement's first date could
+ * never offer it.
+ */
+export async function getBankLedgerCandidates(
+  companyId: string, accountId: string, from: string, to: string,
+) {
+  return sql`
+    select v.journal_line_id, v.entry_no, v.entry_date, v.doc_no, v.doc_type,
+           v.partner_name, v.memo, v.amount, v.document_id
+      from v_bank_ledger_line v
+     where v.company_id = ${companyId}
+       and v.account_id = ${accountId}
+       and v.match_id is null
+       and v.entry_date >= (${from}::date - interval '45 days')
+       and v.entry_date <= (${to}::date + interval '15 days')
+     order by v.entry_date, v.entry_no`;
+}
+
+// ------------------------------------------------------- partner categories --
+
+export async function getPartnerCategories(companyId: string) {
+  return sql`
+    select * from v_partner_category
+     where company_id = ${companyId}
+     order by sort_order, name`;
+}
+
+/**
+ * Sales by the kind of shop it came from, for the period on the dashboard.
+ *
+ * Uncategorised is a row rather than a filter. A breakdown that silently
+ * dropped it would total less than revenue does and send somebody looking
+ * for the missing money.
+ */
+export async function getRevenueByCustomerCategory(
+  companyId: string, from: string, to: string,
+) {
+  return sql`
+    select coalesce(c.name, 'Not categorised') as name,
+           coalesce(c.id::text, 'none')        as id,
+           sum(d.net_total)                    as revenue,
+           count(*)::int                       as invoices
+      from document d
+      join business_partner p on p.id = d.partner_id
+      left join partner_category c on c.id = p.category_id
+     where d.company_id = ${companyId}
+       and d.doc_type = 'SALES_INVOICE'
+       and d.status = 'POSTED'
+       and d.posting_date >= ${from}::date and d.posting_date < ${to}::date
+     group by 1, 2
+     having sum(d.net_total) > 0
+     order by revenue desc`;
+}
+
+// ------------------------------------------------------------------ routes --
+
+export async function getRoutes(companyId: string) {
+  return sql`
+    select * from v_route
+     where company_id = ${companyId}
+     order by code`;
+}
+
+/** One route, the shops on it in order, and when it last ran. */
+export async function getRoute(companyId: string, routeId: string) {
+  const [route] = await sql`
+    select * from v_route where company_id = ${companyId} and id = ${routeId}`;
+  if (!route) return null;
+
+  const stops = await sql`
+    select rs.id, rs.seq, rs.note,
+           p.id as partner_id, p.code as partner_code, p.name as partner_name,
+           p.township, p.region, p.phone,
+           -- Goods already waiting for this shop, so somebody planning the
+           -- beat can see which calls have a load behind them.
+           (select count(*) from document d
+             where d.company_id = ${companyId}
+               and d.doc_type = 'DELIVERY' and d.status = 'POSTED'
+               and d.partner_id = p.id
+               and d.reverses_document_id is null
+               and not exists (
+                     select 1 from delivery_trip_stop s2
+                       join delivery_trip t2 on t2.id = s2.trip_id
+                      where s2.document_id = d.id
+                        and t2.status in ('PLANNED','DISPATCHED'))) as waiting
+      from route_stop rs
+      join business_partner p on p.id = rs.partner_id
+     where rs.route_id = ${routeId}
+     order by rs.seq`;
+
+  const runs = await sql`
+    select id, trip_no, trip_date, status from delivery_trip
+     where route_id = ${routeId}
+     order by trip_date desc limit 10`;
+
+  return { route, stops, runs };
+}
+
+/** Customers not yet on this route, to add to it. */
+export async function getRouteCandidates(companyId: string, routeId: string) {
+  return sql`
+    select p.id, p.code, p.name, p.township, p.region
+      from business_partner p
+     where p.company_id = ${companyId}
+       and p.is_customer and p.is_active
+       and not exists (
+             select 1 from route_stop rs
+              where rs.route_id = ${routeId} and rs.partner_id = p.id)
+     order by p.code`;
+}
+
+/** Every trip with its stops already counted, newest first. */
+export async function getTrips(companyId: string) {
+  return sql`
+    select * from v_delivery_trip
+     where company_id = ${companyId}
+     order by trip_date desc, trip_no desc`;
+}
+
+/** One trip, its stops in running order, and what each stop is carrying. */
+export async function getTrip(companyId: string, tripId: string) {
+  const [trip] = await sql`
+    select * from v_delivery_trip where company_id = ${companyId} and id = ${tripId}`;
+  if (!trip) return null;
+
+  /* Left join: a stop generated from a route is a call at a shop with no
+     goods yet, so document_id is null and an inner join would drop it from
+     the sheet the driver is holding. The partner comes from the stop's own
+     column, which is set either way. */
+  const stops = await sql`
+    select s.id, s.seq, s.status, s.delivered_at, s.failure_reason, s.note,
+           s.document_id, d.doc_no, d.doc_date,
+           coalesce(d.gross_total, 0) as gross_total,
+           p.id as partner_id, p.name as partner_name,
+           p.township, p.region, p.phone, p.address
+      from delivery_trip_stop s
+      left join document d on d.id = s.document_id
+      left join business_partner p
+             on p.id = coalesce(s.partner_id, d.partner_id)
+     where s.trip_id = ${tripId}
+     order by s.seq`;
+
+  return { trip, stops };
+}
+
+/**
+ * Deliveries that could go on a trip: posted, and not already carried by one
+ * that is still running.
+ *
+ * A delivery on a closed trip is offered again deliberately — a stop that
+ * failed comes back tomorrow, and that second attempt is a real journey
+ * rather than a correction of the first.
+ */
+export async function getUncarriedDeliveries(companyId: string, tripId?: string) {
+  return sql`
+    select d.id, d.doc_no, d.doc_date, d.gross_total,
+           p.name as partner_name, p.township, p.region,
+           l.code as location_code
+      from document d
+      left join business_partner p on p.id = d.partner_id
+      left join location l on l.id = d.location_id
+     where d.company_id = ${companyId}
+       and d.doc_type = 'DELIVERY'
+       and d.status = 'POSTED'
+       and d.reverses_document_id is null
+       and not exists (
+             select 1
+               from delivery_trip_stop s
+               join delivery_trip t on t.id = s.trip_id
+              where s.document_id = d.id
+                and t.status in ('PLANNED','DISPATCHED')
+                ${tripId ? sql`and t.id <> ${tripId}` : sql``})
+     order by d.doc_date desc, d.doc_no desc
+     limit 200`;
 }
 
 export async function getSalesmen(companyId: string) {

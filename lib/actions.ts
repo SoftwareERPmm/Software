@@ -28,6 +28,8 @@ import {
   postSalesReturn, postPurchaseReturn, postConsignmentReceipt,
   type InvoiceLine, type OrderLine, type FulfillmentLine, type Allocation, type VoucherLine,
   type AdjustmentLine, type ReturnLine, type TransferLine, type ConsignmentReceiptLine,
+  postYearEndClose,
+  reopenFiscalYear,
 } from "./posting";
 import { postOnce, alreadyPosted } from "./idempotency";
 
@@ -143,7 +145,8 @@ export async function createPartner(_prev: unknown, fd: FormData): Promise<Actio
     await sql`
       insert into business_partner
         (company_id, code, name, name_my, company_name, is_customer, is_supplier,
-         region, township, address, phone, payment_terms_days, credit_limit, price_level_id)
+         region, township, address, phone, payment_terms_days, credit_limit, price_level_id,
+         category_id)
       values
         (${co}, ${code}, ${name}, ${str(fd, "name_my") || null},
          ${str(fd, "company_name") || null}, ${isCustomer}, ${isSupplier},
@@ -154,7 +157,10 @@ export async function createPartner(_prev: unknown, fd: FormData): Promise<Actio
          -- Which column of the price list this customer buys from. Null
          -- means the first level, which is what every customer had before
          -- anyone could choose.
-         ${str(fd, "price_level_id") || null})`;
+         ${str(fd, "price_level_id") || null},
+         -- What kind of shop it is. Classification only; it changes
+         -- nothing about what they are charged or allowed to owe.
+         ${str(fd, "category_id") || null})`;
   } catch (e) {
     if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
     return { error: e instanceof Error ? e.message : String(e) };
@@ -194,6 +200,7 @@ export async function updatePartner(_prev: unknown, fd: FormData): Promise<Actio
         phone = ${str(fd, "phone") || null}, payment_terms_days = ${num(fd, "payment_terms_days")},
         credit_limit = ${fd.get("credit_limit") ? num(fd, "credit_limit") : null},
         price_level_id = ${str(fd, "price_level_id") || null},
+        category_id = ${str(fd, "category_id") || null},
         is_active = ${fd.get("is_active") === "on"}
       where id = ${id} and company_id = ${co}`;
   } catch (e) {
@@ -770,6 +777,7 @@ async function postNote(
     }
     if (!(amount > 0)) return { error: "Enter how much to take off" };
     if (!reason.trim()) return { error: "Say why — the note is read by people who were not here" };
+    if (!str(fd, "category")) return { error: "Say which kind of correction this is" };
 
     const input = {
       companyId: co,
@@ -778,6 +786,7 @@ async function postNote(
       sourceDocumentId,
       amount,
       taxCodeId: str(fd, "tax_code_id") || null,
+      category: (str(fd, "category") || "OTHER") as never,
       reason,
       reference: str(fd, "reference") || null,
     };
@@ -3262,6 +3271,1002 @@ export async function deleteLocation(_prev: unknown, fd: FormData): Promise<Acti
 }
 
 // ------------------------------------------------------- salespersons --
+
+// -------------------------------------------------------------- year end --
+
+export async function closeFiscalYear(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  let docId: string;
+  try {
+    const co = await companyId();
+    const fiscalYearId = str(fd, "fiscal_year_id");
+    if (!fiscalYearId) return { error: "Choose a year" };
+
+    const result = await postOnce(co, attemptKey(fd), (tx) =>
+      postYearEndClose({ companyId: co, fiscalYearId, memo: str(fd, "memo") || null }, tx));
+    docId = (result as { id: string }).id;
+    revalidatePath("/finance/year-end");
+    revalidatePath("/documents");
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  redirectWithToast(`/documents/${docId}`, "Year closed");
+}
+
+export async function reopenYear(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const fiscalYearId = str(fd, "fiscal_year_id");
+    const reason = str(fd, "reason").trim();
+    if (!fiscalYearId) return { error: "Choose a year" };
+    // A reopened year is a fact somebody has to justify later. The void
+    // carries the sentence, so it is on the document rather than in a memory.
+    if (!reason) {
+      return { error: "Say why the year is being reopened — it goes on the reversal for good" };
+    }
+    await reopenFiscalYear({ companyId: co, fiscalYearId, reason });
+    revalidatePath("/finance/year-end");
+    revalidatePath("/documents");
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  return { ok: true };
+}
+
+// ------------------------------------------------------ bank reconciliation --
+//
+// None of this posts, and none of it writes to journal_line. A match is its
+// own row joining a statement line to a ledger line; unreconciling deletes
+// that row. A charge on the statement that is missing from the books is not
+// fixed here — it wants a bank payment voucher, which posts, and the match
+// then points at that voucher's own line.
+
+export async function previewBankStatement(
+  content: string, filename: string, format: UploadFormat,
+) {
+  await companyId();
+  const { planBankStatement } = await import("./read-bank-statement");
+  const rows = format === "xlsx" ? await xlsxToRows(content) : parseCsv(content);
+  return { plan: planBankStatement(rows), filename };
+}
+
+export async function importBankStatement(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  let statementId: string;
+  try {
+    const co = await companyId();
+    const accountId = str(fd, "account_id");
+    const content = str(fd, "file");
+    const filename = str(fd, "filename") || "statement.csv";
+    const format = (str(fd, "format") === "xlsx" ? "xlsx" : "csv") as UploadFormat;
+    if (!accountId) return { error: "Choose which bank account this statement is for" };
+    if (!content) return { error: "No file was uploaded" };
+
+    const [acc] = await sql`
+      select id from account
+       where id = ${accountId} and company_id = ${co} and is_bank_account`;
+    if (!acc) return { error: "That is not a bank account" };
+
+    const { planBankStatement } = await import("./read-bank-statement");
+    const rows = format === "xlsx" ? await xlsxToRows(content) : parseCsv(content);
+    const plan = planBankStatement(rows);
+
+    if (plan.rows.length === 0) {
+      return {
+        error: plan.skipped[0]?.why
+          ?? "No transaction rows could be read from that file",
+      };
+    }
+
+    const from = plan.from!;
+    const to = plan.to!;
+    const opening = fd.get("opening_balance") ? num(fd, "opening_balance") : null;
+    const closing = fd.get("closing_balance") ? num(fd, "closing_balance") : null;
+
+    statementId = await sql.begin(async (tx) => {
+      const [{ n }] = await tx`
+        select fn_next_document_no(${co}, 'BANK_STATEMENT', ${to}::date) as n`;
+      const [st] = await tx`
+        insert into bank_statement
+          (company_id, account_id, statement_no, from_date, to_date,
+           opening_balance, closing_balance, filename)
+        values (${co}, ${accountId}, ${n}, ${from}::date, ${to}::date,
+                ${opening}, ${closing}, ${filename})
+        returning id`;
+      for (const r of plan.rows) {
+        await tx`
+          insert into bank_statement_line
+            (statement_id, line_no, txn_date, description, reference, amount, balance)
+          values (${st.id}, ${r.lineNo}, ${r.txnDate}::date, ${r.description},
+                  ${r.reference}, ${r.amount}, ${r.balance})`;
+      }
+      return st.id as string;
+    });
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/finance/bank-reconciliation");
+  redirectWithToast(`/finance/bank-reconciliation/${statementId}`, "Statement imported");
+}
+
+export async function matchBankLine(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const statementLineId = str(fd, "statement_line_id");
+    const journalLineId = str(fd, "journal_line_id");
+    if (!statementLineId || !journalLineId) return { error: "Choose both sides of the match" };
+
+    const [line] = await sql`
+      select l.id, l.statement_id, l.status, s.account_id
+        from bank_statement_line l
+        join bank_statement s on s.id = l.statement_id
+       where l.id = ${statementLineId} and s.company_id = ${co}`;
+    if (!line) return { error: "That statement line no longer exists" };
+    if (line.status === "MATCHED") return { error: "That line is already matched" };
+
+    // The ledger line has to belong to the same bank account. Matching a
+    // statement against a movement on a different account would reconcile
+    // one account using another's money.
+    const [ledger] = await sql`
+      select journal_line_id, account_id, match_id from v_bank_ledger_line
+       where journal_line_id = ${journalLineId} and company_id = ${co}`;
+    if (!ledger) return { error: "That ledger line no longer exists" };
+    if (ledger.account_id !== line.account_id) {
+      return { error: "That entry is on a different bank account" };
+    }
+    if (ledger.match_id) return { error: "That entry is already reconciled" };
+
+    await sql.begin(async (tx) => {
+      await tx`
+        insert into bank_reconciliation_match
+          (company_id, statement_line_id, journal_line_id, note)
+        values (${co}, ${statementLineId}, ${journalLineId}, ${str(fd, "note") || null})`;
+      await tx`
+        update bank_statement_line set status = 'MATCHED', ignore_reason = null
+         where id = ${statementLineId}`;
+    });
+    revalidatePath(`/finance/bank-reconciliation/${line.statement_id}`);
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: "One of those lines is already matched" };
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  return { ok: true };
+}
+
+export async function unmatchBankLine(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const statementLineId = str(fd, "statement_line_id");
+    if (!statementLineId) return { error: "Choose a line" };
+
+    const [line] = await sql`
+      select l.id, l.statement_id from bank_statement_line l
+        join bank_statement s on s.id = l.statement_id
+       where l.id = ${statementLineId} and s.company_id = ${co}`;
+    if (!line) return { error: "That statement line no longer exists" };
+
+    await sql.begin(async (tx) => {
+      await tx`delete from bank_reconciliation_match
+                where statement_line_id = ${statementLineId} and company_id = ${co}`;
+      await tx`update bank_statement_line set status = 'UNMATCHED'
+                where id = ${statementLineId}`;
+    });
+    revalidatePath(`/finance/bank-reconciliation/${line.statement_id}`);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  return { ok: true };
+}
+
+/** Set aside a line that is not ours to match — and say why. */
+export async function ignoreBankLine(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const statementLineId = str(fd, "statement_line_id");
+    const unignore = str(fd, "unignore") === "1";
+    if (!statementLineId) return { error: "Choose a line" };
+    const reason = str(fd, "reason").trim();
+    if (!unignore && !reason) {
+      return { error: "Say why this line is being set aside — otherwise it just disappears" };
+    }
+
+    const [line] = await sql`
+      select l.id, l.statement_id, l.status from bank_statement_line l
+        join bank_statement s on s.id = l.statement_id
+       where l.id = ${statementLineId} and s.company_id = ${co}`;
+    if (!line) return { error: "That statement line no longer exists" };
+    if (line.status === "MATCHED") {
+      return { error: "That line is matched — unmatch it first" };
+    }
+
+    await sql`
+      update bank_statement_line
+         set status = ${unignore ? "UNMATCHED" : "IGNORED"},
+             ignore_reason = ${unignore ? null : reason}
+       where id = ${statementLineId}`;
+    revalidatePath(`/finance/bank-reconciliation/${line.statement_id}`);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  return { ok: true };
+}
+
+/**
+ * Match everything that can only mean one thing.
+ *
+ * Deliberately conservative: same amount to the kyat, within seven days, and
+ * exactly one candidate on each side. Two ledger lines of 500,000 in the
+ * same week are left alone — a wrong automatic match is worse than no
+ * automatic match, because nobody re-checks the ones the machine did.
+ */
+export async function autoMatchBankStatement(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const statementId = str(fd, "statement_id");
+    if (!statementId) return { error: "Choose a statement" };
+
+    const [st] = await sql`
+      select id, account_id, from_date, to_date from bank_statement
+       where id = ${statementId} and company_id = ${co}`;
+    if (!st) return { error: "That statement no longer exists" };
+
+    const lines = await sql`
+      select id, txn_date, amount from bank_statement_line
+       where statement_id = ${statementId} and status = 'UNMATCHED'
+       order by line_no`;
+
+    const candidates = await sql`
+      select journal_line_id, entry_date, amount from v_bank_ledger_line
+       where company_id = ${co} and account_id = ${st.account_id}
+         and match_id is null
+         and entry_date >= (${st.from_date}::date - interval '45 days')
+         and entry_date <= (${st.to_date}::date + interval '15 days')`;
+
+    const used = new Set<string>();
+    let matched = 0;
+
+    for (const l of lines) {
+      const near = candidates.filter((c: Record<string, unknown>) => {
+        if (used.has(String(c.journal_line_id))) return false;
+        if (Math.abs(Number(c.amount) - Number(l.amount)) > 0.0001) return false;
+        const days = Math.abs(
+          (new Date(String(c.entry_date)).getTime()
+            - new Date(String(l.txn_date)).getTime()) / 86_400_000);
+        return days <= 7;
+      });
+      if (near.length !== 1) continue;
+
+      const jl = String(near[0].journal_line_id);
+      await sql.begin(async (tx) => {
+        await tx`
+          insert into bank_reconciliation_match
+            (company_id, statement_line_id, journal_line_id, note)
+          values (${co}, ${l.id}, ${jl}, 'Matched automatically: same amount, within 7 days')`;
+        await tx`update bank_statement_line set status = 'MATCHED' where id = ${l.id}`;
+      });
+      used.add(jl);
+      matched += 1;
+    }
+
+    revalidatePath(`/finance/bank-reconciliation/${statementId}`);
+    return matched === 0
+      ? { error: "Nothing could be matched without a judgement call — match by hand below." }
+      : { ok: true };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export async function setBankStatementStatus(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const statementId = str(fd, "statement_id");
+    const status = str(fd, "status");
+    if (!statementId) return { error: "Choose a statement" };
+    if (!["OPEN", "RECONCILED"].includes(status)) return { error: "Not a statement status" };
+
+    const [st] = await sql`
+      select s.id,
+             (select count(*) from bank_statement_line l
+               where l.statement_id = s.id and l.status = 'UNMATCHED') as unmatched
+        from bank_statement s
+       where s.id = ${statementId} and s.company_id = ${co}`;
+    if (!st) return { error: "That statement no longer exists" };
+
+    if (status === "RECONCILED" && Number(st.unmatched) > 0) {
+      return {
+        error: `${st.unmatched} line${Number(st.unmatched) === 1 ? " is" : "s are"} still `
+             + `unexplained. Match each one, or set it aside with a reason, before `
+             + `calling the statement reconciled.`,
+      };
+    }
+
+    await sql`update bank_statement set status = ${status}
+               where id = ${statementId} and company_id = ${co}`;
+    revalidatePath(`/finance/bank-reconciliation/${statementId}`);
+    revalidatePath("/finance/bank-reconciliation");
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  return { ok: true };
+}
+
+export async function deleteBankStatement(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const statementId = str(fd, "statement_id");
+    if (!statementId) return { error: "Choose a statement" };
+    // Cascades to its lines and their matches. Nothing in the ledger moves,
+    // which is exactly why deleting an imported statement is safe: it was
+    // never a financial record, only a comparison against one.
+    await sql`delete from bank_statement where id = ${statementId} and company_id = ${co}`;
+    revalidatePath("/finance/bank-reconciliation");
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  redirectWithToast("/finance/bank-reconciliation", "Statement deleted");
+}
+
+// ------------------------------------------------------- partner categories --
+//
+// What kind of shop a customer is. Classification only: it sets no price, no
+// credit limit and no terms, because those were agreed with the shop and
+// live on the shop.
+
+export async function createPartnerCategory(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  const code = str(fd, "code").toUpperCase();
+  try {
+    const co = await companyId();
+    const name = str(fd, "name");
+    if (!code) return { error: "Code is required" };
+    if (!name) return { error: "Name is required" };
+
+    await sql`
+      insert into partner_category (company_id, code, name, name_my, note, sort_order)
+      values (${co}, ${code}, ${name}, ${str(fd, "name_my") || null},
+              ${str(fd, "note") || null}, ${num(fd, "sort_order")})`;
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/partners/categories");
+  redirectWithToast("/partners/categories", "Category added");
+}
+
+export async function updatePartnerCategory(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    const name = str(fd, "name");
+    if (!id) return { error: "Choose a category" };
+    if (!name) return { error: "Name is required" };
+
+    await sql`
+      update partner_category
+         set name = ${name}, name_my = ${str(fd, "name_my") || null},
+             note = ${str(fd, "note") || null},
+             sort_order = ${num(fd, "sort_order")}
+       where id = ${id} and company_id = ${co}`;
+    revalidatePath("/partners/categories");
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  return { ok: true };
+}
+
+export async function setPartnerCategoryActive(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose a category" };
+    await sql`update partner_category set is_active = ${str(fd, "active") === "1"}
+               where id = ${id} and company_id = ${co}`;
+    revalidatePath("/partners/categories");
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  return { ok: true };
+}
+
+/**
+ * Hard delete, and only for a category nothing is filed under.
+ *
+ * Deleting one that customers sit in would blank their classification
+ * silently — the foreign key is nullable, so nothing would complain. A
+ * category in use is deactivated instead, which takes it off the pickers and
+ * leaves the customers who are in it still saying what they are.
+ */
+export async function deletePartnerCategory(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose a category" };
+
+    const [inUse] = await sql`
+      select count(*)::int as n from business_partner
+       where category_id = ${id} and company_id = ${co}`;
+    if (Number(inUse.n) > 0) {
+      return {
+        error: `${inUse.n} partner${Number(inUse.n) === 1 ? " is" : "s are"} filed under `
+             + `this category — deactivate it instead of deleting it.`,
+      };
+    }
+    await sql`delete from partner_category where id = ${id} and company_id = ${co}`;
+    revalidatePath("/partners/categories");
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  return { ok: true };
+}
+
+// -------------------------------------------------------------------- routes --
+//
+// A beat: the same shops, on the same days, normally with the same people.
+// Nothing here posts and nothing here fires by itself — a route is a
+// template somebody presses a button against on the morning of the run.
+
+function weekdaysFrom(fd: FormData): number[] {
+  return fd.getAll("weekday").map((d) => Number(d)).filter((d) => d >= 1 && d <= 7);
+}
+
+export async function createRoute(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  const code = str(fd, "code").toUpperCase();
+  let routeId: string;
+  try {
+    const co = await companyId();
+    const name = str(fd, "name");
+    if (!code) return { error: "Code is required" };
+    if (!name) return { error: "Name is required" };
+
+    const [r] = await sql`
+      insert into route (company_id, code, name, location_id, salesman_id,
+                         driver_id, vehicle_id, weekdays, note)
+      values (${co}, ${code}, ${name}, ${str(fd, "location_id") || null},
+              ${str(fd, "salesman_id") || null}, ${str(fd, "driver_id") || null},
+              ${str(fd, "vehicle_id") || null}, ${weekdaysFrom(fd)},
+              ${str(fd, "note") || null})
+      returning id`;
+    routeId = r.id as string;
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/logistics/routes");
+  redirectWithToast(`/logistics/routes/${routeId}`, "Route created");
+}
+
+export async function updateRoute(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    const name = str(fd, "name");
+    if (!id) return { error: "Choose a route" };
+    if (!name) return { error: "Name is required" };
+
+    await sql`
+      update route
+         set name = ${name}, location_id = ${str(fd, "location_id") || null},
+             salesman_id = ${str(fd, "salesman_id") || null},
+             driver_id = ${str(fd, "driver_id") || null},
+             vehicle_id = ${str(fd, "vehicle_id") || null},
+             weekdays = ${weekdaysFrom(fd)},
+             note = ${str(fd, "note") || null}
+       where id = ${id} and company_id = ${co}`;
+    revalidatePath(`/logistics/routes/${id}`);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  return { ok: true };
+}
+
+export async function setRouteActive(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose a route" };
+    await sql`update route set is_active = ${str(fd, "active") === "1"}
+               where id = ${id} and company_id = ${co}`;
+    revalidatePath("/logistics/routes");
+    revalidatePath(`/logistics/routes/${id}`);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  return { ok: true };
+}
+
+export async function addRouteStops(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const routeId = str(fd, "route_id");
+    const partnerIds = fd.getAll("partner_id").map(String).filter(Boolean);
+    if (!routeId) return { error: "Choose a route" };
+    if (partnerIds.length === 0) return { error: "Tick at least one customer" };
+
+    const [route] = await sql`
+      select id from route where id = ${routeId} and company_id = ${co}`;
+    if (!route) return { error: "That route no longer exists" };
+
+    await sql.begin(async (tx) => {
+      const [{ n }] = await tx`
+        select coalesce(max(seq), 0) as n from route_stop where route_id = ${routeId}`;
+      let seq = Number(n);
+      for (const partnerId of partnerIds) {
+        seq += 1;
+        await tx`
+          insert into route_stop (route_id, seq, partner_id)
+          values (${routeId}, ${seq}, ${partnerId})
+          on conflict (route_id, partner_id) do nothing`;
+      }
+    });
+    revalidatePath(`/logistics/routes/${routeId}`);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  return { ok: true };
+}
+
+export async function removeRouteStop(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const stopId = str(fd, "stop_id");
+    if (!stopId) return { error: "Choose a stop" };
+    const [stop] = await sql`
+      select rs.id, rs.route_id from route_stop rs
+        join route r on r.id = rs.route_id
+       where rs.id = ${stopId} and r.company_id = ${co}`;
+    if (!stop) return { error: "That stop no longer exists" };
+
+    // Taking a shop off the beat changes the plan, never a trip already
+    // generated from it — those are records of journeys that happened.
+    await sql`delete from route_stop where id = ${stopId}`;
+    revalidatePath(`/logistics/routes/${stop.route_id}`);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  return { ok: true };
+}
+
+export async function reorderRouteStops(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const routeId = str(fd, "route_id");
+    const order = fd.getAll("stop_id").map(String).filter(Boolean);
+    if (!routeId || order.length === 0) return { error: "Nothing to reorder" };
+    const [route] = await sql`
+      select id from route where id = ${routeId} and company_id = ${co}`;
+    if (!route) return { error: "That route no longer exists" };
+
+    await sql.begin(async (tx) => {
+      for (const [i, stopId] of order.entries()) {
+        await tx`update route_stop set seq = ${i + 1}
+                  where id = ${stopId} and route_id = ${routeId}`;
+      }
+    });
+    revalidatePath(`/logistics/routes/${routeId}`);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  return { ok: true };
+}
+
+/**
+ * Today's trip, from the standing beat.
+ *
+ * Each shop on the route becomes a stop. Where goods are already waiting for
+ * that shop — a posted delivery not on any running trip — each delivery
+ * becomes its own stop at that shop's position, because the driver hands
+ * over one document at a time and the shop signs for each. A shop with
+ * nothing waiting still gets a stop: on a pre-sale round the whole point of
+ * the call is to come back with an order.
+ *
+ * The route's people and truck are copied on to the trip rather than read
+ * through it. The beat says who usually goes; the trip records who went, and
+ * changing the beat next month must not rewrite last Tuesday.
+ */
+export async function generateTripFromRoute(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  let tripId: string;
+  try {
+    const co = await companyId();
+    const routeId = str(fd, "route_id");
+    const tripDate = str(fd, "trip_date");
+    if (!routeId) return { error: "Choose a route" };
+    if (!tripDate) return { error: "Choose the day it runs" };
+
+    const [route] = await sql`
+      select * from route where id = ${routeId} and company_id = ${co}`;
+    if (!route) return { error: "That route no longer exists" };
+    if (!route.is_active) return { error: "That route is retired" };
+
+    const stops = await sql`
+      select rs.partner_id from route_stop rs
+       where rs.route_id = ${routeId} order by rs.seq`;
+    if (stops.length === 0) {
+      return { error: "That route has no shops on it yet" };
+    }
+
+    const [already] = await sql`
+      select trip_no from delivery_trip
+       where route_id = ${routeId} and trip_date = ${tripDate}::date
+         and status <> 'CANCELLED'`;
+    if (already) {
+      return { error: `${already.trip_no} already runs this route on that day` };
+    }
+
+    tripId = await sql.begin(async (tx) => {
+      const [{ n }] = await tx`
+        select fn_next_document_no(${co}, 'DELIVERY_TRIP', ${tripDate}::date) as n`;
+      const [t] = await tx`
+        insert into delivery_trip
+          (company_id, trip_no, trip_date, location_id, vehicle_id, driver_id,
+           salesman_id, route_id, note)
+        values (${co}, ${n}, ${tripDate}::date, ${route.location_id},
+                ${route.vehicle_id}, ${route.driver_id}, ${route.salesman_id},
+                ${routeId}, ${route.note})
+        returning id`;
+
+      let seq = 0;
+      for (const rs of stops) {
+        const waiting = await tx`
+          select d.id from document d
+           where d.company_id = ${co}
+             and d.doc_type = 'DELIVERY' and d.status = 'POSTED'
+             and d.partner_id = ${rs.partner_id}
+             and d.reverses_document_id is null
+             and not exists (
+                   select 1 from delivery_trip_stop s2
+                     join delivery_trip t2 on t2.id = s2.trip_id
+                    where s2.document_id = d.id
+                      and t2.status in ('PLANNED','DISPATCHED'))
+           order by d.doc_date, d.doc_no`;
+
+        if (waiting.length === 0) {
+          seq += 1;
+          await tx`
+            insert into delivery_trip_stop (trip_id, seq, partner_id)
+            values (${t.id}, ${seq}, ${rs.partner_id})`;
+        } else {
+          for (const w of waiting) {
+            seq += 1;
+            await tx`
+              insert into delivery_trip_stop (trip_id, seq, partner_id, document_id)
+              values (${t.id}, ${seq}, ${rs.partner_id}, ${w.id})`;
+          }
+        }
+      }
+      return t.id as string;
+    });
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/logistics/trips");
+  redirectWithToast(`/logistics/trips/${tripId}`, "Trip generated from the route");
+}
+
+// ------------------------------------------------------------ delivery trips --
+//
+// None of this posts. A trip records who carried goods that already left the
+// warehouse, so every action below writes to the trip tables and nothing
+// else — no journal, no stock, no document status. That is the whole reason
+// it lives here rather than in posting.ts.
+
+export async function createVehicle(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  const code = str(fd, "code").toUpperCase();
+  try {
+    const co = await companyId();
+    const plate = str(fd, "plate_no");
+    if (!code) return { error: "Code is required" };
+    if (!plate) return { error: "Plate number is required — it is what the yard calls it" };
+
+    await sql`
+      insert into vehicle (company_id, code, plate_no, name, capacity_note)
+      values (${co}, ${code}, ${plate}, ${str(fd, "name") || null},
+              ${str(fd, "capacity_note") || null})`;
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/logistics/vehicles");
+  redirectWithToast("/logistics/vehicles", "Vehicle added");
+}
+
+export async function updateVehicle(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose a vehicle" };
+    const plate = str(fd, "plate_no");
+    if (!plate) return { error: "Plate number is required" };
+    await sql`
+      update vehicle
+         set plate_no = ${plate}, name = ${str(fd, "name") || null},
+             capacity_note = ${str(fd, "capacity_note") || null}
+       where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/logistics/vehicles");
+  return { ok: true };
+}
+
+export async function setVehicleActive(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose a vehicle" };
+    await sql`update vehicle set is_active = ${str(fd, "active") === "1"}
+               where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/logistics/vehicles");
+  return { ok: true };
+}
+
+export async function createDriver(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  const code = str(fd, "code").toUpperCase();
+  try {
+    const co = await companyId();
+    const name = str(fd, "name");
+    if (!code) return { error: "Code is required" };
+    if (!name) return { error: "Name is required" };
+
+    await sql`
+      insert into driver (company_id, code, name, name_my, phone, licence_no)
+      values (${co}, ${code}, ${name}, ${str(fd, "name_my") || null},
+              ${str(fd, "phone") || null}, ${str(fd, "licence_no") || null})`;
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/logistics/drivers");
+  redirectWithToast("/logistics/drivers", "Driver added");
+}
+
+export async function updateDriver(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose a driver" };
+    const name = str(fd, "name");
+    if (!name) return { error: "Name is required" };
+    await sql`
+      update driver
+         set name = ${name}, name_my = ${str(fd, "name_my") || null},
+             phone = ${str(fd, "phone") || null},
+             licence_no = ${str(fd, "licence_no") || null}
+       where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/logistics/drivers");
+  return { ok: true };
+}
+
+export async function setDriverActive(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose a driver" };
+    await sql`update driver set is_active = ${str(fd, "active") === "1"}
+               where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/logistics/drivers");
+  return { ok: true };
+}
+
+/** A trip, with the deliveries ticked on the form as its first stops. */
+export async function createTrip(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  let tripId: string;
+  try {
+    const co = await companyId();
+    const tripDate = str(fd, "trip_date");
+    if (!tripDate) return { error: "A trip needs a date" };
+
+    const documentIds = fd.getAll("document_id").map(String).filter(Boolean);
+
+    tripId = await sql.begin(async (tx) => {
+      const [{ n }] = await tx`
+        select fn_next_document_no(${co}, 'DELIVERY_TRIP', ${tripDate}::date) as n`;
+      const [t] = await tx`
+        insert into delivery_trip
+          (company_id, trip_no, trip_date, location_id, vehicle_id, driver_id,
+           salesman_id, note)
+        values (${co}, ${n}, ${tripDate}::date, ${str(fd, "location_id") || null},
+                ${str(fd, "vehicle_id") || null}, ${str(fd, "driver_id") || null},
+                ${str(fd, "salesman_id") || null}, ${str(fd, "note") || null})
+        returning id`;
+      for (const [i, docId] of documentIds.entries()) {
+        await tx`
+          insert into delivery_trip_stop (trip_id, seq, document_id)
+          values (${t.id}, ${i + 1}, ${docId})`;
+      }
+      return t.id as string;
+    });
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/logistics/trips");
+  redirectWithToast(`/logistics/trips/${tripId}`, "Trip created");
+}
+
+export async function addTripStops(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const tripId = str(fd, "trip_id");
+    const documentIds = fd.getAll("document_id").map(String).filter(Boolean);
+    if (!tripId) return { error: "Choose a trip" };
+    if (documentIds.length === 0) return { error: "Tick at least one delivery" };
+
+    const [trip] = await sql`
+      select status from delivery_trip where id = ${tripId} and company_id = ${co}`;
+    if (!trip) return { error: "That trip no longer exists" };
+    if (trip.status === "CLOSED" || trip.status === "CANCELLED") {
+      return { error: `A ${String(trip.status).toLowerCase()} trip cannot take new stops` };
+    }
+
+    await sql.begin(async (tx) => {
+      const [{ n }] = await tx`
+        select coalesce(max(seq), 0) as n from delivery_trip_stop where trip_id = ${tripId}`;
+      let seq = Number(n);
+      for (const docId of documentIds) {
+        seq += 1;
+        await tx`
+          insert into delivery_trip_stop (trip_id, seq, document_id)
+          values (${tripId}, ${seq}, ${docId})
+          on conflict (trip_id, document_id) do nothing`;
+      }
+    });
+    revalidatePath(`/logistics/trips/${tripId}`);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  return { ok: true };
+}
+
+export async function removeTripStop(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const stopId = str(fd, "stop_id");
+    if (!stopId) return { error: "Choose a stop" };
+
+    const [stop] = await sql`
+      select s.id, s.trip_id, s.status, t.status as trip_status
+        from delivery_trip_stop s
+        join delivery_trip t on t.id = s.trip_id
+       where s.id = ${stopId} and t.company_id = ${co}`;
+    if (!stop) return { error: "That stop no longer exists" };
+    // A stop that has an answer is a record of what happened, not a plan.
+    if (stop.status !== "PENDING") {
+      return { error: "That stop has already been answered — it is a record of the journey now" };
+    }
+
+    await sql`delete from delivery_trip_stop where id = ${stopId}`;
+    revalidatePath(`/logistics/trips/${stop.trip_id}`);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  return { ok: true };
+}
+
+/**
+ * The running order, rewritten from a list of stop ids.
+ *
+ * Every seq is set inside one transaction, which the deferred unique on
+ * (trip_id, seq) exists for: an immediate check fails halfway through a swap
+ * because two stops briefly share a number.
+ */
+export async function reorderTripStops(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const tripId = str(fd, "trip_id");
+    const order = fd.getAll("stop_id").map(String).filter(Boolean);
+    if (!tripId || order.length === 0) return { error: "Nothing to reorder" };
+
+    const [trip] = await sql`
+      select id from delivery_trip where id = ${tripId} and company_id = ${co}`;
+    if (!trip) return { error: "That trip no longer exists" };
+
+    await sql.begin(async (tx) => {
+      for (const [i, stopId] of order.entries()) {
+        await tx`
+          update delivery_trip_stop set seq = ${i + 1}
+           where id = ${stopId} and trip_id = ${tripId}`;
+      }
+    });
+    revalidatePath(`/logistics/trips/${tripId}`);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  return { ok: true };
+}
+
+/** What happened at one stop. Proof of delivery, not a posting. */
+export async function answerTripStop(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const stopId = str(fd, "stop_id");
+    const status = str(fd, "status");
+    if (!stopId) return { error: "Choose a stop" };
+    if (!["PENDING", "DELIVERED", "FAILED"].includes(status)) {
+      return { error: "A stop is pending, delivered, or failed" };
+    }
+    const reason = str(fd, "failure_reason");
+    if (status === "FAILED" && !reason.trim()) {
+      return { error: "Say why it failed — shop shut, money not ready, nobody there" };
+    }
+
+    const [stop] = await sql`
+      select s.trip_id from delivery_trip_stop s
+        join delivery_trip t on t.id = s.trip_id
+       where s.id = ${stopId} and t.company_id = ${co}`;
+    if (!stop) return { error: "That stop no longer exists" };
+
+    await sql`
+      update delivery_trip_stop
+         set status = ${status},
+             delivered_at = ${status === "DELIVERED" ? sql`now()` : null},
+             failure_reason = ${status === "FAILED" ? reason.trim() : null}
+       where id = ${stopId}`;
+    revalidatePath(`/logistics/trips/${stop.trip_id}`);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  return { ok: true };
+}
+
+/**
+ * Where the trip is in its journey.
+ *
+ * Closing is refused while a stop is still pending, because the evening
+ * question is exactly the one a half-answered trip cannot answer. Cancelling
+ * is for a trip that never left; one that went out and went badly is closed
+ * with failed stops, which is a truer record.
+ */
+export async function setTripStatus(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const tripId = str(fd, "trip_id");
+    const status = str(fd, "status");
+    if (!tripId) return { error: "Choose a trip" };
+    if (!["PLANNED", "DISPATCHED", "CLOSED", "CANCELLED"].includes(status)) {
+      return { error: "Not a trip status" };
+    }
+
+    const [trip] = await sql`
+      select t.status,
+             (select count(*) from delivery_trip_stop s
+               where s.trip_id = t.id and s.status = 'PENDING') as pending,
+             (select count(*) from delivery_trip_stop s where s.trip_id = t.id) as stops
+        from delivery_trip t
+       where t.id = ${tripId} and t.company_id = ${co}`;
+    if (!trip) return { error: "That trip no longer exists" };
+
+    if (status === "DISPATCHED" && Number(trip.stops) === 0) {
+      return { error: "A trip with no stops has nowhere to go" };
+    }
+    if (status === "CLOSED" && Number(trip.pending) > 0) {
+      return {
+        error: `${trip.pending} stop${Number(trip.pending) === 1 ? " is" : "s are"} still `
+             + `unanswered. Mark each one delivered or failed before closing the trip.`,
+      };
+    }
+    if (status === "CANCELLED" && trip.status === "CLOSED") {
+      return { error: "A closed trip is a record of a journey that happened" };
+    }
+
+    await sql`
+      update delivery_trip
+         set status = ${status},
+             departed_at = ${status === "DISPATCHED" ? sql`now()` : sql`departed_at`},
+             closed_at = ${status === "CLOSED" ? sql`now()` : sql`closed_at`}
+       where id = ${tripId} and company_id = ${co}`;
+    revalidatePath(`/logistics/trips/${tripId}`);
+    revalidatePath("/logistics/trips");
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  return { ok: true };
+}
 
 export async function createSalesman(_prev: unknown, fd: FormData): Promise<ActionResult> {
   const toastMsg = "Salesperson added";

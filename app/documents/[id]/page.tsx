@@ -742,6 +742,26 @@ export default async function DocumentPage({
     <div className="docactions">{correction}</div>
   ) : null;
 
+  /* What kind of correction a note is, when it was posted, and by whom.
+     The category is countable and the sentence is the explanation; neither
+     stands in for the other. "Who" reads honestly rather than helpfully:
+     nobody signs in yet, so there is no name to show and inventing a field
+     somebody types their own name into would look like attribution without
+     being it. */
+  const isNote = doc.doc_type === "CREDIT_NOTE" || doc.doc_type === "DEBIT_NOTE";
+  const isCreditNote = doc.doc_type === "CREDIT_NOTE";
+  const NOTE_REASON: Record<string, string> = {
+    RETURN: isCreditNote
+      ? "Goods returned — not coming back to the warehouse"
+      : "Goods rejected — not going back to the supplier",
+    BILLING_ERROR: "Billing error",
+    CANCELLATION: "Cancellation",
+    DISCOUNT: isCreditNote
+      ? "Discount agreed after the invoice"
+      : "Reduction agreed after the bill",
+    OTHER: "Other",
+  };
+
   /* Which column of the price list filled this document, wherever the
      stats above came from: a deliver-later invoice and a counter sale take
      different branches, and the question is the same on both. Silent when
@@ -759,6 +779,27 @@ export default async function DocumentPage({
   const statsNode = (
     <>
       <DocStats stats={stats} />
+
+      {isNote && (
+        <div className="hintbar">
+          <strong>
+            {NOTE_REASON[String(doc.adjustment_reason ?? "")] ?? "Reason not categorised"}
+          </strong>
+          {doc.memo && <> — {String(doc.memo)}</>}
+          <div className="subline">
+            Posted {people.doc?.posted_at
+              ? new Date(String(people.doc.posted_at)).toLocaleString("en-GB", {
+                  day: "numeric", month: "short", year: "numeric",
+                  hour: "2-digit", minute: "2-digit",
+                })
+              : "—"}
+            {" · "}
+            {people.doc?.posted_by
+              ? <>by {String(people.doc.posted_by)}</>
+              : "no name recorded — nobody signs in to this system yet"}
+          </div>
+        </div>
+      )}
       {/* Selling past a customer's credit limit is allowed, and permanent.
           The sentence somebody wrote to justify it belongs on the document
           itself, where anyone reading the sale later will find it. */}

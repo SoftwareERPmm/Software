@@ -17,6 +17,7 @@ type Partner = {
   region: string | null;
   /** Which column of the price list this customer buys from. */
   price_level_id: string | null; price_level_name: string | null;
+  category_id: string | null; category_name: string | null;
   township: string | null; address: string | null; phone: string | null;
   payment_terms_days: number; credit_limit: string | null; outstanding: string;
   /** From v_customer_credit — what the limit is being used for, and what is
@@ -27,6 +28,7 @@ type Partner = {
 export function PartnerRow({
   partner,
   priceLevels = [],
+  categories = [],
   updateAction,
   deleteAction,
   deactivateAction,
@@ -35,6 +37,7 @@ export function PartnerRow({
   partner: Partner;
   /** The company's price columns, so a customer can be put on one. */
   priceLevels?: { id: string; name: string }[];
+  categories?: { id: string; name: string }[];
   updateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   deleteAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   deactivateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
@@ -125,6 +128,21 @@ export function PartnerRow({
                   <span className="hint">Fills the price on a sales line</span>
                 </div>
               )}
+              {/* Says what the shop is, not what it gets. Kept apart from
+                  the price level on purpose: one is a classification, the
+                  other is a price. */}
+              {categories.length > 0 && (
+                <div className="field">
+                  <label>Category</label>
+                  <select name="category_id" defaultValue={partner.category_id ?? ""}>
+                    <option value="">Not categorised</option>
+                    {categories.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                  <span className="hint">Groups them on reports only</span>
+                </div>
+              )}
               <div className="field">
                 <label>Credit limit</label>
                 <input name="credit_limit" type="number" min="0" defaultValue={partner.credit_limit ?? ""} />
@@ -182,6 +200,10 @@ export function PartnerRow({
           ? (partner.price_level_name
               ?? <span style={{ color: "var(--muted)" }}>Default</span>)
           : <span style={{ color: "var(--muted)" }}>—</span>}
+      </td>
+      <td className="wrap">
+        {partner.category_name
+          ?? <span style={{ color: "var(--muted)" }}>—</span>}
       </td>
       <td className="r">{partner.payment_terms_days}d</td>
       <td className="r">{Number(partner.outstanding) ? money(partner.outstanding) : "—"}</td>

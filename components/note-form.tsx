@@ -37,6 +37,7 @@ export function NoteForm({
   const [attemptKey] = useState(() => crypto.randomUUID());
   const [amount, setAmount] = useState("");
   const [taxCodeId, setTaxCodeId] = useState("");
+  const [category, setCategory] = useState("");
 
   const owed = Number(invoice.outstanding);
   const net = Number(amount) || 0;
@@ -77,8 +78,14 @@ export function NoteForm({
             </div>
             <div className="field">
               <label htmlFor="reference">Reference</label>
+              {/* The counterparty's own paperwork for the same correction.
+                  The two sides name it oppositely: we credit a customer who
+                  raised a debit note against us, and we debit a supplier who
+                  answers with a credit note of their own. */}
               <input id="reference" name="reference" type="text"
-                     placeholder="Their credit note no., if any" />
+                     placeholder={isCredit
+                       ? "Their debit note no., if any"
+                       : "Their credit note no., if any"} />
             </div>
           </div>
         </div>
@@ -113,6 +120,63 @@ export function NoteForm({
               </div>
             )}
           </div>
+
+          {/* Categorised as well as written. The sentence answers one note;
+              the category answers a year — how much went back as billing
+              errors, how much was given away as goodwill. */}
+          <div className="field" style={{ marginTop: "0.6rem" }}>
+            <label htmlFor="category">What kind of correction</label>
+            <select id="category" name="category" required
+                    value={category} onChange={(e) => setCategory(e.target.value)}>
+              <option value="">Choose one…</option>
+              <option value="BILLING_ERROR">
+                {isCredit
+                  ? "Billing error — overcharge, wrong price, billed twice"
+                  : "Billing error — they overcharged, wrong price, billed twice"}
+              </option>
+              <option value="CANCELLATION">Cancellation — billed, then not delivered or called off</option>
+              <option value="DISCOUNT">
+                {isCredit
+                  ? "Discount — a reduction agreed after the invoice"
+                  : "Reduction agreed — short shipment, allowance, late penalty"}
+              </option>
+              <option value="RETURN">
+                {isCredit
+                  ? "Goods returned — and they are NOT coming back to the warehouse"
+                  : "Goods rejected — and they are NOT going back to the supplier"}
+              </option>
+              <option value="OTHER">Something else — say what below</option>
+            </select>
+          </div>
+
+          {/* The stock warning runs opposite ways for the two notes. On a
+              credit note the goods would be coming back in; on a debit note
+              they would be going back out. Either way the note itself moves
+              no stock, and the wrong choice here leaves the warehouse
+              counting goods it does not have, or short of goods it does. */}
+          {category === "RETURN" && (
+            <div className="hintbar caution">
+              {isCredit ? (
+                <>
+                  <strong>Only if the goods are not physically coming back</strong> —
+                  written off, destroyed, or kept by the customer. If they are
+                  returning to the warehouse, close this and raise a{" "}
+                  <Link href="/sales/returns">customer return</Link> instead:
+                  that brings the stock and its cost back as well as the money.
+                </>
+              ) : (
+                <>
+                  <strong>Only if the goods are not physically going back</strong> —
+                  scrapped here, or written off where they stand. If they are
+                  being shipped back to the supplier, close this and raise a{" "}
+                  <Link href="/purchases/returns">supplier return</Link> instead:
+                  that takes the stock and its cost out as well as the money.
+                </>
+              )}{" "}
+              A note only moves money, so stock written off still needs an
+              adjustment of its own.
+            </div>
+          )}
 
           <div className="field" style={{ marginTop: "0.6rem" }}>
             <label htmlFor="reason">Why</label>
@@ -152,7 +216,7 @@ export function NoteForm({
       )}
 
       <div className="actions">
-        <button type="submit" disabled={pending || tooMuch || net <= 0}>
+        <button type="submit" disabled={pending || tooMuch || net <= 0 || !category}>
           {pending ? "Posting…" : `Post ${isCredit ? "credit" : "debit"} note`}
         </button>
         <span className="page-sub">
