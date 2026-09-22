@@ -1165,6 +1165,11 @@ export async function getOpenDeliveries(companyId: string, limit: number | null 
 export async function getDocument(id: string) {
   const [doc] = await sql`
     select d.*, p.name as partner_name, p.code as partner_code,
+           -- Which column of the price list filled this document, as it was
+           -- named on the day. Read from the level rather than stored as
+           -- text: a renamed level should read by its current name, since it
+           -- is the same column of the same list.
+           (select pl.name from price_level pl where pl.id = d.price_level_id) as price_level_name,
            -- Where to send it. The printed document is the one place these
            -- are read, so they travel with the document rather than needing
            -- a second query from the print view.

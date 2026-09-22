@@ -113,6 +113,13 @@ export type SalesInvoiceInput = InvoiceInput & {
    *  delivery is created, and stock doesn't move until one is. */
   toDeliver?: boolean;
 
+  /**
+   * Which column of the price list filled these prices. Recorded on the
+   * document as what was applied, never enforced — the line's own price is
+   * what was charged, whatever the list says afterwards.
+   */
+  priceLevelId?: string | null;
+
   /** Somebody has decided to sell past this customer's credit limit. */
   allowOverCreditLimit?: boolean;
   /** Why. Required by the engine whenever the limit is actually breached. */
@@ -3179,7 +3186,7 @@ async function _postSalesInvoice(
        partner_id, location_id, currency, exchange_rate, status, price_includes_tax,
        net_total, tax_total, gross_total, memo, posted_at,
        payment_type, salesman_id, reference, to_deliver, source_document_id, delivery_fee,
-       credit_override_reason, credit_override_at)
+       credit_override_reason, credit_override_at, price_level_id)
     values
       (${companyId}, 'SALES_INVOICE', ${docNo}, ${version}, ${fiscalYear}, ${docDate}::date,
        ${docDate}::date, ${dueDate}, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
@@ -3189,7 +3196,8 @@ async function _postSalesInvoice(
        ${input.reference ?? null}, ${input.toDeliver ?? false}, ${input.deliveryId ?? null},
        ${deliveryFee},
        ${credit.over ? (input.creditOverrideReason?.trim() ?? null) : null},
-       ${credit.over ? new Date() : null})
+       ${credit.over ? new Date() : null},
+       ${input.priceLevelId ?? null})
     returning id`;
 
   const journal: JournalLine[] = [];

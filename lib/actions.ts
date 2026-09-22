@@ -1409,6 +1409,9 @@ export async function createSalesInvoice(_prev: unknown, fd: FormData): Promise<
       // Prices as typed already contain the tax. The counter price in a shop
       // usually does; a wholesale quote usually does not.
       priceIncludesTax: fd.get("price_includes_tax") !== null,
+      // Which column of the price list filled the lines, kept as a record of
+      // what was applied rather than as a control over what was charged.
+      priceLevelId: str(fd, "price_level_id") || null,
       toDeliver,
       cashIn,
       cashAccountId: str(fd, "cash_account_id") || null,

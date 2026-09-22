@@ -10,7 +10,7 @@ import { DocumentFooter } from "@/components/document-footer";
 import { DocStats, type DocStat } from "@/components/doc-stats";
 import { InvoiceProgress } from "@/components/invoice-progress";
 import {
-  PackageCheck, FileText, Clock, Wallet, CircleDollarSign, Boxes, Truck,
+  PackageCheck, FileText, Clock, Wallet, CircleDollarSign, Boxes, Truck, Tags,
 } from "lucide-react";
 import { CloseOrder } from "@/components/close-order";
 import { CorrectOrder, type CorrectableLine } from "@/components/correct-order";
@@ -741,6 +741,20 @@ export default async function DocumentPage({
   ) : correction ? (
     <div className="docactions">{correction}</div>
   ) : null;
+
+  /* Which column of the price list filled this document, wherever the
+     stats above came from: a deliver-later invoice and a counter sale take
+     different branches, and the question is the same on both. Silent when
+     nothing filled it — a document raised before price levels were
+     reachable says nothing rather than guessing "wholesale". */
+  if (doc.price_level_name) {
+    stats.push({
+      icon: Tags,
+      label: "Priced at",
+      value: String(doc.price_level_name),
+      note: "the price list column these lines came from",
+    });
+  }
 
   const statsNode = (
     <>
