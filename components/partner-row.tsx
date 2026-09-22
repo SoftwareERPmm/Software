@@ -3,6 +3,7 @@
 import { useActionState, useState } from "react";
 import type { ActionResult } from "@/lib/actions";
 import { ConfirmDelete } from "./confirm-delete";
+import { RowMenu } from "./row-menu";
 import { REGION_GROUPS } from "@/lib/regions";
 
 // lib/db.ts opens a real Postgres connection at import time — never import
@@ -16,6 +17,9 @@ type Partner = {
   region: string | null;
   township: string | null; address: string | null; phone: string | null;
   payment_terms_days: number; credit_limit: string | null; outstanding: string;
+  /** From v_customer_credit — what the limit is being used for, and what is
+   *  left of it. Null for a partner who is not a customer. */
+  exposure: string | null; available: string | null;
 };
 
 export function PartnerRow({
@@ -104,6 +108,11 @@ export function PartnerRow({
               <div className="field">
                 <label>Credit limit</label>
                 <input name="credit_limit" type="number" min="0" defaultValue={partner.credit_limit ?? ""} />
+                <span className="hint">
+                  As a customer: blank means no limit, 0 means cash only.
+                  Checked on every credit sale. Nothing to do with buying
+                  from them.
+                </span>
               </div>
             </div>
             <div style={{ display: "flex", gap: "1rem", marginTop: "0.4rem" }}>
@@ -143,38 +152,68 @@ export function PartnerRow({
         {partner.is_supplier && <span className="pill warn">Supplier</span>}
       </td>
       <td>
-        {partner.region ?? partner.township ?? "—"}
-        {partner.region && partner.township && (
-          <div className="subline">{partner.township}</div>
-        )}
+        {partner.region ?? <span style={{ color: "var(--muted)" }}>—</span>}
+      </td>
+      <td className="wrap">
+        {partner.township ?? <span style={{ color: "var(--muted)" }}>—</span>}
       </td>
       <td className="r">{partner.payment_terms_days}d</td>
       <td className="r">{Number(partner.outstanding) ? money(partner.outstanding) : "—"}</td>
+      {/* What they may owe at once. Blank means nobody has set one; 0 is a
+          real answer and means cash only.
+
+          A supplier has neither: a credit limit is what we allow a customer
+          to owe us, and printing "No limit" against a supplier would imply
+          somebody had considered the question. */}
+      <td className="r">
+        {!partner.is_customer
+          ? <span style={{ color: "var(--muted)" }}>—</span>
+          : partner.credit_limit === null
+            ? <span style={{ color: "var(--muted)" }}>No limit</span>
+            : Number(partner.credit_limit) === 0
+              ? <span className="pill warn">Cash only</span>
+              : money(partner.credit_limit)}
+      </td>
+      <td className="r">
+        {partner.credit_limit === null || !partner.is_customer ? (
+          <span style={{ color: "var(--muted)" }}>—</span>
+        ) : Number(partner.available ?? 0) < 0 ? (
+          <span className="pill overdue">{money(Math.abs(Number(partner.available)))} over</span>
+        ) : (
+          money(Number(partner.available ?? partner.credit_limit))
+        )}
+      </td>
       <td>{partner.is_active ? <span className="pill ok">active</span> : <span className="pill warn">inactive</span>}</td>
-      <td>
-        <span className="actions">
-          <button type="button" className="ghost tiny" onClick={() => setEditing(true)}>Edit</button>
+      {/* Behind a dot menu, as on the item list. Three buttons on every row
+          made the actions column wider than the names, and this table now
+          carries money that needs the width more — an amount that wraps is a
+          figure somebody misreads. */}
+      <td className="r">
+        <RowMenu label={`Actions for ${partner.name}`}>
+          <button type="button" onClick={() => setEditing(true)}>Edit</button>
           {partner.is_active ? (
-            <form action={deactFormAction} style={{ display: "inline" }}>
+            <form action={deactFormAction}>
               <input type="hidden" name="id" value={partner.id} />
-              <button type="submit" className="warn tiny">Deactivate</button>
+              <button type="submit" className="warn">Deactivate</button>
             </form>
           ) : (
-            <form action={actFormAction} style={{ display: "inline" }}>
+            <form action={actFormAction}>
               <input type="hidden" name="id" value={partner.id} />
-              <button type="submit" className="ghost tiny">Reactivate</button>
+              <button type="submit">Reactivate</button>
             </form>
           )}
+          <div className="rowmenu-sep" />
           <ConfirmDelete
             action={delFormAction}
             pending={delPending}
             error={delState && "error" in delState ? delState.error : null}
             title={`Delete ${partner.name}?`}
             detail="This cannot be undone."
+            className="danger"
           >
             <input type="hidden" name="id" value={partner.id} />
           </ConfirmDelete>
-        </span>
+        </RowMenu>
         {delState && "error" in delState && (
           <div className="hint" style={{ color: "var(--bad)" }}>{delState.error}</div>
         )}

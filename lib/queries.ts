@@ -1672,12 +1672,17 @@ export async function getPartners(companyId: string) {
            bp.is_customer, bp.is_supplier, bp.is_active,
            bp.region, bp.township, bp.address, bp.phone,
            bp.payment_terms_days, bp.credit_limit,
-           coalesce(oi.outstanding, 0) as outstanding
+           coalesce(oi.outstanding, 0) as outstanding,
+           -- What a customer is actually using of their limit, and what is
+           -- left. Both come from the same view the posting engine reads, so
+           -- the number on this list is the one that will stop a sale.
+           cc.exposure, cc.available
       from business_partner bp
       left join (
             select partner_id, sum(outstanding) as outstanding
               from v_open_item group by partner_id
       ) oi on oi.partner_id = bp.id
+      left join v_customer_credit cc on cc.partner_id = bp.id
      where bp.company_id = ${companyId}
      order by bp.code`;
 }
