@@ -812,10 +812,15 @@ button.tiny { padding: 0.16rem 0.5rem; font-size: var(--t-sm); }
 
 .rowmenu { position: relative; display: inline-block; }
 
+/* The dots are the only way into a row's actions, so they have to read as a
+   control rather than as punctuation. At --muted they were the faintest mark
+   on the row — quieter than the text they sit beside, on a target people are
+   meant to find. Ink-soft and bold gives them the weight of something you
+   click, without competing with the figures. */
 .rowmenu > button.dots {
-  background: transparent; border: 1px solid transparent; color: var(--muted);
+  background: transparent; border: 1px solid transparent; color: var(--ink-soft);
   padding: 0.1rem 0.4rem; line-height: 1.1; border-radius: var(--r-md);
-  font-size: 1.05rem; letter-spacing: 0.06em;
+  font-size: 1.2rem; font-weight: 700; letter-spacing: 0.06em;
 }
 .rowmenu > button.dots:hover,
 .rowmenu > button.dots[aria-expanded="true"] {
