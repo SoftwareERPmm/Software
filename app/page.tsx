@@ -5,7 +5,7 @@ import {
 import { money } from "@/lib/db";
 import {
   getCompany, getKpis, getHealth, getAging, getDocuments, getStock, getActionItems,
-  getNegativeStock, getLowStock,
+  getNegativeStock, getLowStock, getOverCreditLimit,
   getRevenueTrend, getTopItems, getTopCategories, getRevenueByRegion,
   getOnboardingStatus,
 } from "@/lib/queries";
@@ -53,7 +53,7 @@ export default async function Dashboard({
   };
 
   const [kpis, health, aging, docs, stock, actionItems, revenueTrend, topItems, topCategories,
-         regionRevenue, onboarding, negativeStock, lowStock] = await Promise.all([
+         regionRevenue, onboarding, negativeStock, lowStock, overLimit] = await Promise.all([
     getKpis(company.id),
     getHealth(company.id),
     getAging(company.id),
@@ -67,6 +67,7 @@ export default async function Dashboard({
     getOnboardingStatus(company.id),
     getNegativeStock(company.id),
     getLowStock(company.id),
+    getOverCreditLimit(company.id),
   ]);
 
   const healthy = health.unbalanced === 0 && health.inventoryBreaks === 0 && health.trialBalance === 0;
@@ -166,6 +167,18 @@ export default async function Dashboard({
       detail: `oldest ${actionItems.invoicesUndelivered.oldestDays}d · goods still in the warehouse`,
       href: "/sales/deliver?open=undelivered",
       group: "sales", tone: "warn",
+    },
+    /* A customer who owes more than they are allowed to. Not a refusal —
+       the engine does that on the next sale — but a fact somebody has to
+       chase, since a limit can be passed by a payment failing to arrive as
+       easily as by a sale. */
+    {
+      n: (overLimit as unknown as unknown[]).length,
+      label: "Over their credit limit",
+      detail: `${money((overLimit as unknown as { over: string }[])
+        .reduce((t, c) => t + Number(c.over), 0))} beyond what was agreed`,
+      href: "/receivables",
+      group: "sales", tone: "bad",
     },
     /* An invoice nobody agreed terms on. It cannot be chased, because there is
        no date it was supposed to be paid by — and it sits in aging under "No

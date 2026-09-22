@@ -70,7 +70,10 @@ export default function NewPartner() {
               <div className="field">
                 <label htmlFor="credit_limit">Credit limit</label>
                 <input id="credit_limit" name="credit_limit" type="number" min="0" step="any" />
-                <span className="hint">Optional, in MMK</span>
+                <span className="hint">
+                  What they may owe at once. Blank means no limit; 0 means cash only.
+                  Checked on every credit sale.
+                </span>
               </div>
               {/* Region groups for reporting; township stays the address
                   line it has always been. Two different jobs, which is why

@@ -3188,6 +3188,24 @@ export async function getTopCategories(
  * dropped: a map of where the money came from that quietly omits half of it
  * is worse than one that says how much is unaccounted for.
  */
+/**
+ * Customers who owe more than they are allowed to.
+ *
+ * A limit is not only a gate on the next sale: a customer can pass it by
+ * standing still while a payment fails to arrive, or by a delivery going out
+ * against an old order. Nothing blocks that, so the dashboard has to say it.
+ */
+export async function getOverCreditLimit(companyId: string) {
+  return sql`
+    select partner_id, partner_code, partner_name,
+           credit_limit, exposure, exposure - credit_limit as over
+      from v_customer_credit
+     where company_id = ${companyId}
+       and credit_limit is not null
+       and exposure > credit_limit
+     order by exposure - credit_limit desc`;
+}
+
 export async function getRevenueByRegion(companyId: string, from: string, to: string) {
   return sql`
     select coalesce(p.region, 'Region not set') as name,

@@ -1319,6 +1319,11 @@ export async function createSalesInvoice(_prev: unknown, fd: FormData): Promise<
       // that never asked cannot post negative stock by omission.
       allowNegativeStock: fd.get("allow_negative_stock") !== null,
       negativeStockReason: str(fd, "negative_stock_reason") || null,
+      // Selling past what a customer may owe: a decision somebody makes and
+      // signs, never a default. The engine requires the reason whenever the
+      // limit is actually breached.
+      allowOverCreditLimit: fd.get("allow_over_credit_limit") !== null,
+      creditOverrideReason: str(fd, "credit_override_reason") || null,
       lines,
     };
 
@@ -1661,6 +1666,11 @@ export async function createDelivery(_prev: unknown, fd: FormData): Promise<Acti
       // cannot disagree about whether someone had to be asked.
       allowNegativeStock: fd.get("allow_negative_stock") !== null,
       negativeStockReason: str(fd, "negative_stock_reason") || null,
+      // Selling past what a customer may owe: a decision somebody makes and
+      // signs, never a default. The engine requires the reason whenever the
+      // limit is actually breached.
+      allowOverCreditLimit: fd.get("allow_over_credit_limit") !== null,
+      creditOverrideReason: str(fd, "credit_override_reason") || null,
       lines,
     }, tx));
 
@@ -2804,7 +2814,7 @@ export async function getFormData() {
   const [
     customers, suppliers, items, locations, volumeDiscounts, groups, uoms,
     salesmen, promotions, cashAccounts, focReasons, itemPrices, priceLevels,
-    openInvoices, nextNo, stockByLocation, moneyScale, taxCodes,
+    openInvoices, nextNo, stockByLocation, moneyScale, taxCodes, customerCredit,
   ] = await Promise.all([
     sql`select id, code, name, payment_terms_days, price_level_id from business_partner
          where company_id = ${co} and is_customer and is_active order by code`,
@@ -2908,6 +2918,11 @@ export async function getFormData() {
           from tax_code t
          where t.company_id = ${co} and t.is_active
          order by t.code`,
+    // What each customer may owe and what they already do, so a voucher can
+    // say so before the posting engine refuses.
+    sql`select partner_id, credit_limit, outstanding, unbilled_deliveries, exposure, available
+          from v_customer_credit
+         where company_id = ${co} and credit_limit is not null`,
   ]);
 
   return {
@@ -2918,6 +2933,7 @@ export async function getFormData() {
     nextInvoiceNo: (nextNo[0]?.no as string | null) ?? null,
     stockByLocation,
     taxCodes,
+    customerCredit,
     currencyScale: Number(moneyScale[0]?.decimal_places ?? 2),
   };
 }

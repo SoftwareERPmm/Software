@@ -743,6 +743,15 @@ export default async function DocumentPage({
   const statsNode = (
     <>
       <DocStats stats={stats} />
+      {/* Selling past a customer's credit limit is allowed, and permanent.
+          The sentence somebody wrote to justify it belongs on the document
+          itself, where anyone reading the sale later will find it. */}
+      {doc.credit_override_reason && (
+        <div className="hintbar">
+          <strong>Approved over the credit limit.</strong>{" "}
+          {doc.credit_override_reason as string}
+        </div>
+      )}
       {orderActions}
     </>
   );

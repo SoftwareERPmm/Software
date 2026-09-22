@@ -101,6 +101,7 @@ export function SalesVoucher({
   focReasons, openInvoices, nextInvoiceNo, today, categories, uoms,
   itemPrices, priceLevels, stockByLocation, deliveries, initialDeliveryId,
   taxCodes = [],
+  customerCredit = [],
   ownership = [],
   awaiting = [],
 }: {
@@ -120,6 +121,12 @@ export function SalesVoucher({
    *  engine will apply. */
   volumeDiscounts?: VolumeBand[];
   focReasons: FocReason[];
+  /** What each customer with a limit may owe, and what they already do. */
+  customerCredit?: {
+    partner_id: string; credit_limit: string | number;
+    outstanding: string | number; unbilled_deliveries: string | number;
+    exposure: string | number; available: string | number;
+  }[];
   /** Commercial tax codes this company can charge, zero-rate first. */
   taxCodes?: {
     id: string; code: string; name: string;
@@ -515,6 +522,18 @@ export function SalesVoucher({
   const total = r(goodsNet + taxOnGoods + deliveryFee);
   const cashAmount = Number(cashIn) || 0;
   const balance = total - cashAmount;
+
+  /* What this customer may owe, and what this sale would add to it. Only the
+     part left owing counts: cash at the counter extends no credit, which is
+     why a customer already over their limit can still buy for cash. */
+  const [overLimitOk, setOverLimitOk] = useState(false);
+  const [overLimitWhy, setOverLimitWhy] = useState("");
+  const standing = customerCredit.find((c) => c.partner_id === customerId) ?? null;
+  const creditLimit = standing ? Number(standing.credit_limit) : null;
+  const exposure = standing ? Number(standing.exposure) : 0;
+  const onAccount = Math.max(0, total - cashAmount);
+  const wouldOwe = exposure + onAccount;
+  const overLimit = creditLimit !== null && onAccount > 0 && wouldOwe > creditLimit;
   const totalFree = lines.reduce((s, l) => s + freeQty(l), 0);
 
   // Cash means paid in full now — keep Cash in synced to the total so it
@@ -1349,6 +1368,67 @@ export function SalesVoucher({
 
       {cashTooMuch && (
         <div className="alert">Cash in is more than the invoice total.</div>
+      )}
+
+      {/* The customer's standing, stated before it is a problem rather than
+          only when posting refuses. A limit nobody can see until they are
+          stopped by it teaches nothing. */}
+      {standing && !overLimit && onAccount > 0 && (
+        <div className="hintbar">
+          {customer?.name} may owe {fmt(creditLimit as number)}. Owed now{" "}
+          {fmt(exposure)}
+          {Number(standing.unbilled_deliveries) > 0 && (
+            <> (including {fmt(Number(standing.unbilled_deliveries))} delivered, not yet billed)</>
+          )}
+          ; this sale leaves {fmt(wouldOwe)} — {fmt((creditLimit as number) - wouldOwe)} to spare.
+        </div>
+      )}
+
+      {overLimit && !overLimitOk && (
+        <div className="alert">
+          <strong>Over the credit limit.</strong> {customer?.name} may owe{" "}
+          {fmt(creditLimit as number)} and already owes {fmt(exposure)}
+          {Number(standing?.unbilled_deliveries ?? 0) > 0 && (
+            <> (including {fmt(Number(standing?.unbilled_deliveries ?? 0))} delivered and unbilled)</>
+          )}
+          . On account this sale adds {fmt(onAccount)}, leaving{" "}
+          {fmt(wouldOwe)} — {fmt(wouldOwe - (creditLimit as number))} over.
+          <div style={{ marginTop: "0.6rem" }}>
+            Take payment now to bring it under, or approve going over:{" "}
+            <button type="button" className="ghost tiny"
+                    onClick={() => setOverLimitOk(true)}>
+              Approve and say why
+            </button>
+          </div>
+        </div>
+      )}
+
+      {overLimit && overLimitOk && (
+        <div className="alert">
+          <strong>Approved:</strong> this sale takes {customer?.name} past their
+          limit, to {fmt(wouldOwe)} against {fmt(creditLimit as number)}.
+          <div className="field" style={{ marginTop: "0.6rem" }}>
+            <label htmlFor="credit_override_reason">Why is it allowed?</label>
+            <input
+              id="credit_override_reason"
+              name="credit_override_reason"
+              type="text"
+              value={overLimitWhy}
+              onChange={(e) => setOverLimitWhy(e.target.value)}
+              placeholder="Owner approved — cheque collected on delivery"
+            />
+            <span className="hint">
+              Kept on the invoice for good. Posting refuses an approval with no reason.
+            </span>
+          </div>
+          <button type="button" className="ghost tiny" onClick={() => setOverLimitOk(false)}>
+            Undo
+          </button>
+        </div>
+      )}
+
+      {overLimit && overLimitOk && (
+        <input type="hidden" name="allow_over_credit_limit" value="true" />
       )}
 
 

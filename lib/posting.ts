@@ -103,6 +103,11 @@ export type SalesInvoiceInput = InvoiceInput & {
    *  delivery is created, and stock doesn't move until one is. */
   toDeliver?: boolean;
 
+  /** Somebody has decided to sell past this customer's credit limit. */
+  allowOverCreditLimit?: boolean;
+  /** Why. Required by the engine whenever the limit is actually breached. */
+  creditOverrideReason?: string | null;
+
   /** Taken at the counter. Creates a receipt document allocated to this invoice. */
   cashIn?: number;
   cashAccountId?: string | null;
@@ -203,6 +208,9 @@ export type FulfillmentInput = {
    * nobody has noticed lives in this sentence.
    */
   negativeStockReason?: string | null;
+  /** Goods leaving on account can breach a limit as surely as an invoice. */
+  allowOverCreditLimit?: boolean;
+  creditOverrideReason?: string | null;
   memo?: string | null;
   reference?: string | null;
   sourceDocumentId?: string | null;
@@ -310,6 +318,99 @@ const taxNotEffective = (onDate: string) =>
   `That tax code is not active, or had no rate in force on ${onDate}. ` +
   `A rate applies from the date it starts, so a document dated before the ` +
   `first rate cannot use the code.`;
+
+// -------------------------------------------------------- credit limits --
+//
+// What a customer may owe at once. NULL means nobody has set a limit; 0
+// means no credit at all, which is a real answer and not the same thing.
+//
+// Exposure is money already outstanding plus goods that have gone out and
+// not been billed — stock that has left is credit extended whether or not
+// an invoice exists for it yet. Orders not yet delivered are excluded: a
+// promise to deliver is not money at risk until the goods move.
+//
+// Going over stays possible, because it is a commercial decision made by
+// somebody standing at the counter. What it cannot be is accidental.
+
+type CreditStanding = {
+  limit: number | null;
+  exposure: number;
+  outstanding: number;
+  unbilled: number;
+};
+
+async function creditStanding(
+  tx: TransactionSql, companyId: string, partnerId: string,
+): Promise<CreditStanding> {
+  const [row] = await tx`
+    select credit_limit, outstanding, unbilled_deliveries, exposure
+      from v_customer_credit
+     where company_id = ${companyId} and partner_id = ${partnerId}`;
+  return {
+    limit: row?.credit_limit === null || row?.credit_limit === undefined
+      ? null : Number(row.credit_limit),
+    exposure: Number(row?.exposure ?? 0),
+    outstanding: Number(row?.outstanding ?? 0),
+    unbilled: Number(row?.unbilled_deliveries ?? 0),
+  };
+}
+
+/**
+ * Refuse a sale that takes a customer past what they may owe, unless
+ * somebody has said to allow it and why.
+ *
+ * `adding` is what this document puts at risk — the gross of a credit
+ * invoice, or the value of goods leaving on account. A cash sale adds
+ * nothing: money changes hands as the goods do.
+ *
+ * Checked in the engine rather than in the form, so an import, a script or a
+ * resent request meets the same rule. And the reason is required by the
+ * breach, not by the flag: a document that is comfortably inside the limit
+ * needs no confirmation even if one was offered.
+ */
+async function assertCreditLimit(
+  tx: TransactionSql,
+  companyId: string,
+  partnerId: string,
+  adding: number,
+  input: { allowOverCreditLimit?: boolean; creditOverrideReason?: string | null },
+): Promise<{ standing: CreditStanding; over: boolean }> {
+  const standing = await creditStanding(tx, companyId, partnerId);
+
+  /* A document that extends no credit is never blocked, however far over the
+     line the customer already is. Cash at the counter is the case that
+     matters: money and goods change hands together, so a customer who owes
+     too much can still buy — and refusing that would stop the one kind of
+     sale that reduces the problem. The gate is about what this document
+     adds, not about what is already owed. */
+  if (adding <= 0.0001) return { standing, over: false };
+
+  const over = standing.limit !== null && standing.exposure + adding > standing.limit + 0.0001;
+  if (!over) return { standing, over };
+
+  const [p] = await tx`select code, name from business_partner where id = ${partnerId}`;
+  const who = p ? `${p.code} (${p.name})` : "This customer";
+  const fmt = (n: number) => Math.round(n).toLocaleString("en-US");
+  const detail =
+    `${who} may owe ${fmt(standing.limit as number)} at once. ` +
+    `Already outstanding ${fmt(standing.outstanding)}` +
+    (standing.unbilled > 0 ? ` plus ${fmt(standing.unbilled)} delivered and not yet billed` : "") +
+    `, and this one adds ${fmt(adding)} — ` +
+    `${fmt(standing.exposure + adding - (standing.limit as number))} over.`;
+
+  if (input.allowOverCreditLimit !== true) {
+    throw new Error(
+      `${detail} Take payment first, or approve going over the limit and say why.`
+    );
+  }
+  if (!input.creditOverrideReason?.trim()) {
+    throw new Error(
+      `${detail} Approving it needs a reason: a confirmation without one records ` +
+      `that somebody clicked, not what they knew.`
+    );
+  }
+  return { standing, over };
+}
 
 /** The account a tax code posts to, and a readable refusal when it has none. */
 function taxAccountFor(t: TaxRate, side: "output" | "input"): string {
@@ -2223,13 +2324,48 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
     }
   }
 
+  /* Goods leaving on account are credit extended, whether or not an invoice
+     exists yet — which is exactly the gap the "delivered, never invoiced"
+     alert counts. So the limit is checked here too.
+
+     A delivery against a to-deliver invoice adds nothing: that invoice is
+     already in receivables, and counting the goods again would charge the
+     customer's limit twice for one sale. Against an order, or against
+     nothing at all, this is the moment the exposure starts, valued at the
+     order's agreed price where there is one and at cost where there is not. */
+  const billedAlready = input.sourceDocumentId
+    ? (await tx`select doc_type from document where id = ${input.sourceDocumentId}`)[0]?.doc_type
+      === "SALES_INVOICE"
+    : false;
+
+  let goingOut = 0;
+  if (!billedAlready) {
+    for (const line of input.lines) {
+      const [src] = line.sourceLineId
+        ? await tx`select unit_price from document_line where id = ${line.sourceLineId}`
+        : [undefined];
+      const price = Number(src?.unit_price ?? 0);
+      // Goods with no agreed price behind them are weighed at what stock
+      // costs today. That is an estimate made before the FIFO layers are
+      // drawn, so it will not match to the kyat what v_customer_credit
+      // reports afterwards — that reads the cost actually consumed. Both
+      // answer "how much is at risk"; only one of them can be exact, and it
+      // is not the one that has to run before the goods move.
+      goingOut += price > 0
+        ? line.qty * price
+        : line.qty * await estimateCurrentCost(tx, companyId, line.itemId, locationId);
+    }
+  }
+  const creditDel = await assertCreditLimit(
+    tx, companyId, partnerId, round4(goingOut), input);
+
   const [doc] = await tx`
     insert into document
       (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
        partner_id, location_id, currency, exchange_rate, status,
        net_total, tax_total, gross_total, memo, posted_at, reference, source_document_id,
        delivery_fee, negative_stock_confirmed, negative_stock_confirmed_at,
-       negative_stock_reason)
+       negative_stock_reason, credit_override_reason, credit_override_at)
     values
       (${companyId}, 'DELIVERY', ${docNo}, ${fiscalYear}, ${docDate}::date,
        ${docDate}::date, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
@@ -2241,7 +2377,9 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
        ${input.allowNegativeStock === true},
        ${input.allowNegativeStock === true ? new Date().toISOString() : null},
        ${input.allowNegativeStock === true
-         ? (input.negativeStockReason?.trim() || null) : null})
+         ? (input.negativeStockReason?.trim() || null) : null},
+       ${creditDel.over ? (input.creditOverrideReason?.trim() ?? null) : null},
+       ${creditDel.over ? new Date() : null})
     returning id`;
 
   const journal: JournalLine[] = [];
@@ -2856,12 +2994,26 @@ async function _postSalesInvoice(
     await assertNotOverBilled(tx, input.deliveryId, input.lines, "SALES_INVOICE");
   }
 
+  /* What this sale puts at risk. Cash taken at the counter is not credit, so
+     only the part left owing counts — a 100,000 invoice paid 100,000 in cash
+     extends nothing, and a customer at their limit can still buy for cash.
+     Goods billed against a delivery already counted as unbilled exposure add
+     nothing new either: this invoice replaces that exposure rather than
+     stacking on it. */
+  const cashAtCounter = round4(input.cashIn ?? 0);
+  const alreadyExposed = input.deliveryId
+    ? Number((await tx`select gross_total from document where id = ${input.deliveryId}`)[0]?.gross_total ?? 0)
+    : 0;
+  const onAccount = Math.max(0, round4(grossTotal - cashAtCounter - alreadyExposed));
+  const credit = await assertCreditLimit(tx, companyId, partnerId, onAccount, input);
+
   const [doc] = await tx`
     insert into document
       (company_id, doc_type, doc_no, version, fiscal_year_id, doc_date, posting_date, due_date,
        partner_id, location_id, currency, exchange_rate, status, price_includes_tax,
        net_total, tax_total, gross_total, memo, posted_at,
-       payment_type, salesman_id, reference, to_deliver, source_document_id, delivery_fee)
+       payment_type, salesman_id, reference, to_deliver, source_document_id, delivery_fee,
+       credit_override_reason, credit_override_at)
     values
       (${companyId}, 'SALES_INVOICE', ${docNo}, ${version}, ${fiscalYear}, ${docDate}::date,
        ${docDate}::date, ${dueDate}, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
@@ -2869,7 +3021,9 @@ async function _postSalesInvoice(
        ${netTotal}, ${taxTotal}, ${grossTotal}, ${input.memo ?? null}, now(),
        ${input.paymentType ?? "CREDIT"}, ${input.salesmanId ?? null},
        ${input.reference ?? null}, ${input.toDeliver ?? false}, ${input.deliveryId ?? null},
-       ${deliveryFee})
+       ${deliveryFee},
+       ${credit.over ? (input.creditOverrideReason?.trim() ?? null) : null},
+       ${credit.over ? new Date() : null})
     returning id`;
 
   const journal: JournalLine[] = [];
