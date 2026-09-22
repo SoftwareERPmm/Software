@@ -553,10 +553,15 @@ export async function createItem(_prev: unknown, fd: FormData): Promise<ActionRe
     await sql.begin(async (tx) => {
       const [item] = await tx`
         insert into item
-          (company_id, item_group_id, brand_id, serial, code, name, name_my, base_uom_id, is_stocked)
+          (company_id, item_group_id, brand_id, serial, code, name, name_my, base_uom_id, is_stocked,
+           tracks_batch, tracks_expiry)
         values
           (${co}, ${groupId}, ${brandId}, ${serial}, ${fullCode}, ${name}, ${str(fd, "name_my") || null},
-           ${uomId}, ${fd.get("is_stocked") !== null})
+           ${uomId}, ${fd.get("is_stocked") !== null},
+           -- Expiry without batches is a date attached to nothing, so the
+           -- second is only honoured when the first is on.
+           ${fd.get("tracks_batch") !== null},
+           ${fd.get("tracks_batch") !== null && fd.get("tracks_expiry") !== null})
         returning id`;
 
       if (photo && "set" in photo) {
@@ -1126,6 +1131,9 @@ export type PickerItem = {
   id: string; code: string; name: string; is_stocked: boolean;
   item_group_id: string; on_hand: string; sale_price: string; next_cost: string;
   uom_code: string;
+  /** Whether goods of this item arrive in identifiable lots, and whether
+   *  those lots have a shelf life. A receipt form asks for what these say. */
+  tracks_batch?: boolean; tracks_expiry?: boolean;
 };
 
 /**
@@ -1549,6 +1557,10 @@ function parseFulfillmentLines(fd: FormData): FulfillmentLine[] {
       itemId: String(l.itemId ?? ""),
       qty: Number(l.qty),
       unitCost: l.unitCost ? Number(l.unitCost) : undefined,
+      // The lot these goods arrived under. The engine requires it for an
+      // item that tracks batches and ignores it for one that does not.
+      batchNo: l.batchNo || null,
+      expiryDate: l.expiryDate || null,
       // The engine has always accepted this; the parser dropped it, so a
       // delivery raised anywhere but the sales voucher could not mark units
       // free and their cost went to cost of sales instead of the expense the
@@ -2821,6 +2833,7 @@ export async function getFormData() {
     sql`select id, code, name, payment_terms_days from business_partner
          where company_id = ${co} and is_supplier and is_active order by code`,
     sql`select i.id, i.code, i.name, i.is_stocked, i.item_group_id,
+                i.tracks_batch, i.tracks_expiry,
                 -- The unit every quantity of this item is counted in, so a
                 -- figure quoted back to the user can carry it rather than
                 -- being a bare number.

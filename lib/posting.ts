@@ -161,6 +161,15 @@ export type FulfillmentLine = {
   sourceLineId?: string | null;
 
   /**
+   * The lot these goods arrived under, for an item that tracks batches, and
+   * when that lot stops being sellable if it also tracks expiry. Required by
+   * the engine for such an item: a layer with no batch cannot be named in a
+   * recall, and the gap shows up at the worst possible moment.
+   */
+  batchNo?: string | null;
+  expiryDate?: string | null;
+
+  /**
    * The units themselves, for an item whose every unit has an identity — a
    * handset's IMEI, a machine's serial. Required for such an item and
    * refused for any other: a line of twelve biscuits has nothing to name, and
@@ -1234,6 +1243,21 @@ async function planFifoConsumption(
   // still held (0057), and an issue after that has to relieve inventory at the
   // corrected figure — otherwise the correction sits in the inventory account
   // forever with no stock left behind it.
+  /*
+   * Oldest first, except where the goods expire — then it is the earliest
+   * expiry first, which is what anybody loading a van actually does. The two
+   * orders agree most of the time and disagree exactly when it matters: a
+   * batch received last week with three months left must go before one
+   * received last month with a year.
+   *
+   * Layers with no expiry sort first within a tracked item, which is the
+   * untracked stock received before tracking was switched on. It leaves the
+   * shelf before the batched stock, and the exception empties itself.
+   *
+   * Costing is unchanged in shape: the cost still comes from whichever layer
+   * is drawn. What changes is which layer that is — and it should be, since
+   * the cost of a sale ought to follow the goods that physically left.
+   */
   const lots = await tx`
     select sl.id, sl.unit_cost + coalesce(a.delta, 0) as unit_cost,
            sl.qty_received - coalesce(sum(c.qty), 0) as remaining
@@ -1244,9 +1268,10 @@ async function planFifoConsumption(
               from stock_lot_adjustment adj where adj.lot_id = sl.id
       ) a on true
      where sl.company_id = ${companyId} and sl.item_id = ${itemId} and sl.location_id = ${locationId}
-     group by sl.id, sl.unit_cost, a.delta, sl.qty_received, sl.received_date, sl.created_at
+     group by sl.id, sl.unit_cost, a.delta, sl.qty_received, sl.received_date, sl.created_at,
+              sl.expiry_date
     having sl.qty_received - coalesce(sum(c.qty), 0) > 0.0001
-     order by sl.received_date, sl.created_at`;
+     order by sl.expiry_date asc nulls first, sl.received_date, sl.created_at`;
 
   let need = round4(qty);
   const draws: FifoDraw[] = [];
@@ -1657,15 +1682,77 @@ function assertSerials(
 
 async function createFifoLot(
   tx: TransactionSql, companyId: string, itemId: string, locationId: string,
-  receivedAt: string, unitCost: number, qty: number, stockMovementId: string
+  receivedAt: string, unitCost: number, qty: number, stockMovementId: string,
+  /** The lot these goods arrived under, for items that track batches. */
+  batch?: { batchNo?: string | null; expiryDate?: string | null },
 ) {
   // Returns the layer it made, for the one caller that needs to hang unit
   // identities off it. Every other caller ignores it, as before.
   const [lot] = await tx`
-    insert into stock_lot (company_id, item_id, location_id, received_date, unit_cost, qty_received, stock_movement_id)
-    values (${companyId}, ${itemId}, ${locationId}, ${receivedAt}::timestamptz, ${unitCost}, ${qty}, ${stockMovementId})
+    insert into stock_lot (company_id, item_id, location_id, received_date, unit_cost,
+                           qty_received, stock_movement_id, batch_no, expiry_date)
+    values (${companyId}, ${itemId}, ${locationId}, ${receivedAt}::timestamptz, ${unitCost},
+            ${qty}, ${stockMovementId},
+            ${batch?.batchNo?.trim() || null}, ${batch?.expiryDate || null})
     returning id`;
   return lot.id as string;
+}
+
+// ------------------------------------------------------- batch tracking --
+//
+// Per item, and two switches: a batch is traceability (which lot are these
+// units from, so a recall can name them) and expiry is the extra that
+// perishable goods need. An expiry with no batch to belong to is a date
+// attached to nothing, so the second only applies where the first is on.
+//
+// Stock received before tracking was turned on has neither, and keeps
+// issuing oldest-first exactly as it did. That untracked layer empties
+// itself over time rather than needing a migration nobody can do honestly —
+// the batch numbers for goods already on a shelf are not knowable from here.
+
+type BatchTracking = { batch: boolean; expiry: boolean };
+
+async function batchTracking(
+  tx: TransactionSql, itemIds: string[],
+): Promise<Map<string, BatchTracking>> {
+  const out = new Map<string, BatchTracking>();
+  if (itemIds.length === 0) return out;
+  const rows = await tx`
+    select id, tracks_batch, tracks_expiry from item where id = any(${[...new Set(itemIds)]})`;
+  for (const r of rows as unknown as {
+    id: string; tracks_batch: boolean; tracks_expiry: boolean;
+  }[]) {
+    out.set(r.id, { batch: r.tracks_batch, expiry: r.tracks_batch && r.tracks_expiry });
+  }
+  return out;
+}
+
+/**
+ * Goods arriving for a tracked item have to say which lot they are.
+ *
+ * Checked in the engine rather than the form, like every other rule here: an
+ * import or a script receiving stock without a batch would otherwise create a
+ * layer nobody can trace, and the gap only becomes visible during a recall,
+ * which is the worst possible moment to discover it.
+ */
+function assertBatchGiven(
+  item: { id: string; code: string; name: string },
+  track: BatchTracking | undefined,
+  line: { batchNo?: string | null; expiryDate?: string | null },
+) {
+  if (!track?.batch) return;
+  if (!line.batchNo?.trim()) {
+    throw new Error(
+      `${item.code} (${item.name}) is tracked by batch, so this receipt has to ` +
+      `say which lot the goods are from.`
+    );
+  }
+  if (track.expiry && !line.expiryDate) {
+    throw new Error(
+      `${item.code} (${item.name}) expires, so batch ${line.batchNo.trim()} needs ` +
+      `the date it stops being sellable.`
+    );
+  }
 }
 
 /**
@@ -3282,8 +3369,11 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
   const serialTracked = await serialTracking(tx, input.lines.map((l) => l.itemId));
   assertSerials(input.lines, serialTracked, "receive");
 
-  const { companyId, partnerId, locationId, docDate } = input;
-  const receivedAt = input.receivedAt || docDate;
+    const { companyId, partnerId, locationId, docDate } = input;
+
+  // Which of these items keep lot identity, read once for the document
+  // rather than per line.
+  const tracking = await batchTracking(tx, input.lines.map((l) => l.itemId)); const receivedAt = input.receivedAt || docDate;
 
   const fyRows = await tx`select fn_fiscal_year_for(${companyId}, ${docDate}::date) as fy`;
   const fiscalYear = fyRows[0]?.fy ?? null;
@@ -3373,13 +3463,16 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
          ${line.qty}, ${item.base_uom_id}, ${line.qty}, ${unitCost},
          ${net}, 0, ${net}, ${line.sourceLineId ?? null})`;
 
+    assertBatchGiven(item as never, tracking.get(line.itemId), line);
+
     const [movement] = await tx`
       insert into stock_movement
         (company_id, item_id, location_id, movement_date, qty,
-         unit_cost, total_cost, document_id)
+         unit_cost, total_cost, document_id, batch_no, expiry_date)
       values
         (${companyId}, ${line.itemId}, ${locationId}, ${docDate}::date,
-         ${line.qty}, ${unitCost}, ${net}, ${doc.id})
+         ${line.qty}, ${unitCost}, ${net}, ${doc.id},
+         ${line.batchNo?.trim() || null}, ${line.expiryDate || null})
       returning id`;
 
     // Goods already sold before anyone recorded them arriving are covered
@@ -3393,7 +3486,9 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
     const toShelf = round4(line.qty - covered);
     let lotId: string | null = null;
     if (toShelf > 0.0001) {
-      lotId = await createFifoLot(tx, companyId, line.itemId, locationId, receivedAt, unitCost, toShelf, movement.id);
+      lotId = await createFifoLot(
+        tx, companyId, line.itemId, locationId, receivedAt, unitCost, toShelf, movement.id,
+        { batchNo: line.batchNo, expiryDate: line.expiryDate });
     }
 
     /**

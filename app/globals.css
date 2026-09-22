@@ -3510,3 +3510,15 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
   color: var(--brand); cursor: pointer; text-decoration: underline;
   text-underline-offset: 2px;
 }
+
+/* The batch line under a receipt row: only some items need one, so it is a
+   row of its own rather than two columns every item pays for. */
+.batchrow > td {
+  background: color-mix(in srgb, var(--brand) 4%, transparent);
+  white-space: normal;
+  display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
+}
+.batchrow-label { color: var(--muted); font-size: var(--t-sm); }
+.batchrow input[type="text"] { width: 200px; }
+.batchrow input[type="date"] { width: 170px; }
+.batchrow .hint { display: inline; }
