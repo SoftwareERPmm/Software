@@ -10,7 +10,7 @@ import { DocumentFooter } from "@/components/document-footer";
 import { DocStats, type DocStat } from "@/components/doc-stats";
 import { InvoiceProgress } from "@/components/invoice-progress";
 import {
-  PackageCheck, FileText, Clock, Wallet, CircleDollarSign, Boxes, Truck,
+  PackageCheck, FileText, Clock, Wallet, CircleDollarSign, Boxes, Truck, Tags,
 } from "lucide-react";
 import { CloseOrder } from "@/components/close-order";
 import { CorrectOrder, type CorrectableLine } from "@/components/correct-order";
@@ -742,9 +742,64 @@ export default async function DocumentPage({
     <div className="docactions">{correction}</div>
   ) : null;
 
+  /* What kind of correction a note is, when it was posted, and by whom.
+     The category is countable and the sentence is the explanation; neither
+     stands in for the other. "Who" reads honestly rather than helpfully:
+     nobody signs in yet, so there is no name to show and inventing a field
+     somebody types their own name into would look like attribution without
+     being it. */
+  const isNote = doc.doc_type === "CREDIT_NOTE" || doc.doc_type === "DEBIT_NOTE";
+  const isCreditNote = doc.doc_type === "CREDIT_NOTE";
+  const NOTE_REASON: Record<string, string> = {
+    RETURN: isCreditNote
+      ? "Goods returned — not coming back to the warehouse"
+      : "Goods rejected — not going back to the supplier",
+    BILLING_ERROR: "Billing error",
+    CANCELLATION: "Cancellation",
+    DISCOUNT: isCreditNote
+      ? "Discount agreed after the invoice"
+      : "Reduction agreed after the bill",
+    OTHER: "Other",
+  };
+
+  /* Which column of the price list filled this document, wherever the
+     stats above came from: a deliver-later invoice and a counter sale take
+     different branches, and the question is the same on both. Silent when
+     nothing filled it — a document raised before price levels were
+     reachable says nothing rather than guessing "wholesale". */
+  if (doc.price_level_name) {
+    stats.push({
+      icon: Tags,
+      label: "Priced at",
+      value: String(doc.price_level_name),
+      note: "the price list column these lines came from",
+    });
+  }
+
   const statsNode = (
     <>
       <DocStats stats={stats} />
+
+      {isNote && (
+        <div className="hintbar">
+          <strong>
+            {NOTE_REASON[String(doc.adjustment_reason ?? "")] ?? "Reason not categorised"}
+          </strong>
+          {doc.memo && <> — {String(doc.memo)}</>}
+          <div className="subline">
+            Posted {people.doc?.posted_at
+              ? new Date(String(people.doc.posted_at)).toLocaleString("en-GB", {
+                  day: "numeric", month: "short", year: "numeric",
+                  hour: "2-digit", minute: "2-digit",
+                })
+              : "—"}
+            {" · "}
+            {people.doc?.posted_by
+              ? <>by {String(people.doc.posted_by)}</>
+              : "no name recorded — nobody signs in to this system yet"}
+          </div>
+        </div>
+      )}
       {/* Selling past a customer's credit limit is allowed, and permanent.
           The sentence somebody wrote to justify it belongs on the document
           itself, where anyone reading the sale later will find it. */}
@@ -1152,6 +1207,29 @@ export default async function DocumentPage({
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* Reducing an invoice without goods moving. Offered only while
+          something is still owed on it: a note against a settled invoice
+          would drive it below nothing, and what that customer needs is a
+          refund. Sat next to the correction actions because it is one —
+          the other kind, for when their printed copy has to stay true. */}
+      {isInvoice && doc.status === "POSTED" && outstanding > 0 && (
+        <div className="docactions">
+          <Link
+            href={doc.doc_type === "SALES_INVOICE"
+              ? `/sales/credit-notes/new?invoice=${doc.id}`
+              : `/purchases/debit-notes/new?bill=${doc.id}`}
+            className="btn ghost"
+          >
+            {doc.doc_type === "SALES_INVOICE" ? "Credit note" : "Debit note"}
+          </Link>
+          <span className="page-sub">
+            {doc.doc_type === "SALES_INVOICE"
+              ? "Take something off what this customer owes, without goods coming back."
+              : "Take something off what you owe here, without goods going back."}
+          </span>
         </div>
       )}
 

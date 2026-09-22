@@ -103,7 +103,12 @@ export const CHART = [
   // price and settling it.
   ["6-NO",  "Non-Operating Expenses",            "EXPENSE",   false, { under: "6-EX" }],
   ["6400",  "Foreign Exchange Loss",             "EXPENSE",   true,  { added: true }],
-  ["6300",  "Discount Allowed",                  "EXPENSE",   true],
+  // 6300 "Discount Allowed" was here and is retired. A discount given to a
+  // customer is contra-revenue, not an expense — money was not spent, less
+  // was collected — so it duplicated 4020 Sales Discount and classified the
+  // same thing the opposite way. 4020 is the survivor; migration 0096
+  // retires 6300 on databases that already have it.
+
   ["6310",  "Advertising Expense",               "EXPENSE",   true],
   ["6320",  "Promotion Expense",                 "EXPENSE",   true],
   ["6330",  "Commission Expenses",               "EXPENSE",   true],
@@ -119,7 +124,7 @@ export const CHART = [
 export const SYSTEM = {
   GRIR_CLEARING: "1060", OPENING_BALANCE_EQUITY: "3030", RETAINED_EARNINGS: "3020",
   PURCHASE_PRICE_VARIANCE: "5050", PURCHASE_DISCOUNT_RECEIVED: "5020",
-  SALES_DISCOUNT_ALLOWED: "6300", PROMOTION_EXPENSE: "6320", STOCK_ADJUSTMENT: "5300",
+  SALES_DISCOUNT_ALLOWED: "4020", PROMOTION_EXPENSE: "6320", STOCK_ADJUSTMENT: "5300",
 
   // Mostly homes the chart already has, rather than accounts nobody asked for
   // — a rounding difference is a miscellaneous cost and stays one.

@@ -2,8 +2,18 @@ import { createPartner } from "@/lib/actions";
 import { SimpleForm } from "@/components/simple-form";
 import { HelpHint } from "@/components/help-hint";
 import { REGION_GROUPS } from "@/lib/regions";
+import { sql } from "@/lib/db";
 
-export default function NewPartner() {
+export default async function NewPartner() {
+  const [co] = await sql`select id from company order by created_at limit 1`;
+  const levels = (await sql`
+    select id, name from price_level where company_id = ${co.id} order by sort_order`
+  ) as unknown as { id: string; name: string }[];
+  const cats = (await sql`
+    select id, name from partner_category
+     where company_id = ${co.id} and is_active order by sort_order, name`
+  ) as unknown as { id: string; name: string }[];
+
   return (
     <>
       <div className="page-head">
@@ -66,6 +76,34 @@ export default function NewPartner() {
                 <label htmlFor="payment_terms_days">Payment terms (days)</label>
                 <input id="payment_terms_days" name="payment_terms_days" type="number" min="0" defaultValue={30} />
                 <span className="hint">Sets the due date on invoices</span>
+              </div>
+              <div className="field">
+                <label htmlFor="price_level_id">Price level</label>
+                <select id="price_level_id" name="price_level_id" defaultValue="">
+                  <option value="">Default</option>
+                  {levels.map((l) => (
+                    <option key={l.id} value={l.id}>{l.name}</option>
+                  ))}
+                </select>
+                <span className="hint">Which column of the price list they buy from</span>
+              </div>
+              {/* What kind of shop, for reporting. Deliberately next to the
+                  price level and deliberately not doing its job: the level
+                  decides what they pay, the category only says what they
+                  are. */}
+              <div className="field">
+                <label htmlFor="category_id">Customer category</label>
+                <select id="category_id" name="category_id" defaultValue="">
+                  <option value="">Not categorised</option>
+                  {cats.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+                <span className="hint">
+                  {cats.length === 0
+                    ? "None set up yet — Master data → Customer categories"
+                    : "Groups them on reports. Changes no price or limit."}
+                </span>
               </div>
               <div className="field">
                 <label htmlFor="credit_limit">Credit limit</label>

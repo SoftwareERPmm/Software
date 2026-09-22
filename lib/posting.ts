@@ -113,6 +113,13 @@ export type SalesInvoiceInput = InvoiceInput & {
    *  delivery is created, and stock doesn't move until one is. */
   toDeliver?: boolean;
 
+  /**
+   * Which column of the price list filled these prices. Recorded on the
+   * document as what was applied, never enforced — the line's own price is
+   * what was charged, whatever the list says afterwards.
+   */
+  priceLevelId?: string | null;
+
   /** Somebody has decided to sell past this customer's credit limit. */
   allowOverCreditLimit?: boolean;
   /** Why. Required by the engine whenever the limit is actually breached. */
@@ -3179,7 +3186,7 @@ async function _postSalesInvoice(
        partner_id, location_id, currency, exchange_rate, status, price_includes_tax,
        net_total, tax_total, gross_total, memo, posted_at,
        payment_type, salesman_id, reference, to_deliver, source_document_id, delivery_fee,
-       credit_override_reason, credit_override_at)
+       credit_override_reason, credit_override_at, price_level_id)
     values
       (${companyId}, 'SALES_INVOICE', ${docNo}, ${version}, ${fiscalYear}, ${docDate}::date,
        ${docDate}::date, ${dueDate}, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
@@ -3189,7 +3196,8 @@ async function _postSalesInvoice(
        ${input.reference ?? null}, ${input.toDeliver ?? false}, ${input.deliveryId ?? null},
        ${deliveryFee},
        ${credit.over ? (input.creditOverrideReason?.trim() ?? null) : null},
-       ${credit.over ? new Date() : null})
+       ${credit.over ? new Date() : null},
+       ${input.priceLevelId ?? null})
     returning id`;
 
   const journal: JournalLine[] = [];
@@ -5412,6 +5420,194 @@ export type ReturnInput = {
  *   Dr Inventory     / Cr Cost of Goods Sold  (stock returns, at today's cost)
  *   Dr Sales Returns / Cr Accounts Receivable (revenue reversed, at the line price)
  */
+// ------------------------------------------------------- credit / debit --
+//
+// An invoice is wrong by 20,000 and nothing is coming back: the price was
+// agreed differently, a short delivery was billed in full, a discount was
+// settled after the fact. Amending the invoice is right for a recording
+// error and wrong once the customer holds a printed one — their copy would
+// disagree with the books, and the reduction is expected to be its own dated
+// paper.
+//
+// Value only. Neither note touches stock, which is the whole point: goods
+// coming back is a return, and returns already exist.
+//
+//   CREDIT_NOTE   Dr Sales Return     / Cr Accounts Receivable
+//   DEBIT_NOTE    Dr Accounts Payable / Cr Purchase Return
+//
+// The invoice is never edited. What it still owes is derived, and these join
+// the same subtraction a return already makes.
+
+/**
+ * RETURN is for goods the customer kept or destroyed. Goods physically
+ * coming back is a sales or purchase return, which moves the stock and its
+ * cost — a note standing in for one would leave the warehouse right and the
+ * books wrong.
+ */
+export type NoteCategory =
+  | "RETURN" | "BILLING_ERROR" | "CANCELLATION" | "DISCOUNT" | "OTHER";
+
+export type NoteInput = {
+  companyId: string;
+  partnerId: string;
+  docDate: string;
+  /** The invoice being reduced. Required: a note against nothing is a
+   *  journal entry, and this app already has one of those. */
+  sourceDocumentId: string;
+  /** What to take off, before tax. */
+  amount: number;
+  /** The tax the original line carried, so the note gives that back too. */
+  taxCodeId?: string | null;
+  /**
+   * Which kind of correction this is. Categorised as well as written,
+   * because the sentence answers one note and a category answers a year:
+   * how much went back as billing errors, how much was given away as
+   * goodwill, whether one customer's account is mostly corrections.
+   */
+  category: NoteCategory;
+  /** And why, in words. A category is not an explanation. Required — a tax
+   *  office reads this, and so does whoever finds the note in a year. */
+  reason: string;
+  memo?: string | null;
+  reference?: string | null;
+};
+
+async function _postNote(
+  tx: TransactionSql,
+  kind: "CREDIT_NOTE" | "DEBIT_NOTE",
+  input: NoteInput,
+) {
+  const { companyId, partnerId, docDate } = input;
+  const isCredit = kind === "CREDIT_NOTE";
+  const against = isCredit ? "SALES_INVOICE" : "PURCHASE_INVOICE";
+
+  const categories: NoteCategory[] =
+    ["RETURN", "BILLING_ERROR", "CANCELLATION", "DISCOUNT", "OTHER"];
+  if (!categories.includes(input.category)) {
+    throw new Error("Say which kind of correction this is");
+  }
+  if (!input.reason?.trim()) {
+    throw new Error(
+      `A ${isCredit ? "credit" : "debit"} note has to say why the invoice is ` +
+      `being reduced. It is the only part of this document that explains itself.`
+    );
+  }
+
+  const scale = await currencyScale(tx, companyId);
+  const amount = roundMoney(input.amount, scale);
+  if (!(amount > 0)) throw new Error("A note has to reduce the invoice by something");
+
+  const source = await requireSource(tx, {
+    id: input.sourceDocumentId,
+    companyId,
+    partnerId,
+    expect: [against],
+    role: isCredit ? "invoice this credit note reduces" : "bill this debit note reduces",
+  });
+
+  const fyRows = await tx`select fn_fiscal_year_for(${companyId}, ${docDate}::date) as fy`;
+  const fiscalYear = fyRows[0]?.fy ?? null;
+  if (!fiscalYear) throw new Error(`No fiscal year covers ${docDate}`);
+
+  /* Tax comes off with the money it was charged on. Resolved at the note's
+     own date, like every other rate in this engine — a note written in
+     October against a September invoice uses October's rate only if that is
+     what the caller names, and names the invoice's code when it means to
+     reverse what was charged. */
+  const { byId: rates, none: noTax } = await loadTaxRates(tx, companyId, docDate);
+  const rate = input.taxCodeId ? rates.get(input.taxCodeId) : noTax;
+  if (input.taxCodeId && !rate) throw new Error(taxNotEffective(docDate));
+  const tax = rate ? roundMoney((amount * rate.rate) / 100, scale) : 0;
+  const gross = roundMoney(amount + tax, scale);
+
+  /* What the invoice still owes, so a note cannot take it below nothing. A
+     customer who has already paid needs their money back, not a credit — and
+     an invoice driven negative would sit in aging as a debt owed the wrong
+     way round. */
+  const [open] = await tx`
+    select outstanding from v_open_item where document_id = ${input.sourceDocumentId}`;
+  const owed = Number(open?.outstanding ?? 0);
+  if (gross > owed + 0.0001) {
+    throw new Error(
+      `${source.doc_no} has ${Math.round(owed).toLocaleString("en-US")} still owing and ` +
+      `this note is for ${Math.round(gross).toLocaleString("en-US")}. A note cannot take ` +
+      `an invoice below nothing — refund what was overpaid instead, or reduce the note.`
+    );
+  }
+
+  const noRows = await tx`
+    select fn_next_document_no(${companyId}, ${kind}, ${docDate}::date) as no`;
+  const docNo = noRows[0].no;
+
+  // The invoice's own warehouse, so the note lands on the same branch in
+  // every location-filtered report as the invoice it reduces.
+  const [src] = await tx`
+    select location_id from document where id = ${input.sourceDocumentId}`;
+  const noteLocation = (src?.location_id as string | null) ?? null;
+
+  const [doc] = await tx`
+    insert into document
+      (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
+       partner_id, location_id, currency, exchange_rate, status,
+       net_total, tax_total, gross_total, memo, posted_at, reference,
+       source_document_id, adjustment_reason)
+    values
+      (${companyId}, ${kind}, ${docNo}, ${fiscalYear}, ${docDate}::date, ${docDate}::date,
+       ${partnerId}, ${noteLocation}, 'MMK', 1, 'POSTED',
+       ${amount}, ${tax}, ${gross},
+       -- The reason is the document. Kept in memo so every list, the history
+       -- log and the printed note carry it without a column of its own.
+       ${input.reason.trim()}, now(), ${input.reference ?? null},
+       ${input.sourceDocumentId}, ${input.category})
+    returning id`;
+
+  const journal: JournalLine[] = [];
+
+  if (isCredit) {
+    // Revenue given back, tax given back, and the customer owes less.
+    const ret = await tx`
+      select fn_resolve_account_for_item(${companyId}, 'SALES_RETURN', null) as a`;
+    journal.push({ accountId: ret[0].a, amount });
+    if (tax !== 0 && rate) {
+      journal.push({ accountId: taxAccountFor(rate, "output"), amount: tax });
+    }
+    const ar = await tx`
+      select fn_resolve_control_account(${companyId}, 'AR_CONTROL', ${partnerId}) as a`;
+    journal.push({ accountId: ar[0].a, amount: -gross, partnerId });
+  } else {
+    // We owe the supplier less, and the cost — and the tax we claimed on it —
+    // comes back off.
+    const ap = await tx`
+      select fn_resolve_control_account(${companyId}, 'AP_CONTROL', ${partnerId}) as a`;
+    journal.push({ accountId: ap[0].a, amount: gross, partnerId });
+    const ret = await tx`
+      select fn_resolve_account_for_item(${companyId}, 'PURCHASE_RETURN', null) as a`;
+    journal.push({ accountId: ret[0].a, amount: -amount });
+    if (tax !== 0 && rate) {
+      journal.push({ accountId: taxAccountFor(rate, "input"), amount: -tax });
+    }
+  }
+
+  const entryId = await writeJournal(
+    tx, companyId, docDate, kind, doc.id,
+    `${docNo} ${isCredit ? "credit note" : "debit note"} against ${source.doc_no}`,
+    journal, noteLocation,
+  );
+  await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
+
+  return { id: doc.id as string, docNo, against: source.doc_no as string, gross };
+}
+
+/** Sales side: the customer owes less, and no goods came back. */
+export async function postCreditNote(input: NoteInput, tx?: TransactionSql) {
+  return inTransaction(tx, (t) => _postNote(t, "CREDIT_NOTE", input));
+}
+
+/** Purchase side: we owe the supplier less, and no goods went back. */
+export async function postDebitNote(input: NoteInput, tx?: TransactionSql) {
+  return inTransaction(tx, (t) => _postNote(t, "DEBIT_NOTE", input));
+}
+
 export async function postSalesReturn(input: ReturnInput, outer?: TransactionSql) {
   if (input.lines.length === 0) throw new Error("A return needs at least one line");
   assertLines(input.lines);
@@ -7048,6 +7244,209 @@ export async function reconcileNegativeStock(input: {
  * looked like nothing in particular would be impossible to read six months
  * later.
  */
+// -------------------------------------------------------- year end close --
+
+export type YearEndCloseInput = {
+  companyId: string;
+  fiscalYearId: string;
+  /** Why, in words. Optional — the document explains itself well enough. */
+  memo?: string | null;
+};
+
+/**
+ * Empty the year's trading into equity, then shut the year.
+ *
+ * A revenue account records one year's selling. Carried into the next it
+ * would make April's income statement open with March's sales, and the
+ * balance sheet would never show what the company had actually earned. So at
+ * the year end every profit and loss account is brought to nil against
+ * retained earnings, where the result stops being this year's and becomes
+ * the company's.
+ *
+ *   Dr each revenue account (they carry credit balances)
+ *   Cr each cost account   (they carry debit balances)
+ *   Cr Retained Earnings with the profit — or Dr it with the loss
+ *
+ * Balances come from journal lines *dated* inside the year rather than from
+ * documents filed under it. A period lock is about dates, the income
+ * statement reads dates, and an entry dated into March belongs to March
+ * whatever its document says.
+ *
+ * Closing the periods is part of the same transaction, not a follow-up.
+ * Emptying the accounts and leaving the year open is the trap this exists to
+ * avoid: somebody books a March invoice in June, and retained earnings is
+ * quietly wrong with nothing on the face of the books to say so. The journal
+ * posts first — the period trigger would refuse it otherwise — and the doors
+ * shut behind it.
+ */
+export async function postYearEndClose(input: YearEndCloseInput, outer?: TransactionSql) {
+  return inTransaction(outer, async (tx) => {
+    const { companyId, fiscalYearId } = input;
+
+    // Dates formatted in SQL: the driver hands back a Date object, and
+    // String()ing one gives "Wed Mar 31" rather than a date the rest of the
+    // engine can use.
+    const [fy] = await tx`
+      select id, code, status,
+             to_char(start_date, 'YYYY-MM-DD') as start_date,
+             to_char(end_date,   'YYYY-MM-DD') as end_date
+        from fiscal_year
+       where id = ${fiscalYearId} and company_id = ${companyId}`;
+    if (!fy) throw new Error("That fiscal year does not exist");
+    if (fy.status !== "OPEN") {
+      throw new Error(`Fiscal year ${fy.code} is already ${String(fy.status).toLowerCase()}`);
+    }
+
+    const [standing] = await tx`
+      select doc_no from document
+       where company_id = ${companyId} and fiscal_year_id = ${fiscalYearId}
+         and doc_type = 'YEAR_END_CLOSE' and status <> 'REVERSED'
+         -- Not the mirror a void writes: it is the same type against the
+         -- same year, and counting it would make a reopened year
+         -- permanently unclosable.
+         and reverses_document_id is null`;
+    if (standing) {
+      throw new Error(`${standing.doc_no} already closes ${fy.code}. Void it to reopen the year.`);
+    }
+
+    // Dated the last day of the year, always. A close dated anywhere else
+    // would sit in a period it does not belong to, and the entry that zeroes
+    // March would land in April's income statement.
+    const docDate = fy.end_date as string;
+
+    const balances = await tx`
+      select jl.account_id, sum(jl.base_amount) as amount
+        from journal_line jl
+        join journal_entry je on je.id = jl.journal_entry_id
+        join account a on a.id = jl.account_id
+       where jl.company_id = ${companyId}
+         and a.account_type in ('REVENUE','COGS','EXPENSE')
+         and je.entry_date between ${fy.start_date} and ${fy.end_date}
+       group by jl.account_id
+      having sum(jl.base_amount) <> 0`;
+
+    if (balances.length === 0) {
+      throw new Error(
+        `${fy.code} has no profit or loss to close. Nothing traded in it, so there `
+        + `is nothing to move into retained earnings.`
+      );
+    }
+
+    const scale = await currencyScale(tx, companyId);
+    const journal: JournalLine[] = [];
+    let result = 0;
+
+    for (const b of balances) {
+      const amount = roundMoney(Number(b.amount), scale);
+      if (amount === 0) continue;
+      // The mirror of what the account carries, so it ends the year at nil.
+      journal.push({ accountId: b.account_id as string, amount: -amount });
+      result += amount;
+    }
+
+    const retained = await tx`
+      select fn_system_account(${companyId}, 'RETAINED_EARNINGS') as a`;
+    if (!retained[0]?.a) {
+      throw new Error(
+        "No Retained Earnings account is set for this company. Set one under "
+        + "Master data → Chart of Accounts before closing a year."
+      );
+    }
+    journal.push({ accountId: retained[0].a as string, amount: roundMoney(result, scale) });
+
+    const noRows = await tx`
+      select fn_next_document_no(${companyId}, 'YEAR_END_CLOSE', ${docDate}::date) as no`;
+    const docNo = noRows[0].no;
+
+    // A profit is a credit to equity, so `result` is negative when the year
+    // made money. Reported the other way round, which is how anybody asking
+    // means the question.
+    const profit = roundMoney(-result, scale);
+
+    const [doc] = await tx`
+      insert into document
+        (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
+         currency, exchange_rate, status,
+         net_total, tax_total, gross_total, memo, posted_at)
+      values
+        (${companyId}, 'YEAR_END_CLOSE', ${docNo}, ${fiscalYearId},
+         ${docDate}::date, ${docDate}::date, 'MMK', 1, 'POSTED',
+         ${profit}, 0, ${profit},
+         ${input.memo?.trim() || `Closing ${fy.code}`}, now())
+      returning id`;
+
+    const entryId = await writeJournal(
+      tx, companyId, docDate, "YEAR_END_CLOSE", doc.id as string,
+      `Year end close ${fy.code}`, journal,
+    );
+    // Without this the document has a journal but does not know it, and
+    // every screen — and voidDocument — reads it as having posted nothing.
+    await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
+
+    // Now the doors. Periods first, then the year, both inside this
+    // transaction — a close that half-shut the year would be worse than one
+    // that never ran.
+    await tx`
+      update fiscal_period set status = 'CLOSED'
+       where fiscal_year_id = ${fiscalYearId} and company_id = ${companyId}
+         and status = 'OPEN'`;
+    await tx`
+      update fiscal_year set status = 'CLOSED'
+       where id = ${fiscalYearId} and company_id = ${companyId}`;
+
+    return {
+      id: doc.id as string,
+      docNo: docNo as string,
+      profit,
+      accounts: balances.length,
+    };
+  });
+}
+
+/**
+ * Let a closed year be posted into again.
+ *
+ * Voiding the close is what reopens it — the reversal is a document of its
+ * own and the original stays on file, so "this year was closed, then
+ * reopened on the 14th" is readable afterwards. The periods have to be
+ * opened first or the reversing entry cannot post into them.
+ */
+export async function reopenFiscalYear(
+  input: { companyId: string; fiscalYearId: string; reason?: string | null },
+  outer?: TransactionSql,
+) {
+  return inTransaction(outer, async (tx) => {
+    const { companyId, fiscalYearId } = input;
+
+    const [fy] = await tx`
+      select id, code, status from fiscal_year
+       where id = ${fiscalYearId} and company_id = ${companyId}`;
+    if (!fy) throw new Error("That fiscal year does not exist");
+
+    const [close] = await tx`
+      select id, doc_no from document
+       where company_id = ${companyId} and fiscal_year_id = ${fiscalYearId}
+         and doc_type = 'YEAR_END_CLOSE' and status <> 'REVERSED'
+         and reverses_document_id is null`;
+    if (!close) throw new Error(`${fy.code} has no standing close to reverse`);
+
+    await tx`
+      update fiscal_period set status = 'OPEN'
+       where fiscal_year_id = ${fiscalYearId} and company_id = ${companyId}
+         and status = 'CLOSED'`;
+    await tx`
+      update fiscal_year set status = 'OPEN'
+       where id = ${fiscalYearId} and company_id = ${companyId}`;
+
+    await voidDocument({
+      documentId: close.id as string,
+      reason: input.reason?.trim() || `Reopening ${fy.code}`,
+    }, tx);
+
+    return { reopened: fy.code as string, voided: close.doc_no as string };
+  });
+}
+
 export async function voidDocument(input: {
   documentId: string;
   reason?: string | null;

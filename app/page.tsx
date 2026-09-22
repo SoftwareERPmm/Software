@@ -7,6 +7,7 @@ import {
   getCompany, getKpis, getHealth, getAging, getDocuments, getStock, getActionItems,
   getNegativeStock, getLowStock, getOverCreditLimit,
   getRevenueTrend, getTopItems, getTopCategories, getRevenueByRegion,
+  getRevenueByCustomerCategory,
   getOnboardingStatus,
 } from "@/lib/queries";
 import { RevenueBars, ShareDonut } from "@/components/charts";
@@ -53,7 +54,8 @@ export default async function Dashboard({
   };
 
   const [kpis, health, aging, docs, stock, actionItems, revenueTrend, topItems, topCategories,
-         regionRevenue, onboarding, negativeStock, lowStock, overLimit] = await Promise.all([
+         regionRevenue, custCategoryRevenue, onboarding, negativeStock, lowStock,
+         overLimit] = await Promise.all([
     getKpis(company.id),
     getHealth(company.id),
     getAging(company.id),
@@ -64,6 +66,7 @@ export default async function Dashboard({
     getTopItems(company.id, period.items.from, period.items.to),
     getTopCategories(company.id, period.cat.from, period.cat.to),
     getRevenueByRegion(company.id, period.reg.from, period.reg.to),
+    getRevenueByCustomerCategory(company.id, period.reg.from, period.reg.to),
     getOnboardingStatus(company.id),
     getNegativeStock(company.id),
     getLowStock(company.id),
@@ -237,6 +240,9 @@ export default async function Dashboard({
   const lastMonthName = monthName(trend[latestIdx - 1]?.month);
 
   const regions = regionRevenue as unknown as
+    { id: string; name: string; revenue: number | string }[];
+
+  const custCategories = custCategoryRevenue as unknown as
     { id: string; name: string; revenue: number | string }[];
 
   const items = topItems as unknown as
@@ -618,6 +624,24 @@ export default async function Dashboard({
           )}
         </div>
       </div>
+
+      {/* Only drawn once somebody has classified a customer. An empty
+          breakdown is a circle around "Not categorised", which tells nobody
+          anything and takes the space of something that would. */}
+      {custCategories.length > 0 &&
+       !(custCategories.length === 1 && custCategories[0].id === "none") && (
+        <div className="dash-card dash-card-pad" style={{ marginBottom: "var(--dash-gap)" }}>
+          <div className="dash-section-head">
+            <div>
+              <h2>Revenue by kind of customer</h2>
+              <span className="dash-sub">
+                Sales {period.reg.sentence}, by what kind of shop bought
+              </span>
+            </div>
+          </div>
+          <ShareDonut data={custCategories} currency={company.base_currency} />
+        </div>
+      )}
 
       <div className="dash-card dash-card-pad" style={{ marginBottom: "var(--dash-gap)" }}>
         <div className="dash-section-head">

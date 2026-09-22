@@ -692,6 +692,11 @@ export function SalesVoucher({
 
       <input type="hidden" name="lines" value={payload} />
       <input type="hidden" name="payment_type" value={paymentType} />
+      {/* What filled the prices, carried so the posted invoice can say it.
+          Not what will be charged — that is on each line. */}
+      {activeLevelId && (
+        <input type="hidden" name="price_level_id" value={activeLevelId} />
+      )}
 
       <div className="card doc-meta">
         <div className="card-head">

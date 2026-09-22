@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getCompany, getPartners } from "@/lib/queries";
+import { sql } from "@/lib/db";
 import { updatePartner, deactivatePartner, activatePartner, deletePartner } from "@/lib/actions";
 import { PartnerRow } from "@/components/partner-row";
 import { DataTable, type DataRow } from "@/components/data-table";
@@ -8,21 +9,38 @@ import { HelpHint } from "@/components/help-hint";
 export default async function Partners({
   searchParams,
 }: {
-  searchParams: Promise<{ role?: string }>;
+  searchParams: Promise<{ role?: string; category?: string }>;
 }) {
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
-  const { role } = await searchParams;
+  const { role, category } = await searchParams;
   const all = (await getPartners(company.id)) as any[];
+  // The price columns this company keeps, so a customer can be put on one.
+  const priceLevels = (await sql`
+    select id, name from price_level where company_id = ${company.id} order by sort_order`
+  ) as unknown as { id: string; name: string }[];
+  const categories = (await sql`
+    select id, name from partner_category
+     where company_id = ${company.id} and is_active order by sort_order, name`
+  ) as unknown as { id: string; name: string }[];
 
   // Customers and Suppliers in the nav are filtered views of this same
   // table, not separate lists — the same company is routinely both, and
   // splitting the data would mean reconciling one partner against itself.
-  const partners =
+  const byRole =
     role === "customer" ? all.filter((p) => p.is_customer)
     : role === "supplier" ? all.filter((p) => p.is_supplier)
     : all;
+
+  /* ?category=<id> narrows to one kind of trade, and ?category=none to the
+     ones nobody has classified — the second is the useful one while the
+     field is still being filled in. */
+  const partners =
+    category === "none" ? byRole.filter((p) => !p.category_id)
+    : category ? byRole.filter((p) => p.category_id === category)
+    : byRole;
+  const uncategorised = byRole.filter((p) => !p.category_id).length;
 
   const rows: DataRow[] = partners.map((p) => ({
     key: p.id,
@@ -33,6 +51,8 @@ export default async function Partners({
       role: `${p.is_customer ? "Customer" : ""} ${p.is_supplier ? "Supplier" : ""}`.trim(),
       region: p.region ?? "",
       township: p.township ?? "",
+      price_level: p.price_level_name ?? "",
+      category: p.category_name ?? "",
       payment_terms_days: Number(p.payment_terms_days),
       outstanding: Number(p.outstanding),
       // Sorting by what is left of a limit puts whoever is closest to it at
@@ -47,6 +67,8 @@ export default async function Partners({
     node: (
       <PartnerRow
         partner={p}
+        priceLevels={priceLevels}
+        categories={categories}
         updateAction={updatePartner}
         deactivateAction={deactivatePartner}
         activateAction={activatePartner}
@@ -72,6 +94,35 @@ export default async function Partners({
           <div className="card-head">
             <h2>{role === "customer" ? "Customers" : role === "supplier" ? "Suppliers" : "Partners"}</h2>
             <span className="actions">
+              {/* Only offered once categories exist, and the uncategorised
+                  count is shown because a classification half filled in is
+                  worse than none — it looks complete on a report. */}
+              {categories.length > 0 && (
+                <span className="page-sub">
+                  <Link href={role ? `/partners?role=${role}` : "/partners"}
+                        style={{ color: !category ? "var(--brand)" : "inherit" }}>
+                    All
+                  </Link>
+                  {categories.map((c) => (
+                    <span key={c.id}>
+                      {" · "}
+                      <Link href={`/partners?${role ? `role=${role}&` : ""}category=${c.id}`}
+                            style={{ color: category === c.id ? "var(--brand)" : "inherit" }}>
+                        {c.name}
+                      </Link>
+                    </span>
+                  ))}
+                  {uncategorised > 0 && (
+                    <>
+                      {" · "}
+                      <Link href={`/partners?${role ? `role=${role}&` : ""}category=none`}
+                            style={{ color: category === "none" ? "var(--brand)" : "inherit" }}>
+                        Not categorised ({uncategorised})
+                      </Link>
+                    </>
+                  )}
+                </span>
+              )}
               <span className="page-sub">{partners.length} records</span>
               <Link href="/partners/new" className="btn">New partner</Link>
             </span>
@@ -87,6 +138,8 @@ export default async function Partners({
               { key: "role", label: "Role", sortable: true },
               { key: "region", label: "Region", sortable: true },
               { key: "township", label: "Township", sortable: true },
+              { key: "price_level", label: "Price level", sortable: true },
+              { key: "category", label: "Category", sortable: true },
               { key: "payment_terms_days", label: "Terms", sortable: true, align: "r" },
               { key: "outstanding", label: "Outstanding", sortable: true, align: "r" },
               { key: "credit_limit", label: "Credit limit", sortable: true, align: "r" },
