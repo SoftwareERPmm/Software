@@ -25,6 +25,13 @@ export type InvoiceLine = {
   unitPrice: number;
   /** The discount typed on this line, in percent. */
   discountPct?: number;
+  /**
+   * Which commercial tax applies to this line. Left unset, the line is
+   * taxed at the company's NONE code — which is what every document posted
+   * before tax existed carried, so nothing already in the ledger changes
+   * meaning.
+   */
+  taxCodeId?: string | null;
   focReasonId?: string | null;
 
   /** Purchase side: which goods-receipt line this bills. Optional — when it
@@ -67,6 +74,12 @@ export type InvoiceInput = {
   dueDate: string | null;
   memo?: string | null;
   reference?: string | null;
+  /**
+   * True when the unit prices already contain the tax, so it is extracted
+   * from the price rather than added to it. The counter price in a Myanmar
+   * shop is usually tax-inclusive; a wholesale quote usually is not.
+   */
+  priceIncludesTax?: boolean;
   lines: InvoiceLine[];
 };
 
@@ -89,6 +102,11 @@ export type SalesInvoiceInput = InvoiceInput & {
   /** Goods leave later. When true, this invoice posts revenue only — no
    *  delivery is created, and stock doesn't move until one is. */
   toDeliver?: boolean;
+
+  /** Somebody has decided to sell past this customer's credit limit. */
+  allowOverCreditLimit?: boolean;
+  /** Why. Required by the engine whenever the limit is actually breached. */
+  creditOverrideReason?: string | null;
 
   /** Taken at the counter. Creates a receipt document allocated to this invoice. */
   cashIn?: number;
@@ -143,6 +161,15 @@ export type FulfillmentLine = {
   sourceLineId?: string | null;
 
   /**
+   * The lot these goods arrived under, for an item that tracks batches, and
+   * when that lot stops being sellable if it also tracks expiry. Required by
+   * the engine for such an item: a layer with no batch cannot be named in a
+   * recall, and the gap shows up at the worst possible moment.
+   */
+  batchNo?: string | null;
+  expiryDate?: string | null;
+
+  /**
    * The units themselves, for an item whose every unit has an identity — a
    * handset's IMEI, a machine's serial. Required for such an item and
    * refused for any other: a line of twelve biscuits has nothing to name, and
@@ -190,6 +217,9 @@ export type FulfillmentInput = {
    * nobody has noticed lives in this sentence.
    */
   negativeStockReason?: string | null;
+  /** Goods leaving on account can breach a limit as surely as an invoice. */
+  allowOverCreditLimit?: boolean;
+  creditOverrideReason?: string | null;
   memo?: string | null;
   reference?: string | null;
   sourceDocumentId?: string | null;
@@ -213,6 +243,194 @@ type JournalLine = {
 
 function round4(n: number) {
   return Math.round(n * 10000) / 10000;
+}
+
+// -------------------------------------------------------- commercial tax --
+//
+// Tax charged on a sale is money held for the revenue department: it belongs
+// in a liability, never in revenue, and the customer owes the gross. Tax paid
+// on a purchase is creditable against it, so it is an asset until it is set
+// off — book it to expense and the trader pays it twice.
+//
+// A line records both figures, and the document totals keep them apart:
+// net_total is what was earned, tax_total what is held, gross_total what is
+// owed. v_open_item ages the gross, which is what the customer actually has
+// to pay.
+
+type TaxRate = {
+  id: string;
+  code: string;
+  rate: number;
+  outputAccountId: string | null;
+  inputAccountId: string | null;
+};
+
+/**
+ * The codes, each carrying the rate it charged on `onDate`.
+ *
+ * A rate belongs to a date: the same code can be 5% in March and 6% in
+ * September, and a document is taxed the way its own day was taxed. That is
+ * what makes a backdated invoice, or a re-posted amendment of an old one,
+ * come out at the rate it was originally raised at rather than today's.
+ *
+ * A code with no rate effective yet is left out entirely rather than treated
+ * as zero — using it is refused below, because a tax nobody has set a rate
+ * for is an unanswered question, not an exemption.
+ */
+async function loadTaxRates(
+  tx: TransactionSql, companyId: string, onDate: string,
+): Promise<{ byId: Map<string, TaxRate>; none: TaxRate | null }> {
+  const rows = await tx`
+    select t.id, t.code, t.output_account_id, t.input_account_id,
+           fn_tax_rate_on(t.id, ${onDate}::date) as rate
+      from tax_code t
+     where t.company_id = ${companyId} and t.is_active
+       and fn_tax_rate_on(t.id, ${onDate}::date) is not null`;
+  const byId = new Map<string, TaxRate>();
+  let none: TaxRate | null = null;
+  for (const r of rows as unknown as {
+    id: string; code: string; rate: string;
+    output_account_id: string | null; input_account_id: string | null;
+  }[]) {
+    const t: TaxRate = {
+      id: r.id, code: r.code, rate: Number(r.rate),
+      outputAccountId: r.output_account_id, inputAccountId: r.input_account_id,
+    };
+    byId.set(t.id, t);
+    if (t.rate === 0 && (!none || t.code === "NONE")) none = t;
+  }
+  return { byId, none };
+}
+
+/**
+ * Split one line's money into what was earned and what is held as tax.
+ *
+ * `amount` is the line after every discount. Exclusive, the tax is added on
+ * top; inclusive, it was already inside the price and comes back out — and
+ * the two must never both happen to one figure, which is why the document
+ * carries the flag rather than each line guessing.
+ */
+function splitTax(
+  amount: number, rate: number, includesTax: boolean, scale: number,
+): { net: number; tax: number } {
+  if (rate === 0 || amount === 0) return { net: roundMoney(amount, scale), tax: 0 };
+  if (includesTax) {
+    const net = roundMoney(amount / (1 + rate / 100), scale);
+    // The tax is the remainder, not a second rounding of the rate: that is
+    // what keeps net + tax equal to the price on the shelf, to the kyat.
+    return { net, tax: roundMoney(amount - net, scale) };
+  }
+  return { net: roundMoney(amount, scale), tax: roundMoney((amount * rate) / 100, scale) };
+}
+
+const taxNotEffective = (onDate: string) =>
+  `That tax code is not active, or had no rate in force on ${onDate}. ` +
+  `A rate applies from the date it starts, so a document dated before the ` +
+  `first rate cannot use the code.`;
+
+// -------------------------------------------------------- credit limits --
+//
+// What a customer may owe at once. NULL means nobody has set a limit; 0
+// means no credit at all, which is a real answer and not the same thing.
+//
+// Exposure is money already outstanding plus goods that have gone out and
+// not been billed — stock that has left is credit extended whether or not
+// an invoice exists for it yet. Orders not yet delivered are excluded: a
+// promise to deliver is not money at risk until the goods move.
+//
+// Going over stays possible, because it is a commercial decision made by
+// somebody standing at the counter. What it cannot be is accidental.
+
+type CreditStanding = {
+  limit: number | null;
+  exposure: number;
+  outstanding: number;
+  unbilled: number;
+};
+
+async function creditStanding(
+  tx: TransactionSql, companyId: string, partnerId: string,
+): Promise<CreditStanding> {
+  const [row] = await tx`
+    select credit_limit, outstanding, unbilled_deliveries, exposure
+      from v_customer_credit
+     where company_id = ${companyId} and partner_id = ${partnerId}`;
+  return {
+    limit: row?.credit_limit === null || row?.credit_limit === undefined
+      ? null : Number(row.credit_limit),
+    exposure: Number(row?.exposure ?? 0),
+    outstanding: Number(row?.outstanding ?? 0),
+    unbilled: Number(row?.unbilled_deliveries ?? 0),
+  };
+}
+
+/**
+ * Refuse a sale that takes a customer past what they may owe, unless
+ * somebody has said to allow it and why.
+ *
+ * `adding` is what this document puts at risk — the gross of a credit
+ * invoice, or the value of goods leaving on account. A cash sale adds
+ * nothing: money changes hands as the goods do.
+ *
+ * Checked in the engine rather than in the form, so an import, a script or a
+ * resent request meets the same rule. And the reason is required by the
+ * breach, not by the flag: a document that is comfortably inside the limit
+ * needs no confirmation even if one was offered.
+ */
+async function assertCreditLimit(
+  tx: TransactionSql,
+  companyId: string,
+  partnerId: string,
+  adding: number,
+  input: { allowOverCreditLimit?: boolean; creditOverrideReason?: string | null },
+): Promise<{ standing: CreditStanding; over: boolean }> {
+  const standing = await creditStanding(tx, companyId, partnerId);
+
+  /* A document that extends no credit is never blocked, however far over the
+     line the customer already is. Cash at the counter is the case that
+     matters: money and goods change hands together, so a customer who owes
+     too much can still buy — and refusing that would stop the one kind of
+     sale that reduces the problem. The gate is about what this document
+     adds, not about what is already owed. */
+  if (adding <= 0.0001) return { standing, over: false };
+
+  const over = standing.limit !== null && standing.exposure + adding > standing.limit + 0.0001;
+  if (!over) return { standing, over };
+
+  const [p] = await tx`select code, name from business_partner where id = ${partnerId}`;
+  const who = p ? `${p.code} (${p.name})` : "This customer";
+  const fmt = (n: number) => Math.round(n).toLocaleString("en-US");
+  const detail =
+    `${who} may owe ${fmt(standing.limit as number)} at once. ` +
+    `Already outstanding ${fmt(standing.outstanding)}` +
+    (standing.unbilled > 0 ? ` plus ${fmt(standing.unbilled)} delivered and not yet billed` : "") +
+    `, and this one adds ${fmt(adding)} — ` +
+    `${fmt(standing.exposure + adding - (standing.limit as number))} over.`;
+
+  if (input.allowOverCreditLimit !== true) {
+    throw new Error(
+      `${detail} Take payment first, or approve going over the limit and say why.`
+    );
+  }
+  if (!input.creditOverrideReason?.trim()) {
+    throw new Error(
+      `${detail} Approving it needs a reason: a confirmation without one records ` +
+      `that somebody clicked, not what they knew.`
+    );
+  }
+  return { standing, over };
+}
+
+/** The account a tax code posts to, and a readable refusal when it has none. */
+function taxAccountFor(t: TaxRate, side: "output" | "input"): string {
+  const id = side === "output" ? t.outputAccountId : t.inputAccountId;
+  if (!id) {
+    throw new Error(
+      `Tax code ${t.code} charges ${t.rate}% but has no ${side} account set. ` +
+      `Point it at one under Master data → Tax codes before using it.`
+    );
+  }
+  return id;
 }
 
 // ------------------------------------------------------------- guards --
@@ -1025,6 +1243,21 @@ async function planFifoConsumption(
   // still held (0057), and an issue after that has to relieve inventory at the
   // corrected figure — otherwise the correction sits in the inventory account
   // forever with no stock left behind it.
+  /*
+   * Oldest first, except where the goods expire — then it is the earliest
+   * expiry first, which is what anybody loading a van actually does. The two
+   * orders agree most of the time and disagree exactly when it matters: a
+   * batch received last week with three months left must go before one
+   * received last month with a year.
+   *
+   * Layers with no expiry sort first within a tracked item, which is the
+   * untracked stock received before tracking was switched on. It leaves the
+   * shelf before the batched stock, and the exception empties itself.
+   *
+   * Costing is unchanged in shape: the cost still comes from whichever layer
+   * is drawn. What changes is which layer that is — and it should be, since
+   * the cost of a sale ought to follow the goods that physically left.
+   */
   const lots = await tx`
     select sl.id, sl.unit_cost + coalesce(a.delta, 0) as unit_cost,
            sl.qty_received - coalesce(sum(c.qty), 0) as remaining
@@ -1035,9 +1268,10 @@ async function planFifoConsumption(
               from stock_lot_adjustment adj where adj.lot_id = sl.id
       ) a on true
      where sl.company_id = ${companyId} and sl.item_id = ${itemId} and sl.location_id = ${locationId}
-     group by sl.id, sl.unit_cost, a.delta, sl.qty_received, sl.received_date, sl.created_at
+     group by sl.id, sl.unit_cost, a.delta, sl.qty_received, sl.received_date, sl.created_at,
+              sl.expiry_date
     having sl.qty_received - coalesce(sum(c.qty), 0) > 0.0001
-     order by sl.received_date, sl.created_at`;
+     order by sl.expiry_date asc nulls first, sl.received_date, sl.created_at`;
 
   let need = round4(qty);
   const draws: FifoDraw[] = [];
@@ -1448,15 +1682,77 @@ function assertSerials(
 
 async function createFifoLot(
   tx: TransactionSql, companyId: string, itemId: string, locationId: string,
-  receivedAt: string, unitCost: number, qty: number, stockMovementId: string
+  receivedAt: string, unitCost: number, qty: number, stockMovementId: string,
+  /** The lot these goods arrived under, for items that track batches. */
+  batch?: { batchNo?: string | null; expiryDate?: string | null },
 ) {
   // Returns the layer it made, for the one caller that needs to hang unit
   // identities off it. Every other caller ignores it, as before.
   const [lot] = await tx`
-    insert into stock_lot (company_id, item_id, location_id, received_date, unit_cost, qty_received, stock_movement_id)
-    values (${companyId}, ${itemId}, ${locationId}, ${receivedAt}::timestamptz, ${unitCost}, ${qty}, ${stockMovementId})
+    insert into stock_lot (company_id, item_id, location_id, received_date, unit_cost,
+                           qty_received, stock_movement_id, batch_no, expiry_date)
+    values (${companyId}, ${itemId}, ${locationId}, ${receivedAt}::timestamptz, ${unitCost},
+            ${qty}, ${stockMovementId},
+            ${batch?.batchNo?.trim() || null}, ${batch?.expiryDate || null})
     returning id`;
   return lot.id as string;
+}
+
+// ------------------------------------------------------- batch tracking --
+//
+// Per item, and two switches: a batch is traceability (which lot are these
+// units from, so a recall can name them) and expiry is the extra that
+// perishable goods need. An expiry with no batch to belong to is a date
+// attached to nothing, so the second only applies where the first is on.
+//
+// Stock received before tracking was turned on has neither, and keeps
+// issuing oldest-first exactly as it did. That untracked layer empties
+// itself over time rather than needing a migration nobody can do honestly —
+// the batch numbers for goods already on a shelf are not knowable from here.
+
+type BatchTracking = { batch: boolean; expiry: boolean };
+
+async function batchTracking(
+  tx: TransactionSql, itemIds: string[],
+): Promise<Map<string, BatchTracking>> {
+  const out = new Map<string, BatchTracking>();
+  if (itemIds.length === 0) return out;
+  const rows = await tx`
+    select id, tracks_batch, tracks_expiry from item where id = any(${[...new Set(itemIds)]})`;
+  for (const r of rows as unknown as {
+    id: string; tracks_batch: boolean; tracks_expiry: boolean;
+  }[]) {
+    out.set(r.id, { batch: r.tracks_batch, expiry: r.tracks_batch && r.tracks_expiry });
+  }
+  return out;
+}
+
+/**
+ * Goods arriving for a tracked item have to say which lot they are.
+ *
+ * Checked in the engine rather than the form, like every other rule here: an
+ * import or a script receiving stock without a batch would otherwise create a
+ * layer nobody can trace, and the gap only becomes visible during a recall,
+ * which is the worst possible moment to discover it.
+ */
+function assertBatchGiven(
+  item: { id: string; code: string; name: string },
+  track: BatchTracking | undefined,
+  line: { batchNo?: string | null; expiryDate?: string | null },
+) {
+  if (!track?.batch) return;
+  if (!line.batchNo?.trim()) {
+    throw new Error(
+      `${item.code} (${item.name}) is tracked by batch, so this receipt has to ` +
+      `say which lot the goods are from.`
+    );
+  }
+  if (track.expiry && !line.expiryDate) {
+    throw new Error(
+      `${item.code} (${item.name}) expires, so batch ${line.batchNo.trim()} needs ` +
+      `the date it stops being sellable.`
+    );
+  }
 }
 
 /**
@@ -2115,13 +2411,48 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
     }
   }
 
+  /* Goods leaving on account are credit extended, whether or not an invoice
+     exists yet — which is exactly the gap the "delivered, never invoiced"
+     alert counts. So the limit is checked here too.
+
+     A delivery against a to-deliver invoice adds nothing: that invoice is
+     already in receivables, and counting the goods again would charge the
+     customer's limit twice for one sale. Against an order, or against
+     nothing at all, this is the moment the exposure starts, valued at the
+     order's agreed price where there is one and at cost where there is not. */
+  const billedAlready = input.sourceDocumentId
+    ? (await tx`select doc_type from document where id = ${input.sourceDocumentId}`)[0]?.doc_type
+      === "SALES_INVOICE"
+    : false;
+
+  let goingOut = 0;
+  if (!billedAlready) {
+    for (const line of input.lines) {
+      const [src] = line.sourceLineId
+        ? await tx`select unit_price from document_line where id = ${line.sourceLineId}`
+        : [undefined];
+      const price = Number(src?.unit_price ?? 0);
+      // Goods with no agreed price behind them are weighed at what stock
+      // costs today. That is an estimate made before the FIFO layers are
+      // drawn, so it will not match to the kyat what v_customer_credit
+      // reports afterwards — that reads the cost actually consumed. Both
+      // answer "how much is at risk"; only one of them can be exact, and it
+      // is not the one that has to run before the goods move.
+      goingOut += price > 0
+        ? line.qty * price
+        : line.qty * await estimateCurrentCost(tx, companyId, line.itemId, locationId);
+    }
+  }
+  const creditDel = await assertCreditLimit(
+    tx, companyId, partnerId, round4(goingOut), input);
+
   const [doc] = await tx`
     insert into document
       (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
        partner_id, location_id, currency, exchange_rate, status,
        net_total, tax_total, gross_total, memo, posted_at, reference, source_document_id,
        delivery_fee, negative_stock_confirmed, negative_stock_confirmed_at,
-       negative_stock_reason)
+       negative_stock_reason, credit_override_reason, credit_override_at)
     values
       (${companyId}, 'DELIVERY', ${docNo}, ${fiscalYear}, ${docDate}::date,
        ${docDate}::date, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
@@ -2133,7 +2464,9 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
        ${input.allowNegativeStock === true},
        ${input.allowNegativeStock === true ? new Date().toISOString() : null},
        ${input.allowNegativeStock === true
-         ? (input.negativeStockReason?.trim() || null) : null})
+         ? (input.negativeStockReason?.trim() || null) : null},
+       ${creditDel.over ? (input.creditOverrideReason?.trim() ?? null) : null},
+       ${creditDel.over ? new Date() : null})
     returning id`;
 
   const journal: JournalLine[] = [];
@@ -2658,7 +2991,35 @@ async function _postSalesInvoice(
   // The goods total is what the pricing arrived at, not the list prices it
   // started from. Computing it separately is how the receivable and the
   // revenue came to disagree by exactly one volume discount.
-  const goodsTotal = priced.total;
+  //
+  // Tax is split off it here, before the document is written, because the
+  // header totals and the lines have to be the same arithmetic. Splitting it
+  // again inside the line loop is how a tax_total and the sum of its lines
+  // come to differ by a rounding step.
+  const { byId: taxRates, none: noTax } = await loadTaxRates(tx, companyId, docDate);
+  const includesTax = input.priceIncludesTax ?? false;
+  const taxFor = new Map<InvoiceLine, { net: number; tax: number; rate: TaxRate }>();
+  for (const l of charged) {
+    const rate = l.taxCodeId ? taxRates.get(l.taxCodeId) : noTax;
+    if (l.taxCodeId && !rate) throw new Error(taxNotEffective(docDate));
+    const chosen = rate ?? noTax;
+    const amount = round4(pricedFor.get(l)?.net ?? l.qty * l.unitPrice);
+    const split = chosen
+      ? splitTax(amount, chosen.rate, includesTax, scale)
+      : { net: roundMoney(amount, scale), tax: 0 };
+    taxFor.set(l, { net: split.net, tax: split.tax, rate: chosen ?? {
+      id: "", code: "NONE", rate: 0, outputAccountId: null, inputAccountId: null,
+    } });
+  }
+
+  const taxTotal = roundMoney(
+    [...taxFor.values()].reduce((t, v) => t + v.tax, 0), scale);
+  // Inclusive pricing means the earned figure is less than the price typed,
+  // so the goods total is rebuilt from the splits rather than taken from the
+  // pricing run.
+  const goodsTotal = includesTax && taxTotal !== 0
+    ? roundMoney([...taxFor.values()].reduce((t, v) => t + v.net, 0), scale)
+    : priced.total;
 
   // The fee comes from the delivery unless this invoice states its own. A
   // charge entered when the goods went out must not be lost just because
@@ -2673,7 +3034,13 @@ async function _postSalesInvoice(
 
   // The receivable is the goods plus the carriage; the two reach different
   // accounts on the credit side but the customer owes one sum.
+  //
+  // Carriage is deliberately outside the tax for now: it is charged as
+  // income earned for delivering rather than as part of what the goods sold
+  // for, and taxing it needs its own code on the header. Documented here
+  // rather than guessed at silently.
   const netTotal = round4(goodsTotal + deliveryFee);
+  const grossTotal = round4(netTotal + taxTotal);
 
   // An invoice that bills nothing has no journal entry to write, and until
   // now it failed several steps later with "Journal entry JE-000005 has no
@@ -2714,19 +3081,36 @@ async function _postSalesInvoice(
     await assertNotOverBilled(tx, input.deliveryId, input.lines, "SALES_INVOICE");
   }
 
+  /* What this sale puts at risk. Cash taken at the counter is not credit, so
+     only the part left owing counts — a 100,000 invoice paid 100,000 in cash
+     extends nothing, and a customer at their limit can still buy for cash.
+     Goods billed against a delivery already counted as unbilled exposure add
+     nothing new either: this invoice replaces that exposure rather than
+     stacking on it. */
+  const cashAtCounter = round4(input.cashIn ?? 0);
+  const alreadyExposed = input.deliveryId
+    ? Number((await tx`select gross_total from document where id = ${input.deliveryId}`)[0]?.gross_total ?? 0)
+    : 0;
+  const onAccount = Math.max(0, round4(grossTotal - cashAtCounter - alreadyExposed));
+  const credit = await assertCreditLimit(tx, companyId, partnerId, onAccount, input);
+
   const [doc] = await tx`
     insert into document
       (company_id, doc_type, doc_no, version, fiscal_year_id, doc_date, posting_date, due_date,
-       partner_id, location_id, currency, exchange_rate, status,
+       partner_id, location_id, currency, exchange_rate, status, price_includes_tax,
        net_total, tax_total, gross_total, memo, posted_at,
-       payment_type, salesman_id, reference, to_deliver, source_document_id, delivery_fee)
+       payment_type, salesman_id, reference, to_deliver, source_document_id, delivery_fee,
+       credit_override_reason, credit_override_at)
     values
       (${companyId}, 'SALES_INVOICE', ${docNo}, ${version}, ${fiscalYear}, ${docDate}::date,
        ${docDate}::date, ${dueDate}, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
-       ${netTotal}, 0, ${netTotal}, ${input.memo ?? null}, now(),
+       ${includesTax},
+       ${netTotal}, ${taxTotal}, ${grossTotal}, ${input.memo ?? null}, now(),
        ${input.paymentType ?? "CREDIT"}, ${input.salesmanId ?? null},
        ${input.reference ?? null}, ${input.toDeliver ?? false}, ${input.deliveryId ?? null},
-       ${deliveryFee})
+       ${deliveryFee},
+       ${credit.over ? (input.creditOverrideReason?.trim() ?? null) : null},
+       ${credit.over ? new Date() : null})
     returning id`;
 
   const journal: JournalLine[] = [];
@@ -2740,7 +3124,10 @@ async function _postSalesInvoice(
     if (!item) throw new Error("Item not found");
 
     const d = pricedFor.get(line);
-    const net = line.focReasonId ? 0 : round4(d?.net ?? line.qty * line.unitPrice);
+    const t = taxFor.get(line);
+    // A free line is free of tax too: there is no consideration to tax.
+    const net = line.focReasonId ? 0 : round4(t?.net ?? d?.net ?? line.qty * line.unitPrice);
+    const lineTax = line.focReasonId ? 0 : round4(t?.tax ?? 0);
 
     await tx`
       insert into document_line
@@ -2749,7 +3136,7 @@ async function _postSalesInvoice(
          discount_pct, discount_amount,
          volume_discount_pct, volume_discount_amount, volume_discount_id,
          invoice_discount_pct, invoice_discount_amount, invoice_discount_id,
-         net_amount, tax_amount, gross_amount, foc_reason_id, source_line_id)
+         net_amount, tax_code_id, tax_amount, gross_amount, foc_reason_id, source_line_id)
       values
         (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
          ${line.qty}, ${item.base_uom_id}, ${line.qty},
@@ -2757,7 +3144,8 @@ async function _postSalesInvoice(
          ${d?.itemDiscountPct ?? 0}, ${d?.itemDiscountAmount ?? 0},
          ${d?.volumeDiscountPct ?? 0}, ${d?.volumeDiscountAmount ?? 0}, ${d?.volumeDiscountId ?? null},
          ${d?.invoiceDiscountPct ?? 0}, ${d?.invoiceDiscountAmount ?? 0}, ${d?.invoiceDiscountId ?? null},
-         ${net}, 0, ${net}, ${line.focReasonId ?? null},
+         ${net}, ${line.focReasonId ? null : (line.taxCodeId ?? t?.rate.id ?? null)},
+         ${lineTax}, ${round4(net + lineTax)}, ${line.focReasonId ?? null},
          -- Which order line this bills. The purchase side has always recorded
          -- it and the sales side never did, though the form sends it and the
          -- type carries it: it was read off the input and dropped. A sales
@@ -2795,10 +3183,28 @@ async function _postSalesInvoice(
     journal.push({ accountId: income.account_id, amount: -deliveryFee });
   }
 
-  if (netTotal !== 0) {
+  // Tax charged, grouped by the account each code points at — one leg per
+  // account rather than one per line, so a ten-line invoice at one rate
+  // writes one credit to Commercial Tax Payable.
+  if (taxTotal !== 0) {
+    const byAccount = new Map<string, number>();
+    for (const v of taxFor.values()) {
+      if (v.tax === 0) continue;
+      const acct = taxAccountFor(v.rate, "output");
+      byAccount.set(acct, roundMoney((byAccount.get(acct) ?? 0) + v.tax, scale));
+    }
+    for (const [accountId, amount] of byAccount) {
+      journal.push({ accountId, amount: -amount });
+    }
+  }
+
+  // The customer owes the gross. net_total is what was earned and tax_total
+  // what is held for the revenue department; the receivable is both, which is
+  // also what v_open_item ages and what a receipt settles against.
+  if (grossTotal !== 0) {
     const ar = await tx`
       select fn_resolve_control_account(${companyId}, 'AR_CONTROL', ${partnerId}) as a`;
-    journal.push({ accountId: ar[0].a, amount: netTotal, partnerId });
+    journal.push({ accountId: ar[0].a, amount: grossTotal, partnerId });
   }
 
   const entryId = await writeJournal(
@@ -2826,9 +3232,9 @@ async function _postSalesInvoice(
   let receiptNo: string | null = null;
 
   if (cashIn > 0) {
-    if (cashIn > netTotal) {
+    if (cashIn > grossTotal) {
       throw new Error(
-        `Cash in (${cashIn}) is more than the invoice total (${netTotal})`
+        `Cash in (${cashIn}) is more than the invoice total (${grossTotal})`
       );
     }
 
@@ -2963,8 +3369,11 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
   const serialTracked = await serialTracking(tx, input.lines.map((l) => l.itemId));
   assertSerials(input.lines, serialTracked, "receive");
 
-  const { companyId, partnerId, locationId, docDate } = input;
-  const receivedAt = input.receivedAt || docDate;
+    const { companyId, partnerId, locationId, docDate } = input;
+
+  // Which of these items keep lot identity, read once for the document
+  // rather than per line.
+  const tracking = await batchTracking(tx, input.lines.map((l) => l.itemId)); const receivedAt = input.receivedAt || docDate;
 
   const fyRows = await tx`select fn_fiscal_year_for(${companyId}, ${docDate}::date) as fy`;
   const fiscalYear = fyRows[0]?.fy ?? null;
@@ -3054,13 +3463,16 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
          ${line.qty}, ${item.base_uom_id}, ${line.qty}, ${unitCost},
          ${net}, 0, ${net}, ${line.sourceLineId ?? null})`;
 
+    assertBatchGiven(item as never, tracking.get(line.itemId), line);
+
     const [movement] = await tx`
       insert into stock_movement
         (company_id, item_id, location_id, movement_date, qty,
-         unit_cost, total_cost, document_id)
+         unit_cost, total_cost, document_id, batch_no, expiry_date)
       values
         (${companyId}, ${line.itemId}, ${locationId}, ${docDate}::date,
-         ${line.qty}, ${unitCost}, ${net}, ${doc.id})
+         ${line.qty}, ${unitCost}, ${net}, ${doc.id},
+         ${line.batchNo?.trim() || null}, ${line.expiryDate || null})
       returning id`;
 
     // Goods already sold before anyone recorded them arriving are covered
@@ -3074,7 +3486,9 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
     const toShelf = round4(line.qty - covered);
     let lotId: string | null = null;
     if (toShelf > 0.0001) {
-      lotId = await createFifoLot(tx, companyId, line.itemId, locationId, receivedAt, unitCost, toShelf, movement.id);
+      lotId = await createFifoLot(
+        tx, companyId, line.itemId, locationId, receivedAt, unitCost, toShelf, movement.id,
+        { batchNo: line.batchNo, expiryDate: line.expiryDate });
     }
 
     /**
@@ -4053,18 +4467,39 @@ async function _postPurchaseInvoice(
     await assertOrderTerms(tx, companyId, input.lines);
   }
 
-  const lineNets = input.lines.map((l) => roundMoney(l.qty * l.unitPrice, scale));
+  // Input tax is split off the line the same way the sales side splits
+  // output tax, and for the same reason: the header and the lines must be
+  // one piece of arithmetic. The cost that reaches inventory is the net —
+  // tax the company gets back is not part of what the goods cost, and
+  // capitalising it would overstate stock and understate the tax asset.
+  const { byId: taxRates, none: noTax } = await loadTaxRates(tx, companyId, docDate);
+  const includesTax = input.priceIncludesTax ?? false;
+  const splits = input.lines.map((l) => {
+    const rate = l.taxCodeId ? taxRates.get(l.taxCodeId) : noTax;
+    if (l.taxCodeId && !rate) throw new Error(taxNotEffective(docDate));
+    const chosen = rate ?? noTax;
+    const amount = roundMoney(l.qty * l.unitPrice, scale);
+    const split = chosen
+      ? splitTax(amount, chosen.rate, includesTax, scale)
+      : { net: amount, tax: 0 };
+    return { ...split, rate: chosen };
+  });
+
+  const lineNets = splits.map((v) => v.net);
   const netTotal = roundMoney(lineNets.reduce((t, v) => t + v, 0), scale);
+  const taxTotal = roundMoney(splits.reduce((t, v) => t + v.tax, 0), scale);
+  const grossTotal = roundMoney(netTotal + taxTotal, scale);
 
   const [doc] = await tx`
     insert into document
       (company_id, doc_type, doc_no, version, fiscal_year_id, doc_date, posting_date, due_date,
-       partner_id, location_id, currency, exchange_rate, status,
+       partner_id, location_id, currency, exchange_rate, status, price_includes_tax,
        net_total, tax_total, gross_total, memo, posted_at, reference, source_document_id)
     values
       (${companyId}, 'PURCHASE_INVOICE', ${docNo}, ${version}, ${fiscalYear}, ${docDate}::date,
        ${docDate}::date, ${dueDate}, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
-       ${netTotal}, 0, ${netTotal}, ${input.memo ?? null}, now(),
+       ${includesTax},
+       ${netTotal}, ${taxTotal}, ${grossTotal}, ${input.memo ?? null}, now(),
        ${input.reference ?? null}, ${input.goodsReceiptId ?? null})
     returning id`;
 
@@ -4086,11 +4521,13 @@ async function _postPurchaseInvoice(
       insert into document_line
         (company_id, document_id, line_no, item_id, location_id,
          entered_qty, entered_uom_id, base_qty, unit_price,
-         net_amount, tax_amount, gross_amount, source_line_id)
+         net_amount, tax_code_id, tax_amount, gross_amount, source_line_id)
       values
         (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
          ${line.qty}, ${item.base_uom_id}, ${line.qty}, ${line.unitPrice},
-         ${net}, 0, ${net}, ${line.sourceLineId ?? null})`;
+         ${net}, ${line.taxCodeId ?? splits[lineNo - 1].rate?.id ?? null},
+         ${splits[lineNo - 1].tax}, ${roundMoney(net + splits[lineNo - 1].tax, scale)},
+         ${line.sourceLineId ?? null})`;
 
     isStocked.set(line.itemId, !!item.is_stocked);
 
@@ -4258,7 +4695,20 @@ async function _postPurchaseInvoice(
 
   const ap = await tx`
     select fn_resolve_control_account(${companyId}, 'AP_CONTROL', ${partnerId}) as a`;
-  journal.push({ accountId: ap[0].a, amount: -netTotal, partnerId });
+  // Input tax is recoverable, so it is an asset rather than part of the cost
+  // of the goods: Dr Input Commercial Tax, and the supplier is owed the gross.
+  if (taxTotal !== 0) {
+    const byAccount = new Map<string, number>();
+    for (const v of splits) {
+      if (v.tax === 0 || !v.rate) continue;
+      const acct = taxAccountFor(v.rate, "input");
+      byAccount.set(acct, roundMoney((byAccount.get(acct) ?? 0) + v.tax, scale));
+    }
+    for (const [accountId, amount] of byAccount) {
+      journal.push({ accountId, amount });
+    }
+  }
+  journal.push({ accountId: ap[0].a, amount: -grossTotal, partnerId });
 
   const entryId = await writeJournal(
     tx, companyId, docDate, "PURCHASE_INVOICE", doc.id, `${docNo} purchase invoice`, journal, locationId
@@ -4272,8 +4722,8 @@ async function _postPurchaseInvoice(
   let paymentNo: string | null = null;
 
   if (cashOut > 0) {
-    if (cashOut > netTotal) {
-      throw new Error(`Cash paid (${cashOut}) is more than the invoice total (${netTotal})`);
+    if (cashOut > grossTotal) {
+      throw new Error(`Cash paid (${cashOut}) is more than the invoice total (${grossTotal})`);
     }
 
     const pmtNoRows = await tx`
@@ -4824,6 +5274,13 @@ export type ReturnLine = {
   itemId: string;
   qty: number;
   unitPrice: number;
+  /**
+   * The tax the line being reversed was charged. A return has to give the tax
+   * back with the money: credit the net only and the customer is out of
+   * pocket by the tax on goods they no longer have, while the company keeps
+   * tax it never earned. The caller passes the code off the invoice line.
+   */
+  taxCodeId?: string | null;
   focReasonId?: string | null;
 };
 export type ReturnInput = {
@@ -4837,6 +5294,8 @@ export type ReturnInput = {
   sourceDocumentId?: string | null;
   /** When returned stock actually came back in, if more precise than docDate — purchase returns ignore this, they only remove stock. */
   receivedAt?: string | null;
+  /** Prices already contain the tax, as on the invoice being reversed. */
+  priceIncludesTax?: boolean;
   lines: ReturnLine[];
 };
 
@@ -4862,9 +5321,25 @@ export async function postSalesReturn(input: ReturnInput, outer?: TransactionSql
       select fn_next_document_no(${companyId}, 'SALES_RETURN', ${docDate}::date) as no`;
     const docNo = noRows[0].no;
 
-    const netTotal = round4(
-      input.lines.reduce((s, l) => s + (l.focReasonId ? 0 : l.qty * l.unitPrice), 0)
-    );
+    const scaleR = await currencyScale(tx, companyId);
+    const { byId: taxRatesR, none: noTaxR } = await loadTaxRates(tx, companyId, docDate);
+    const includesTaxR = input.priceIncludesTax ?? false;
+    const taxForR = new Map<ReturnLine, { net: number; tax: number; rate: TaxRate | null }>();
+    for (const l of input.lines) {
+      if (l.focReasonId) { taxForR.set(l, { net: 0, tax: 0, rate: null }); continue; }
+      const found = l.taxCodeId ? taxRatesR.get(l.taxCodeId) : noTaxR;
+      if (l.taxCodeId && !found) throw new Error(taxNotEffective(docDate));
+      const chosen = found ?? noTaxR;
+      const amount = round4(l.qty * l.unitPrice);
+      const split = chosen
+        ? splitTax(amount, chosen.rate, includesTaxR, scaleR)
+        : { net: amount, tax: 0 };
+      taxForR.set(l, { net: split.net, tax: split.tax, rate: chosen ?? null });
+    }
+
+    const netTotal = round4([...taxForR.values()].reduce((s, v) => s + v.net, 0));
+    const taxTotal = roundMoney([...taxForR.values()].reduce((s, v) => s + v.tax, 0), scaleR);
+    const grossTotal = round4(netTotal + taxTotal);
 
     // How much of each item has already come back against this sale, so a
     // second return reads the cost layers after the ones the first took —
@@ -4904,7 +5379,7 @@ export async function postSalesReturn(input: ReturnInput, outer?: TransactionSql
       values
         (${companyId}, 'SALES_RETURN', ${docNo}, ${fiscalYear}, ${docDate}::date,
          ${docDate}::date, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
-         ${netTotal}, 0, ${netTotal}, ${input.memo ?? null}, now(), ${input.reference ?? null},
+         ${netTotal}, ${taxTotal}, ${grossTotal}, ${input.memo ?? null}, now(), ${input.reference ?? null},
          ${input.sourceDocumentId ?? null})
       returning id`;
 
@@ -4918,18 +5393,21 @@ export async function postSalesReturn(input: ReturnInput, outer?: TransactionSql
         select id, code, name, is_stocked, base_uom_id from item where id = ${line.itemId}`;
       if (!item) throw new Error("Item not found");
 
-      const net = line.focReasonId ? 0 : round4(line.qty * line.unitPrice);
+      const rt = taxForR.get(line);
+      const net = line.focReasonId ? 0 : round4(rt?.net ?? line.qty * line.unitPrice);
+      const lineTax = round4(rt?.tax ?? 0);
 
       await tx`
         insert into document_line
           (company_id, document_id, line_no, item_id, location_id,
            entered_qty, entered_uom_id, base_qty, unit_price,
-           net_amount, tax_amount, gross_amount, foc_reason_id)
+           net_amount, tax_code_id, tax_amount, gross_amount, foc_reason_id)
         values
           (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
            ${line.qty}, ${item.base_uom_id}, ${line.qty},
            ${line.focReasonId ? 0 : line.unitPrice},
-           ${net}, 0, ${net}, ${line.focReasonId ?? null})`;
+           ${net}, ${line.focReasonId ? null : (line.taxCodeId ?? rt?.rate?.id ?? null)},
+           ${lineTax}, ${round4(net + lineTax)}, ${line.focReasonId ?? null})`;
 
       if (item.is_stocked) {
         // Returned stock comes back as fresh lots at the cost the original
@@ -5028,7 +5506,21 @@ export async function postSalesReturn(input: ReturnInput, outer?: TransactionSql
           + `Settings, or return against the invoice it came from.`
         );
       }
-      journal.push({ accountId: credit[0].a as string, amount: -netTotal, partnerId });
+      journal.push({ accountId: credit[0].a as string, amount: -grossTotal, partnerId });
+    }
+
+    // Tax charged on the sale is handed back: the liability to the revenue
+    // department shrinks by what the customer is no longer paying.
+    if (taxTotal !== 0) {
+      const byAccount = new Map<string, number>();
+      for (const v of taxForR.values()) {
+        if (v.tax === 0 || !v.rate) continue;
+        const acct = taxAccountFor(v.rate, "output");
+        byAccount.set(acct, roundMoney((byAccount.get(acct) ?? 0) + v.tax, scaleR));
+      }
+      for (const [accountId, amount] of byAccount) {
+        journal.push({ accountId, amount });
+      }
     }
 
     const entryId = await writeJournal(
@@ -5195,8 +5687,29 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
       }
     }
 
-    const netTotal = round4(lines.reduce(
-      (s, l) => s + (l.clearValue ?? round4(l.qty * l.unitPrice)), 0));
+    /* Tax only exists here when the return reduces a supplier invoice. A
+       return against a goods receipt that was never billed reverses an
+       accrual, and no input tax was ever claimed on it — so there is none to
+       give back, and pretending otherwise would credit the company a tax
+       asset it never had. */
+    const scaleR = await currencyScale(tx, companyId);
+    const { byId: taxRatesR, none: noTaxR } = await loadTaxRates(tx, companyId, docDate);
+    const includesTaxR = input.priceIncludesTax ?? false;
+    const splitsR = lines.map((l) => {
+      const amount = l.clearValue ?? round4(l.qty * l.unitPrice);
+      if (againstReceipt) return { net: amount, tax: 0, rate: null as TaxRate | null };
+      const found = l.taxCodeId ? taxRatesR.get(l.taxCodeId) : noTaxR;
+      if (l.taxCodeId && !found) throw new Error(taxNotEffective(docDate));
+      const chosen = found ?? noTaxR;
+      const split = chosen
+        ? splitTax(amount, chosen.rate, includesTaxR, scaleR)
+        : { net: amount, tax: 0 };
+      return { net: split.net, tax: split.tax, rate: chosen ?? null };
+    });
+
+    const netTotal = round4(splitsR.reduce((s, v) => s + v.net, 0));
+    const taxTotal = roundMoney(splitsR.reduce((s, v) => s + v.tax, 0), scaleR);
+    const grossTotal = round4(netTotal + taxTotal);
 
     const [doc] = await tx`
       insert into document
@@ -5206,7 +5719,7 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
       values
         (${companyId}, 'PURCHASE_RETURN', ${docNo}, ${fiscalYear}, ${docDate}::date,
          ${docDate}::date, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
-         ${netTotal}, 0, ${netTotal}, ${input.memo ?? null}, now(), ${input.reference ?? null},
+         ${netTotal}, ${taxTotal}, ${grossTotal}, ${input.memo ?? null}, now(), ${input.reference ?? null},
          ${input.sourceDocumentId ?? null})
       returning id`;
 
@@ -5224,7 +5737,9 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
       // The value the matcher actually drew, where it drew one — not the
       // rounded product of a rate it derived, which can differ by a fraction
       // and leave that fraction sitting in the clearing account for good.
-      const net = round4(line.clearValue ?? round4(line.qty * line.unitPrice));
+      // The net is the split figure, so a tax-inclusive return credits the
+      // supplier the same gross the invoice charged.
+      const net = round4(splitsR[lineNo - 1].net);
 
       const onHandRows = await tx`
         select fn_qty_on_hand(${companyId}, ${line.itemId}, ${locationId}) as on_hand`;
@@ -5244,11 +5759,13 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
         insert into document_line
           (company_id, document_id, line_no, item_id, location_id,
            entered_qty, entered_uom_id, base_qty, unit_price,
-           net_amount, tax_amount, gross_amount)
+           net_amount, tax_code_id, tax_amount, gross_amount)
         values
           (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
            ${line.qty}, ${item.base_uom_id}, ${line.qty}, ${line.unitPrice},
-           ${net}, 0, ${net})`;
+           ${net}, ${splitsR[lineNo - 1].rate?.id ?? null},
+           ${splitsR[lineNo - 1].tax},
+           ${round4(net + splitsR[lineNo - 1].tax)})`;
 
       const [movement] = await tx`
         insert into stock_movement
@@ -5290,7 +5807,21 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
     } else {
       const ap = await tx`
         select fn_resolve_control_account(${companyId}, 'AP_CONTROL', ${partnerId}) as a`;
-      journal.push({ accountId: ap[0].a, amount: netTotal, partnerId });
+      journal.push({ accountId: ap[0].a, amount: grossTotal, partnerId });
+
+      // The tax asset goes back with the goods: we can no longer claim input
+      // tax on a purchase we have returned.
+      if (taxTotal !== 0) {
+        const byAccount = new Map<string, number>();
+        for (const v of splitsR) {
+          if (v.tax === 0 || !v.rate) continue;
+          const acct = taxAccountFor(v.rate, "input");
+          byAccount.set(acct, roundMoney((byAccount.get(acct) ?? 0) + v.tax, scaleR));
+        }
+        for (const [accountId, amount] of byAccount) {
+          journal.push({ accountId, amount: -amount });
+        }
+      }
     }
 
     const entryId = await writeJournal(

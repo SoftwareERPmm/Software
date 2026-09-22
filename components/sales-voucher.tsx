@@ -100,6 +100,8 @@ export function SalesVoucher({
   currencyScale = 4,
   focReasons, openInvoices, nextInvoiceNo, today, categories, uoms,
   itemPrices, priceLevels, stockByLocation, deliveries, initialDeliveryId,
+  taxCodes = [],
+  customerCredit = [],
   ownership = [],
   awaiting = [],
 }: {
@@ -119,6 +121,18 @@ export function SalesVoucher({
    *  engine will apply. */
   volumeDiscounts?: VolumeBand[];
   focReasons: FocReason[];
+  /** What each customer with a limit may owe, and what they already do. */
+  customerCredit?: {
+    partner_id: string; credit_limit: string | number;
+    outstanding: string | number; unbilled_deliveries: string | number;
+    exposure: string | number; available: string | number;
+  }[];
+  /** Commercial tax codes this company can charge, zero-rate first. */
+  taxCodes?: {
+    id: string; code: string; name: string;
+    /** Every rate this code has carried, oldest first. */
+    rates: { rate: string | number; validFrom: string }[];
+  }[];
   itemPrices: ItemPrice[];
   priceLevels: PriceLevel[];
   openInvoices: OpenInvoice[];
@@ -466,14 +480,60 @@ export function SalesVoucher({
   const pricedFor = new Map(chargedLines.map((l, i) => [l.key, pricing.lines[i]]));
 
   const goodsTotal = pricing.total;
+
+  /* Commercial tax. One code for the whole invoice rather than per line:
+     that is how a Myanmar trader charges it, and a per-line override can
+     come later without changing what is stored — the engine already keeps
+     the code on each line. */
+  /* What each code charges on the date this document is dated — not on the
+     date the page was opened. A rate that started in September does not
+     apply to an invoice being written up for August. */
+  const rateOn = (t: { rates: { rate: string | number; validFrom: string }[] }) => {
+    const inForce = (t.rates ?? []).filter((r) => r.validFrom <= docDate);
+    return inForce.length ? Number(inForce[inForce.length - 1].rate) : null;
+  };
+  const effective = taxCodes
+    .map((t) => ({ ...t, rate: rateOn(t) }))
+    .filter((t) => t.rate !== null) as (typeof taxCodes[number] & { rate: number })[];
+  const taxable = effective.filter((t) => t.rate > 0);
+  const zeroRated = effective.find((t) => t.rate === 0) ?? null;
+  const [taxCodeId, setTaxCodeId] = useState<string>(zeroRated?.id ?? "");
+  const [inclusive, setInclusive] = useState(false);
+  const taxRate = effective.find((t) => t.id === taxCodeId)?.rate ?? 0;
+
+  // The same split the engine does, so the voucher cannot preview one figure
+  // and post another: exclusive adds on top, inclusive comes back out.
+  const r = (n: number) => {
+    const f = Math.pow(10, currencyScale);
+    return Math.round(n * f) / f;
+  };
+  const taxOnGoods = taxRate === 0 ? 0
+    : inclusive ? r(goodsTotal - r(goodsTotal / (1 + taxRate / 100)))
+    : r((goodsTotal * taxRate) / 100);
+  const goodsNet = inclusive ? r(goodsTotal - taxOnGoods) : goodsTotal;
   // Carriage charged to the customer. It is part of what they owe — so it
   // belongs in the total, the cash-in sync and the balance — but it is
   // credited to delivery income rather than to sales, which is why it is
   // shown separately rather than folded silently into the goods.
   const deliveryFee = Number(fee) || 0;
-  const total = goodsTotal + deliveryFee;
+  // What the customer owes: the goods net of tax, the tax, and the carriage.
+  // Carriage is outside the tax for now — it is income earned for
+  // delivering, and taxing it needs its own code on the header.
+  const total = r(goodsNet + taxOnGoods + deliveryFee);
   const cashAmount = Number(cashIn) || 0;
   const balance = total - cashAmount;
+
+  /* What this customer may owe, and what this sale would add to it. Only the
+     part left owing counts: cash at the counter extends no credit, which is
+     why a customer already over their limit can still buy for cash. */
+  const [overLimitOk, setOverLimitOk] = useState(false);
+  const [overLimitWhy, setOverLimitWhy] = useState("");
+  const standing = customerCredit.find((c) => c.partner_id === customerId) ?? null;
+  const creditLimit = standing ? Number(standing.credit_limit) : null;
+  const exposure = standing ? Number(standing.exposure) : 0;
+  const onAccount = Math.max(0, total - cashAmount);
+  const wouldOwe = exposure + onAccount;
+  const overLimit = creditLimit !== null && onAccount > 0 && wouldOwe > creditLimit;
   const totalFree = lines.reduce((s, l) => s + freeQty(l), 0);
 
   // Cash means paid in full now — keep Cash in synced to the total so it
@@ -521,6 +581,7 @@ export function SalesVoucher({
           itemId: l.itemId, qty,
           unitPrice: Number(l.unitPrice) || 0,
           discountPct: Number(l.discountPct) || 0,
+          taxCodeId: taxCodeId || null,
           // Which delivery line this bills, so the engine can hold it to what
           // went out. Free lines carry no source: a giveaway is not part of
           // what the delivery is owed billing for.
@@ -1077,9 +1138,42 @@ export function SalesVoucher({
               {fmt(totalFree)} free unit{totalFree === 1 ? "" : "s"} — cost goes to promotion expense
             </span>
           )}
-          {deliveryFee > 0 && (
+
+          {/* Commercial tax sits with the total it changes, not in a card
+              further down the form: it is the difference between what the
+              goods sold for and what the customer hands over. */}
+          {taxable.length > 0 && (
+            <label className="totalbar-tax">
+              <span style={{ color: "var(--muted)" }}>Commercial tax</span>
+              <select
+                value={taxCodeId}
+                onChange={(e) => setTaxCodeId(e.target.value)}
+                aria-label="Commercial tax"
+              >
+                {zeroRated && <option value={zeroRated.id}>None</option>}
+                {taxable.map((t) => (
+                  <option key={t.id} value={t.id}>{t.code} · {t.rate}%</option>
+                ))}
+              </select>
+            </label>
+          )}
+          {taxRate > 0 && (
+            <label className="totalbar-tax" title="Prices as typed already contain the tax">
+              <input
+                type="checkbox"
+                name="price_includes_tax"
+                checked={inclusive}
+                onChange={(e) => setInclusive(e.target.checked)}
+              />
+              <span style={{ color: "var(--muted)" }}>Prices include tax</span>
+            </label>
+          )}
+
+          {(deliveryFee > 0 || taxOnGoods > 0) && (
             <span style={{ color: "var(--muted)" }}>
-              goods {fmt(goodsTotal)} + delivery {fmt(deliveryFee)}
+              goods {fmt(goodsNet)}
+              {taxOnGoods > 0 && <> + tax {fmt(taxOnGoods)}</>}
+              {deliveryFee > 0 && <> + delivery {fmt(deliveryFee)}</>}
             </span>
           )}
           <span style={{ color: "var(--muted)" }}>Invoice total</span>
@@ -1274,6 +1368,67 @@ export function SalesVoucher({
 
       {cashTooMuch && (
         <div className="alert">Cash in is more than the invoice total.</div>
+      )}
+
+      {/* The customer's standing, stated before it is a problem rather than
+          only when posting refuses. A limit nobody can see until they are
+          stopped by it teaches nothing. */}
+      {standing && !overLimit && onAccount > 0 && (
+        <div className="hintbar">
+          {customer?.name} may owe {fmt(creditLimit as number)}. Owed now{" "}
+          {fmt(exposure)}
+          {Number(standing.unbilled_deliveries) > 0 && (
+            <> (including {fmt(Number(standing.unbilled_deliveries))} delivered, not yet billed)</>
+          )}
+          ; this sale leaves {fmt(wouldOwe)} — {fmt((creditLimit as number) - wouldOwe)} to spare.
+        </div>
+      )}
+
+      {overLimit && !overLimitOk && (
+        <div className="alert">
+          <strong>Over the credit limit.</strong> {customer?.name} may owe{" "}
+          {fmt(creditLimit as number)} and already owes {fmt(exposure)}
+          {Number(standing?.unbilled_deliveries ?? 0) > 0 && (
+            <> (including {fmt(Number(standing?.unbilled_deliveries ?? 0))} delivered and unbilled)</>
+          )}
+          . On account this sale adds {fmt(onAccount)}, leaving{" "}
+          {fmt(wouldOwe)} — {fmt(wouldOwe - (creditLimit as number))} over.
+          <div style={{ marginTop: "0.6rem" }}>
+            Take payment now to bring it under, or approve going over:{" "}
+            <button type="button" className="ghost tiny"
+                    onClick={() => setOverLimitOk(true)}>
+              Approve and say why
+            </button>
+          </div>
+        </div>
+      )}
+
+      {overLimit && overLimitOk && (
+        <div className="alert">
+          <strong>Approved:</strong> this sale takes {customer?.name} past their
+          limit, to {fmt(wouldOwe)} against {fmt(creditLimit as number)}.
+          <div className="field" style={{ marginTop: "0.6rem" }}>
+            <label htmlFor="credit_override_reason">Why is it allowed?</label>
+            <input
+              id="credit_override_reason"
+              name="credit_override_reason"
+              type="text"
+              value={overLimitWhy}
+              onChange={(e) => setOverLimitWhy(e.target.value)}
+              placeholder="Owner approved — cheque collected on delivery"
+            />
+            <span className="hint">
+              Kept on the invoice for good. Posting refuses an approval with no reason.
+            </span>
+          </div>
+          <button type="button" className="ghost tiny" onClick={() => setOverLimitOk(false)}>
+            Undo
+          </button>
+        </div>
+      )}
+
+      {overLimit && overLimitOk && (
+        <input type="hidden" name="allow_over_credit_limit" value="true" />
       )}
 
 

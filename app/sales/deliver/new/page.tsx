@@ -2,7 +2,7 @@ import Link from "next/link";
 import { getFormData, createDelivery } from "@/lib/actions";
 import {
   getOpenSalesOrders, getStockByLocation, getOwnershipMap,
-  getInvoiceDeliveryContext, getRelatedDocuments,
+  getInvoiceDeliveryContext, getRelatedDocuments, getPickOrder,
 } from "@/lib/queries";
 import { DeliverAgainstInvoice } from "@/components/deliver-against-invoice";
 import { RelatedDocumentsPanel } from "@/components/related-documents";
@@ -44,7 +44,7 @@ export default async function NewDelivery({
       );
     }
   }
-  const [categories, openOrders, stockByLocation, focReasons, ownership] = await Promise.all([
+  const [categories, openOrders, stockByLocation, focReasons, ownership, pickLayers] = await Promise.all([
     allCategories(co.id),
     getOpenSalesOrders(co.id),
     getStockByLocation(co.id),
@@ -53,6 +53,9 @@ export default async function NewDelivery({
     // issuing. Owned and consigned sit in the same warehouse and nothing
     // about the shelf tells them apart.
     getOwnershipMap(co.id),
+    // Which lots an issue would take, in the engine's own order, so the form
+    // can name the batch before the goods are picked.
+    getPickOrder(co.id),
   ]);
   const today = new Date().toISOString().slice(0, 10);
 
@@ -105,6 +108,7 @@ export default async function NewDelivery({
         focReasons={focReasons as never}
         openOrders={openOrders as never}
         ownership={ownership.consigned as never}
+        pickLayers={pickLayers as never}
         today={today}
       />
     </>

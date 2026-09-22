@@ -142,6 +142,7 @@ from (values
     ('1-CA', '1050', 'Prepaid Expenses',                    'ASSET'::account_type,   false,  false,  false),
     ('1-CA', '1060', 'GR/IR Clearing',                      'ASSET'::account_type,   false,  false,  false),
     ('1-CA', '1070', 'Supplier Advances',                   'ASSET'::account_type,   false,  false,  false),
+    ('1-CA', '1080', 'Input Commercial Tax',                'ASSET'::account_type,   false,  false,  false),
     ('1-FA', '1100', 'Land',                                'ASSET'::account_type,   false,  false,  false),
     ('1-FA', '1110', 'Building',                            'ASSET'::account_type,   false,  false,  false),
     ('1-FA', '1120', 'Office Equipment',                    'ASSET'::account_type,   false,  false,  false),
@@ -210,7 +211,9 @@ from (values
     ('ROUNDING_DIFFERENCE',         '6110'),
     ('DELIVERY_INCOME',             '4030'),
     ('CUSTOMER_ADVANCE',            '2060'),
-    ('SUPPLIER_ADVANCE',            '1070')
+    ('SUPPLIER_ADVANCE',            '1070'),
+    ('OUTPUT_TAX',                  '7000'),
+    ('INPUT_TAX',                   '1080')
 ) as r(role, code)
 join account a on a.company_id = co and a.code = r.code;
 

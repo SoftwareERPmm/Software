@@ -71,6 +71,7 @@ export function InvoiceForm({
   goodsReceipts,
   initialGoodsReceiptId,
   awaiting = [],
+  taxCodes = [],
 }: {
   kind: "sales" | "purchase";
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
@@ -87,6 +88,12 @@ export function InvoiceForm({
   goodsReceipts?: OpenDoc[];
   /** Arrived via "Create purchase invoice" on a specific receipt's own page — match it immediately. */
   initialGoodsReceiptId?: string;
+  /** Commercial tax codes this company can be charged, zero rate first. */
+  taxCodes?: {
+    id: string; code: string; name: string;
+    /** Every rate this code has carried, oldest first. */
+    rates: { rate: string | number; validFrom: string }[];
+  }[];
 }) {
   const backHere = useBackHere();
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
@@ -301,7 +308,32 @@ export function InvoiceForm({
     setLines((ls) => (ls.length === 1 ? ls : ls.filter((l) => l.key !== key)));
 
   const amount = (l: Line) => (Number(l.qty) || 0) * (Number(l.unitPrice) || 0);
-  const total = lines.reduce((s, l) => s + amount(l), 0);
+  const goodsTotal = lines.reduce((s, l) => s + amount(l), 0);
+
+  /* Input tax on a supplier bill. Same split the engine does — a wholesaler
+     here usually quotes with the tax inside the price, so inclusive is worth
+     one click rather than a calculator. */
+  /* What each code charges on the date this document is dated — not on the
+     date the page was opened. A rate that started in September does not
+     apply to an invoice being written up for August. */
+  const rateOn = (t: { rates: { rate: string | number; validFrom: string }[] }) => {
+    const inForce = (t.rates ?? []).filter((r) => r.validFrom <= docDate);
+    return inForce.length ? Number(inForce[inForce.length - 1].rate) : null;
+  };
+  const effective = taxCodes
+    .map((t) => ({ ...t, rate: rateOn(t) }))
+    .filter((t) => t.rate !== null) as (typeof taxCodes[number] & { rate: number })[];
+  const taxable = effective.filter((t) => t.rate > 0);
+  const zeroRated = effective.find((t) => t.rate === 0) ?? null;
+  const [taxCodeId, setTaxCodeId] = useState<string>(zeroRated?.id ?? "");
+  const [inclusive, setInclusive] = useState(false);
+  const taxRate = effective.find((t) => t.id === taxCodeId)?.rate ?? 0;
+  const rTax = (n: number) => Math.round(n);
+  const taxOnGoods = taxRate === 0 ? 0
+    : inclusive ? rTax(goodsTotal - rTax(goodsTotal / (1 + taxRate / 100)))
+    : rTax((goodsTotal * taxRate) / 100);
+  const goodsNet = inclusive ? goodsTotal - taxOnGoods : goodsTotal;
+  const total = goodsNet + taxOnGoods;
 
   const payload = JSON.stringify(
     lines
@@ -310,6 +342,7 @@ export function InvoiceForm({
         itemId: l.itemId,
         qty: Number(l.qty),
         unitPrice: Number(l.unitPrice) || 0,
+        taxCodeId: taxCodeId || null,
         // Whichever this line came from. A receipt line and an order line
         // never both apply — matching a receipt replaces the lines.
         sourceLineId: l.sourceLineId ?? l.orderLineId,
@@ -706,6 +739,37 @@ export function InvoiceForm({
         </div>
 
         <div className="totalbar">
+          {taxable.length > 0 && (
+            <label className="totalbar-tax">
+              <span style={{ color: "var(--muted)" }}>Commercial tax</span>
+              <select
+                value={taxCodeId}
+                onChange={(e) => setTaxCodeId(e.target.value)}
+                aria-label="Commercial tax"
+              >
+                {zeroRated && <option value={zeroRated.id}>None</option>}
+                {taxable.map((t) => (
+                  <option key={t.id} value={t.id}>{t.code} · {t.rate}%</option>
+                ))}
+              </select>
+            </label>
+          )}
+          {taxRate > 0 && (
+            <label className="totalbar-tax" title="The supplier's prices already contain the tax">
+              <input
+                type="checkbox"
+                name="price_includes_tax"
+                checked={inclusive}
+                onChange={(e) => setInclusive(e.target.checked)}
+              />
+              <span style={{ color: "var(--muted)" }}>Prices include tax</span>
+            </label>
+          )}
+          {taxOnGoods > 0 && (
+            <span style={{ color: "var(--muted)" }}>
+              goods {fmt(goodsNet)} + tax {fmt(taxOnGoods)}
+            </span>
+          )}
           <span style={{ color: "var(--muted)" }}>Total</span>
           <span className="big">{fmt(total)} MMK</span>
         </div>

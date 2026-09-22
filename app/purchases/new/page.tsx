@@ -12,7 +12,7 @@ export default async function NewPurchaseInvoice({
   searchParams: Promise<{ goods_receipt_id?: string }>;
 }) {
   const { goods_receipt_id } = await searchParams;
-  const { suppliers, items, locations, uoms, cashAccounts } = await getFormData();
+  const { suppliers, items, locations, uoms, cashAccounts, taxCodes } = await getFormData();
   const [co] = await sql`select id from company order by created_at limit 1`;
   const categories = await allCategories(co.id);
   const goodsReceipts = await getOpenGoodsReceipts(co.id);
@@ -77,6 +77,7 @@ export default async function NewPurchaseInvoice({
         goodsReceipts={goodsReceipts as never}
         initialGoodsReceiptId={goods_receipt_id}
         awaiting={awaiting}
+        taxCodes={taxCodes as never}
       />
     </>
   );

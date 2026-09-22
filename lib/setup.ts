@@ -182,10 +182,19 @@ export async function scaffoldCompany(input: SetupInput) {
         (${co.id}, 'WHOLE',  'Wholesale', 1),
         (${co.id}, 'RETAIL', 'Retail',    2)`;
 
-    // The tax engine is deferred, but every document line points at a code.
+    // NONE for goods and customers outside the tax, CT5 for everything else.
+    // Both read their accounts from the OUTPUT_TAX / INPUT_TAX roles rather
+    // than holding account ids of their own, so re-charting a company cannot
+    // leave a tax code pointing at an account that no longer exists.
     await tx`
-      insert into tax_code (company_id, code, name, rate)
-      values (${co.id}, 'NONE', 'No Commercial Tax', 0)`;
+      insert into tax_code (company_id, code, name, rate, output_account_id, input_account_id)
+      select ${co.id}, v.code, v.name, v.rate,
+             (select account_id from system_account
+               where company_id = ${co.id} and role = 'OUTPUT_TAX'),
+             (select account_id from system_account
+               where company_id = ${co.id} and role = 'INPUT_TAX')
+        from (values ('NONE', 'No Commercial Tax', 0), ('CT5', 'Commercial Tax 5%', 5))
+             as v(code, name, rate)`;
 
     for (const [type, prefix] of SERIES) {
       await tx`

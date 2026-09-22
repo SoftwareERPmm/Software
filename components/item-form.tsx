@@ -40,6 +40,8 @@ export function ItemForm({
     null
   );
 
+  const [tracksBatch, setTracksBatch] = useState(false);
+  const [tracksExpiry, setTracksExpiry] = useState(false);
   const [brandList, setBrandList] = useState<Brand[]>(brands);
   const [brandId, setBrandId] = useState("");
   const [addingBrand, setAddingBrand] = useState(false);
@@ -254,6 +256,34 @@ export function ItemForm({
             <input id="is_stocked" name="is_stocked" type="checkbox" defaultChecked />
             Stocked — this item moves through inventory
           </label>
+
+          {/* Two switches, not one. A batch is traceability — which lot are
+              these units from, so a recall can name them — and plenty of
+              goods have that without a shelf life. Expiry is the extra that
+              perishables need, and it needs a batch to belong to, so it only
+              appears once batches are on. */}
+          <label className="check" htmlFor="tracks_batch" style={{ marginTop: "0.5rem" }}>
+            <input
+              id="tracks_batch" name="tracks_batch" type="checkbox"
+              checked={tracksBatch}
+              onChange={(e) => {
+                setTracksBatch(e.target.checked);
+                if (!e.target.checked) setTracksExpiry(false);
+              }}
+            />
+            Track batches — every receipt says which lot the goods came from
+          </label>
+          {tracksBatch && (
+            <label className="check" htmlFor="tracks_expiry"
+                   style={{ marginTop: "0.4rem", marginLeft: "1.6rem" }}>
+              <input
+                id="tracks_expiry" name="tracks_expiry" type="checkbox"
+                checked={tracksExpiry}
+                onChange={(e) => setTracksExpiry(e.target.checked)}
+              />
+              Batches expire — and the oldest-expiring stock is sold first
+            </label>
+          )}
         </div>
       </div>
 

@@ -812,10 +812,15 @@ button.tiny { padding: 0.16rem 0.5rem; font-size: var(--t-sm); }
 
 .rowmenu { position: relative; display: inline-block; }
 
+/* The dots are the only way into a row's actions, so they have to read as a
+   control rather than as punctuation. At --muted they were the faintest mark
+   on the row — quieter than the text they sit beside, on a target people are
+   meant to find. Ink-soft and bold gives them the weight of something you
+   click, without competing with the figures. */
 .rowmenu > button.dots {
-  background: transparent; border: 1px solid transparent; color: var(--muted);
+  background: transparent; border: 1px solid transparent; color: var(--ink-soft);
   padding: 0.1rem 0.4rem; line-height: 1.1; border-radius: var(--r-md);
-  font-size: 1.05rem; letter-spacing: 0.06em;
+  font-size: 1.2rem; font-weight: 700; letter-spacing: 0.06em;
 }
 .rowmenu > button.dots:hover,
 .rowmenu > button.dots[aria-expanded="true"] {
@@ -3183,7 +3188,14 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
   border-radius: var(--r-lg);
   padding: var(--s3);
   min-width: 0;
+  overflow-x: auto;
 }
+/* The batch panel carries a four-column table where its neighbours carry
+   label-and-figure pairs, so it takes two tracks of the grid where there is
+   room and drops back to one when there is not. Without it the table spills
+   across the panel beside it. */
+.stockpanel-wide { grid-column: span 2; }
+@media (max-width: 900px) { .stockpanel-wide { grid-column: span 1; } }
 .stockpanel h3 {
   font-size: var(--t-base); font-weight: 600; margin: 0 0 0.7rem;
   letter-spacing: var(--track-tight);
@@ -3494,3 +3506,36 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
    an odd number, and breaking it 4 + 1 puts "Due this week" on a line of its
    own looking like an afterthought. */
 .kpis-five { grid-template-columns: repeat(auto-fit, minmax(196px, 1fr)); }
+
+/* The tax control lives in the total bar, beside the figure it changes. */
+.totalbar-tax { display: inline-flex; align-items: center; gap: 0.4rem; font-size: var(--t-sm); }
+.totalbar-tax select { padding: 0.25rem 0.4rem; font-size: var(--t-sm); }
+
+/* A count that opens something, without looking like a button. */
+.linkish {
+  background: none; border: 0; padding: 0; font: inherit;
+  color: var(--brand); cursor: pointer; text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* The batch line under a receipt row: only some items need one, so it is a
+   row of its own rather than two columns every item pays for. */
+.batchrow > td {
+  background: color-mix(in srgb, var(--brand) 4%, transparent);
+  white-space: normal;
+  display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
+}
+.batchrow-label { color: var(--muted); font-size: var(--t-sm); }
+.batchrow input[type="text"] { width: 200px; }
+.batchrow input[type="date"] { width: 170px; }
+.batchrow .hint { display: inline; }
+
+/* The lots a line moved, under the line itself: a sub-row rather than a
+   column, because most documents touch no tracked item and would pay for an
+   empty column on every row. */
+.batchtrail > td { padding-top: 0 !important; white-space: normal; }
+.batchtrail-item {
+  display: inline-block; margin-right: 1rem;
+  font-size: var(--t-xs); color: var(--muted);
+}
+.batchtrail-exp { color: var(--muted); }

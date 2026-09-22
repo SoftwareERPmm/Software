@@ -26,14 +26,22 @@ export default async function Partners({
 
   const rows: DataRow[] = partners.map((p) => ({
     key: p.id,
-    searchText: [p.code, p.name, p.name_my, p.township].filter(Boolean).join(" "),
+    searchText: [p.code, p.name, p.name_my, p.region, p.township].filter(Boolean).join(" "),
     sort: {
       code: p.code,
       name: p.name,
       role: `${p.is_customer ? "Customer" : ""} ${p.is_supplier ? "Supplier" : ""}`.trim(),
+      region: p.region ?? "",
       township: p.township ?? "",
       payment_terms_days: Number(p.payment_terms_days),
       outstanding: Number(p.outstanding),
+      // Sorting by what is left of a limit puts whoever is closest to it at
+      // the top. Customers with no limit sort last rather than first, since
+      // "not set" is not the same as "nothing left".
+      credit_limit: p.credit_limit === null ? -1 : Number(p.credit_limit),
+      available: p.credit_limit === null
+        ? Number.MAX_SAFE_INTEGER
+        : Number(p.available ?? p.credit_limit),
       is_active: p.is_active ? 1 : 0,
     },
     node: (
@@ -77,9 +85,12 @@ export default async function Partners({
               { key: "code", label: "Code", sortable: true },
               { key: "name", label: "Name", sortable: true },
               { key: "role", label: "Role", sortable: true },
+              { key: "region", label: "Region", sortable: true },
               { key: "township", label: "Township", sortable: true },
               { key: "payment_terms_days", label: "Terms", sortable: true, align: "r" },
               { key: "outstanding", label: "Outstanding", sortable: true, align: "r" },
+              { key: "credit_limit", label: "Credit limit", sortable: true, align: "r" },
+              { key: "available", label: "Left to spend", sortable: true, align: "r" },
               { key: "is_active", label: "Status", sortable: true },
               { key: "actions", label: "" },
             ]}

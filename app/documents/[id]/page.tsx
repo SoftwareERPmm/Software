@@ -34,6 +34,7 @@ import { sql, money, qty, shortDate } from "@/lib/db";
 import {
   getDocument,
   getDocumentLines,
+  getDocumentBatches,
   getJournalForDocument,
   getDownstream,
   getDocumentOutstanding,
@@ -135,8 +136,9 @@ export default async function DocumentPage({
   const doc = await getDocument(id);
   if (!doc) notFound();
 
-  const [lines, journal, downstream, chainDocuments] = await Promise.all([
+  const [lines, docBatches, journal, downstream, chainDocuments] = await Promise.all([
     getDocumentLines(id),
+    getDocumentBatches(id),
     getJournalForDocument(doc.journal_entry_id),
     getDownstream(id),
     getChainDocuments(id),
@@ -558,7 +560,12 @@ export default async function DocumentPage({
     );
   } else if (isInvoice && !progress) {
     stats.push(
-      { icon: CircleDollarSign, label: "Invoice total", value: money(doc.gross_total) },
+      { icon: CircleDollarSign, label: "Invoice total", value: money(doc.gross_total),
+        // What the total is made of, when some of it is tax. Silent when
+        // there is none, so an untaxed invoice reads exactly as before.
+        note: Number(doc.tax_total) !== 0
+          ? `${money(doc.net_total)} + ${money(doc.tax_total)} tax`
+          : undefined },
       { icon: Wallet, label: "Paid", value: money(Number(doc.gross_total) - outstanding),
         tone: outstanding === 0 ? "ok" : undefined },
       { icon: Clock, label: "Outstanding", value: money(outstanding),
@@ -738,6 +745,15 @@ export default async function DocumentPage({
   const statsNode = (
     <>
       <DocStats stats={stats} />
+      {/* Selling past a customer's credit limit is allowed, and permanent.
+          The sentence somebody wrote to justify it belongs on the document
+          itself, where anyone reading the sale later will find it. */}
+      {doc.credit_override_reason && (
+        <div className="hintbar">
+          <strong>Approved over the credit limit.</strong>{" "}
+          {doc.credit_override_reason as string}
+        </div>
+      )}
       {orderActions}
     </>
   );
@@ -1299,20 +1315,47 @@ export default async function DocumentPage({
                   </tr>
                 </thead>
                 <tbody>
-                  {lines.map((l: any) => (
-                    <tr key={l.id}>
-                      <td className="code">{l.line_no}</td>
-                      <td className="code">{l.item_code ?? "—"}</td>
-                      <td className="wrap">
-                        {l.item_name ?? l.description ?? "—"}
-                        {l.foc_reason && <> <span className="pill warn">{l.foc_reason}</span></>}
-                      </td>
-                      <td className="code">{l.uom_code ?? "—"}</td>
-                      <td className="r">{qty(l.entered_qty)}</td>
-                      <td className="r">{money(unitValue(l))}</td>
-                      <td className="r">{money(l.net_amount)}</td>
-                    </tr>
-                  ))}
+                  {lines.map((l: any) => {
+                    /* Which lots this line actually moved. On the way in it
+                       is what was typed; on the way out it is whichever
+                       layers the engine drew, which is the only record of
+                       what the customer was handed — and the thing a recall
+                       asks for. */
+                    const batches = (docBatches as any[])
+                      .filter((b) => b.item_id === l.item_id);
+                    return (
+                      <Fragment key={l.id}>
+                        <tr>
+                          <td className="code">{l.line_no}</td>
+                          <td className="code">{l.item_code ?? "—"}</td>
+                          <td className="wrap">
+                            {l.item_name ?? l.description ?? "—"}
+                            {l.foc_reason && <> <span className="pill warn">{l.foc_reason}</span></>}
+                          </td>
+                          <td className="code">{l.uom_code ?? "—"}</td>
+                          <td className="r">{qty(l.entered_qty)}</td>
+                          <td className="r">{money(unitValue(l))}</td>
+                          <td className="r">{money(l.net_amount)}</td>
+                        </tr>
+                        {batches.length > 0 && (
+                          <tr className="batchtrail">
+                            <td />
+                            <td colSpan={6}>
+                              {batches.map((b, i) => (
+                                <span key={`${b.batch_no}-${i}`} className="batchtrail-item">
+                                  <span className="code">{b.batch_no}</span>
+                                  {" "}{qty(Math.abs(Number(b.qty)))}
+                                  {b.expiry_date && (
+                                    <span className="batchtrail-exp"> · expires {b.expiry_date}</span>
+                                  )}
+                                </span>
+                              ))}
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
                 </tbody>
                 <tfoot>
                   <tr>

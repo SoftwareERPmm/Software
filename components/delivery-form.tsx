@@ -48,10 +48,17 @@ const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 4 
 export function DeliveryForm({
   action, customers, items: initialItems, locations, categories, uoms,
   stockByLocation, focReasons, openOrders, today, ownership = [],
+  pickLayers = [],
 }: {
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   customers: Partner[];
   items: PickerItem[];
+  /** Open layers in the order the engine draws them, so the form can say
+   *  which batches a quantity would take. */
+  pickLayers?: {
+    item_id: string; location_id: string;
+    batch_no: string | null; expiry_date: string | null; qty: string;
+  }[];
   locations: Location[];
   categories: Node[];
   uoms: Uom[];
@@ -75,6 +82,27 @@ export function DeliveryForm({
   const [items, setItems] = useState(initialItems);
   const [partnerId, setPartnerId] = useState("");
   const [locationId, setLocationId] = useState(locations[0]?.id ?? "");
+
+  /**
+   * Which lots a quantity would take, worked out the way the engine will.
+   *
+   * Same order, same arithmetic: earliest expiry first, untracked layers
+   * before dated ones. A preview ordered any other way would show the picker
+   * one batch and hand the customer another, which is worse than showing
+   * nothing at all.
+   */
+  const drawFor = (itemId: string, want: number) => {
+    let left = want;
+    const taken: { batch: string | null; expiry: string | null; qty: number }[] = [];
+    for (const lot of (pickLayers ?? []).filter(
+      (p) => p.item_id === itemId && p.location_id === locationId)) {
+      if (left <= 0.0001) break;
+      const take = Math.min(left, Number(lot.qty));
+      taken.push({ batch: lot.batch_no, expiry: lot.expiry_date, qty: take });
+      left -= take;
+    }
+    return { taken, short: left > 0.0001 ? left : 0 };
+  };
   const [orderId, setOrderId] = useState("");
   const [lines, setLines] = useState<Line[]>([
     { key: 1, itemId: "", qty: "", focQty: "", focReasonId: "", source: "OWNED" },
@@ -362,6 +390,37 @@ export function DeliveryForm({
                       <button type="button" className="ghost tiny" onClick={() => removeLine(l.key)}>
                         Remove
                       </button>
+                    </td>
+                  </tr>
+                );
+              })}
+              {/* What each tracked line would actually take off the shelf.
+                  Shown before posting because the picker is the person who
+                  has to find it, and "24 of B-SHORT" is a different errand
+                  from "24 units". */}
+              {lines.filter((l) => byId(l.itemId)?.tracks_batch && issuing(l) > 0).map((l) => {
+                const item = byId(l.itemId)!;
+                const { taken, short } = drawFor(l.itemId, issuing(l));
+                return (
+                  <tr key={`draw-${l.key}`} className="batchrow">
+                    <td colSpan={focReasons.length > 0 ? 6 : 5}>
+                      <span className="batchrow-label">{item.code} will take</span>
+                      {taken.length === 0 ? (
+                        <span className="hint">nothing on hand here</span>
+                      ) : (
+                        taken.map((t, i) => (
+                          <span key={i} className="batchtrail-item">
+                            <span className="code">{t.batch ?? "no batch"}</span>{" "}
+                            {fmt(t.qty)}
+                            {t.expiry && <span className="batchtrail-exp"> · expires {t.expiry}</span>}
+                          </span>
+                        ))
+                      )}
+                      {short > 0 && (
+                        <span className="hint" style={{ color: "var(--bad)" }}>
+                          {fmt(short)} short of what is on the shelf
+                        </span>
+                      )}
                     </td>
                   </tr>
                 );

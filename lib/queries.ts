@@ -1182,6 +1182,47 @@ export async function getDocumentLines(id: string) {
      order by dl.line_no`;
 }
 
+/**
+ * Which batches a document moved, for items that keep lots.
+ *
+ * Goods arriving carry their batch on the movement itself — one receipt line
+ * is one batch, because that is what a receipt is. Goods leaving may draw
+ * several, so the batch is read back through the layers consumed rather than
+ * stored a second time on the issue: the consumption rows already say which
+ * lot each unit came out of, and duplicating that onto the movement would
+ * create a second version of a fact that can drift from the first.
+ *
+ * Empty for a document that touched no tracked item, which is most of them.
+ */
+export async function getDocumentBatches(documentId: string) {
+  return sql`
+    -- Goods in: the batch is on the movement.
+    select m.item_id, m.batch_no,
+           to_char(m.expiry_date, 'YYYY-MM-DD') as expiry_date,
+           sum(m.qty)                            as qty
+      from stock_movement m
+      join item i on i.id = m.item_id
+     where m.document_id = ${documentId} and i.tracks_batch
+       and m.qty > 0 and m.batch_no is not null
+     group by m.item_id, m.batch_no, m.expiry_date
+
+    union all
+
+    -- Goods out: the batches are whichever layers were drawn.
+    select m.item_id, l.batch_no,
+           to_char(l.expiry_date, 'YYYY-MM-DD') as expiry_date,
+           -sum(c.qty)                           as qty
+      from stock_movement m
+      join stock_lot_consumption c on c.stock_movement_id = m.id
+      join stock_lot l on l.id = c.lot_id
+      join item i on i.id = m.item_id
+     where m.document_id = ${documentId} and i.tracks_batch
+       and l.batch_no is not null
+     group by m.item_id, l.batch_no, l.expiry_date
+
+     order by 2`;
+}
+
 export async function getJournalForDocument(journalEntryId: string | null) {
   if (!journalEntryId) return [];
   return sql`
@@ -1672,12 +1713,17 @@ export async function getPartners(companyId: string) {
            bp.is_customer, bp.is_supplier, bp.is_active,
            bp.region, bp.township, bp.address, bp.phone,
            bp.payment_terms_days, bp.credit_limit,
-           coalesce(oi.outstanding, 0) as outstanding
+           coalesce(oi.outstanding, 0) as outstanding,
+           -- What a customer is actually using of their limit, and what is
+           -- left. Both come from the same view the posting engine reads, so
+           -- the number on this list is the one that will stop a sale.
+           cc.exposure, cc.available
       from business_partner bp
       left join (
             select partner_id, sum(outstanding) as outstanding
               from v_open_item group by partner_id
       ) oi on oi.partner_id = bp.id
+      left join v_customer_credit cc on cc.partner_id = bp.id
      where bp.company_id = ${companyId}
      order by bp.code`;
 }
@@ -1686,6 +1732,7 @@ export async function getItems(companyId: string) {
   return sql`
     select i.id, i.code, i.name, i.name_my, i.item_group_id, i.brand_id,
            i.base_uom_id, i.is_stocked, i.is_active,
+           i.tracks_batch, i.tracks_expiry,
            -- Not the picture — just whether there is one and when it changed.
            -- The bytes are served from their own URL, keyed by this; selecting
            -- them here would put every photo in the catalogue into one query.
@@ -3188,6 +3235,147 @@ export async function getTopCategories(
  * dropped: a map of where the money came from that quietly omits half of it
  * is worse than one that says how much is unaccounted for.
  */
+/**
+ * Customers who owe more than they are allowed to.
+ *
+ * A limit is not only a gate on the next sale: a customer can pass it by
+ * standing still while a payment fails to arrive, or by a delivery going out
+ * against an old order. Nothing blocks that, so the dashboard has to say it.
+ */
+/**
+ * What is on the shelf, batch by batch, for the items that keep lots.
+ *
+ * One row per batch per warehouse, with the earliest expiry first — the
+ * order the goods should actually leave in, so the list reads as a picking
+ * order rather than as a filing cabinet.
+ *
+ * Only tracked items appear. An item that keeps no batches has nothing to
+ * say here, and padding the result with a "no batch" row for every other
+ * item would make the common case pay for the rare one.
+ */
+export async function getStockBatches(companyId: string) {
+  return sql`
+    select l.item_id, l.location_id, loc.code as location_code,
+           l.batch_no,
+           to_char(l.expiry_date, 'YYYY-MM-DD')        as expiry_date,
+           (l.expiry_date - current_date)              as days_left,
+           sum(l.qty_received
+               - coalesce((select sum(c.qty) from stock_lot_consumption c
+                            where c.lot_id = l.id), 0))  as qty
+      from stock_lot l
+      join item i on i.id = l.item_id
+      join location loc on loc.id = l.location_id
+     where l.company_id = ${companyId} and i.tracks_batch
+     group by l.item_id, l.location_id, loc.code, l.batch_no, l.expiry_date
+    having sum(l.qty_received
+               - coalesce((select sum(c.qty) from stock_lot_consumption c
+                            where c.lot_id = l.id), 0)) > 0.0001
+     order by l.expiry_date nulls last, l.batch_no`;
+}
+
+/**
+ * Stock on hand by how much shelf life it has left.
+ *
+ * Value at cost rather than quantity: a hundred units of something cheap and
+ * ten of something dear are not the same problem, and the figure a
+ * distributor acts on is what the write-off would cost.
+ *
+ * Returns nothing at all for a company that tracks no expiry, which is what
+ * lets the screen hide the whole card rather than draw an empty one — most
+ * of a trading catalogue never expires, and a permanent zero is a question
+ * nobody asked being kept on the screen forever.
+ */
+export async function getExpiryBands(companyId: string) {
+  return sql`
+    with lots as (
+      select l.item_id, l.expiry_date,
+             (l.expiry_date - current_date) as days_left,
+             (l.qty_received
+              - coalesce((select sum(c.qty) from stock_lot_consumption c
+                           where c.lot_id = l.id), 0)) as qty,
+             l.unit_cost
+        from stock_lot l
+        join item i on i.id = l.item_id
+       where l.company_id = ${companyId}
+         and i.tracks_batch and i.tracks_expiry
+         and l.expiry_date is not null
+    )
+    select case
+             when days_left < 0  then 'EXPIRED'
+             when days_left <= 30 then 'D0_30'
+             when days_left <= 60 then 'D31_60'
+             when days_left <= 90 then 'D61_90'
+             else 'OVER_90'
+           end                                   as band,
+           count(*)::int                         as batches,
+           sum(qty)                              as qty,
+           sum(qty * unit_cost)                  as value
+      from lots
+     where qty > 0.0001
+     group by 1`;
+}
+
+/**
+ * The layers an issue would draw, in the order the engine draws them.
+ *
+ * Ordered identically to the picking query in lib/posting.ts — earliest
+ * expiry first, nulls before dates, then oldest received. That is the whole
+ * value of it: a preview ordered any other way would show the picker one
+ * batch and hand the customer another.
+ *
+ * Untracked layers are included, with a null batch, because on a tracked
+ * item they are the stock that leaves first and a preview that hid them
+ * would be wrong about the next hundred units.
+ */
+export async function getPickOrder(companyId: string) {
+  return sql`
+    select l.item_id, l.location_id, l.batch_no,
+           to_char(l.expiry_date, 'YYYY-MM-DD') as expiry_date,
+           sum(l.qty_received
+               - coalesce((select sum(c.qty) from stock_lot_consumption c
+                            where c.lot_id = l.id), 0)) as qty
+      from stock_lot l
+      join item i on i.id = l.item_id
+     where l.company_id = ${companyId} and i.tracks_batch
+     group by l.item_id, l.location_id, l.batch_no, l.expiry_date,
+              l.received_date, l.created_at
+    having sum(l.qty_received
+               - coalesce((select sum(c.qty) from stock_lot_consumption c
+                            where c.lot_id = l.id), 0)) > 0.0001
+     order by l.expiry_date asc nulls first, l.received_date, l.created_at`;
+}
+
+/** The same, per item, for the list beneath the bands. */
+export async function getExpiryByItem(companyId: string) {
+  return sql`
+    select l.item_id,
+           min(l.expiry_date - current_date)::int as soonest_days,
+           count(*) filter (where l.expiry_date < current_date)::int as expired_batches,
+           sum((l.qty_received
+                - coalesce((select sum(c.qty) from stock_lot_consumption c
+                             where c.lot_id = l.id), 0)) * l.unit_cost)
+             filter (where l.expiry_date < current_date)             as expired_value
+      from stock_lot l
+      join item i on i.id = l.item_id
+     where l.company_id = ${companyId}
+       and i.tracks_batch and i.tracks_expiry and l.expiry_date is not null
+       and (l.qty_received
+            - coalesce((select sum(c.qty) from stock_lot_consumption c
+                         where c.lot_id = l.id), 0)) > 0.0001
+     group by l.item_id`;
+}
+
+export async function getOverCreditLimit(companyId: string) {
+  return sql`
+    select partner_id, partner_code, partner_name,
+           credit_limit, exposure, exposure - credit_limit as over
+      from v_customer_credit
+     where company_id = ${companyId}
+       and credit_limit is not null
+       and exposure > credit_limit
+     order by exposure - credit_limit desc`;
+}
+
 export async function getRevenueByRegion(companyId: string, from: string, to: string) {
   return sql`
     select coalesce(p.region, 'Region not set') as name,

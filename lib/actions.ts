@@ -553,10 +553,15 @@ export async function createItem(_prev: unknown, fd: FormData): Promise<ActionRe
     await sql.begin(async (tx) => {
       const [item] = await tx`
         insert into item
-          (company_id, item_group_id, brand_id, serial, code, name, name_my, base_uom_id, is_stocked)
+          (company_id, item_group_id, brand_id, serial, code, name, name_my, base_uom_id, is_stocked,
+           tracks_batch, tracks_expiry)
         values
           (${co}, ${groupId}, ${brandId}, ${serial}, ${fullCode}, ${name}, ${str(fd, "name_my") || null},
-           ${uomId}, ${fd.get("is_stocked") !== null})
+           ${uomId}, ${fd.get("is_stocked") !== null},
+           -- Expiry without batches is a date attached to nothing, so the
+           -- second is only honoured when the first is on.
+           ${fd.get("tracks_batch") !== null},
+           ${fd.get("tracks_batch") !== null && fd.get("tracks_expiry") !== null})
         returning id`;
 
       if (photo && "set" in photo) {
@@ -700,6 +705,140 @@ export async function deleteItem(_prev: unknown, fd: FormData): Promise<ActionRe
 }
 
 // ------------------------------------------------------------- brands --
+
+// ------------------------------------------------------------- tax codes --
+//
+// A rate and the two accounts it posts to. The accounts are not editable
+// here on purpose: they come from the OUTPUT_TAX and INPUT_TAX roles, so
+// every code posts to the same pair and a company that re-charts cannot end
+// up with one code pointing at a deleted account.
+
+export async function createTaxCode(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  const code = str(fd, "code").toUpperCase();
+  try {
+    const co = await companyId();
+    const name = str(fd, "name");
+    const rate = num(fd, "rate");
+
+    if (!code) return { error: "Code is required" };
+    if (!name) return { error: "Name is required" };
+    if (rate < 0 || rate > 100) return { error: "A rate is a percentage between 0 and 100" };
+
+    const dup = await sql`select 1 from tax_code where company_id = ${co} and code = ${code}`;
+    if (dup.length) return { error: `Code ${code} is already used` };
+
+    // A zero-rate code needs no accounts: nothing posts. A charging one does,
+    // and both sides come from the roles rather than being chosen per code.
+    //
+    // The rate is a dated row from the start. Its first one runs from the
+    // day given, or from before any document this company holds when none is
+    // — a code whose rate began yesterday cannot tax last month's invoice.
+    const from = str(fd, "valid_from") || "1900-01-01";
+    const [created] = await sql`
+      insert into tax_code (company_id, code, name, output_account_id, input_account_id)
+      values (${co}, ${code}, ${name},
+        case when ${rate} > 0 then (select account_id from system_account
+          where company_id = ${co} and role = 'OUTPUT_TAX') end,
+        case when ${rate} > 0 then (select account_id from system_account
+          where company_id = ${co} and role = 'INPUT_TAX') end)
+      returning id`;
+    await sql`
+      insert into tax_rate (company_id, tax_code_id, rate, valid_from)
+      values (${co}, ${created.id}, ${rate}, ${from}::date)`;
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/settings/tax-codes");
+  redirectWithToast("/settings/tax-codes", "Tax code added");
+}
+
+export async function updateTaxCode(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  const code = str(fd, "code").toUpperCase();
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    const name = str(fd, "name");
+
+    if (!id) return { error: "Choose a tax code" };
+    if (!code) return { error: "Code is required" };
+    if (!name) return { error: "Name is required" };
+
+    /* The rate is not editable here — it is a dated series, changed by
+       adding the next one. What this edits is the code's name, its code and
+       whether it can still be chosen. */
+    const dup = await sql`
+      select 1 from tax_code where company_id = ${co} and code = ${code} and id <> ${id}`;
+    if (dup.length) return { error: `Code ${code} is already used` };
+
+    await sql`
+      update tax_code set
+        code = ${code}, name = ${name},
+        is_active = ${fd.get("is_active") === "on"}
+      where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/settings/tax-codes");
+  redirectWithToast("/settings/tax-codes", "Tax code updated");
+}
+
+/**
+ * The next rate this code will charge, from the day it starts.
+ *
+ * Not an edit of the last one. A rate that changed in September is two
+ * facts — 5% until then, 6% after — and an invoice raised in March is still
+ * a 5% invoice. Backdating is allowed because notifications arrive after
+ * the date they take effect; what it cannot do is change a document already
+ * posted, since the tax on those lines was written when they posted.
+ */
+export async function addTaxRate(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "tax_code_id");
+    const rate = num(fd, "rate");
+    const from = str(fd, "valid_from");
+
+    if (!id) return { error: "Choose a tax code" };
+    if (!from) return { error: "Say which date the new rate starts from" };
+    if (rate < 0 || rate > 100) return { error: "A rate is a percentage between 0 and 100" };
+
+    const [code] = await sql`
+      select id, code from tax_code where id = ${id} and company_id = ${co}`;
+    if (!code) return { error: "That tax code does not belong to this company" };
+
+    const dup = await sql`
+      select rate from tax_rate where tax_code_id = ${id} and valid_from = ${from}::date`;
+    if (dup.length) {
+      return { error: `${code.code} already has a rate starting ${from} — `
+        + `${Number(dup[0].rate)}%. Two rates cannot start the same day.` };
+    }
+
+    await sql`
+      insert into tax_rate (company_id, tax_code_id, rate, valid_from)
+      values (${co}, ${id}, ${rate}, ${from}::date)`;
+
+    // A code that charges now needs the accounts for it, even if its first
+    // rate was zero.
+    if (rate > 0) {
+      await sql`
+        update tax_code set
+          output_account_id = coalesce(output_account_id, (select account_id from system_account
+            where company_id = ${co} and role = 'OUTPUT_TAX')),
+          input_account_id = coalesce(input_account_id, (select account_id from system_account
+            where company_id = ${co} and role = 'INPUT_TAX'))
+        where id = ${id}`;
+    }
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/settings/tax-codes");
+  redirectWithToast("/settings/tax-codes", "Rate change scheduled");
+}
 
 export async function createBrand(_prev: unknown, fd: FormData): Promise<ActionResult> {
   const toastMsg = "Brand added";
@@ -992,6 +1131,9 @@ export type PickerItem = {
   id: string; code: string; name: string; is_stocked: boolean;
   item_group_id: string; on_hand: string; sale_price: string; next_cost: string;
   uom_code: string;
+  /** Whether goods of this item arrive in identifiable lots, and whether
+   *  those lots have a shelf life. A receipt form asks for what these say. */
+  tracks_batch?: boolean; tracks_expiry?: boolean;
 };
 
 /**
@@ -1113,6 +1255,10 @@ function parseLines(fd: FormData): InvoiceLine[] {
       qty: Number(l.qty),
       unitPrice: Number(l.unitPrice),
       discountPct: Number(l.discountPct) || 0,
+      // Which commercial tax this line carries. A blank means the form did
+      // not ask, and the engine falls back to the company's zero-rate code —
+      // which is what every document posted before tax existed carries.
+      taxCodeId: l.taxCodeId || null,
       focReasonId: l.focReasonId || null,
       sourceLineId: l.sourceLineId || null,
       // Which pool the goods came out of, and whose. A parser that drops
@@ -1169,6 +1315,9 @@ export async function createSalesInvoice(_prev: unknown, fd: FormData): Promise<
       reference: str(fd, "reference") || null,
       salesmanId: str(fd, "salesman_id") || null,
       paymentType,
+      // Prices as typed already contain the tax. The counter price in a shop
+      // usually does; a wholesale quote usually does not.
+      priceIncludesTax: fd.get("price_includes_tax") !== null,
       toDeliver,
       cashIn,
       cashAccountId: str(fd, "cash_account_id") || null,
@@ -1178,6 +1327,11 @@ export async function createSalesInvoice(_prev: unknown, fd: FormData): Promise<
       // that never asked cannot post negative stock by omission.
       allowNegativeStock: fd.get("allow_negative_stock") !== null,
       negativeStockReason: str(fd, "negative_stock_reason") || null,
+      // Selling past what a customer may owe: a decision somebody makes and
+      // signs, never a default. The engine requires the reason whenever the
+      // limit is actually breached.
+      allowOverCreditLimit: fd.get("allow_over_credit_limit") !== null,
+      creditOverrideReason: str(fd, "credit_override_reason") || null,
       lines,
     };
 
@@ -1247,6 +1401,9 @@ export async function createPurchaseInvoice(_prev: unknown, fd: FormData): Promi
       reference: str(fd, "reference") || null,
       cashOut,
       cashAccountId: str(fd, "cash_account_id") || null,
+      // Supplier invoices from Myanmar wholesalers are usually quoted with
+      // the tax already inside the price.
+      priceIncludesTax: fd.get("price_includes_tax") !== null,
       lines,
     };
 
@@ -1400,6 +1557,10 @@ function parseFulfillmentLines(fd: FormData): FulfillmentLine[] {
       itemId: String(l.itemId ?? ""),
       qty: Number(l.qty),
       unitCost: l.unitCost ? Number(l.unitCost) : undefined,
+      // The lot these goods arrived under. The engine requires it for an
+      // item that tracks batches and ignores it for one that does not.
+      batchNo: l.batchNo || null,
+      expiryDate: l.expiryDate || null,
       // The engine has always accepted this; the parser dropped it, so a
       // delivery raised anywhere but the sales voucher could not mark units
       // free and their cost went to cost of sales instead of the expense the
@@ -1517,6 +1678,11 @@ export async function createDelivery(_prev: unknown, fd: FormData): Promise<Acti
       // cannot disagree about whether someone had to be asked.
       allowNegativeStock: fd.get("allow_negative_stock") !== null,
       negativeStockReason: str(fd, "negative_stock_reason") || null,
+      // Selling past what a customer may owe: a decision somebody makes and
+      // signs, never a default. The engine requires the reason whenever the
+      // limit is actually breached.
+      allowOverCreditLimit: fd.get("allow_over_credit_limit") !== null,
+      creditOverrideReason: str(fd, "credit_override_reason") || null,
       lines,
     }, tx));
 
@@ -2660,13 +2826,14 @@ export async function getFormData() {
   const [
     customers, suppliers, items, locations, volumeDiscounts, groups, uoms,
     salesmen, promotions, cashAccounts, focReasons, itemPrices, priceLevels,
-    openInvoices, nextNo, stockByLocation, moneyScale,
+    openInvoices, nextNo, stockByLocation, moneyScale, taxCodes, customerCredit,
   ] = await Promise.all([
     sql`select id, code, name, payment_terms_days, price_level_id from business_partner
          where company_id = ${co} and is_customer and is_active order by code`,
     sql`select id, code, name, payment_terms_days from business_partner
          where company_id = ${co} and is_supplier and is_active order by code`,
     sql`select i.id, i.code, i.name, i.is_stocked, i.item_group_id,
+                i.tracks_batch, i.tracks_expiry,
                 -- The unit every quantity of this item is counted in, so a
                 -- figure quoted back to the user can carry it rather than
                 -- being a bare number.
@@ -2751,6 +2918,24 @@ export async function getFormData() {
     // post rather than one four decimal places finer.
     sql`select c.decimal_places from company co
           join currency c on c.code = co.base_currency where co.id = ${co}`,
+    // Commercial tax codes with every dated rate they carry, so a form can
+    // show what a code charges on the date the document is dated rather than
+    // on the date the page was opened.
+    sql`select t.id, t.code, t.name,
+               coalesce((
+                 select json_agg(json_build_object(
+                          'rate', r.rate, 'validFrom', to_char(r.valid_from, 'YYYY-MM-DD'))
+                        order by r.valid_from)
+                   from tax_rate r where r.tax_code_id = t.id
+               ), '[]'::json) as rates
+          from tax_code t
+         where t.company_id = ${co} and t.is_active
+         order by t.code`,
+    // What each customer may owe and what they already do, so a voucher can
+    // say so before the posting engine refuses.
+    sql`select partner_id, credit_limit, outstanding, unbilled_deliveries, exposure, available
+          from v_customer_credit
+         where company_id = ${co} and credit_limit is not null`,
   ]);
 
   return {
@@ -2760,6 +2945,8 @@ export async function getFormData() {
     // depends on a series that has not been created yet.
     nextInvoiceNo: (nextNo[0]?.no as string | null) ?? null,
     stockByLocation,
+    taxCodes,
+    customerCredit,
     currencyScale: Number(moneyScale[0]?.decimal_places ?? 2),
   };
 }

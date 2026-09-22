@@ -14,6 +14,9 @@ type Partner = { id: string; code: string; name: string };
 type Location = { id: string; code: string; name: string };
 type Line = {
   key: number; itemId: string; qty: string; unitCost: string;
+  /** The lot these goods arrived under, for an item that tracks batches. */
+  batchNo?: string;
+  expiryDate?: string;
   /**
    * The invoice line this one fulfils, when the receipt is matched to a bill.
    * Recorded rather than re-derived: without it, which line a shipment came
@@ -258,6 +261,8 @@ export function ReceiptForm({
       .map((l) => ({
         itemId: l.itemId, qty: Number(l.qty), unitCost: Number(l.unitCost) || 0,
         sourceLineId: l.sourceLineId ?? null,
+        batchNo: l.batchNo?.trim() || null,
+        expiryDate: l.expiryDate || null,
       }))
   );
 
@@ -491,6 +496,42 @@ export function ReceiptForm({
                     <td className="tight">
                       <button type="button" className="ghost tiny" onClick={() => removeLine(l.key)}
                         aria-label="Remove line" disabled={lines.length === 1}>×</button>
+                    </td>
+                  </tr>
+                );
+              })}
+              {/* The lot, for items that keep one. On its own row beneath the
+                  line rather than as two more columns: only some items need
+                  it, and widening every receipt for the few that do would
+                  squeeze the quantities and costs on all the rest. */}
+              {lines.filter((l) => byId(l.itemId)?.tracks_batch).map((l) => {
+                const item = byId(l.itemId)!;
+                return (
+                  <tr key={`batch-${l.key}`} className="batchrow">
+                    <td colSpan={matchedPi ? 7 : 6}>
+                      <span className="batchrow-label">
+                        {item.code} — which lot?
+                      </span>
+                      <input
+                        type="text"
+                        value={l.batchNo ?? ""}
+                        onChange={(e) => setLine(l.key, { batchNo: e.target.value })}
+                        placeholder="Batch number"
+                        aria-label={`Batch number for ${item.code}`}
+                      />
+                      {item.tracks_expiry && (
+                        <input
+                          type="date"
+                          value={l.expiryDate ?? ""}
+                          onChange={(e) => setLine(l.key, { expiryDate: e.target.value })}
+                          aria-label={`Expiry date for ${item.code}`}
+                        />
+                      )}
+                      <span className="hint">
+                        {item.tracks_expiry
+                          ? "Sold before any batch that lasts longer."
+                          : "Recorded so a recall can name these units."}
+                      </span>
                     </td>
                   </tr>
                 );
