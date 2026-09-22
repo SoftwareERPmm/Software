@@ -1550,9 +1550,13 @@ button, .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
 }
 
 /* The chosen pool, on the line itself. */
+/* A quiet button on a white surface, so it has to say so: the base button
+   rule paints text in --brand-fg for solid green buttons, and this one only
+   overrode the background. The pool label was white on white — invisible,
+   while the quantity beside it showed because .avail sets its own colour. */
 .sourcebtn {
   display: inline-flex; align-items: center; gap: 0.4rem; width: 100%;
-  padding: 0.3rem 0.5rem; background: var(--surface);
+  padding: 0.3rem 0.5rem; background: var(--surface); color: var(--ink);
   border: 1px solid var(--line); border-radius: var(--r-md);
   font-size: var(--t-sm); text-align: left; cursor: pointer;
 }
