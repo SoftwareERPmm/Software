@@ -3,12 +3,13 @@ import { Boxes, PackageCheck, TrendingDown, AlertTriangle, HandCoins } from "luc
 import { money, qty, shortDate } from "@/lib/db";
 import {
   getCompany, getItems, getReservedQty, getIncomingQty, getLowStock, getReorderPoints, getLocations,
-  getStockByLocation, getConsignedStockOnHand, getStockBatches,
+  getStockByLocation, getConsignedStockOnHand, getStockBatches, getExpiryBands,
 } from "@/lib/queries";
 import { createReorderPoint, updateReorderPoint, deleteReorderPoint } from "@/lib/actions";
 import { type DataRow } from "@/components/data-table";
 import { StockTable } from "@/components/stock-table";
 import { StockRow, type StockRowItem } from "@/components/stock-row";
+import { ExpiryBands } from "@/components/expiry-bands";
 import { AddReorderPointForm } from "@/components/reorder-point-form";
 import { ReorderPointRow } from "@/components/reorder-point-row";
 import { AccountPicker } from "@/components/account-picker";
@@ -36,7 +37,7 @@ export default async function Stock({
   if (!company) return <div className="empty">No company found.</div>;
 
   const [items, reserved, incoming, lowStock, reorderPoints, locations, stockByLocation, consigned,
-         batches] = await Promise.all([
+         batches, expiryBands] = await Promise.all([
     getItems(company.id) as unknown as Promise<Row[]>,
     getReservedQty(company.id) as unknown as Promise<Array<{ item_id: string; location_id: string; reserved_qty: string }>>,
     getIncomingQty(company.id) as unknown as Promise<Array<{ item_id: string; location_id: string; incoming_qty: string }>>,
@@ -62,6 +63,9 @@ export default async function Stock({
       item_id: string; location_id: string; location_code: string;
       batch_no: string | null; expiry_date: string | null;
       days_left: number | null; qty: string;
+    }>>,
+    getExpiryBands(company.id) as unknown as Promise<Array<{
+      band: string; batches: number; qty: string; value: string;
     }>>,
   ]);
 
@@ -373,6 +377,13 @@ export default async function Stock({
           </span>
         </div>
       </div>
+
+      {/* Only for a company that actually holds perishable stock. Most of a
+          trading catalogue never expires, and a band chart reading zero
+          forever is a question nobody asked kept on the screen. It appears
+          the moment an item tracks expiry and has some on hand, and
+          disappears again when the last dated batch is gone. */}
+      {expiryBands.length > 0 && <ExpiryBands bands={expiryBands} />}
 
       {lowStock.length > 0 && (
         <section>

@@ -3232,6 +3232,68 @@ export async function getStockBatches(companyId: string) {
      order by l.expiry_date nulls last, l.batch_no`;
 }
 
+/**
+ * Stock on hand by how much shelf life it has left.
+ *
+ * Value at cost rather than quantity: a hundred units of something cheap and
+ * ten of something dear are not the same problem, and the figure a
+ * distributor acts on is what the write-off would cost.
+ *
+ * Returns nothing at all for a company that tracks no expiry, which is what
+ * lets the screen hide the whole card rather than draw an empty one — most
+ * of a trading catalogue never expires, and a permanent zero is a question
+ * nobody asked being kept on the screen forever.
+ */
+export async function getExpiryBands(companyId: string) {
+  return sql`
+    with lots as (
+      select l.item_id, l.expiry_date,
+             (l.expiry_date - current_date) as days_left,
+             (l.qty_received
+              - coalesce((select sum(c.qty) from stock_lot_consumption c
+                           where c.lot_id = l.id), 0)) as qty,
+             l.unit_cost
+        from stock_lot l
+        join item i on i.id = l.item_id
+       where l.company_id = ${companyId}
+         and i.tracks_batch and i.tracks_expiry
+         and l.expiry_date is not null
+    )
+    select case
+             when days_left < 0  then 'EXPIRED'
+             when days_left <= 30 then 'D0_30'
+             when days_left <= 60 then 'D31_60'
+             when days_left <= 90 then 'D61_90'
+             else 'OVER_90'
+           end                                   as band,
+           count(*)::int                         as batches,
+           sum(qty)                              as qty,
+           sum(qty * unit_cost)                  as value
+      from lots
+     where qty > 0.0001
+     group by 1`;
+}
+
+/** The same, per item, for the list beneath the bands. */
+export async function getExpiryByItem(companyId: string) {
+  return sql`
+    select l.item_id,
+           min(l.expiry_date - current_date)::int as soonest_days,
+           count(*) filter (where l.expiry_date < current_date)::int as expired_batches,
+           sum((l.qty_received
+                - coalesce((select sum(c.qty) from stock_lot_consumption c
+                             where c.lot_id = l.id), 0)) * l.unit_cost)
+             filter (where l.expiry_date < current_date)             as expired_value
+      from stock_lot l
+      join item i on i.id = l.item_id
+     where l.company_id = ${companyId}
+       and i.tracks_batch and i.tracks_expiry and l.expiry_date is not null
+       and (l.qty_received
+            - coalesce((select sum(c.qty) from stock_lot_consumption c
+                         where c.lot_id = l.id), 0)) > 0.0001
+     group by l.item_id`;
+}
+
 export async function getOverCreditLimit(companyId: string) {
   return sql`
     select partner_id, partner_code, partner_name,
