@@ -3039,11 +3039,24 @@ async function _postSalesInvoice(
   }
 
   const scale = await currencyScale(tx, companyId);
+  /* Pack sizes resolved before pricing, because a quantity band is matched
+     on units of stock: five cartons of twenty-four earns a hundred-unit band
+     and five pieces does not. Resolved once here and reused when the lines
+     are written, so one line cannot be priced at one factor and stored at
+     another. */
+  const packs = new Map<InvoiceLine, PackFactor>();
+  for (const l of input.lines) {
+    const [it] = await tx`select base_uom_id from item where id = ${l.itemId}`;
+    if (!it) throw new Error("Item not found");
+    packs.set(l, await packFactor(tx, l.itemId, l.uomId, it.base_uom_id as string));
+  }
+
   const priced = priceLines(
     charged.map((l) => ({
       itemId: l.itemId,
       itemGroupId: itemGroups.get(l.itemId) ?? null,
       qty: l.qty,
+      baseQty: round4(l.qty * (packs.get(l)?.factor ?? 1)),
       unitPrice: l.unitPrice,
       discountPct: l.discountPct ?? 0,
     })),
@@ -3191,8 +3204,9 @@ async function _postSalesInvoice(
 
     /* The invoice speaks in whatever was sold — five cartons, not a hundred
        and twenty pieces — while base_qty keeps the figure every stock and
-       fulfilment check reads. */
-    const pack = await packFactor(tx, line.itemId, line.uomId, item.base_uom_id as string);
+       fulfilment check reads. Taken from the map built before pricing, so
+       the factor that earned the discount is the factor that gets stored. */
+    const pack = packs.get(line) ?? { factor: 1, uomId: item.base_uom_id as string };
     const baseQty = round4(line.qty * pack.factor);
     const d = pricedFor.get(line);
     const t = taxFor.get(line);
