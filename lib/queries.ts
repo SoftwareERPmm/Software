@@ -1182,6 +1182,47 @@ export async function getDocumentLines(id: string) {
      order by dl.line_no`;
 }
 
+/**
+ * Which batches a document moved, for items that keep lots.
+ *
+ * Goods arriving carry their batch on the movement itself — one receipt line
+ * is one batch, because that is what a receipt is. Goods leaving may draw
+ * several, so the batch is read back through the layers consumed rather than
+ * stored a second time on the issue: the consumption rows already say which
+ * lot each unit came out of, and duplicating that onto the movement would
+ * create a second version of a fact that can drift from the first.
+ *
+ * Empty for a document that touched no tracked item, which is most of them.
+ */
+export async function getDocumentBatches(documentId: string) {
+  return sql`
+    -- Goods in: the batch is on the movement.
+    select m.item_id, m.batch_no,
+           to_char(m.expiry_date, 'YYYY-MM-DD') as expiry_date,
+           sum(m.qty)                            as qty
+      from stock_movement m
+      join item i on i.id = m.item_id
+     where m.document_id = ${documentId} and i.tracks_batch
+       and m.qty > 0 and m.batch_no is not null
+     group by m.item_id, m.batch_no, m.expiry_date
+
+    union all
+
+    -- Goods out: the batches are whichever layers were drawn.
+    select m.item_id, l.batch_no,
+           to_char(l.expiry_date, 'YYYY-MM-DD') as expiry_date,
+           -sum(c.qty)                           as qty
+      from stock_movement m
+      join stock_lot_consumption c on c.stock_movement_id = m.id
+      join stock_lot l on l.id = c.lot_id
+      join item i on i.id = m.item_id
+     where m.document_id = ${documentId} and i.tracks_batch
+       and l.batch_no is not null
+     group by m.item_id, l.batch_no, l.expiry_date
+
+     order by 2`;
+}
+
 export async function getJournalForDocument(journalEntryId: string | null) {
   if (!journalEntryId) return [];
   return sql`
@@ -3272,6 +3313,36 @@ export async function getExpiryBands(companyId: string) {
       from lots
      where qty > 0.0001
      group by 1`;
+}
+
+/**
+ * The layers an issue would draw, in the order the engine draws them.
+ *
+ * Ordered identically to the picking query in lib/posting.ts — earliest
+ * expiry first, nulls before dates, then oldest received. That is the whole
+ * value of it: a preview ordered any other way would show the picker one
+ * batch and hand the customer another.
+ *
+ * Untracked layers are included, with a null batch, because on a tracked
+ * item they are the stock that leaves first and a preview that hid them
+ * would be wrong about the next hundred units.
+ */
+export async function getPickOrder(companyId: string) {
+  return sql`
+    select l.item_id, l.location_id, l.batch_no,
+           to_char(l.expiry_date, 'YYYY-MM-DD') as expiry_date,
+           sum(l.qty_received
+               - coalesce((select sum(c.qty) from stock_lot_consumption c
+                            where c.lot_id = l.id), 0)) as qty
+      from stock_lot l
+      join item i on i.id = l.item_id
+     where l.company_id = ${companyId} and i.tracks_batch
+     group by l.item_id, l.location_id, l.batch_no, l.expiry_date,
+              l.received_date, l.created_at
+    having sum(l.qty_received
+               - coalesce((select sum(c.qty) from stock_lot_consumption c
+                            where c.lot_id = l.id), 0)) > 0.0001
+     order by l.expiry_date asc nulls first, l.received_date, l.created_at`;
 }
 
 /** The same, per item, for the list beneath the bands. */

@@ -3529,3 +3529,13 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
 .batchrow input[type="text"] { width: 200px; }
 .batchrow input[type="date"] { width: 170px; }
 .batchrow .hint { display: inline; }
+
+/* The lots a line moved, under the line itself: a sub-row rather than a
+   column, because most documents touch no tracked item and would pay for an
+   empty column on every row. */
+.batchtrail > td { padding-top: 0 !important; white-space: normal; }
+.batchtrail-item {
+  display: inline-block; margin-right: 1rem;
+  font-size: var(--t-xs); color: var(--muted);
+}
+.batchtrail-exp { color: var(--muted); }
