@@ -713,6 +713,12 @@ export async function getOpenGoodsReceipts(companyId: string, limit: number | nu
 
   const lines = await sql`
     select dl.id, dl.document_id, dl.item_id, dl.base_qty as qty, dl.net_amount as net,
+           -- The unit the goods were received in, and how many base units it
+           -- holds. Matching counts in base units, as it must; the price is
+           -- per received unit, so a bill raised from this receipt has to
+           -- quote both in the same unit or it multiplies a carton price by
+           -- a count of pieces.
+           dl.entered_uom_id, dl.conversion_factor,
            dl.unit_price, i.code as item_code, i.name as item_name,
            -- What the order said this would cost, where the receipt came in
            -- against one. Carried so the bill can be checked against the
@@ -800,7 +806,15 @@ export async function getOpenGoodsReceipts(companyId: string, limit: number | nu
           itemId: l.item_id,
           itemCode: l.item_code,
           itemName: l.item_name,
+          // Remaining in base units, for every check that counts stock…
           qty: Math.round((Number(l.qty) - (billed.get(l.id) ?? 0)) * 10000) / 10000,
+          // …and the same remainder in the unit it was received in, which is
+          // the unit its price belongs to.
+          uomId: (l.entered_uom_id as string) ?? null,
+          factor: Number(l.conversion_factor ?? 1) || 1,
+          enteredQty: Math.round(
+            ((Number(l.qty) - (billed.get(l.id) ?? 0)) / (Number(l.conversion_factor ?? 1) || 1))
+            * 10000) / 10000,
           unitPrice: Number(l.unit_price),
           orderPrice: l.order_price === null ? null : Number(l.order_price),
           orderId: (l.order_id as string) ?? null,

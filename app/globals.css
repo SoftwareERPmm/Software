@@ -3553,3 +3553,11 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
 .packrow select { min-width: 150px; }
 .packrow input { width: 110px; }
 .packrow-eq { color: var(--muted); font-size: var(--t-sm); }
+
+/* A field the document you came from has already decided: shown as the fact
+   it is rather than as a question with one answer. Sits at the height of the
+   inputs beside it so a row of them still reads as a row. */
+.fixedfield {
+  display: inline-flex; align-items: center; min-height: 2.1rem;
+  padding: 0.2rem 0; font-size: var(--t-md); color: var(--ink);
+}
