@@ -53,6 +53,18 @@ export type StockRowItem = {
   /** Empty when this item carries no consigned stock. */
   consignors: string[];
   warehouses: StockWarehouseRow[];
+  /** One row per batch per warehouse, earliest expiry first. Empty for an
+   *  item that keeps no lots, and for a tracked item whose only stock came
+   *  in before tracking was switched on. */
+  batches: {
+    locationCode: string;
+    batchNo: string | null;
+    expiryDate: string | null;
+    daysLeft: number | null;
+    qty: number;
+  }[];
+  tracksBatch: boolean;
+  tracksExpiry: boolean;
 };
 
 /** The page's own formatters cannot cross the boundary, so they live here. */
@@ -62,6 +74,11 @@ const qty = (v: number) =>
   Number(v).toLocaleString("en-US", { maximumFractionDigits: 2 });
 
 const DASH = "—";
+
+/** Near enough to worry about. Ninety days is a buying decision for a
+ *  distributor — long enough to move the stock, short enough that nobody
+ *  should be surprised by it later. */
+const EXPIRING_DAYS = 90;
 
 export function StockRow(
   { item, columnCount, showConsigned }:
@@ -77,6 +94,13 @@ export function StockRow(
   // behind this item average out to. Meaningless with nothing on hand, and
   // shown as such rather than as zero.
   const averageCost = item.onHand > 0 ? item.valueOnHand / item.onHand : null;
+
+  // Counted here rather than passed in: the row already has every batch, and
+  // a figure computed in two places is a figure that will disagree with
+  // itself eventually.
+  const expired = item.batches.filter((b) => b.daysLeft !== null && b.daysLeft < 0).length;
+  const expiringSoon = item.batches.filter(
+    (b) => b.daysLeft !== null && b.daysLeft >= 0 && b.daysLeft <= EXPIRING_DAYS).length;
 
   return (
     <>
@@ -221,6 +245,82 @@ export function StockRow(
                   </table>
                 )}
               </section>
+
+              {/* Batches, where the item keeps them. Expiry is read here
+                  rather than on the dashboard: most of a distributor's
+                  catalogue never expires, and a company-wide alert about
+                  something only some items do would be noise on every other
+                  screen. The place to notice a short-dated batch is the
+                  place you are already looking at that item's stock. */}
+              {item.tracksBatch && (
+                <section className="stockpanel stockpanel-wide">
+                  <h3>
+                    Batches on hand
+                    {expiringSoon > 0 && (
+                      <span className="pill warn" style={{ marginLeft: "0.5rem" }}>
+                        {expiringSoon} expiring
+                      </span>
+                    )}
+                    {expired > 0 && (
+                      <span className="pill overdue" style={{ marginLeft: "0.4rem" }}>
+                        {expired} expired
+                      </span>
+                    )}
+                  </h3>
+                  {item.batches.length === 0 ? (
+                    <div className="empty">
+                      Nothing batched on hand.
+                      {item.onHand > 0 && " What is here arrived before batches were tracked."}
+                    </div>
+                  ) : (
+                    <table className="stockpanel-table">
+                      <thead>
+                        <tr>
+                          <th>Batch</th>
+                          <th>Warehouse</th>
+                          {item.tracksExpiry && <th>Expires</th>}
+                          <th className="r">On hand</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {item.batches.map((b, i) => {
+                          const d = b.daysLeft;
+                          const state = d === null ? null
+                            : d < 0 ? "expired"
+                            : d <= EXPIRING_DAYS ? "soon" : null;
+                          return (
+                            <tr key={`${b.batchNo}-${b.locationCode}-${i}`}>
+                              <td className="code">{b.batchNo ?? DASH}</td>
+                              <td className="code">{b.locationCode}</td>
+                              {item.tracksExpiry && (
+                                <td className="code">
+                                  {b.expiryDate ?? DASH}
+                                  {state === "expired" && (
+                                    <span className="pill overdue" style={{ marginLeft: "0.4rem" }}>
+                                      {Math.abs(d as number)}d ago
+                                    </span>
+                                  )}
+                                  {state === "soon" && (
+                                    <span className="pill warn" style={{ marginLeft: "0.4rem" }}>
+                                      {d}d left
+                                    </span>
+                                  )}
+                                </td>
+                              )}
+                              <td className="r">{qty(b.qty)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                  {item.tracksExpiry && item.batches.length > 1 && (
+                    <div className="hint">
+                      Sold earliest-expiry first, so {item.batches[0].batchNo} leaves before the rest.
+                    </div>
+                  )}
+                </section>
+              )}
 
               <section className="stockpanel">
                 <h3>Pricing</h3>

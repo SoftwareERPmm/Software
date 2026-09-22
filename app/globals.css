@@ -3188,7 +3188,14 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
   border-radius: var(--r-lg);
   padding: var(--s3);
   min-width: 0;
+  overflow-x: auto;
 }
+/* The batch panel carries a four-column table where its neighbours carry
+   label-and-figure pairs, so it takes two tracks of the grid where there is
+   room and drops back to one when there is not. Without it the table spills
+   across the panel beside it. */
+.stockpanel-wide { grid-column: span 2; }
+@media (max-width: 900px) { .stockpanel-wide { grid-column: span 1; } }
 .stockpanel h3 {
   font-size: var(--t-base); font-weight: 600; margin: 0 0 0.7rem;
   letter-spacing: var(--track-tight);

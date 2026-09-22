@@ -1691,6 +1691,7 @@ export async function getItems(companyId: string) {
   return sql`
     select i.id, i.code, i.name, i.name_my, i.item_group_id, i.brand_id,
            i.base_uom_id, i.is_stocked, i.is_active,
+           i.tracks_batch, i.tracks_expiry,
            -- Not the picture — just whether there is one and when it changed.
            -- The bytes are served from their own URL, keyed by this; selecting
            -- them here would put every photo in the catalogue into one query.
@@ -3200,6 +3201,37 @@ export async function getTopCategories(
  * standing still while a payment fails to arrive, or by a delivery going out
  * against an old order. Nothing blocks that, so the dashboard has to say it.
  */
+/**
+ * What is on the shelf, batch by batch, for the items that keep lots.
+ *
+ * One row per batch per warehouse, with the earliest expiry first — the
+ * order the goods should actually leave in, so the list reads as a picking
+ * order rather than as a filing cabinet.
+ *
+ * Only tracked items appear. An item that keeps no batches has nothing to
+ * say here, and padding the result with a "no batch" row for every other
+ * item would make the common case pay for the rare one.
+ */
+export async function getStockBatches(companyId: string) {
+  return sql`
+    select l.item_id, l.location_id, loc.code as location_code,
+           l.batch_no,
+           to_char(l.expiry_date, 'YYYY-MM-DD')        as expiry_date,
+           (l.expiry_date - current_date)              as days_left,
+           sum(l.qty_received
+               - coalesce((select sum(c.qty) from stock_lot_consumption c
+                            where c.lot_id = l.id), 0))  as qty
+      from stock_lot l
+      join item i on i.id = l.item_id
+      join location loc on loc.id = l.location_id
+     where l.company_id = ${companyId} and i.tracks_batch
+     group by l.item_id, l.location_id, loc.code, l.batch_no, l.expiry_date
+    having sum(l.qty_received
+               - coalesce((select sum(c.qty) from stock_lot_consumption c
+                            where c.lot_id = l.id), 0)) > 0.0001
+     order by l.expiry_date nulls last, l.batch_no`;
+}
+
 export async function getOverCreditLimit(companyId: string) {
   return sql`
     select partner_id, partner_code, partner_name,

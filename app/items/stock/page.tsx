@@ -3,7 +3,7 @@ import { Boxes, PackageCheck, TrendingDown, AlertTriangle, HandCoins } from "luc
 import { money, qty, shortDate } from "@/lib/db";
 import {
   getCompany, getItems, getReservedQty, getIncomingQty, getLowStock, getReorderPoints, getLocations,
-  getStockByLocation, getConsignedStockOnHand,
+  getStockByLocation, getConsignedStockOnHand, getStockBatches,
 } from "@/lib/queries";
 import { createReorderPoint, updateReorderPoint, deleteReorderPoint } from "@/lib/actions";
 import { type DataRow } from "@/components/data-table";
@@ -18,6 +18,7 @@ type Row = {
   item_group_id: string; group_name: string; parent_group_name: string | null;
   brand_name: string | null; barcode: string | null;
   uom_code: string; qty_on_hand: string; value_on_hand: string; is_stocked: boolean;
+  tracks_batch: boolean; tracks_expiry: boolean;
   last_purchase_price: string | null;
   last_purchase_document_id: string | null;
   last_purchase_doc_no: string | null;
@@ -34,7 +35,8 @@ export default async function Stock({
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
-  const [items, reserved, incoming, lowStock, reorderPoints, locations, stockByLocation, consigned] = await Promise.all([
+  const [items, reserved, incoming, lowStock, reorderPoints, locations, stockByLocation, consigned,
+         batches] = await Promise.all([
     getItems(company.id) as unknown as Promise<Row[]>,
     getReservedQty(company.id) as unknown as Promise<Array<{ item_id: string; location_id: string; reserved_qty: string }>>,
     getIncomingQty(company.id) as unknown as Promise<Array<{ item_id: string; location_id: string; incoming_qty: string }>>,
@@ -53,6 +55,13 @@ export default async function Stock({
     }>>,
     getConsignedStockOnHand(company.id) as unknown as Promise<Array<{
       item_id: string; location_id: string; on_hand: string; consignor_name: string;
+    }>>,
+    // Only the items that keep lots return anything here, so this costs
+    // nothing on a catalogue that tracks none.
+    getStockBatches(company.id) as unknown as Promise<Array<{
+      item_id: string; location_id: string; location_code: string;
+      batch_no: string | null; expiry_date: string | null;
+      days_left: number | null; qty: string;
     }>>,
   ]);
 
@@ -207,6 +216,17 @@ export default async function Stock({
       lastCostDate: i.last_purchase_date ? shortDate(i.last_purchase_date) : null,
       consignors,
       warehouses: warehousesOf(i.id),
+      tracksBatch: !!i.tracks_batch,
+      tracksExpiry: !!i.tracks_batch && !!i.tracks_expiry,
+      batches: batches
+        .filter((b) => b.item_id === i.id)
+        .map((b) => ({
+          locationCode: b.location_code,
+          batchNo: b.batch_no,
+          expiryDate: b.expiry_date,
+          daysLeft: b.days_left === null ? null : Number(b.days_left),
+          qty: Number(b.qty),
+        })),
     };
 
     return {
