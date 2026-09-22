@@ -558,7 +558,12 @@ export default async function DocumentPage({
     );
   } else if (isInvoice && !progress) {
     stats.push(
-      { icon: CircleDollarSign, label: "Invoice total", value: money(doc.gross_total) },
+      { icon: CircleDollarSign, label: "Invoice total", value: money(doc.gross_total),
+        // What the total is made of, when some of it is tax. Silent when
+        // there is none, so an untaxed invoice reads exactly as before.
+        note: Number(doc.tax_total) !== 0
+          ? `${money(doc.net_total)} + ${money(doc.tax_total)} tax`
+          : undefined },
       { icon: Wallet, label: "Paid", value: money(Number(doc.gross_total) - outstanding),
         tone: outstanding === 0 ? "ok" : undefined },
       { icon: Clock, label: "Outstanding", value: money(outstanding),

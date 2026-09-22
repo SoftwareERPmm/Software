@@ -32,6 +32,10 @@ export const CHART = [
   ["1060",  "GR/IR Clearing",                    "ASSET",     true,  { added: true }],
   // Paid to a supplier before they billed us. Ours until they do.
   ["1070",  "Supplier Advances",                 "ASSET",     true,  { added: true }],
+  // Commercial tax paid on purchases, creditable against tax charged on
+  // sales. An asset while it is still owed back to us, not an expense — a
+  // trader who expenses it pays it twice.
+  ["1080",  "Input Commercial Tax",              "ASSET",     true,  { added: true }],
   ["1-FA",  "Non-Current Assets (Fixed Assets)", "ASSET",     false],
   ["1100",  "Land",                              "ASSET",     true],
   ["1110",  "Building",                          "ASSET",     true],
@@ -136,6 +140,11 @@ export const SYSTEM = {
   // and it is not a receivable anyway. It is something owed to the customer
   // until the goods go, and something owed to us until the supplier delivers.
   CUSTOMER_ADVANCE: "2060", SUPPLIER_ADVANCE: "1070",
+
+  // Commercial tax. Charged on a sale it is money held for the revenue
+  // department, never income; paid on a purchase it is creditable against
+  // what we charge, so it sits in assets until it is set off.
+  OUTPUT_TAX: "7000", INPUT_TAX: "1080",
 };
 
 // COGS points at 5000 "Purchase" — they are the same account here. The

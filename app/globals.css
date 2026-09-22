@@ -3494,3 +3494,7 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
    an odd number, and breaking it 4 + 1 puts "Due this week" on a line of its
    own looking like an afterthought. */
 .kpis-five { grid-template-columns: repeat(auto-fit, minmax(196px, 1fr)); }
+
+/* The tax control lives in the total bar, beside the figure it changes. */
+.totalbar-tax { display: inline-flex; align-items: center; gap: 0.4rem; font-size: var(--t-sm); }
+.totalbar-tax select { padding: 0.25rem 0.4rem; font-size: var(--t-sm); }

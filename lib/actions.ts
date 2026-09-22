@@ -701,6 +701,84 @@ export async function deleteItem(_prev: unknown, fd: FormData): Promise<ActionRe
 
 // ------------------------------------------------------------- brands --
 
+// ------------------------------------------------------------- tax codes --
+//
+// A rate and the two accounts it posts to. The accounts are not editable
+// here on purpose: they come from the OUTPUT_TAX and INPUT_TAX roles, so
+// every code posts to the same pair and a company that re-charts cannot end
+// up with one code pointing at a deleted account.
+
+export async function createTaxCode(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  const code = str(fd, "code").toUpperCase();
+  try {
+    const co = await companyId();
+    const name = str(fd, "name");
+    const rate = num(fd, "rate");
+
+    if (!code) return { error: "Code is required" };
+    if (!name) return { error: "Name is required" };
+    if (rate < 0 || rate > 100) return { error: "A rate is a percentage between 0 and 100" };
+
+    const dup = await sql`select 1 from tax_code where company_id = ${co} and code = ${code}`;
+    if (dup.length) return { error: `Code ${code} is already used` };
+
+    // A zero-rate code needs no accounts: nothing posts. A charging one does,
+    // and both sides come from the roles rather than being chosen per code.
+    await sql`
+      insert into tax_code (company_id, code, name, rate, output_account_id, input_account_id)
+      values (${co}, ${code}, ${name}, ${rate},
+        case when ${rate} > 0 then (select account_id from system_account
+          where company_id = ${co} and role = 'OUTPUT_TAX') end,
+        case when ${rate} > 0 then (select account_id from system_account
+          where company_id = ${co} and role = 'INPUT_TAX') end)`;
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/settings/tax-codes");
+  redirectWithToast("/settings/tax-codes", "Tax code added");
+}
+
+export async function updateTaxCode(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  const code = str(fd, "code").toUpperCase();
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    const name = str(fd, "name");
+    const rate = num(fd, "rate");
+
+    if (!id) return { error: "Choose a tax code" };
+    if (!code) return { error: "Code is required" };
+    if (!name) return { error: "Name is required" };
+    if (rate < 0 || rate > 100) return { error: "A rate is a percentage between 0 and 100" };
+
+    /* Documents already posted keep the tax they were posted with: the figure
+       lives on the line, not in this table, so editing a rate cannot reach
+       back and change what a customer was charged last month. What it does
+       change is every invoice raised from now on. */
+    const dup = await sql`
+      select 1 from tax_code where company_id = ${co} and code = ${code} and id <> ${id}`;
+    if (dup.length) return { error: `Code ${code} is already used` };
+
+    await sql`
+      update tax_code set
+        code = ${code}, name = ${name}, rate = ${rate},
+        is_active = ${fd.get("is_active") === "on"},
+        output_account_id = case when ${rate} > 0 then (select account_id from system_account
+          where company_id = ${co} and role = 'OUTPUT_TAX') end,
+        input_account_id = case when ${rate} > 0 then (select account_id from system_account
+          where company_id = ${co} and role = 'INPUT_TAX') end
+      where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/settings/tax-codes");
+  redirectWithToast("/settings/tax-codes", "Tax code updated");
+}
+
 export async function createBrand(_prev: unknown, fd: FormData): Promise<ActionResult> {
   const toastMsg = "Brand added";
   const code = str(fd, "code").toUpperCase();
@@ -1113,6 +1191,10 @@ function parseLines(fd: FormData): InvoiceLine[] {
       qty: Number(l.qty),
       unitPrice: Number(l.unitPrice),
       discountPct: Number(l.discountPct) || 0,
+      // Which commercial tax this line carries. A blank means the form did
+      // not ask, and the engine falls back to the company's zero-rate code —
+      // which is what every document posted before tax existed carries.
+      taxCodeId: l.taxCodeId || null,
       focReasonId: l.focReasonId || null,
       sourceLineId: l.sourceLineId || null,
       // Which pool the goods came out of, and whose. A parser that drops
@@ -1169,6 +1251,9 @@ export async function createSalesInvoice(_prev: unknown, fd: FormData): Promise<
       reference: str(fd, "reference") || null,
       salesmanId: str(fd, "salesman_id") || null,
       paymentType,
+      // Prices as typed already contain the tax. The counter price in a shop
+      // usually does; a wholesale quote usually does not.
+      priceIncludesTax: fd.get("price_includes_tax") !== null,
       toDeliver,
       cashIn,
       cashAccountId: str(fd, "cash_account_id") || null,
@@ -1247,6 +1332,9 @@ export async function createPurchaseInvoice(_prev: unknown, fd: FormData): Promi
       reference: str(fd, "reference") || null,
       cashOut,
       cashAccountId: str(fd, "cash_account_id") || null,
+      // Supplier invoices from Myanmar wholesalers are usually quoted with
+      // the tax already inside the price.
+      priceIncludesTax: fd.get("price_includes_tax") !== null,
       lines,
     };
 
@@ -2660,7 +2748,7 @@ export async function getFormData() {
   const [
     customers, suppliers, items, locations, volumeDiscounts, groups, uoms,
     salesmen, promotions, cashAccounts, focReasons, itemPrices, priceLevels,
-    openInvoices, nextNo, stockByLocation, moneyScale,
+    openInvoices, nextNo, stockByLocation, moneyScale, taxCodes,
   ] = await Promise.all([
     sql`select id, code, name, payment_terms_days, price_level_id from business_partner
          where company_id = ${co} and is_customer and is_active order by code`,
@@ -2751,6 +2839,9 @@ export async function getFormData() {
     // post rather than one four decimal places finer.
     sql`select c.decimal_places from company co
           join currency c on c.code = co.base_currency where co.id = ${co}`,
+    // Commercial tax codes, zero rate first so "None" heads the list.
+    sql`select id, code, name, rate from tax_code
+         where company_id = ${co} and is_active order by rate, code`,
   ]);
 
   return {
@@ -2760,6 +2851,7 @@ export async function getFormData() {
     // depends on a series that has not been created yet.
     nextInvoiceNo: (nextNo[0]?.no as string | null) ?? null,
     stockByLocation,
+    taxCodes,
     currencyScale: Number(moneyScale[0]?.decimal_places ?? 2),
   };
 }

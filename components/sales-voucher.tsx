@@ -100,6 +100,7 @@ export function SalesVoucher({
   currencyScale = 4,
   focReasons, openInvoices, nextInvoiceNo, today, categories, uoms,
   itemPrices, priceLevels, stockByLocation, deliveries, initialDeliveryId,
+  taxCodes = [],
   ownership = [],
   awaiting = [],
 }: {
@@ -119,6 +120,8 @@ export function SalesVoucher({
    *  engine will apply. */
   volumeDiscounts?: VolumeBand[];
   focReasons: FocReason[];
+  /** Commercial tax codes this company can charge, zero-rate first. */
+  taxCodes?: { id: string; code: string; name: string; rate: string | number }[];
   itemPrices: ItemPrice[];
   priceLevels: PriceLevel[];
   openInvoices: OpenInvoice[];
@@ -466,12 +469,37 @@ export function SalesVoucher({
   const pricedFor = new Map(chargedLines.map((l, i) => [l.key, pricing.lines[i]]));
 
   const goodsTotal = pricing.total;
+
+  /* Commercial tax. One code for the whole invoice rather than per line:
+     that is how a Myanmar trader charges it, and a per-line override can
+     come later without changing what is stored — the engine already keeps
+     the code on each line. */
+  const taxable = taxCodes.filter((t) => Number(t.rate) > 0);
+  const zeroRated = taxCodes.find((t) => Number(t.rate) === 0) ?? null;
+  const [taxCodeId, setTaxCodeId] = useState<string>(zeroRated?.id ?? "");
+  const [inclusive, setInclusive] = useState(false);
+  const chosenTax = taxCodes.find((t) => t.id === taxCodeId) ?? null;
+  const taxRate = Number(chosenTax?.rate ?? 0);
+
+  // The same split the engine does, so the voucher cannot preview one figure
+  // and post another: exclusive adds on top, inclusive comes back out.
+  const r = (n: number) => {
+    const f = Math.pow(10, currencyScale);
+    return Math.round(n * f) / f;
+  };
+  const taxOnGoods = taxRate === 0 ? 0
+    : inclusive ? r(goodsTotal - r(goodsTotal / (1 + taxRate / 100)))
+    : r((goodsTotal * taxRate) / 100);
+  const goodsNet = inclusive ? r(goodsTotal - taxOnGoods) : goodsTotal;
   // Carriage charged to the customer. It is part of what they owe — so it
   // belongs in the total, the cash-in sync and the balance — but it is
   // credited to delivery income rather than to sales, which is why it is
   // shown separately rather than folded silently into the goods.
   const deliveryFee = Number(fee) || 0;
-  const total = goodsTotal + deliveryFee;
+  // What the customer owes: the goods net of tax, the tax, and the carriage.
+  // Carriage is outside the tax for now — it is income earned for
+  // delivering, and taxing it needs its own code on the header.
+  const total = r(goodsNet + taxOnGoods + deliveryFee);
   const cashAmount = Number(cashIn) || 0;
   const balance = total - cashAmount;
   const totalFree = lines.reduce((s, l) => s + freeQty(l), 0);
@@ -521,6 +549,7 @@ export function SalesVoucher({
           itemId: l.itemId, qty,
           unitPrice: Number(l.unitPrice) || 0,
           discountPct: Number(l.discountPct) || 0,
+          taxCodeId: taxCodeId || null,
           // Which delivery line this bills, so the engine can hold it to what
           // went out. Free lines carry no source: a giveaway is not part of
           // what the delivery is owed billing for.
@@ -1077,9 +1106,42 @@ export function SalesVoucher({
               {fmt(totalFree)} free unit{totalFree === 1 ? "" : "s"} — cost goes to promotion expense
             </span>
           )}
-          {deliveryFee > 0 && (
+
+          {/* Commercial tax sits with the total it changes, not in a card
+              further down the form: it is the difference between what the
+              goods sold for and what the customer hands over. */}
+          {taxable.length > 0 && (
+            <label className="totalbar-tax">
+              <span style={{ color: "var(--muted)" }}>Commercial tax</span>
+              <select
+                value={taxCodeId}
+                onChange={(e) => setTaxCodeId(e.target.value)}
+                aria-label="Commercial tax"
+              >
+                {zeroRated && <option value={zeroRated.id}>None</option>}
+                {taxable.map((t) => (
+                  <option key={t.id} value={t.id}>{t.code} · {Number(t.rate)}%</option>
+                ))}
+              </select>
+            </label>
+          )}
+          {taxRate > 0 && (
+            <label className="totalbar-tax" title="Prices as typed already contain the tax">
+              <input
+                type="checkbox"
+                name="price_includes_tax"
+                checked={inclusive}
+                onChange={(e) => setInclusive(e.target.checked)}
+              />
+              <span style={{ color: "var(--muted)" }}>Prices include tax</span>
+            </label>
+          )}
+
+          {(deliveryFee > 0 || taxOnGoods > 0) && (
             <span style={{ color: "var(--muted)" }}>
-              goods {fmt(goodsTotal)} + delivery {fmt(deliveryFee)}
+              goods {fmt(goodsNet)}
+              {taxOnGoods > 0 && <> + tax {fmt(taxOnGoods)}</>}
+              {deliveryFee > 0 && <> + delivery {fmt(deliveryFee)}</>}
             </span>
           )}
           <span style={{ color: "var(--muted)" }}>Invoice total</span>

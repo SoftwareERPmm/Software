@@ -25,6 +25,13 @@ export type InvoiceLine = {
   unitPrice: number;
   /** The discount typed on this line, in percent. */
   discountPct?: number;
+  /**
+   * Which commercial tax applies to this line. Left unset, the line is
+   * taxed at the company's NONE code — which is what every document posted
+   * before tax existed carried, so nothing already in the ledger changes
+   * meaning.
+   */
+  taxCodeId?: string | null;
   focReasonId?: string | null;
 
   /** Purchase side: which goods-receipt line this bills. Optional — when it
@@ -67,6 +74,12 @@ export type InvoiceInput = {
   dueDate: string | null;
   memo?: string | null;
   reference?: string | null;
+  /**
+   * True when the unit prices already contain the tax, so it is extracted
+   * from the price rather than added to it. The counter price in a Myanmar
+   * shop is usually tax-inclusive; a wholesale quote usually is not.
+   */
+  priceIncludesTax?: boolean;
   lines: InvoiceLine[];
 };
 
@@ -213,6 +226,82 @@ type JournalLine = {
 
 function round4(n: number) {
   return Math.round(n * 10000) / 10000;
+}
+
+// -------------------------------------------------------- commercial tax --
+//
+// Tax charged on a sale is money held for the revenue department: it belongs
+// in a liability, never in revenue, and the customer owes the gross. Tax paid
+// on a purchase is creditable against it, so it is an asset until it is set
+// off — book it to expense and the trader pays it twice.
+//
+// A line records both figures, and the document totals keep them apart:
+// net_total is what was earned, tax_total what is held, gross_total what is
+// owed. v_open_item ages the gross, which is what the customer actually has
+// to pay.
+
+type TaxRate = {
+  id: string;
+  code: string;
+  rate: number;
+  outputAccountId: string | null;
+  inputAccountId: string | null;
+};
+
+async function loadTaxRates(
+  tx: TransactionSql, companyId: string,
+): Promise<{ byId: Map<string, TaxRate>; none: TaxRate | null }> {
+  const rows = await tx`
+    select id, code, rate, output_account_id, input_account_id
+      from tax_code
+     where company_id = ${companyId} and is_active`;
+  const byId = new Map<string, TaxRate>();
+  let none: TaxRate | null = null;
+  for (const r of rows as unknown as {
+    id: string; code: string; rate: string;
+    output_account_id: string | null; input_account_id: string | null;
+  }[]) {
+    const t: TaxRate = {
+      id: r.id, code: r.code, rate: Number(r.rate),
+      outputAccountId: r.output_account_id, inputAccountId: r.input_account_id,
+    };
+    byId.set(t.id, t);
+    if (t.rate === 0 && (!none || t.code === "NONE")) none = t;
+  }
+  return { byId, none };
+}
+
+/**
+ * Split one line's money into what was earned and what is held as tax.
+ *
+ * `amount` is the line after every discount. Exclusive, the tax is added on
+ * top; inclusive, it was already inside the price and comes back out — and
+ * the two must never both happen to one figure, which is why the document
+ * carries the flag rather than each line guessing.
+ */
+function splitTax(
+  amount: number, rate: number, includesTax: boolean, scale: number,
+): { net: number; tax: number } {
+  if (rate === 0 || amount === 0) return { net: roundMoney(amount, scale), tax: 0 };
+  if (includesTax) {
+    const net = roundMoney(amount / (1 + rate / 100), scale);
+    // The tax is the remainder, not a second rounding of the rate: that is
+    // what keeps net + tax equal to the price on the shelf, to the kyat.
+    return { net, tax: roundMoney(amount - net, scale) };
+  }
+  return { net: roundMoney(amount, scale), tax: roundMoney((amount * rate) / 100, scale) };
+}
+
+/** The account a tax code posts to, and a readable refusal when it has none. */
+function taxAccountFor(t: TaxRate, side: "output" | "input"): string {
+  const id = side === "output" ? t.outputAccountId : t.inputAccountId;
+  if (!id) {
+    throw new Error(
+      `Tax code ${t.code} charges ${t.rate}% but has no ${side} account set. ` +
+      `Point it at one under Master data → Tax codes before using it.`
+    );
+  }
+  return id;
 }
 
 // ------------------------------------------------------------- guards --
@@ -2658,7 +2747,35 @@ async function _postSalesInvoice(
   // The goods total is what the pricing arrived at, not the list prices it
   // started from. Computing it separately is how the receivable and the
   // revenue came to disagree by exactly one volume discount.
-  const goodsTotal = priced.total;
+  //
+  // Tax is split off it here, before the document is written, because the
+  // header totals and the lines have to be the same arithmetic. Splitting it
+  // again inside the line loop is how a tax_total and the sum of its lines
+  // come to differ by a rounding step.
+  const { byId: taxRates, none: noTax } = await loadTaxRates(tx, companyId);
+  const includesTax = input.priceIncludesTax ?? false;
+  const taxFor = new Map<InvoiceLine, { net: number; tax: number; rate: TaxRate }>();
+  for (const l of charged) {
+    const rate = l.taxCodeId ? taxRates.get(l.taxCodeId) : noTax;
+    if (l.taxCodeId && !rate) throw new Error("That tax code is not active for this company");
+    const chosen = rate ?? noTax;
+    const amount = round4(pricedFor.get(l)?.net ?? l.qty * l.unitPrice);
+    const split = chosen
+      ? splitTax(amount, chosen.rate, includesTax, scale)
+      : { net: roundMoney(amount, scale), tax: 0 };
+    taxFor.set(l, { net: split.net, tax: split.tax, rate: chosen ?? {
+      id: "", code: "NONE", rate: 0, outputAccountId: null, inputAccountId: null,
+    } });
+  }
+
+  const taxTotal = roundMoney(
+    [...taxFor.values()].reduce((t, v) => t + v.tax, 0), scale);
+  // Inclusive pricing means the earned figure is less than the price typed,
+  // so the goods total is rebuilt from the splits rather than taken from the
+  // pricing run.
+  const goodsTotal = includesTax && taxTotal !== 0
+    ? roundMoney([...taxFor.values()].reduce((t, v) => t + v.net, 0), scale)
+    : priced.total;
 
   // The fee comes from the delivery unless this invoice states its own. A
   // charge entered when the goods went out must not be lost just because
@@ -2673,7 +2790,13 @@ async function _postSalesInvoice(
 
   // The receivable is the goods plus the carriage; the two reach different
   // accounts on the credit side but the customer owes one sum.
+  //
+  // Carriage is deliberately outside the tax for now: it is charged as
+  // income earned for delivering rather than as part of what the goods sold
+  // for, and taxing it needs its own code on the header. Documented here
+  // rather than guessed at silently.
   const netTotal = round4(goodsTotal + deliveryFee);
+  const grossTotal = round4(netTotal + taxTotal);
 
   // An invoice that bills nothing has no journal entry to write, and until
   // now it failed several steps later with "Journal entry JE-000005 has no
@@ -2717,13 +2840,14 @@ async function _postSalesInvoice(
   const [doc] = await tx`
     insert into document
       (company_id, doc_type, doc_no, version, fiscal_year_id, doc_date, posting_date, due_date,
-       partner_id, location_id, currency, exchange_rate, status,
+       partner_id, location_id, currency, exchange_rate, status, price_includes_tax,
        net_total, tax_total, gross_total, memo, posted_at,
        payment_type, salesman_id, reference, to_deliver, source_document_id, delivery_fee)
     values
       (${companyId}, 'SALES_INVOICE', ${docNo}, ${version}, ${fiscalYear}, ${docDate}::date,
        ${docDate}::date, ${dueDate}, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
-       ${netTotal}, 0, ${netTotal}, ${input.memo ?? null}, now(),
+       ${includesTax},
+       ${netTotal}, ${taxTotal}, ${grossTotal}, ${input.memo ?? null}, now(),
        ${input.paymentType ?? "CREDIT"}, ${input.salesmanId ?? null},
        ${input.reference ?? null}, ${input.toDeliver ?? false}, ${input.deliveryId ?? null},
        ${deliveryFee})
@@ -2740,7 +2864,10 @@ async function _postSalesInvoice(
     if (!item) throw new Error("Item not found");
 
     const d = pricedFor.get(line);
-    const net = line.focReasonId ? 0 : round4(d?.net ?? line.qty * line.unitPrice);
+    const t = taxFor.get(line);
+    // A free line is free of tax too: there is no consideration to tax.
+    const net = line.focReasonId ? 0 : round4(t?.net ?? d?.net ?? line.qty * line.unitPrice);
+    const lineTax = line.focReasonId ? 0 : round4(t?.tax ?? 0);
 
     await tx`
       insert into document_line
@@ -2749,7 +2876,7 @@ async function _postSalesInvoice(
          discount_pct, discount_amount,
          volume_discount_pct, volume_discount_amount, volume_discount_id,
          invoice_discount_pct, invoice_discount_amount, invoice_discount_id,
-         net_amount, tax_amount, gross_amount, foc_reason_id, source_line_id)
+         net_amount, tax_code_id, tax_amount, gross_amount, foc_reason_id, source_line_id)
       values
         (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
          ${line.qty}, ${item.base_uom_id}, ${line.qty},
@@ -2757,7 +2884,8 @@ async function _postSalesInvoice(
          ${d?.itemDiscountPct ?? 0}, ${d?.itemDiscountAmount ?? 0},
          ${d?.volumeDiscountPct ?? 0}, ${d?.volumeDiscountAmount ?? 0}, ${d?.volumeDiscountId ?? null},
          ${d?.invoiceDiscountPct ?? 0}, ${d?.invoiceDiscountAmount ?? 0}, ${d?.invoiceDiscountId ?? null},
-         ${net}, 0, ${net}, ${line.focReasonId ?? null},
+         ${net}, ${line.focReasonId ? null : (line.taxCodeId ?? t?.rate.id ?? null)},
+         ${lineTax}, ${round4(net + lineTax)}, ${line.focReasonId ?? null},
          -- Which order line this bills. The purchase side has always recorded
          -- it and the sales side never did, though the form sends it and the
          -- type carries it: it was read off the input and dropped. A sales
@@ -2795,10 +2923,28 @@ async function _postSalesInvoice(
     journal.push({ accountId: income.account_id, amount: -deliveryFee });
   }
 
-  if (netTotal !== 0) {
+  // Tax charged, grouped by the account each code points at — one leg per
+  // account rather than one per line, so a ten-line invoice at one rate
+  // writes one credit to Commercial Tax Payable.
+  if (taxTotal !== 0) {
+    const byAccount = new Map<string, number>();
+    for (const v of taxFor.values()) {
+      if (v.tax === 0) continue;
+      const acct = taxAccountFor(v.rate, "output");
+      byAccount.set(acct, roundMoney((byAccount.get(acct) ?? 0) + v.tax, scale));
+    }
+    for (const [accountId, amount] of byAccount) {
+      journal.push({ accountId, amount: -amount });
+    }
+  }
+
+  // The customer owes the gross. net_total is what was earned and tax_total
+  // what is held for the revenue department; the receivable is both, which is
+  // also what v_open_item ages and what a receipt settles against.
+  if (grossTotal !== 0) {
     const ar = await tx`
       select fn_resolve_control_account(${companyId}, 'AR_CONTROL', ${partnerId}) as a`;
-    journal.push({ accountId: ar[0].a, amount: netTotal, partnerId });
+    journal.push({ accountId: ar[0].a, amount: grossTotal, partnerId });
   }
 
   const entryId = await writeJournal(
@@ -2826,9 +2972,9 @@ async function _postSalesInvoice(
   let receiptNo: string | null = null;
 
   if (cashIn > 0) {
-    if (cashIn > netTotal) {
+    if (cashIn > grossTotal) {
       throw new Error(
-        `Cash in (${cashIn}) is more than the invoice total (${netTotal})`
+        `Cash in (${cashIn}) is more than the invoice total (${grossTotal})`
       );
     }
 
@@ -4053,18 +4199,39 @@ async function _postPurchaseInvoice(
     await assertOrderTerms(tx, companyId, input.lines);
   }
 
-  const lineNets = input.lines.map((l) => roundMoney(l.qty * l.unitPrice, scale));
+  // Input tax is split off the line the same way the sales side splits
+  // output tax, and for the same reason: the header and the lines must be
+  // one piece of arithmetic. The cost that reaches inventory is the net —
+  // tax the company gets back is not part of what the goods cost, and
+  // capitalising it would overstate stock and understate the tax asset.
+  const { byId: taxRates, none: noTax } = await loadTaxRates(tx, companyId);
+  const includesTax = input.priceIncludesTax ?? false;
+  const splits = input.lines.map((l) => {
+    const rate = l.taxCodeId ? taxRates.get(l.taxCodeId) : noTax;
+    if (l.taxCodeId && !rate) throw new Error("That tax code is not active for this company");
+    const chosen = rate ?? noTax;
+    const amount = roundMoney(l.qty * l.unitPrice, scale);
+    const split = chosen
+      ? splitTax(amount, chosen.rate, includesTax, scale)
+      : { net: amount, tax: 0 };
+    return { ...split, rate: chosen };
+  });
+
+  const lineNets = splits.map((v) => v.net);
   const netTotal = roundMoney(lineNets.reduce((t, v) => t + v, 0), scale);
+  const taxTotal = roundMoney(splits.reduce((t, v) => t + v.tax, 0), scale);
+  const grossTotal = roundMoney(netTotal + taxTotal, scale);
 
   const [doc] = await tx`
     insert into document
       (company_id, doc_type, doc_no, version, fiscal_year_id, doc_date, posting_date, due_date,
-       partner_id, location_id, currency, exchange_rate, status,
+       partner_id, location_id, currency, exchange_rate, status, price_includes_tax,
        net_total, tax_total, gross_total, memo, posted_at, reference, source_document_id)
     values
       (${companyId}, 'PURCHASE_INVOICE', ${docNo}, ${version}, ${fiscalYear}, ${docDate}::date,
        ${docDate}::date, ${dueDate}, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
-       ${netTotal}, 0, ${netTotal}, ${input.memo ?? null}, now(),
+       ${includesTax},
+       ${netTotal}, ${taxTotal}, ${grossTotal}, ${input.memo ?? null}, now(),
        ${input.reference ?? null}, ${input.goodsReceiptId ?? null})
     returning id`;
 
@@ -4086,11 +4253,13 @@ async function _postPurchaseInvoice(
       insert into document_line
         (company_id, document_id, line_no, item_id, location_id,
          entered_qty, entered_uom_id, base_qty, unit_price,
-         net_amount, tax_amount, gross_amount, source_line_id)
+         net_amount, tax_code_id, tax_amount, gross_amount, source_line_id)
       values
         (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
          ${line.qty}, ${item.base_uom_id}, ${line.qty}, ${line.unitPrice},
-         ${net}, 0, ${net}, ${line.sourceLineId ?? null})`;
+         ${net}, ${line.taxCodeId ?? splits[lineNo - 1].rate?.id ?? null},
+         ${splits[lineNo - 1].tax}, ${roundMoney(net + splits[lineNo - 1].tax, scale)},
+         ${line.sourceLineId ?? null})`;
 
     isStocked.set(line.itemId, !!item.is_stocked);
 
@@ -4258,7 +4427,20 @@ async function _postPurchaseInvoice(
 
   const ap = await tx`
     select fn_resolve_control_account(${companyId}, 'AP_CONTROL', ${partnerId}) as a`;
-  journal.push({ accountId: ap[0].a, amount: -netTotal, partnerId });
+  // Input tax is recoverable, so it is an asset rather than part of the cost
+  // of the goods: Dr Input Commercial Tax, and the supplier is owed the gross.
+  if (taxTotal !== 0) {
+    const byAccount = new Map<string, number>();
+    for (const v of splits) {
+      if (v.tax === 0 || !v.rate) continue;
+      const acct = taxAccountFor(v.rate, "input");
+      byAccount.set(acct, roundMoney((byAccount.get(acct) ?? 0) + v.tax, scale));
+    }
+    for (const [accountId, amount] of byAccount) {
+      journal.push({ accountId, amount });
+    }
+  }
+  journal.push({ accountId: ap[0].a, amount: -grossTotal, partnerId });
 
   const entryId = await writeJournal(
     tx, companyId, docDate, "PURCHASE_INVOICE", doc.id, `${docNo} purchase invoice`, journal, locationId
@@ -4272,8 +4454,8 @@ async function _postPurchaseInvoice(
   let paymentNo: string | null = null;
 
   if (cashOut > 0) {
-    if (cashOut > netTotal) {
-      throw new Error(`Cash paid (${cashOut}) is more than the invoice total (${netTotal})`);
+    if (cashOut > grossTotal) {
+      throw new Error(`Cash paid (${cashOut}) is more than the invoice total (${grossTotal})`);
     }
 
     const pmtNoRows = await tx`
@@ -4824,6 +5006,13 @@ export type ReturnLine = {
   itemId: string;
   qty: number;
   unitPrice: number;
+  /**
+   * The tax the line being reversed was charged. A return has to give the tax
+   * back with the money: credit the net only and the customer is out of
+   * pocket by the tax on goods they no longer have, while the company keeps
+   * tax it never earned. The caller passes the code off the invoice line.
+   */
+  taxCodeId?: string | null;
   focReasonId?: string | null;
 };
 export type ReturnInput = {
@@ -4837,6 +5026,8 @@ export type ReturnInput = {
   sourceDocumentId?: string | null;
   /** When returned stock actually came back in, if more precise than docDate — purchase returns ignore this, they only remove stock. */
   receivedAt?: string | null;
+  /** Prices already contain the tax, as on the invoice being reversed. */
+  priceIncludesTax?: boolean;
   lines: ReturnLine[];
 };
 
@@ -4862,9 +5053,25 @@ export async function postSalesReturn(input: ReturnInput, outer?: TransactionSql
       select fn_next_document_no(${companyId}, 'SALES_RETURN', ${docDate}::date) as no`;
     const docNo = noRows[0].no;
 
-    const netTotal = round4(
-      input.lines.reduce((s, l) => s + (l.focReasonId ? 0 : l.qty * l.unitPrice), 0)
-    );
+    const scaleR = await currencyScale(tx, companyId);
+    const { byId: taxRatesR, none: noTaxR } = await loadTaxRates(tx, companyId);
+    const includesTaxR = input.priceIncludesTax ?? false;
+    const taxForR = new Map<ReturnLine, { net: number; tax: number; rate: TaxRate | null }>();
+    for (const l of input.lines) {
+      if (l.focReasonId) { taxForR.set(l, { net: 0, tax: 0, rate: null }); continue; }
+      const found = l.taxCodeId ? taxRatesR.get(l.taxCodeId) : noTaxR;
+      if (l.taxCodeId && !found) throw new Error("That tax code is not active for this company");
+      const chosen = found ?? noTaxR;
+      const amount = round4(l.qty * l.unitPrice);
+      const split = chosen
+        ? splitTax(amount, chosen.rate, includesTaxR, scaleR)
+        : { net: amount, tax: 0 };
+      taxForR.set(l, { net: split.net, tax: split.tax, rate: chosen ?? null });
+    }
+
+    const netTotal = round4([...taxForR.values()].reduce((s, v) => s + v.net, 0));
+    const taxTotal = roundMoney([...taxForR.values()].reduce((s, v) => s + v.tax, 0), scaleR);
+    const grossTotal = round4(netTotal + taxTotal);
 
     // How much of each item has already come back against this sale, so a
     // second return reads the cost layers after the ones the first took —
@@ -4904,7 +5111,7 @@ export async function postSalesReturn(input: ReturnInput, outer?: TransactionSql
       values
         (${companyId}, 'SALES_RETURN', ${docNo}, ${fiscalYear}, ${docDate}::date,
          ${docDate}::date, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
-         ${netTotal}, 0, ${netTotal}, ${input.memo ?? null}, now(), ${input.reference ?? null},
+         ${netTotal}, ${taxTotal}, ${grossTotal}, ${input.memo ?? null}, now(), ${input.reference ?? null},
          ${input.sourceDocumentId ?? null})
       returning id`;
 
@@ -4918,18 +5125,21 @@ export async function postSalesReturn(input: ReturnInput, outer?: TransactionSql
         select id, code, name, is_stocked, base_uom_id from item where id = ${line.itemId}`;
       if (!item) throw new Error("Item not found");
 
-      const net = line.focReasonId ? 0 : round4(line.qty * line.unitPrice);
+      const rt = taxForR.get(line);
+      const net = line.focReasonId ? 0 : round4(rt?.net ?? line.qty * line.unitPrice);
+      const lineTax = round4(rt?.tax ?? 0);
 
       await tx`
         insert into document_line
           (company_id, document_id, line_no, item_id, location_id,
            entered_qty, entered_uom_id, base_qty, unit_price,
-           net_amount, tax_amount, gross_amount, foc_reason_id)
+           net_amount, tax_code_id, tax_amount, gross_amount, foc_reason_id)
         values
           (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
            ${line.qty}, ${item.base_uom_id}, ${line.qty},
            ${line.focReasonId ? 0 : line.unitPrice},
-           ${net}, 0, ${net}, ${line.focReasonId ?? null})`;
+           ${net}, ${line.focReasonId ? null : (line.taxCodeId ?? rt?.rate?.id ?? null)},
+           ${lineTax}, ${round4(net + lineTax)}, ${line.focReasonId ?? null})`;
 
       if (item.is_stocked) {
         // Returned stock comes back as fresh lots at the cost the original
@@ -5028,7 +5238,21 @@ export async function postSalesReturn(input: ReturnInput, outer?: TransactionSql
           + `Settings, or return against the invoice it came from.`
         );
       }
-      journal.push({ accountId: credit[0].a as string, amount: -netTotal, partnerId });
+      journal.push({ accountId: credit[0].a as string, amount: -grossTotal, partnerId });
+    }
+
+    // Tax charged on the sale is handed back: the liability to the revenue
+    // department shrinks by what the customer is no longer paying.
+    if (taxTotal !== 0) {
+      const byAccount = new Map<string, number>();
+      for (const v of taxForR.values()) {
+        if (v.tax === 0 || !v.rate) continue;
+        const acct = taxAccountFor(v.rate, "output");
+        byAccount.set(acct, roundMoney((byAccount.get(acct) ?? 0) + v.tax, scaleR));
+      }
+      for (const [accountId, amount] of byAccount) {
+        journal.push({ accountId, amount });
+      }
     }
 
     const entryId = await writeJournal(
@@ -5195,8 +5419,29 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
       }
     }
 
-    const netTotal = round4(lines.reduce(
-      (s, l) => s + (l.clearValue ?? round4(l.qty * l.unitPrice)), 0));
+    /* Tax only exists here when the return reduces a supplier invoice. A
+       return against a goods receipt that was never billed reverses an
+       accrual, and no input tax was ever claimed on it — so there is none to
+       give back, and pretending otherwise would credit the company a tax
+       asset it never had. */
+    const scaleR = await currencyScale(tx, companyId);
+    const { byId: taxRatesR, none: noTaxR } = await loadTaxRates(tx, companyId);
+    const includesTaxR = input.priceIncludesTax ?? false;
+    const splitsR = lines.map((l) => {
+      const amount = l.clearValue ?? round4(l.qty * l.unitPrice);
+      if (againstReceipt) return { net: amount, tax: 0, rate: null as TaxRate | null };
+      const found = l.taxCodeId ? taxRatesR.get(l.taxCodeId) : noTaxR;
+      if (l.taxCodeId && !found) throw new Error("That tax code is not active for this company");
+      const chosen = found ?? noTaxR;
+      const split = chosen
+        ? splitTax(amount, chosen.rate, includesTaxR, scaleR)
+        : { net: amount, tax: 0 };
+      return { net: split.net, tax: split.tax, rate: chosen ?? null };
+    });
+
+    const netTotal = round4(splitsR.reduce((s, v) => s + v.net, 0));
+    const taxTotal = roundMoney(splitsR.reduce((s, v) => s + v.tax, 0), scaleR);
+    const grossTotal = round4(netTotal + taxTotal);
 
     const [doc] = await tx`
       insert into document
@@ -5206,7 +5451,7 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
       values
         (${companyId}, 'PURCHASE_RETURN', ${docNo}, ${fiscalYear}, ${docDate}::date,
          ${docDate}::date, ${partnerId}, ${locationId}, 'MMK', 1, 'POSTED',
-         ${netTotal}, 0, ${netTotal}, ${input.memo ?? null}, now(), ${input.reference ?? null},
+         ${netTotal}, ${taxTotal}, ${grossTotal}, ${input.memo ?? null}, now(), ${input.reference ?? null},
          ${input.sourceDocumentId ?? null})
       returning id`;
 
@@ -5224,7 +5469,9 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
       // The value the matcher actually drew, where it drew one — not the
       // rounded product of a rate it derived, which can differ by a fraction
       // and leave that fraction sitting in the clearing account for good.
-      const net = round4(line.clearValue ?? round4(line.qty * line.unitPrice));
+      // The net is the split figure, so a tax-inclusive return credits the
+      // supplier the same gross the invoice charged.
+      const net = round4(splitsR[lineNo - 1].net);
 
       const onHandRows = await tx`
         select fn_qty_on_hand(${companyId}, ${line.itemId}, ${locationId}) as on_hand`;
@@ -5244,11 +5491,13 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
         insert into document_line
           (company_id, document_id, line_no, item_id, location_id,
            entered_qty, entered_uom_id, base_qty, unit_price,
-           net_amount, tax_amount, gross_amount)
+           net_amount, tax_code_id, tax_amount, gross_amount)
         values
           (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
            ${line.qty}, ${item.base_uom_id}, ${line.qty}, ${line.unitPrice},
-           ${net}, 0, ${net})`;
+           ${net}, ${splitsR[lineNo - 1].rate?.id ?? null},
+           ${splitsR[lineNo - 1].tax},
+           ${round4(net + splitsR[lineNo - 1].tax)})`;
 
       const [movement] = await tx`
         insert into stock_movement
@@ -5290,7 +5539,21 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
     } else {
       const ap = await tx`
         select fn_resolve_control_account(${companyId}, 'AP_CONTROL', ${partnerId}) as a`;
-      journal.push({ accountId: ap[0].a, amount: netTotal, partnerId });
+      journal.push({ accountId: ap[0].a, amount: grossTotal, partnerId });
+
+      // The tax asset goes back with the goods: we can no longer claim input
+      // tax on a purchase we have returned.
+      if (taxTotal !== 0) {
+        const byAccount = new Map<string, number>();
+        for (const v of splitsR) {
+          if (v.tax === 0 || !v.rate) continue;
+          const acct = taxAccountFor(v.rate, "input");
+          byAccount.set(acct, roundMoney((byAccount.get(acct) ?? 0) + v.tax, scaleR));
+        }
+        for (const [accountId, amount] of byAccount) {
+          journal.push({ accountId, amount: -amount });
+        }
+      }
     }
 
     const entryId = await writeJournal(
