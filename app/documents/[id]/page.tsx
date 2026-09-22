@@ -1169,6 +1169,29 @@ export default async function DocumentPage({
         </div>
       )}
 
+      {/* Reducing an invoice without goods moving. Offered only while
+          something is still owed on it: a note against a settled invoice
+          would drive it below nothing, and what that customer needs is a
+          refund. Sat next to the correction actions because it is one —
+          the other kind, for when their printed copy has to stay true. */}
+      {isInvoice && doc.status === "POSTED" && outstanding > 0 && (
+        <div className="docactions">
+          <Link
+            href={doc.doc_type === "SALES_INVOICE"
+              ? `/sales/credit-notes/new?invoice=${doc.id}`
+              : `/purchases/debit-notes/new?bill=${doc.id}`}
+            className="btn ghost"
+          >
+            {doc.doc_type === "SALES_INVOICE" ? "Credit note" : "Debit note"}
+          </Link>
+          <span className="page-sub">
+            {doc.doc_type === "SALES_INVOICE"
+              ? "Take something off what this customer owes, without goods coming back."
+              : "Take something off what you owe here, without goods going back."}
+          </span>
+        </div>
+      )}
+
       {needsSalesInvoice && (
         <div className="docactions">
           <Link href={`/sales/new?delivery_id=${doc.id}`} className="btn">

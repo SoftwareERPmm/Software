@@ -5420,6 +5420,173 @@ export type ReturnInput = {
  *   Dr Inventory     / Cr Cost of Goods Sold  (stock returns, at today's cost)
  *   Dr Sales Returns / Cr Accounts Receivable (revenue reversed, at the line price)
  */
+// ------------------------------------------------------- credit / debit --
+//
+// An invoice is wrong by 20,000 and nothing is coming back: the price was
+// agreed differently, a short delivery was billed in full, a discount was
+// settled after the fact. Amending the invoice is right for a recording
+// error and wrong once the customer holds a printed one — their copy would
+// disagree with the books, and the reduction is expected to be its own dated
+// paper.
+//
+// Value only. Neither note touches stock, which is the whole point: goods
+// coming back is a return, and returns already exist.
+//
+//   CREDIT_NOTE   Dr Sales Return     / Cr Accounts Receivable
+//   DEBIT_NOTE    Dr Accounts Payable / Cr Purchase Return
+//
+// The invoice is never edited. What it still owes is derived, and these join
+// the same subtraction a return already makes.
+
+export type NoteInput = {
+  companyId: string;
+  partnerId: string;
+  docDate: string;
+  /** The invoice being reduced. Required: a note against nothing is a
+   *  journal entry, and this app already has one of those. */
+  sourceDocumentId: string;
+  /** What to take off, before tax. */
+  amount: number;
+  /** The tax the original line carried, so the note gives that back too. */
+  taxCodeId?: string | null;
+  /** Why. Required — a tax office reads this, and so does whoever finds the
+   *  note in a year. */
+  reason: string;
+  memo?: string | null;
+  reference?: string | null;
+};
+
+async function _postNote(
+  tx: TransactionSql,
+  kind: "CREDIT_NOTE" | "DEBIT_NOTE",
+  input: NoteInput,
+) {
+  const { companyId, partnerId, docDate } = input;
+  const isCredit = kind === "CREDIT_NOTE";
+  const against = isCredit ? "SALES_INVOICE" : "PURCHASE_INVOICE";
+
+  if (!input.reason?.trim()) {
+    throw new Error(
+      `A ${isCredit ? "credit" : "debit"} note has to say why the invoice is ` +
+      `being reduced. It is the only part of this document that explains itself.`
+    );
+  }
+
+  const scale = await currencyScale(tx, companyId);
+  const amount = roundMoney(input.amount, scale);
+  if (!(amount > 0)) throw new Error("A note has to reduce the invoice by something");
+
+  const source = await requireSource(tx, {
+    id: input.sourceDocumentId,
+    companyId,
+    partnerId,
+    expect: [against],
+    role: isCredit ? "invoice this credit note reduces" : "bill this debit note reduces",
+  });
+
+  const fyRows = await tx`select fn_fiscal_year_for(${companyId}, ${docDate}::date) as fy`;
+  const fiscalYear = fyRows[0]?.fy ?? null;
+  if (!fiscalYear) throw new Error(`No fiscal year covers ${docDate}`);
+
+  /* Tax comes off with the money it was charged on. Resolved at the note's
+     own date, like every other rate in this engine — a note written in
+     October against a September invoice uses October's rate only if that is
+     what the caller names, and names the invoice's code when it means to
+     reverse what was charged. */
+  const { byId: rates, none: noTax } = await loadTaxRates(tx, companyId, docDate);
+  const rate = input.taxCodeId ? rates.get(input.taxCodeId) : noTax;
+  if (input.taxCodeId && !rate) throw new Error(taxNotEffective(docDate));
+  const tax = rate ? roundMoney((amount * rate.rate) / 100, scale) : 0;
+  const gross = roundMoney(amount + tax, scale);
+
+  /* What the invoice still owes, so a note cannot take it below nothing. A
+     customer who has already paid needs their money back, not a credit — and
+     an invoice driven negative would sit in aging as a debt owed the wrong
+     way round. */
+  const [open] = await tx`
+    select outstanding from v_open_item where document_id = ${input.sourceDocumentId}`;
+  const owed = Number(open?.outstanding ?? 0);
+  if (gross > owed + 0.0001) {
+    throw new Error(
+      `${source.doc_no} has ${Math.round(owed).toLocaleString("en-US")} still owing and ` +
+      `this note is for ${Math.round(gross).toLocaleString("en-US")}. A note cannot take ` +
+      `an invoice below nothing — refund what was overpaid instead, or reduce the note.`
+    );
+  }
+
+  const noRows = await tx`
+    select fn_next_document_no(${companyId}, ${kind}, ${docDate}::date) as no`;
+  const docNo = noRows[0].no;
+
+  // The invoice's own warehouse, so the note lands on the same branch in
+  // every location-filtered report as the invoice it reduces.
+  const [src] = await tx`
+    select location_id from document where id = ${input.sourceDocumentId}`;
+  const noteLocation = (src?.location_id as string | null) ?? null;
+
+  const [doc] = await tx`
+    insert into document
+      (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
+       partner_id, location_id, currency, exchange_rate, status,
+       net_total, tax_total, gross_total, memo, posted_at, reference,
+       source_document_id)
+    values
+      (${companyId}, ${kind}, ${docNo}, ${fiscalYear}, ${docDate}::date, ${docDate}::date,
+       ${partnerId}, ${noteLocation}, 'MMK', 1, 'POSTED',
+       ${amount}, ${tax}, ${gross},
+       -- The reason is the document. Kept in memo so every list, the history
+       -- log and the printed note carry it without a column of its own.
+       ${input.reason.trim()}, now(), ${input.reference ?? null},
+       ${input.sourceDocumentId})
+    returning id`;
+
+  const journal: JournalLine[] = [];
+
+  if (isCredit) {
+    // Revenue given back, tax given back, and the customer owes less.
+    const ret = await tx`
+      select fn_resolve_account_for_item(${companyId}, 'SALES_RETURN', null) as a`;
+    journal.push({ accountId: ret[0].a, amount });
+    if (tax !== 0 && rate) {
+      journal.push({ accountId: taxAccountFor(rate, "output"), amount: tax });
+    }
+    const ar = await tx`
+      select fn_resolve_control_account(${companyId}, 'AR_CONTROL', ${partnerId}) as a`;
+    journal.push({ accountId: ar[0].a, amount: -gross, partnerId });
+  } else {
+    // We owe the supplier less, and the cost — and the tax we claimed on it —
+    // comes back off.
+    const ap = await tx`
+      select fn_resolve_control_account(${companyId}, 'AP_CONTROL', ${partnerId}) as a`;
+    journal.push({ accountId: ap[0].a, amount: gross, partnerId });
+    const ret = await tx`
+      select fn_resolve_account_for_item(${companyId}, 'PURCHASE_RETURN', null) as a`;
+    journal.push({ accountId: ret[0].a, amount: -amount });
+    if (tax !== 0 && rate) {
+      journal.push({ accountId: taxAccountFor(rate, "input"), amount: -tax });
+    }
+  }
+
+  const entryId = await writeJournal(
+    tx, companyId, docDate, kind, doc.id,
+    `${docNo} ${isCredit ? "credit note" : "debit note"} against ${source.doc_no}`,
+    journal, noteLocation,
+  );
+  await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
+
+  return { id: doc.id as string, docNo, against: source.doc_no as string, gross };
+}
+
+/** Sales side: the customer owes less, and no goods came back. */
+export async function postCreditNote(input: NoteInput, tx?: TransactionSql) {
+  return inTransaction(tx, (t) => _postNote(t, "CREDIT_NOTE", input));
+}
+
+/** Purchase side: we owe the supplier less, and no goods went back. */
+export async function postDebitNote(input: NoteInput, tx?: TransactionSql) {
+  return inTransaction(tx, (t) => _postNote(t, "DEBIT_NOTE", input));
+}
+
 export async function postSalesReturn(input: ReturnInput, outer?: TransactionSql) {
   if (input.lines.length === 0) throw new Error("A return needs at least one line");
   assertLines(input.lines);

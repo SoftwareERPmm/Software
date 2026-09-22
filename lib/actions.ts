@@ -13,6 +13,7 @@ import { encodeItemPhoto } from "./item-photo";
 import { asRegion } from "./regions";
 import {
   postSalesInvoice, postPurchaseInvoice, postSaleWithDelivery, postPurchaseWithReceipt,
+  postCreditNote, postDebitNote,
   postSalesOrder, postPurchaseOrder, postDelivery, postGoodsReceipt,
   postSupplierPayment, postCustomerReceipt,
   postCashVoucher, postBankVoucher, postJournalVoucher,
@@ -748,6 +749,63 @@ export async function deleteItem(_prev: unknown, fd: FormData): Promise<ActionRe
 }
 
 // ------------------------------------------------------------- brands --
+
+// --------------------------------------------------- credit / debit notes --
+
+async function postNote(
+  kind: "CREDIT_NOTE" | "DEBIT_NOTE", fd: FormData,
+): Promise<ActionResult> {
+  const isCredit = kind === "CREDIT_NOTE";
+  let docId: string;
+  try {
+    const co = await companyId();
+    const sourceDocumentId = str(fd, "source_document_id");
+    const partnerId = str(fd, "partner_id");
+    const amount = num(fd, "amount");
+    const reason = str(fd, "reason");
+    const docDate = str(fd, "doc_date");
+
+    if (!sourceDocumentId) {
+      return { error: isCredit ? "Choose the invoice to credit" : "Choose the bill to debit" };
+    }
+    if (!(amount > 0)) return { error: "Enter how much to take off" };
+    if (!reason.trim()) return { error: "Say why — the note is read by people who were not here" };
+
+    const input = {
+      companyId: co,
+      partnerId,
+      docDate,
+      sourceDocumentId,
+      amount,
+      taxCodeId: str(fd, "tax_code_id") || null,
+      reason,
+      reference: str(fd, "reference") || null,
+    };
+
+    const result = await postOnce(co, attemptKey(fd), (tx) =>
+      isCredit ? postCreditNote(input, tx) : postDebitNote(input, tx));
+
+    revalidatePath("/documents");
+    revalidatePath(`/documents/${sourceDocumentId}`);
+    docId = (result as { id: string }).id;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  // Outside the try, as every posting action here does: redirect() throws to
+  // do its work, and catching it would turn a success into an error message.
+  redirectWithToast(`/documents/${docId}`, `${isCredit ? "Credit" : "Debit"} note posted`);
+}
+
+/** The customer owes less, and no goods came back. */
+export async function createCreditNote(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  return postNote("CREDIT_NOTE", fd);
+}
+
+/** We owe the supplier less, and no goods went back. */
+export async function createDebitNote(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  return postNote("DEBIT_NOTE", fd);
+}
 
 // ------------------------------------------------------------- tax codes --
 //
