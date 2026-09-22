@@ -1169,6 +1169,10 @@ export type PickerItem = {
   id: string; code: string; name: string; is_stocked: boolean;
   item_group_id: string; on_hand: string; sale_price: string; next_cost: string;
   uom_code: string;
+  base_uom_id?: string;
+  /** The packs this item is bought and sold in. Empty for an item handled
+   *  only in its own unit, which is most of a catalogue. */
+  packs?: { uomId: string; code: string; factor: string | number }[];
   /** Whether goods of this item arrive in identifiable lots, and whether
    *  those lots have a shelf life. A receipt form asks for what these say. */
   tracks_batch?: boolean; tracks_expiry?: boolean;
@@ -2876,6 +2880,16 @@ export async function getFormData() {
                 -- figure quoted back to the user can carry it rather than
                 -- being a bare number.
                 u.code as uom_code,
+                i.base_uom_id,
+                -- The packs this item can be bought and sold in, so a line
+                -- can offer them without a second round trip per item.
+                coalesce((
+                  select json_agg(json_build_object(
+                           'uomId', iu.uom_id, 'code', pu.code, 'factor', iu.factor)
+                         order by iu.factor)
+                    from item_uom iu join uom pu on pu.id = iu.uom_id
+                   where iu.item_id = i.id
+                ), '[]'::json) as packs,
                 coalesce(s.qty, 0) as on_hand,
                 coalesce((
                   select unit_cost from v_stock_lot_open
