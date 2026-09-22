@@ -724,13 +724,22 @@ export async function createTaxCode(_prev: unknown, fd: FormData): Promise<Actio
 
     // A zero-rate code needs no accounts: nothing posts. A charging one does,
     // and both sides come from the roles rather than being chosen per code.
-    await sql`
-      insert into tax_code (company_id, code, name, rate, output_account_id, input_account_id)
-      values (${co}, ${code}, ${name}, ${rate},
+    //
+    // The rate is a dated row from the start. Its first one runs from the
+    // day given, or from before any document this company holds when none is
+    // — a code whose rate began yesterday cannot tax last month's invoice.
+    const from = str(fd, "valid_from") || "1900-01-01";
+    const [created] = await sql`
+      insert into tax_code (company_id, code, name, output_account_id, input_account_id)
+      values (${co}, ${code}, ${name},
         case when ${rate} > 0 then (select account_id from system_account
           where company_id = ${co} and role = 'OUTPUT_TAX') end,
         case when ${rate} > 0 then (select account_id from system_account
-          where company_id = ${co} and role = 'INPUT_TAX') end)`;
+          where company_id = ${co} and role = 'INPUT_TAX') end)
+      returning id`;
+    await sql`
+      insert into tax_rate (company_id, tax_code_id, rate, valid_from)
+      values (${co}, ${created.id}, ${rate}, ${from}::date)`;
   } catch (e) {
     if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
     return { error: e instanceof Error ? e.message : String(e) };
@@ -746,29 +755,22 @@ export async function updateTaxCode(_prev: unknown, fd: FormData): Promise<Actio
     const co = await companyId();
     const id = str(fd, "id");
     const name = str(fd, "name");
-    const rate = num(fd, "rate");
 
     if (!id) return { error: "Choose a tax code" };
     if (!code) return { error: "Code is required" };
     if (!name) return { error: "Name is required" };
-    if (rate < 0 || rate > 100) return { error: "A rate is a percentage between 0 and 100" };
 
-    /* Documents already posted keep the tax they were posted with: the figure
-       lives on the line, not in this table, so editing a rate cannot reach
-       back and change what a customer was charged last month. What it does
-       change is every invoice raised from now on. */
+    /* The rate is not editable here — it is a dated series, changed by
+       adding the next one. What this edits is the code's name, its code and
+       whether it can still be chosen. */
     const dup = await sql`
       select 1 from tax_code where company_id = ${co} and code = ${code} and id <> ${id}`;
     if (dup.length) return { error: `Code ${code} is already used` };
 
     await sql`
       update tax_code set
-        code = ${code}, name = ${name}, rate = ${rate},
-        is_active = ${fd.get("is_active") === "on"},
-        output_account_id = case when ${rate} > 0 then (select account_id from system_account
-          where company_id = ${co} and role = 'OUTPUT_TAX') end,
-        input_account_id = case when ${rate} > 0 then (select account_id from system_account
-          where company_id = ${co} and role = 'INPUT_TAX') end
+        code = ${code}, name = ${name},
+        is_active = ${fd.get("is_active") === "on"}
       where id = ${id} and company_id = ${co}`;
   } catch (e) {
     if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
@@ -777,6 +779,60 @@ export async function updateTaxCode(_prev: unknown, fd: FormData): Promise<Actio
 
   revalidatePath("/settings/tax-codes");
   redirectWithToast("/settings/tax-codes", "Tax code updated");
+}
+
+/**
+ * The next rate this code will charge, from the day it starts.
+ *
+ * Not an edit of the last one. A rate that changed in September is two
+ * facts — 5% until then, 6% after — and an invoice raised in March is still
+ * a 5% invoice. Backdating is allowed because notifications arrive after
+ * the date they take effect; what it cannot do is change a document already
+ * posted, since the tax on those lines was written when they posted.
+ */
+export async function addTaxRate(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "tax_code_id");
+    const rate = num(fd, "rate");
+    const from = str(fd, "valid_from");
+
+    if (!id) return { error: "Choose a tax code" };
+    if (!from) return { error: "Say which date the new rate starts from" };
+    if (rate < 0 || rate > 100) return { error: "A rate is a percentage between 0 and 100" };
+
+    const [code] = await sql`
+      select id, code from tax_code where id = ${id} and company_id = ${co}`;
+    if (!code) return { error: "That tax code does not belong to this company" };
+
+    const dup = await sql`
+      select rate from tax_rate where tax_code_id = ${id} and valid_from = ${from}::date`;
+    if (dup.length) {
+      return { error: `${code.code} already has a rate starting ${from} — `
+        + `${Number(dup[0].rate)}%. Two rates cannot start the same day.` };
+    }
+
+    await sql`
+      insert into tax_rate (company_id, tax_code_id, rate, valid_from)
+      values (${co}, ${id}, ${rate}, ${from}::date)`;
+
+    // A code that charges now needs the accounts for it, even if its first
+    // rate was zero.
+    if (rate > 0) {
+      await sql`
+        update tax_code set
+          output_account_id = coalesce(output_account_id, (select account_id from system_account
+            where company_id = ${co} and role = 'OUTPUT_TAX')),
+          input_account_id = coalesce(input_account_id, (select account_id from system_account
+            where company_id = ${co} and role = 'INPUT_TAX'))
+        where id = ${id}`;
+    }
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/settings/tax-codes");
+  redirectWithToast("/settings/tax-codes", "Rate change scheduled");
 }
 
 export async function createBrand(_prev: unknown, fd: FormData): Promise<ActionResult> {
@@ -2839,9 +2895,19 @@ export async function getFormData() {
     // post rather than one four decimal places finer.
     sql`select c.decimal_places from company co
           join currency c on c.code = co.base_currency where co.id = ${co}`,
-    // Commercial tax codes, zero rate first so "None" heads the list.
-    sql`select id, code, name, rate from tax_code
-         where company_id = ${co} and is_active order by rate, code`,
+    // Commercial tax codes with every dated rate they carry, so a form can
+    // show what a code charges on the date the document is dated rather than
+    // on the date the page was opened.
+    sql`select t.id, t.code, t.name,
+               coalesce((
+                 select json_agg(json_build_object(
+                          'rate', r.rate, 'validFrom', to_char(r.valid_from, 'YYYY-MM-DD'))
+                        order by r.valid_from)
+                   from tax_rate r where r.tax_code_id = t.id
+               ), '[]'::json) as rates
+          from tax_code t
+         where t.company_id = ${co} and t.is_active
+         order by t.code`,
   ]);
 
   return {

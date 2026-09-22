@@ -248,13 +248,27 @@ type TaxRate = {
   inputAccountId: string | null;
 };
 
+/**
+ * The codes, each carrying the rate it charged on `onDate`.
+ *
+ * A rate belongs to a date: the same code can be 5% in March and 6% in
+ * September, and a document is taxed the way its own day was taxed. That is
+ * what makes a backdated invoice, or a re-posted amendment of an old one,
+ * come out at the rate it was originally raised at rather than today's.
+ *
+ * A code with no rate effective yet is left out entirely rather than treated
+ * as zero — using it is refused below, because a tax nobody has set a rate
+ * for is an unanswered question, not an exemption.
+ */
 async function loadTaxRates(
-  tx: TransactionSql, companyId: string,
+  tx: TransactionSql, companyId: string, onDate: string,
 ): Promise<{ byId: Map<string, TaxRate>; none: TaxRate | null }> {
   const rows = await tx`
-    select id, code, rate, output_account_id, input_account_id
-      from tax_code
-     where company_id = ${companyId} and is_active`;
+    select t.id, t.code, t.output_account_id, t.input_account_id,
+           fn_tax_rate_on(t.id, ${onDate}::date) as rate
+      from tax_code t
+     where t.company_id = ${companyId} and t.is_active
+       and fn_tax_rate_on(t.id, ${onDate}::date) is not null`;
   const byId = new Map<string, TaxRate>();
   let none: TaxRate | null = null;
   for (const r of rows as unknown as {
@@ -291,6 +305,11 @@ function splitTax(
   }
   return { net: roundMoney(amount, scale), tax: roundMoney((amount * rate) / 100, scale) };
 }
+
+const taxNotEffective = (onDate: string) =>
+  `That tax code is not active, or had no rate in force on ${onDate}. ` +
+  `A rate applies from the date it starts, so a document dated before the ` +
+  `first rate cannot use the code.`;
 
 /** The account a tax code posts to, and a readable refusal when it has none. */
 function taxAccountFor(t: TaxRate, side: "output" | "input"): string {
@@ -2752,12 +2771,12 @@ async function _postSalesInvoice(
   // header totals and the lines have to be the same arithmetic. Splitting it
   // again inside the line loop is how a tax_total and the sum of its lines
   // come to differ by a rounding step.
-  const { byId: taxRates, none: noTax } = await loadTaxRates(tx, companyId);
+  const { byId: taxRates, none: noTax } = await loadTaxRates(tx, companyId, docDate);
   const includesTax = input.priceIncludesTax ?? false;
   const taxFor = new Map<InvoiceLine, { net: number; tax: number; rate: TaxRate }>();
   for (const l of charged) {
     const rate = l.taxCodeId ? taxRates.get(l.taxCodeId) : noTax;
-    if (l.taxCodeId && !rate) throw new Error("That tax code is not active for this company");
+    if (l.taxCodeId && !rate) throw new Error(taxNotEffective(docDate));
     const chosen = rate ?? noTax;
     const amount = round4(pricedFor.get(l)?.net ?? l.qty * l.unitPrice);
     const split = chosen
@@ -4204,11 +4223,11 @@ async function _postPurchaseInvoice(
   // one piece of arithmetic. The cost that reaches inventory is the net —
   // tax the company gets back is not part of what the goods cost, and
   // capitalising it would overstate stock and understate the tax asset.
-  const { byId: taxRates, none: noTax } = await loadTaxRates(tx, companyId);
+  const { byId: taxRates, none: noTax } = await loadTaxRates(tx, companyId, docDate);
   const includesTax = input.priceIncludesTax ?? false;
   const splits = input.lines.map((l) => {
     const rate = l.taxCodeId ? taxRates.get(l.taxCodeId) : noTax;
-    if (l.taxCodeId && !rate) throw new Error("That tax code is not active for this company");
+    if (l.taxCodeId && !rate) throw new Error(taxNotEffective(docDate));
     const chosen = rate ?? noTax;
     const amount = roundMoney(l.qty * l.unitPrice, scale);
     const split = chosen
@@ -5054,13 +5073,13 @@ export async function postSalesReturn(input: ReturnInput, outer?: TransactionSql
     const docNo = noRows[0].no;
 
     const scaleR = await currencyScale(tx, companyId);
-    const { byId: taxRatesR, none: noTaxR } = await loadTaxRates(tx, companyId);
+    const { byId: taxRatesR, none: noTaxR } = await loadTaxRates(tx, companyId, docDate);
     const includesTaxR = input.priceIncludesTax ?? false;
     const taxForR = new Map<ReturnLine, { net: number; tax: number; rate: TaxRate | null }>();
     for (const l of input.lines) {
       if (l.focReasonId) { taxForR.set(l, { net: 0, tax: 0, rate: null }); continue; }
       const found = l.taxCodeId ? taxRatesR.get(l.taxCodeId) : noTaxR;
-      if (l.taxCodeId && !found) throw new Error("That tax code is not active for this company");
+      if (l.taxCodeId && !found) throw new Error(taxNotEffective(docDate));
       const chosen = found ?? noTaxR;
       const amount = round4(l.qty * l.unitPrice);
       const split = chosen
@@ -5425,13 +5444,13 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
        give back, and pretending otherwise would credit the company a tax
        asset it never had. */
     const scaleR = await currencyScale(tx, companyId);
-    const { byId: taxRatesR, none: noTaxR } = await loadTaxRates(tx, companyId);
+    const { byId: taxRatesR, none: noTaxR } = await loadTaxRates(tx, companyId, docDate);
     const includesTaxR = input.priceIncludesTax ?? false;
     const splitsR = lines.map((l) => {
       const amount = l.clearValue ?? round4(l.qty * l.unitPrice);
       if (againstReceipt) return { net: amount, tax: 0, rate: null as TaxRate | null };
       const found = l.taxCodeId ? taxRatesR.get(l.taxCodeId) : noTaxR;
-      if (l.taxCodeId && !found) throw new Error("That tax code is not active for this company");
+      if (l.taxCodeId && !found) throw new Error(taxNotEffective(docDate));
       const chosen = found ?? noTaxR;
       const split = chosen
         ? splitTax(amount, chosen.rate, includesTaxR, scaleR)

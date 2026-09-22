@@ -121,7 +121,11 @@ export function SalesVoucher({
   volumeDiscounts?: VolumeBand[];
   focReasons: FocReason[];
   /** Commercial tax codes this company can charge, zero-rate first. */
-  taxCodes?: { id: string; code: string; name: string; rate: string | number }[];
+  taxCodes?: {
+    id: string; code: string; name: string;
+    /** Every rate this code has carried, oldest first. */
+    rates: { rate: string | number; validFrom: string }[];
+  }[];
   itemPrices: ItemPrice[];
   priceLevels: PriceLevel[];
   openInvoices: OpenInvoice[];
@@ -474,12 +478,21 @@ export function SalesVoucher({
      that is how a Myanmar trader charges it, and a per-line override can
      come later without changing what is stored — the engine already keeps
      the code on each line. */
-  const taxable = taxCodes.filter((t) => Number(t.rate) > 0);
-  const zeroRated = taxCodes.find((t) => Number(t.rate) === 0) ?? null;
+  /* What each code charges on the date this document is dated — not on the
+     date the page was opened. A rate that started in September does not
+     apply to an invoice being written up for August. */
+  const rateOn = (t: { rates: { rate: string | number; validFrom: string }[] }) => {
+    const inForce = (t.rates ?? []).filter((r) => r.validFrom <= docDate);
+    return inForce.length ? Number(inForce[inForce.length - 1].rate) : null;
+  };
+  const effective = taxCodes
+    .map((t) => ({ ...t, rate: rateOn(t) }))
+    .filter((t) => t.rate !== null) as (typeof taxCodes[number] & { rate: number })[];
+  const taxable = effective.filter((t) => t.rate > 0);
+  const zeroRated = effective.find((t) => t.rate === 0) ?? null;
   const [taxCodeId, setTaxCodeId] = useState<string>(zeroRated?.id ?? "");
   const [inclusive, setInclusive] = useState(false);
-  const chosenTax = taxCodes.find((t) => t.id === taxCodeId) ?? null;
-  const taxRate = Number(chosenTax?.rate ?? 0);
+  const taxRate = effective.find((t) => t.id === taxCodeId)?.rate ?? 0;
 
   // The same split the engine does, so the voucher cannot preview one figure
   // and post another: exclusive adds on top, inclusive comes back out.
@@ -1120,7 +1133,7 @@ export function SalesVoucher({
               >
                 {zeroRated && <option value={zeroRated.id}>None</option>}
                 {taxable.map((t) => (
-                  <option key={t.id} value={t.id}>{t.code} · {Number(t.rate)}%</option>
+                  <option key={t.id} value={t.id}>{t.code} · {t.rate}%</option>
                 ))}
               </select>
             </label>

@@ -3498,3 +3498,10 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
 /* The tax control lives in the total bar, beside the figure it changes. */
 .totalbar-tax { display: inline-flex; align-items: center; gap: 0.4rem; font-size: var(--t-sm); }
 .totalbar-tax select { padding: 0.25rem 0.4rem; font-size: var(--t-sm); }
+
+/* A count that opens something, without looking like a button. */
+.linkish {
+  background: none; border: 0; padding: 0; font: inherit;
+  color: var(--brand); cursor: pointer; text-decoration: underline;
+  text-underline-offset: 2px;
+}
