@@ -2,8 +2,14 @@ import { createPartner } from "@/lib/actions";
 import { SimpleForm } from "@/components/simple-form";
 import { HelpHint } from "@/components/help-hint";
 import { REGION_GROUPS } from "@/lib/regions";
+import { sql } from "@/lib/db";
 
-export default function NewPartner() {
+export default async function NewPartner() {
+  const [co] = await sql`select id from company order by created_at limit 1`;
+  const levels = (await sql`
+    select id, name from price_level where company_id = ${co.id} order by sort_order`
+  ) as unknown as { id: string; name: string }[];
+
   return (
     <>
       <div className="page-head">
@@ -66,6 +72,16 @@ export default function NewPartner() {
                 <label htmlFor="payment_terms_days">Payment terms (days)</label>
                 <input id="payment_terms_days" name="payment_terms_days" type="number" min="0" defaultValue={30} />
                 <span className="hint">Sets the due date on invoices</span>
+              </div>
+              <div className="field">
+                <label htmlFor="price_level_id">Price level</label>
+                <select id="price_level_id" name="price_level_id" defaultValue="">
+                  <option value="">Default</option>
+                  {levels.map((l) => (
+                    <option key={l.id} value={l.id}>{l.name}</option>
+                  ))}
+                </select>
+                <span className="hint">Which column of the price list they buy from</span>
               </div>
               <div className="field">
                 <label htmlFor="credit_limit">Credit limit</label>

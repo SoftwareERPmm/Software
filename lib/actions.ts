@@ -142,14 +142,18 @@ export async function createPartner(_prev: unknown, fd: FormData): Promise<Actio
     await sql`
       insert into business_partner
         (company_id, code, name, name_my, company_name, is_customer, is_supplier,
-         region, township, address, phone, payment_terms_days, credit_limit)
+         region, township, address, phone, payment_terms_days, credit_limit, price_level_id)
       values
         (${co}, ${code}, ${name}, ${str(fd, "name_my") || null},
          ${str(fd, "company_name") || null}, ${isCustomer}, ${isSupplier},
          ${asRegion(str(fd, "region"))}, ${str(fd, "township") || null},
          ${str(fd, "address") || null},
          ${str(fd, "phone") || null}, ${num(fd, "payment_terms_days")},
-         ${fd.get("credit_limit") ? num(fd, "credit_limit") : null})`;
+         ${fd.get("credit_limit") ? num(fd, "credit_limit") : null},
+         -- Which column of the price list this customer buys from. Null
+         -- means the first level, which is what every customer had before
+         -- anyone could choose.
+         ${str(fd, "price_level_id") || null})`;
   } catch (e) {
     if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
     return { error: e instanceof Error ? e.message : String(e) };
@@ -188,6 +192,7 @@ export async function updatePartner(_prev: unknown, fd: FormData): Promise<Actio
         township = ${str(fd, "township") || null}, address = ${str(fd, "address") || null},
         phone = ${str(fd, "phone") || null}, payment_terms_days = ${num(fd, "payment_terms_days")},
         credit_limit = ${fd.get("credit_limit") ? num(fd, "credit_limit") : null},
+        price_level_id = ${str(fd, "price_level_id") || null},
         is_active = ${fd.get("is_active") === "on"}
       where id = ${id} and company_id = ${co}`;
   } catch (e) {
@@ -876,6 +881,50 @@ export async function addTaxRate(_prev: unknown, fd: FormData): Promise<ActionRe
 
   revalidatePath("/settings/tax-codes");
   redirectWithToast("/settings/tax-codes", "Rate change scheduled");
+}
+
+// ----------------------------------------------------------- price list --
+//
+// A price belongs to a level, a unit and a date. Changing what something
+// sells for is adding the next price from the day it applies, never
+// overwriting the last one: an invoice raised in March was raised at March's
+// price, and the line already stores what was charged, so the list is free
+// to move on without dragging history with it.
+
+export async function setItemPrice(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const itemId = str(fd, "item_id");
+    const levelId = str(fd, "price_level_id");
+    const uomId = str(fd, "uom_id");
+    const price = num(fd, "price");
+    const from = str(fd, "valid_from") || new Date().toISOString().slice(0, 10);
+
+    if (!itemId) return { error: "Choose an item" };
+    if (!levelId) return { error: "Choose a price level" };
+    if (!uomId) return { error: "Choose the unit this price is per" };
+    if (!(price >= 0)) return { error: "A price cannot be negative" };
+
+    const [item] = await sql`
+      select id, code from item where id = ${itemId} and company_id = ${co}`;
+    if (!item) return { error: "That item does not belong to this company" };
+
+    /* One price per item, level, unit and day. Asked for twice on the same
+       day, the later answer wins — which is what somebody correcting a typo
+       means, and a second row for the same morning would leave the two
+       arguing. */
+    await sql`
+      insert into item_price (company_id, item_id, price_level_id, uom_id, currency, price, valid_from)
+      values (${co}, ${itemId}, ${levelId}, ${uomId}, 'MMK', ${price}, ${from}::date)
+      on conflict (company_id, item_id, price_level_id, uom_id, currency, valid_from)
+      do update set price = excluded.price`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/items/prices");
+  revalidatePath("/sales/new");
+  redirectWithToast("/items/prices", "Price set");
 }
 
 export async function createBrand(_prev: unknown, fd: FormData): Promise<ActionResult> {

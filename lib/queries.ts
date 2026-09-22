@@ -1726,7 +1726,8 @@ export async function getPartners(companyId: string) {
     select bp.id, bp.code, bp.name, bp.name_my, bp.company_name,
            bp.is_customer, bp.is_supplier, bp.is_active,
            bp.region, bp.township, bp.address, bp.phone,
-           bp.payment_terms_days, bp.credit_limit,
+           bp.payment_terms_days, bp.credit_limit, bp.price_level_id,
+           (select pl.name from price_level pl where pl.id = bp.price_level_id) as price_level_name,
            coalesce(oi.outstanding, 0) as outstanding,
            -- What a customer is actually using of their limit, and what is
            -- left. Both come from the same view the posting engine reads, so
@@ -3377,6 +3378,37 @@ export async function getExpiryByItem(companyId: string) {
             - coalesce((select sum(c.qty) from stock_lot_consumption c
                          where c.lot_id = l.id), 0)) > 0.0001
      group by l.item_id`;
+}
+
+/**
+ * The price list: every item, and what it sells for at each level today.
+ *
+ * "Today" because a price is a dated series — the latest one that had begun
+ * by now is the one a voucher fills in. Earlier rows stay where they are,
+ * describing the invoices raised under them.
+ */
+export async function getPriceList(companyId: string) {
+  return sql`
+    select i.id as item_id, i.code, i.name, i.base_uom_id,
+           u.code as uom_code,
+           pl.id as level_id, pl.name as level_name, pl.sort_order,
+           cur.price, to_char(cur.valid_from, 'YYYY-MM-DD') as valid_from,
+           (select count(*)::int from item_price h
+             where h.item_id = i.id and h.price_level_id = pl.id) as prices
+      from item i
+      join uom u on u.id = i.base_uom_id
+      cross join price_level pl
+      left join lateral (
+            select ip.price, ip.valid_from
+              from item_price ip
+             where ip.item_id = i.id and ip.price_level_id = pl.id
+               and ip.valid_from <= current_date
+             order by ip.valid_from desc
+             limit 1
+      ) cur on true
+     where i.company_id = ${companyId} and pl.company_id = ${companyId}
+       and i.is_active
+     order by i.code, pl.sort_order`;
 }
 
 export async function getOverCreditLimit(companyId: string) {

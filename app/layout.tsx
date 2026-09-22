@@ -191,6 +191,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <NavLink href="/items/subcategories">Sub Categories</NavLink>
               <NavLink href="/items/brands">Brands</NavLink>
               <NavLink href="/items/units">Units</NavLink>
+              <NavLink href="/items/prices">Price list</NavLink>
               <NavLink href="/warehouses">Branches &amp; warehouses</NavLink>
               <NavLink href="/salespersons">Salespersons</NavLink>
               <NavLink href="/settings/accounts">Chart of Accounts</NavLink>

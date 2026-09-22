@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getCompany, getPartners } from "@/lib/queries";
+import { sql } from "@/lib/db";
 import { updatePartner, deactivatePartner, activatePartner, deletePartner } from "@/lib/actions";
 import { PartnerRow } from "@/components/partner-row";
 import { DataTable, type DataRow } from "@/components/data-table";
@@ -15,6 +16,10 @@ export default async function Partners({
 
   const { role } = await searchParams;
   const all = (await getPartners(company.id)) as any[];
+  // The price columns this company keeps, so a customer can be put on one.
+  const priceLevels = (await sql`
+    select id, name from price_level where company_id = ${company.id} order by sort_order`
+  ) as unknown as { id: string; name: string }[];
 
   // Customers and Suppliers in the nav are filtered views of this same
   // table, not separate lists — the same company is routinely both, and
@@ -33,6 +38,7 @@ export default async function Partners({
       role: `${p.is_customer ? "Customer" : ""} ${p.is_supplier ? "Supplier" : ""}`.trim(),
       region: p.region ?? "",
       township: p.township ?? "",
+      price_level: p.price_level_name ?? "",
       payment_terms_days: Number(p.payment_terms_days),
       outstanding: Number(p.outstanding),
       // Sorting by what is left of a limit puts whoever is closest to it at
@@ -47,6 +53,7 @@ export default async function Partners({
     node: (
       <PartnerRow
         partner={p}
+        priceLevels={priceLevels}
         updateAction={updatePartner}
         deactivateAction={deactivatePartner}
         activateAction={activatePartner}
@@ -87,6 +94,7 @@ export default async function Partners({
               { key: "role", label: "Role", sortable: true },
               { key: "region", label: "Region", sortable: true },
               { key: "township", label: "Township", sortable: true },
+              { key: "price_level", label: "Price level", sortable: true },
               { key: "payment_terms_days", label: "Terms", sortable: true, align: "r" },
               { key: "outstanding", label: "Outstanding", sortable: true, align: "r" },
               { key: "credit_limit", label: "Credit limit", sortable: true, align: "r" },
