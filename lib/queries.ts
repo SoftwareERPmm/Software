@@ -1763,6 +1763,9 @@ export async function getPartners(companyId: string) {
            (select pl.name from price_level pl where pl.id = bp.price_level_id) as price_level_name,
            bp.category_id,
            (select pc.name from partner_category pc where pc.id = bp.category_id) as category_name,
+           bp.supplier_category_id,
+           (select pc.name from partner_category pc
+             where pc.id = bp.supplier_category_id) as supplier_category_name,
            coalesce(oi.outstanding, 0) as outstanding,
            -- What a customer is actually using of their limit, and what is
            -- left. Both come from the same view the posting engine reads, so
@@ -3738,6 +3741,95 @@ export async function getDiscountsByPartner(companyId: string, from: string, to:
      order by total_discount desc`;
 }
 
+// ------------------------------------------------- cash conversion cycle --
+
+/**
+ * How long a kyat spends tied up before it comes back.
+ *
+ *   DIO  days the goods sit on the shelf      inventory / cost of sales
+ *   DSO  days a customer takes to pay         receivables / revenue
+ *   DPO  days we take to pay a supplier       payables / cost of sales
+ *   CCC  = DIO + DSO − DPO
+ *
+ * A distributor's working capital lives in that number: it is how many days
+ * of trading must be funded out of somebody's pocket between paying for
+ * goods and being paid for them. Lower is better, and negative means
+ * suppliers are funding the business.
+ *
+ * Two things this gets right that a naive version does not.
+ *
+ * **Year-end closes are excluded.** Closing a year empties revenue and cost
+ * of sales into retained earnings, so a sum over a window containing the
+ * close reads zero — and a cycle divided by zero revenue is not a large
+ * number, it is a missing one. The close is a bookkeeping entry about the
+ * year, not trading within it.
+ *
+ * **Balances are averaged across the window**, not taken at the end. A
+ * closing balance on a day when a big delivery happened to land would swing
+ * the whole metric; the question is how much was tied up *through* the
+ * period.
+ */
+export async function getCashConversionCycle(companyId: string, from: string, to: string) {
+  // Movement within the window, ignoring the year-end close.
+  const flow = async (types: string[]) => {
+    const [r] = await sql`
+      select coalesce(sum(jl.base_amount), 0)::float as v
+        from journal_line jl
+        join account a on a.id = jl.account_id
+        join journal_entry je on je.id = jl.journal_entry_id
+        left join document d on d.journal_entry_id = je.id
+       where jl.company_id = ${companyId}
+         and a.account_type = any(${types})
+         and je.entry_date >= ${from}::date and je.entry_date < ${to}::date
+         and coalesce(d.doc_type, '') <> 'YEAR_END_CLOSE'`;
+    return Number(r.v);
+  };
+
+  // Balance on a role's account as at a date — everything posted before it.
+  const balanceAt = async (role: string, on: string) => {
+    const [r] = await sql`
+      select coalesce(sum(jl.base_amount), 0)::float as v
+        from journal_line jl
+        join journal_entry je on je.id = jl.journal_entry_id
+       where jl.company_id = ${companyId}
+         and je.entry_date < ${on}::date
+         and jl.account_id in (
+               select account_id from account_determination
+                where company_id = ${companyId} and role = ${role})`;
+    return Number(r.v);
+  };
+
+  const avg = async (role: string) =>
+    ((await balanceAt(role, from)) + (await balanceAt(role, to))) / 2;
+
+  const [revenue, cogs] = [-(await flow(["REVENUE"])), await flow(["COGS"])];
+  const [inventory, receivable, payable] = [
+    await avg("INVENTORY"), await avg("AR_CONTROL"), -(await avg("AP_CONTROL")),
+  ];
+
+  const days = Math.max(
+    1,
+    Math.round((new Date(to).getTime() - new Date(from).getTime()) / 86_400_000),
+  );
+
+  // A ratio with no denominator is not zero, it is unanswerable — said so
+  // rather than shown as 0, which would read as "money comes back the same
+  // day".
+  const ratio = (num: number, den: number) =>
+    den > 0.0001 ? (num / den) * days : null;
+
+  const dio = ratio(inventory, cogs);
+  const dso = ratio(receivable, revenue);
+  const dpo = ratio(payable, cogs);
+
+  return {
+    from, to, days,
+    revenue, cogs, inventory, receivable, payable,
+    dio, dso, dpo,
+    ccc: dio !== null && dso !== null && dpo !== null ? dio + dso - dpo : null,
+  };
+}
+
 // -------------------------------------------------------------- year end --
 
 /** Every fiscal year, what it would close, and whether it already has. */
@@ -3814,11 +3906,12 @@ export async function getBankLedgerCandidates(
 
 // ------------------------------------------------------- partner categories --
 
-export async function getPartnerCategories(companyId: string) {
+export async function getPartnerCategories(companyId: string, kind?: "CUSTOMER" | "SUPPLIER") {
   return sql`
     select * from v_partner_category
      where company_id = ${companyId}
-     order by sort_order, name`;
+       ${kind ? sql`and kind = ${kind}` : sql``}
+     order by kind, sort_order, name`;
 }
 
 /**
@@ -3838,7 +3931,7 @@ export async function getRevenueByCustomerCategory(
            count(*)::int                       as invoices
       from document d
       join business_partner p on p.id = d.partner_id
-      left join partner_category c on c.id = p.category_id
+      left join partner_category c on c.id = p.category_id and c.kind = 'CUSTOMER'
      where d.company_id = ${companyId}
        and d.doc_type = 'SALES_INVOICE'
        and d.status = 'POSTED'

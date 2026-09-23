@@ -146,7 +146,7 @@ export async function createPartner(_prev: unknown, fd: FormData): Promise<Actio
       insert into business_partner
         (company_id, code, name, name_my, company_name, is_customer, is_supplier,
          region, township, address, phone, payment_terms_days, credit_limit, price_level_id,
-         category_id)
+         category_id, supplier_category_id)
       values
         (${co}, ${code}, ${name}, ${str(fd, "name_my") || null},
          ${str(fd, "company_name") || null}, ${isCustomer}, ${isSupplier},
@@ -160,14 +160,27 @@ export async function createPartner(_prev: unknown, fd: FormData): Promise<Actio
          ${str(fd, "price_level_id") || null},
          -- What kind of shop it is. Classification only; it changes
          -- nothing about what they are charged or allowed to owe.
-         ${str(fd, "category_id") || null})`;
+         ${str(fd, "category_id") || null},
+         ${str(fd, "supplier_category_id") || null})`;
   } catch (e) {
     if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
     return { error: e instanceof Error ? e.message : String(e) };
   }
 
   revalidatePath("/partners");
-  redirectWithToast("/partners", toastMsg);
+  // Back to the list they were looking at. Editing a supplier and being
+  // returned to the unfiltered list — reading customers — loses the filter
+  // and the place in it, which on a long partner list is the whole search
+  // again.
+  redirectWithToast(listPath(fd), toastMsg);
+}
+
+/** The partner list as it was being viewed, so a save returns to it. */
+function listPath(fd: FormData): string {
+  const role = String(fd.get("role") ?? "");
+  return role === "customer" || role === "supplier"
+    ? `/partners?role=${role}`
+    : "/partners";
 }
 
 export async function updatePartner(_prev: unknown, fd: FormData): Promise<ActionResult> {
@@ -201,6 +214,7 @@ export async function updatePartner(_prev: unknown, fd: FormData): Promise<Actio
         credit_limit = ${fd.get("credit_limit") ? num(fd, "credit_limit") : null},
         price_level_id = ${str(fd, "price_level_id") || null},
         category_id = ${str(fd, "category_id") || null},
+        supplier_category_id = ${str(fd, "supplier_category_id") || null},
         is_active = ${fd.get("is_active") === "on"}
       where id = ${id} and company_id = ${co}`;
   } catch (e) {
@@ -209,7 +223,11 @@ export async function updatePartner(_prev: unknown, fd: FormData): Promise<Actio
   }
 
   revalidatePath("/partners");
-  redirectWithToast("/partners", toastMsg);
+  // Back to the list they were looking at. Editing a supplier and being
+  // returned to the unfiltered list — reading customers — loses the filter
+  // and the place in it, which on a long partner list is the whole search
+  // again.
+  redirectWithToast(listPath(fd), toastMsg);
 }
 
 /** Deactivates a partner without touching any document already against them. */
@@ -3300,6 +3318,37 @@ export async function deleteLocation(_prev: unknown, fd: FormData): Promise<Acti
 
 // ------------------------------------------------------- salespersons --
 
+// ---------------------------------------------------------------- package --
+
+/**
+ * Which package this company is sold on.
+ *
+ * Switchable rather than set once, because the tiers have to be testable:
+ * the whole point of gating is that Starter looks different from
+ * Enterprise, and that cannot be checked from a column somebody set at
+ * install time and never touched again.
+ *
+ * Changing it is a commercial fact, not an accounting one — it moves no
+ * money and posts nothing. There is no sign-in yet, so nothing restricts who
+ * may change it; when roles arrive this is one of the first actions that
+ * should be behind one.
+ */
+export async function setCompanyPlan(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const plan = str(fd, "plan");
+    if (!["STARTER", "BUSINESS", "ENTERPRISE"].includes(plan)) {
+      return { error: "Not a package" };
+    }
+    await sql`update company set plan = ${plan} where id = ${co}`;
+    revalidatePath("/settings/plan");
+    revalidatePath("/", "layout");
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  return { ok: true };
+}
+
 // -------------------------------------------------------------- year end --
 
 export async function closeFiscalYear(_prev: unknown, fd: FormData): Promise<ActionResult> {
@@ -3648,9 +3697,10 @@ export async function createPartnerCategory(_prev: unknown, fd: FormData): Promi
     if (!name) return { error: "Name is required" };
 
     await sql`
-      insert into partner_category (company_id, code, name, name_my, note, sort_order)
+      insert into partner_category (company_id, code, name, name_my, note, sort_order, kind)
       values (${co}, ${code}, ${name}, ${str(fd, "name_my") || null},
-              ${str(fd, "note") || null}, ${num(fd, "sort_order")})`;
+              ${str(fd, "note") || null}, ${num(fd, "sort_order")},
+              ${str(fd, "kind") === "SUPPLIER" ? "SUPPLIER" : "CUSTOMER"})`;
   } catch (e) {
     if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
     return { error: e instanceof Error ? e.message : String(e) };

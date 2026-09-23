@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import type { ActionResult } from "@/lib/actions";
 import { ConfirmDelete } from "./confirm-delete";
 import { RowMenu } from "./row-menu";
@@ -18,6 +19,7 @@ type Partner = {
   /** Which column of the price list this customer buys from. */
   price_level_id: string | null; price_level_name: string | null;
   category_id: string | null; category_name: string | null;
+  supplier_category_id: string | null; supplier_category_name: string | null;
   township: string | null; address: string | null; phone: string | null;
   payment_terms_days: number; credit_limit: string | null; outstanding: string;
   /** From v_customer_credit — what the limit is being used for, and what is
@@ -29,6 +31,7 @@ export function PartnerRow({
   partner,
   priceLevels = [],
   categories = [],
+  supplierCategories = [],
   updateAction,
   deleteAction,
   deactivateAction,
@@ -38,11 +41,13 @@ export function PartnerRow({
   /** The company's price columns, so a customer can be put on one. */
   priceLevels?: { id: string; name: string }[];
   categories?: { id: string; name: string }[];
+  supplierCategories?: { id: string; name: string }[];
   updateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   deleteAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   deactivateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   activateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
 }) {
+  const role = useSearchParams().get("role") ?? "";
   const [editing, setEditing] = useState(false);
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     updateAction as never,
@@ -67,6 +72,9 @@ export function PartnerRow({
       <tr>
         <td colSpan={7}>
           <form action={formAction} className="form" style={{ padding: "0.5rem 0" }}>
+            {/* Which list this edit came from, so saving returns to it
+                rather than to the unfiltered one. */}
+            {role && <input type="hidden" name="role" value={role} />}
             {state && "error" in state && <div className="alert">{state.error}</div>}
             <input type="hidden" name="id" value={partner.id} />
             <div className="row">
@@ -143,6 +151,19 @@ export function PartnerRow({
                   <span className="hint">Groups them on reports only</span>
                 </div>
               )}
+              {partner.is_supplier && supplierCategories.length > 0 && (
+                <div className="field">
+                  <label>Supplier category</label>
+                  <select name="supplier_category_id"
+                          defaultValue={partner.supplier_category_id ?? ""}>
+                    <option value="">Not categorised</option>
+                    {supplierCategories.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                  <span className="hint">What kind of supplier, when we buy</span>
+                </div>
+              )}
               <div className="field">
                 <label>Credit limit</label>
                 <input name="credit_limit" type="number" min="0" defaultValue={partner.credit_limit ?? ""} />
@@ -201,9 +222,14 @@ export function PartnerRow({
               ?? <span style={{ color: "var(--muted)" }}>Default</span>)
           : <span style={{ color: "var(--muted)" }}>—</span>}
       </td>
+      {/* Both axes, because a partner that is both is two different
+          things and one column would have to pick a side. */}
       <td className="wrap">
         {partner.category_name
           ?? <span style={{ color: "var(--muted)" }}>—</span>}
+        {partner.supplier_category_name && (
+          <div className="subline">buys: {partner.supplier_category_name}</div>
+        )}
       </td>
       <td className="r">{partner.payment_terms_days}d</td>
       <td className="r">{Number(partner.outstanding) ? money(partner.outstanding) : "—"}</td>

@@ -8,8 +8,8 @@ import { RowMenu } from "./row-menu";
 
 type Category = {
   id: string; code: string; name: string; name_my: string | null;
-  note: string | null; sort_order: number | string;
-  partners: string | number; customers: string | number;
+  note: string | null; sort_order: number | string; kind: string;
+  partners: string | number; customers: string | number; suppliers: string | number;
   is_active: boolean;
 };
 
@@ -56,7 +56,7 @@ export function PartnerCategoryRow({
   if (editing) {
     return (
       <tr>
-        <td colSpan={8}>
+        <td colSpan={9}>
           {error && <div className="alert">{error.error}</div>}
           <form action={formAction} className="form">
             <input type="hidden" name="id" value={category.id} />
@@ -99,9 +99,14 @@ export function PartnerCategoryRow({
   return (
     <>
       {error && (
-        <tr><td colSpan={8}><div className="alert">{error.error}</div></td></tr>
+        <tr><td colSpan={9}><div className="alert">{error.error}</div></td></tr>
       )}
       <tr>
+        <td>
+          <span className={`pill ${category.kind === "SUPPLIER" ? "warn" : "ok"}`}>
+            {category.kind === "SUPPLIER" ? "supplier" : "customer"}
+          </span>
+        </td>
         <td className="r code">{String(category.sort_order)}</td>
         <td className="code">{category.code}</td>
         <td className="wrap">
@@ -117,7 +122,14 @@ export function PartnerCategoryRow({
             </Link>
           ) : "—"}
         </td>
-        <td className="r">{Number(category.partners) || "—"}</td>
+        <td className="r">
+          {Number(category.suppliers) > 0 ? (
+            <Link href={`/partners?role=supplier&category=${category.id}`}
+                  style={{ color: "var(--brand)" }}>
+              {String(category.suppliers)}
+            </Link>
+          ) : "—"}
+        </td>
         <td>
           {category.is_active
             ? <span className="pill ok">active</span>
