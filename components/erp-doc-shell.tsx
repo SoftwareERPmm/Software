@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
-import { ErpDocToolbar, ErpCopyNumber } from "@/components/erp-doc-toolbar";
+import { ErpCopyNumber, ErpPrintButton } from "@/components/erp-doc-toolbar";
+import { ErpMore } from "@/components/erp-more";
 
 /**
  * The chrome every document sits in: breadcrumb, action bar with the chevron
@@ -44,7 +45,7 @@ export type ChainStage = {
 
 export function ErpDocShell({
   docId, docNo, typeLabel, status, listHref, listLabel,
-  chain, actions, badges, children, backHref, backLabel,
+  chain, actions, menuActions, badges, children, backHref, backLabel,
   banner, stats, footer,
 }: {
   docId: string;
@@ -61,6 +62,11 @@ export function ErpDocShell({
   chain: ChainStage[];
   /** Workflow actions — left of the pipeline, where the reference puts them. */
   actions?: React.ReactNode;
+  /** Rare or irreversible actions, behind the overflow menu in the header —
+   *  the same place an order keeps "Correct order" and "Close remaining", so
+   *  moving between a document and the one it became does not move the
+   *  controls. */
+  menuActions?: React.ReactNode;
   /** Extra pills beside the number: outstanding, delivered, matched. */
   badges?: React.ReactNode;
   /** Whose move it is, when somebody is late. Above the document itself. */
@@ -93,8 +99,9 @@ export function ErpDocShell({
         <span className="erp-crumb-sep">/</span>
         <span className="erp-crumb-here">{docNo}</span>
         <ErpCopyNumber docNo={docNo} />
-        <span style={{ marginLeft: "auto" }}>
-          <ErpDocToolbar docId={docId} docNo={docNo} />
+        <span style={{ marginLeft: "auto" }} className="erp-head-tools">
+          <ErpPrintButton docId={docId} />
+          {menuActions && <ErpMore>{menuActions}</ErpMore>}
         </span>
       </div>
 

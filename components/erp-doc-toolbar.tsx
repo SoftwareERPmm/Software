@@ -22,6 +22,13 @@ import { Star, Printer, Link2, Check, Copy } from "lucide-react";
  * deliberately absent rather than stubbed. Those are posting decisions and
  * belong to the engine, not to a toolbar.
  */
+/**
+ * No longer rendered. Star and copy-link were removed from the document
+ * header in favour of Print and More alone; the star was localStorage-only
+ * with no list or filter reading it, so nothing depended on it. Kept rather
+ * than deleted because the copy-link behaviour is worth having back if a
+ * header ever wants it again.
+ */
 export function ErpDocToolbar({ docId, docNo }: { docId: string; docNo: string }) {
   const [starred, setStarred] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -71,15 +78,27 @@ export function ErpDocToolbar({ docId, docNo }: { docId: string; docNo: string }
         <Star size={15} strokeWidth={2} fill={starred ? "currentColor" : "none"} />
       </button>
 
-      <a href={`/documents/${docId}/print`} className="erp-tool" title="Print">
-        <Printer size={15} strokeWidth={2} />
-      </a>
-
       <button type="button" onClick={copyLink} className="erp-tool"
               title={copied ? "Link copied" : "Copy link"}>
         {copied ? <Check size={15} strokeWidth={2} /> : <Link2 size={15} strokeWidth={2} />}
       </button>
     </div>
+  );
+}
+
+/**
+ * Print, as a button rather than an icon.
+ *
+ * It sat in the icon group beside star and copy-link, which made the one
+ * thing people come to these pages to do the same size as the two they
+ * rarely do. Full width of a header button and next to More, matching the
+ * order screen, which had it right.
+ */
+export function ErpPrintButton({ docId }: { docId: string }) {
+  return (
+    <a href={`/documents/${docId}/print`} className="erp-hbtn">
+      <Printer size={15} aria-hidden="true" /> Print
+    </a>
   );
 }
 

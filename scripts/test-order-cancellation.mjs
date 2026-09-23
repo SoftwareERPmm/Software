@@ -77,7 +77,11 @@ try {
   const [loc] = await sql`select id from location
      where company_id = ${co.id} and is_stock_location and is_active order by code limit 1`;
   const [item] = await sql`select id, code from item
-     where company_id = ${co.id} and is_stocked and is_active order by code limit 1`;
+     where company_id = ${co.id} and is_stocked and is_active
+     -- A plain item first. These suites test ordering and fulfilment,
+     -- not batch tracking, and a tracked item makes every receipt
+     -- demand a lot number the suite has no reason to care about.
+     order by tracks_batch, code limit 1`;
   const [supp] = await sql`select id from business_partner
      where company_id = ${co.id} and is_supplier order by code limit 1`;
   const [till] = await sql`select id from account

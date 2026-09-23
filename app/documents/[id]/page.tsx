@@ -702,6 +702,34 @@ export default async function DocumentPage({
    * to be corrected at the order and carried into the bill — so hiding the
    * action once the goods are all in would hide it exactly when it is needed.
    */
+  /* Voidable: the trigger belongs in the overflow menu, beside the order's
+     Correct and Close — rare, irreversible, and not something to sit next
+     to the routine next step. Not voidable: the refusal stays on the page,
+     because "why can I not undo this" is an explanation with links to what
+     is built on top, and a menu is the wrong place to hide it. */
+  const voidNode = voidPlan ? (
+        <VoidDocument
+          action={voidDocumentAction}
+          documentId={doc.id}
+          docNo={doc.doc_no}
+          canVoid={voidPlan.canVoid}
+          blockers={voidPlan.blockers}
+          effects={voidPlan.effects}
+          /* Only a goods receipt is asked the question, because only a goods
+             receipt has the other answer: goods that arrived and went back are
+             a supplier return. Nothing else here has a physical counterpart
+             the reader could confuse a void with. */
+          returnHref={returnRoute?.href ?? null}
+          returnLabel={returnRoute?.label ?? null}
+          restoresUnits={Number(restores?.units ?? 0)}
+          salesReturnHref={`/sales/returns/new?source=${doc.id}`}
+        >
+          {correctInvoiceAction}
+          {voucherCorrection}
+          {settlementCorrection}
+        </VoidDocument>
+  ) : null;
+
   const correction = isPostedOrder && !doc.superseded_by_document_id ? (
     <CorrectOrder
       preview={previewOrderCorrection}
@@ -1008,6 +1036,7 @@ export default async function DocumentPage({
         </>
       }
       stats={statsNode}
+      menuActions={voidPlan?.canVoid ? voidNode : undefined}
       footer={footer}
       badges={
         <>
@@ -1066,28 +1095,7 @@ export default async function DocumentPage({
       {/* Voiding sits with the document rather than on the list, because it
           needs the whole picture — what it would reverse, and what has been
           built on top of it — and that is only assembled here. */}
-      {voidPlan && (
-        <VoidDocument
-          action={voidDocumentAction}
-          documentId={doc.id}
-          docNo={doc.doc_no}
-          canVoid={voidPlan.canVoid}
-          blockers={voidPlan.blockers}
-          effects={voidPlan.effects}
-          /* Only a goods receipt is asked the question, because only a goods
-             receipt has the other answer: goods that arrived and went back are
-             a supplier return. Nothing else here has a physical counterpart
-             the reader could confuse a void with. */
-          returnHref={returnRoute?.href ?? null}
-          returnLabel={returnRoute?.label ?? null}
-          restoresUnits={Number(restores?.units ?? 0)}
-          salesReturnHref={`/sales/returns/new?source=${doc.id}`}
-        >
-          {correctInvoiceAction}
-          {voucherCorrection}
-          {settlementCorrection}
-        </VoidDocument>
-      )}
+      {voidPlan && !voidPlan.canVoid && voidNode}
 
       {movesGoods && (
         <LinkToOrder

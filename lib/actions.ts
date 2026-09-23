@@ -2971,9 +2971,37 @@ export async function getAccountLedger(accountId: string, from?: string, to?: st
   const co = await companyId();
   return sql`
     select entry_no, entry_date, memo, source_type, doc_no, doc_type,
-           partner_name, location_code, debit, credit, running_balance
+           partner_name, location_code, debit, credit, running_balance,
+           -- The ids behind the two numbers on screen. Without them the
+           -- entry and document columns were text a reader could see and not
+           -- follow, which on a ledger is the one thing they want to do.
+           journal_entry_id, source_id
       from v_account_ledger
      where company_id = ${co} and account_id = ${accountId}
+       ${from ? sql`and entry_date >= ${from}::date` : sql``}
+       ${to ? sql`and entry_date <= ${to}::date` : sql``}
+     order by entry_date, entry_no`;
+}
+
+/**
+ * Every movement across a set of accounts — the cash book read as one list
+ * rather than one account at a time.
+ *
+ * No running balance, deliberately. A balance that ran across two tills
+ * would be the sum of things nobody holds together, and the number people
+ * check a cash book against is the balance of *an* account. Closing
+ * balances are reported per account beside the list instead.
+ */
+export async function getAccountsLedger(accountIds: string[], from?: string, to?: string) {
+  const co = await companyId();
+  if (accountIds.length === 0) return [];
+  return sql`
+    select entry_no, entry_date, memo, source_type, doc_no, doc_type,
+           partner_name, location_code, debit, credit,
+           account_id, account_code, account_name,
+           journal_entry_id, source_id
+      from v_account_ledger
+     where company_id = ${co} and account_id = any(${accountIds})
        ${from ? sql`and entry_date >= ${from}::date` : sql``}
        ${to ? sql`and entry_date <= ${to}::date` : sql``}
      order by entry_date, entry_no`;
