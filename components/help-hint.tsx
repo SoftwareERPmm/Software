@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { HelpCircle } from "lucide-react";
 
 /**
@@ -24,6 +24,21 @@ export function HelpHint({ label = "What this shows", children }: {
   const [pinned, setPinned] = useState(false);
   const wrap = useRef<HTMLSpanElement>(null);
   const id = useId();
+
+  // Which side it opens towards. Anchored to the mark's left edge it opens
+  // into the page, which is right for a mark on the left of the screen and
+  // wrong for one in the last column — there the bubble ran off the right of
+  // the window and the whole page gained a horizontal scrollbar. Measured
+  // rather than guessed per caller, so a mark that later moves keeps working.
+  const bubble = useRef<HTMLSpanElement>(null);
+  const [flip, setFlip] = useState(false);
+  useLayoutEffect(() => {
+    if (!open) { setFlip(false); return; }
+    const el = bubble.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (r.right > document.documentElement.clientWidth - 8) setFlip(true);
+  }, [open]);
 
   // A click elsewhere, or Escape, puts it away. Only while it is open —
   // otherwise every screen carrying a hint listens to every click on the page.
@@ -63,7 +78,8 @@ export function HelpHint({ label = "What this shows", children }: {
         <HelpCircle size={14} aria-hidden="true" />
       </button>
       {open && (
-        <span className="helphint-bubble" id={id} role="tooltip">
+        <span ref={bubble} id={id} role="tooltip"
+              className={flip ? "helphint-bubble flip" : "helphint-bubble"}>
           {children}
         </span>
       )}
