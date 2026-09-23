@@ -19,6 +19,7 @@ export default async function PartnerCategories() {
     key: c.id,
     searchText: [c.code, c.name, c.name_my, c.note].filter(Boolean).map(String).join(" "),
     sort: {
+      kind: String(c.kind),
       sort_order: Number(c.sort_order),
       code: c.code,
       name: c.name,
@@ -40,12 +41,16 @@ export default async function PartnerCategories() {
     <>
       <div className="page-head">
         <span className="eyebrow">Master data</span>
-        <h1>Customer categories</h1>
+        <h1>Partner categories</h1>
         <HelpHint>
-          What kind of shop a partner is — a supermarket chain, a township
-          wholesaler, a corner store, a pharmacy. They buy differently, are
-          visited differently and are worth different money, and without this
-          the only way to tell them apart is to recognise the name.
+          What kind of trade a partner is. On the customer side: a supermarket
+          chain, a township wholesaler, a corner store, a pharmacy. On the
+          supplier side: an importer, a local manufacturer, an agent.
+          <br /><br />
+          Two lists, never mixed. &ldquo;Supermarket&rdquo; describes who you
+          sell to and &ldquo;Importer&rdquo; who you buy from — they are
+          different questions about the same company, and one that is both is
+          filed on each side separately.
           <br /><br />
           <strong>Classification only.</strong> A category sets no price, no
           credit limit and no payment terms. Those were agreed with the shop
@@ -62,6 +67,14 @@ export default async function PartnerCategories() {
           <div className="card-head"><h2>New category</h2></div>
           <div className="card-body">
             <div className="row">
+              <div className="field">
+                <label htmlFor="kind">Side</label>
+                <select id="kind" name="kind" defaultValue="CUSTOMER">
+                  <option value="CUSTOMER">Customer — what kind of shop</option>
+                  <option value="SUPPLIER">Supplier — what kind of supplier</option>
+                </select>
+                <span className="hint">Which list this belongs to</span>
+              </div>
               <div className="field">
                 <label htmlFor="code">Code</label>
                 <input id="code" name="code" type="text" placeholder="SUPER" required />
@@ -104,12 +117,13 @@ export default async function PartnerCategories() {
             searchPlaceholder="Search categories…"
             defaultSort={{ key: "sort_order", dir: "asc" }}
             columns={[
+              { key: "kind", label: "Side", sortable: true },
               { key: "sort_order", label: "#", sortable: true, align: "r" },
               { key: "code", label: "Code", sortable: true },
               { key: "name", label: "Category", sortable: true },
               { key: "note", label: "Note" },
               { key: "customers", label: "Customers", sortable: true, align: "r" },
-              { key: "partners", label: "All partners", sortable: true, align: "r" },
+              { key: "suppliers", label: "Suppliers", sortable: true, align: "r" },
               { key: "is_active", label: "Status", sortable: true },
               { key: "actions", label: "" },
             ]}

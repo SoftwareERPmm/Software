@@ -177,6 +177,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 <NavLink href="/finance/income-statement" sub>Income Statement</NavLink>
                 <NavLink href="/finance/balance-sheet" sub>Balance Sheet</NavLink>
                 <NavLink href="/finance/cash-flow" sub>Cash Flow</NavLink>
+                <NavLink href="/finance/cash-cycle" sub>Cash Conversion Cycle</NavLink>
               </NavSubGroup>
               {/* Not under Financial Reports. Aging answers "who owes us and
                   how late", which is a working question asked while chasing
@@ -198,7 +199,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               "/partners", "/items", "/warehouses", "/salespersons", "/settings",
             ]}>
               <NavLink href="/partners" exact clearParams={["role", "category"]}>Partners</NavLink>
-              <NavLink href="/partners/categories" exact>Customer categories</NavLink>
+              <NavLink href="/partners/categories" exact>Partner categories</NavLink>
               <NavLink href="/partners?role=customer" sub>Customers</NavLink>
               <NavLink href="/partners?role=supplier" sub>Suppliers</NavLink>
               <NavLink href="/items" exact>Items</NavLink>
@@ -211,6 +212,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <NavLink href="/salespersons">Salespersons</NavLink>
               <NavLink href="/settings/accounts">Chart of Accounts</NavLink>
               <NavLink href="/settings/tax-codes">Tax codes</NavLink>
+              <NavLink href="/settings/plan">Package</NavLink>
             </NavGroup>
 
           </nav>

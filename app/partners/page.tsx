@@ -20,10 +20,12 @@ export default async function Partners({
   const priceLevels = (await sql`
     select id, name from price_level where company_id = ${company.id} order by sort_order`
   ) as unknown as { id: string; name: string }[];
-  const categories = (await sql`
-    select id, name from partner_category
+  const allCategories = (await sql`
+    select id, name, kind from partner_category
      where company_id = ${company.id} and is_active order by sort_order, name`
-  ) as unknown as { id: string; name: string }[];
+  ) as unknown as { id: string; name: string; kind: string }[];
+  const categories = allCategories.filter((c) => c.kind === "CUSTOMER");
+  const supplierCategories = allCategories.filter((c) => c.kind === "SUPPLIER");
 
   // Customers and Suppliers in the nav are filtered views of this same
   // table, not separate lists — the same company is routinely both, and
@@ -37,10 +39,15 @@ export default async function Partners({
      ones nobody has classified — the second is the useful one while the
      field is still being filled in. */
   const partners =
-    category === "none" ? byRole.filter((p) => !p.category_id)
-    : category ? byRole.filter((p) => p.category_id === category)
+    category === "none"
+      ? byRole.filter((p) => (role === "supplier" ? !p.supplier_category_id : !p.category_id))
+    : category
+      ? byRole.filter((p) => p.category_id === category || p.supplier_category_id === category)
     : byRole;
-  const uncategorised = byRole.filter((p) => !p.category_id).length;
+  const uncategorised = byRole.filter((p) =>
+    role === "supplier" ? !p.supplier_category_id : !p.category_id).length;
+  // The filter bar offers the side being looked at.
+  const filterCats = role === "supplier" ? supplierCategories : categories;
 
   const rows: DataRow[] = partners.map((p) => ({
     key: p.id,
@@ -52,7 +59,7 @@ export default async function Partners({
       region: p.region ?? "",
       township: p.township ?? "",
       price_level: p.price_level_name ?? "",
-      category: p.category_name ?? "",
+      category: (role === "supplier" ? p.supplier_category_name : p.category_name) ?? "",
       payment_terms_days: Number(p.payment_terms_days),
       outstanding: Number(p.outstanding),
       // Sorting by what is left of a limit puts whoever is closest to it at
@@ -69,6 +76,7 @@ export default async function Partners({
         partner={p}
         priceLevels={priceLevels}
         categories={categories}
+        supplierCategories={supplierCategories}
         updateAction={updatePartner}
         deactivateAction={deactivatePartner}
         activateAction={activatePartner}
@@ -97,13 +105,13 @@ export default async function Partners({
               {/* Only offered once categories exist, and the uncategorised
                   count is shown because a classification half filled in is
                   worse than none — it looks complete on a report. */}
-              {categories.length > 0 && (
+              {filterCats.length > 0 && (
                 <span className="page-sub">
                   <Link href={role ? `/partners?role=${role}` : "/partners"}
                         style={{ color: !category ? "var(--brand)" : "inherit" }}>
                     All
                   </Link>
-                  {categories.map((c) => (
+                  {filterCats.map((c) => (
                     <span key={c.id}>
                       {" · "}
                       <Link href={`/partners?${role ? `role=${role}&` : ""}category=${c.id}`}

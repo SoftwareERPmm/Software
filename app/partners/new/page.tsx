@@ -9,10 +9,12 @@ export default async function NewPartner() {
   const levels = (await sql`
     select id, name from price_level where company_id = ${co.id} order by sort_order`
   ) as unknown as { id: string; name: string }[];
-  const cats = (await sql`
-    select id, name from partner_category
+  const allCats = (await sql`
+    select id, name, kind from partner_category
      where company_id = ${co.id} and is_active order by sort_order, name`
-  ) as unknown as { id: string; name: string }[];
+  ) as unknown as { id: string; name: string; kind: string }[];
+  const cats = allCats.filter((c) => c.kind === "CUSTOMER");
+  const supplierCats = allCats.filter((c) => c.kind === "SUPPLIER");
 
   return (
     <>
@@ -103,6 +105,22 @@ export default async function NewPartner() {
                   {cats.length === 0
                     ? "None set up yet — Master data → Customer categories"
                     : "Groups them on reports. Changes no price or limit."}
+                </span>
+              </div>
+              {/* The other axis. A company we both sell to and buy from is
+                  two different things to us, so it is filed twice. */}
+              <div className="field">
+                <label htmlFor="supplier_category_id">Supplier category</label>
+                <select id="supplier_category_id" name="supplier_category_id" defaultValue="">
+                  <option value="">Not categorised</option>
+                  {supplierCats.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+                <span className="hint">
+                  {supplierCats.length === 0
+                    ? "None set up yet — Master data → Partner categories"
+                    : "What kind of supplier, when we buy from them"}
                 </span>
               </div>
               <div className="field">
