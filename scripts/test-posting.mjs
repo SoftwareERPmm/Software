@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 
 import { takeTestLock, releaseTestLock } from "./test-lock.mjs";
+import { resetTransactions } from "./test-reset.mjs";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
@@ -56,10 +57,7 @@ try {
   const [loc] = await sql`
     select id, code from location where company_id = ${co.id} and is_stock_location order by code limit 1`;
 
-  await sql.unsafe(`truncate table payment_allocation, stock_lot_consumption, stock_lot,
-    stock_movement, document_line, document, journal_line, journal_entry
-    restart identity cascade`);
-  await sql`update number_series set next_value = 1`;
+  await resetTransactions(sql);
 
   // Fixtures, created only if the database does not already have them.
   let [cust] = await sql`
@@ -79,7 +77,8 @@ try {
   }
 
   let [item] = await sql`
-    select id, code, name from item where company_id = ${co.id} and is_stocked order by code limit 1`;
+    select id, code, name, tracks_batch
+      from item where company_id = ${co.id} and is_stocked order by code limit 1`;
   if (!item) {
     let [grp] = await sql`select id from item_group where company_id = ${co.id} order by code limit 1`;
     if (!grp) {
@@ -101,6 +100,15 @@ try {
 
   // The codes this chart actually uses, asked of the same resolvers the
   // posting code asks. Hard-coded demo codes made a real chart look broken.
+  // Whichever item this chart happens to offer, received the way that item
+  // requires. The fixture is "the first stocked item", so turning batch
+  // tracking on for it elsewhere used to break this suite with "has to say
+  // which lot the goods are from" — a true complaint about the receipt, and
+  // nothing to do with what this suite is testing.
+  const lot = item.tracks_batch
+    ? { batchNo: "POSTING-TEST", expiryDate: "2099-12-31" }
+    : {};
+
   const acct = accountsFor(sql, co.id);
   const INVENTORY = await acct.forItem("INVENTORY", item.id);
   const COGS = await acct.forItem("COGS", item.id);
@@ -112,7 +120,7 @@ try {
   const gr = await postGoodsReceipt({
     companyId: co.id, partnerId: supp.id, locationId: loc.id,
     docDate: today, memo: "first layer",
-    lines: [{ itemId: item.id, qty: 100, unitCost: 1000 }],
+    lines: [{ itemId: item.id, qty: 100, unitCost: 1000, ...lot }],
   });
   console.log(`  posted ${gr.docNo}  100 @ 1000`);
 
@@ -146,7 +154,7 @@ try {
   const gr2 = await postPurchaseWithReceipt({
     companyId: co.id, partnerId: supp.id, locationId: loc.id,
     docDate: today, dueDate: null, memo: "second layer",
-    lines: [{ itemId: item.id, qty: 100, unitPrice: 1500 }],
+    lines: [{ itemId: item.id, qty: 100, unitPrice: 1500, ...lot }],
   });
   console.log(`  posted ${gr2.docNo}  100 @ 1500 (received and billed together)`);
 
@@ -235,7 +243,7 @@ try {
   failures++;
 } finally {
   await releaseTestLock(sql);
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }
 
 process.exit(failures === 0 ? 0 : 1);

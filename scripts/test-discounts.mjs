@@ -340,7 +340,7 @@ console.log("\n  free of charge, which is not a discount\n");
   check("trial balance nets to zero", Math.abs(n(tb.t)) < 0.0001, String(n(tb.t)));
 
   await releaseTestLock(sql);
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }
 
 

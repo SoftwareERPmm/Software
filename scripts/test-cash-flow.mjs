@@ -152,5 +152,5 @@ try {
   process.exitCode = 1;
 } finally {
   await releaseTestLock(sql);
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }

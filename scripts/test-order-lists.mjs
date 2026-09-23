@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 
 import { takeTestLock, releaseTestLock } from "./test-lock.mjs";
+import { resetTransactions } from "./test-reset.mjs";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
   for (const line of readFileSync(join(root, ".env"), "utf8").split("\n")) {
@@ -33,10 +34,7 @@ const n = (v) => Number(v ?? 0);
 try {
   const [co] = await sql`select id from company limit 1`;
 
-  await sql.unsafe(`truncate table payment_allocation, stock_lot_consumption, stock_lot,
-    stock_movement, document_line, document, journal_line, journal_entry
-    restart identity cascade`);
-  await sql`update number_series set next_value = 1`;
+  await resetTransactions(sql);
   await sql`delete from business_partner where code = 'OL-C'`;
   await sql`delete from item where code like 'OL%'`;
   await sql`delete from item_group where code like 'OL%'`;
@@ -126,10 +124,7 @@ try {
   check("partial order: ordered 10, fulfilled 4", n(partialRow.ordered_qty) === 10 && n(partialRow.fulfilled_qty) === 4);
   check("full order: ordered 5, fulfilled 5", n(fullRow.ordered_qty) === 5 && n(fullRow.fulfilled_qty) === 5);
 
-  await sql.unsafe(`truncate table payment_allocation, stock_lot_consumption, stock_lot,
-    stock_movement, document_line, document, journal_line, journal_entry
-    restart identity cascade`);
-  await sql`update number_series set next_value = 1`;
+  await resetTransactions(sql);
   await sql`delete from business_partner where code = 'OL-C'`;
   await sql`delete from item where code like 'OL%'`;
   await sql`delete from item_group where code like 'OL%'`;
@@ -140,7 +135,7 @@ try {
   bad++;
 } finally {
   await releaseTestLock(sql);
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }
 
 process.exit(bad === 0 ? 0 : 1);

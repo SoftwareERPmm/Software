@@ -120,5 +120,5 @@ try {
   console.error(`\n${err.message}`);
   process.exit(1);
 } finally {
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }

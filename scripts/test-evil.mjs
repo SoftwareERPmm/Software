@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 
 import { takeTestLock, releaseTestLock } from "./test-lock.mjs";
+import { resetTransactions } from "./test-reset.mjs";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
@@ -88,10 +89,7 @@ try {
   const GRIR = await evilAcct.role("GRIR_CLEARING");
   const PPV = await evilAcct.role("PURCHASE_PRICE_VARIANCE");
 
-  await sql.unsafe(`truncate table payment_allocation, stock_lot_consumption, stock_lot,
-    stock_movement, document_line, document, journal_line, journal_entry
-    restart identity cascade`);
-  await sql`update number_series set next_value = 1`;
+  await resetTransactions(sql);
 
   let [cust] = await sql`
     select id from business_partner where company_id = ${co.id} and is_customer order by code limit 1`;
@@ -651,7 +649,7 @@ try {
   failures++;
 } finally {
   await releaseTestLock(sql);
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }
 
 process.exit(failures === 0 ? 0 : 1);

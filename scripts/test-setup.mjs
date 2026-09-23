@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 
 import { takeTestLock, releaseTestLock } from "./test-lock.mjs";
+import { resetTransactions } from "./test-reset.mjs";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 if (!process.env.DATABASE_URL) {
   // Anchored and read line by line — .env can carry more than one
@@ -46,12 +47,7 @@ const check = (l, ok, d = "") => { if (!ok) bad++; console.log(`  ${ok ? "PASS" 
 
 try {
   // Strip the database back to nothing but the schema.
-  await sql.unsafe(`truncate table payment_allocation, stock_movement, document_line,
-    document, journal_line, journal_entry, promotion, item_alias, item_uom,
-    item_reorder, item_price, item, item_group, business_partner, salesman,
-    foc_reason, account_determination, system_account, number_series,
-    tax_code, price_level, uom, location, fiscal_period, fiscal_year,
-    account, company restart identity cascade`);
+  await resetTransactions(sql);
 
   check("database is bare", (await sql`select 1 from company`).length === 0);
 
@@ -125,6 +121,6 @@ try {
   console.log(bad === 0 ? "\n  a bare database bootstraps cleanly\n" : `\n  ${bad} failed\n`);
 } catch (e) {
   console.error(`\n  error: ${e.message}\n`); bad++;
-} finally { await sql.end(); }
+} finally { await sql.end({ timeout: 5 }); }
 
 process.exit(bad === 0 ? 0 : 1);

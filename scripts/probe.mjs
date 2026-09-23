@@ -35,7 +35,7 @@ for (const url of process.argv.slice(2)) {
   } catch (err) {
     console.log(`  UNREACHABLE: ${err.message}`);
   } finally {
-    await sql.end();
+    await sql.end({ timeout: 5 });
   }
 }
 console.log("");

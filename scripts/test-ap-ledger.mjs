@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 
 import { takeTestLock, releaseTestLock } from "./test-lock.mjs";
+import { resetTransactions } from "./test-reset.mjs";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 if (!process.env.DATABASE_URL) {
   // Anchored and read line by line — .env can carry more than one
@@ -50,9 +51,7 @@ const m = (v) => n(v).toLocaleString("en-US");
 try {
   const [co] = await sql`select id from company limit 1`;
 
-  await sql.unsafe(`truncate table payment_allocation, stock_movement, document_line,
-    document, journal_line, journal_entry restart identity cascade`);
-  await sql`update number_series set next_value = 1`;
+  await resetTransactions(sql);
   await sql`delete from item where code like '99%'`;
   await sql`delete from item_group where code like '99%'`;
   await sql`delete from business_partner where code = 'AP-SUP'`;
@@ -182,9 +181,7 @@ try {
     `Cr ${m(ap.closing_credit)}`);
   check("the two closing columns agree", tDr === tCr, `${m(tDr)} vs ${m(tCr)}`);
 
-  await sql.unsafe(`truncate table payment_allocation, stock_movement, document_line,
-    document, journal_line, journal_entry restart identity cascade`);
-  await sql`update number_series set next_value = 1`;
+  await resetTransactions(sql);
   await sql`delete from item where code like '99%'`;
   await sql`delete from item_group where code like '99%'`;
   await sql`delete from business_partner where code = 'AP-SUP'`;
@@ -195,7 +192,7 @@ try {
   bad++;
 } finally {
   await releaseTestLock(sql);
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }
 
 process.exit(bad === 0 ? 0 : 1);

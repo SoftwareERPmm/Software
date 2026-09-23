@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 
 import { takeTestLock, releaseTestLock } from "./test-lock.mjs";
+import { resetTransactions } from "./test-reset.mjs";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 if (!process.env.DATABASE_URL) {
   // Anchored and read line by line — .env can carry more than one
@@ -45,10 +46,7 @@ try {
   // Start from a known state. Journal entries and stock movements refuse row
   // deletion by design, so anything a previous run posted has to go through
   // TRUNCATE before the items it references can be removed.
-  await sql.unsafe(`truncate table payment_allocation, stock_lot_consumption, stock_lot,
-    stock_movement, document_line, document, journal_line, journal_entry
-    restart identity cascade`);
-  await sql`update number_series set next_value = 1`;
+  await resetTransactions(sql);
   await sql`delete from item where code like '77%'`;
   await sql`delete from item_group where code like '77%'`;
 
@@ -127,13 +125,10 @@ try {
 
   // The purchase above references the item, and journal entries and stock
   // movements refuse row deletion by design, so tear down through TRUNCATE.
-  await sql.unsafe(`truncate table payment_allocation, stock_lot_consumption, stock_lot,
-    stock_movement, document_line, document, journal_line, journal_entry
-    restart identity cascade`);
+  await resetTransactions(sql);
   await sql`delete from item where code like '77%'`;
   await sql`delete from item_group where code like '77%'`;
   await sql`delete from business_partner where code = 'TMP-S'`;
-  await sql`update number_series set next_value = 1`;
 
   console.log(bad === 0 ? "\n  inline item creation works\n" : `\n  ${bad} failed\n`);
 } catch (err) {
@@ -141,7 +136,7 @@ try {
   bad++;
 } finally {
   await releaseTestLock(sql);
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }
 
 process.exit(bad === 0 ? 0 : 1);

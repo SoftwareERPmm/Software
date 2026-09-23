@@ -203,5 +203,5 @@ try {
   console.error(`\n  error: ${err.message}\n`);
   process.exit(1);
 } finally {
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }

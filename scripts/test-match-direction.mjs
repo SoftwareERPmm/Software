@@ -154,6 +154,6 @@ try {
   console.log(`\n  ${failures === 0 ? "match direction is symmetric on both sides" : failures + " FAILED"}\n`);
 } finally {
   await releaseTestLock(sql);
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }
 process.exit(failures === 0 ? 0 : 1);

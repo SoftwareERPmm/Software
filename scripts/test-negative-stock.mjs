@@ -113,9 +113,14 @@ try {
     });
   }
 
+  // Migration 0067 made the three travel together: confirmed, when, and why.
+  // This suite predated it and sent only the confirmation, which the check
+  // constraint document_negative_stock_reason_check has refused ever since —
+  // correctly. A confirmation with no reason is the thing 0067 exists to stop.
   const sale = await postSaleWithDelivery({
     companyId: co.id, partnerId: cust.id, locationId: wh.id, docDate: today, dueDate: null,
     allowNegativeStock: true,
+    negativeStockReason: "Counted on the shelf; the receipt was never keyed",
     lines: [{ itemId: item, qty: 10, unitPrice: 9000 }],
   });
   console.log(`    sold 10 with none recorded: ${sale.docNo}\n`);
@@ -183,14 +188,29 @@ try {
   check("no phantom layer is left on the shelf", n(lots[0].remaining) === 0, String(n(lots[0].remaining)));
 
   // 10 x 200 understated.
+  //
+  // It lands in the account the original issue charged, not in purchase
+  // price variance. Migration 0060 settled that: "the only right answer is
+  // the account the original issue posted to". These goods were sold at a
+  // provisional cost; the extra 200 a unit is more cost of goods already
+  // gone, so it belongs beside the rest of that cost. Purchase price
+  // variance is for goods still on the shelf whose invoice disagrees with
+  // their receipt — a different situation with a different home.
+  //
+  // This assertion named PURCHASE_PRICE_VARIANCE until 0060 moved it, and
+  // went on failing quietly afterwards because a crash stopped the suite
+  // before it could report.
   const variance = await sql`
     select coalesce(sum(jl.base_amount), 0) as v
-      from journal_line jl join account a on a.id = jl.account_id
-      join system_account sa on sa.account_id = a.id and sa.role = 'PURCHASE_PRICE_VARIANCE'
+      from journal_line jl
       join journal_entry je on je.id = jl.journal_entry_id
       join document d on d.journal_entry_id = je.id
-     where jl.company_id = ${co.id} and d.id = ${gr.id}`;
-  check("the 200 a unit it was under-costed by reaches variance",
+     where jl.company_id = ${co.id} and d.id = ${gr.id}
+       and jl.account_id in (
+             select distinct slc.expense_account_id
+               from stock_lot_consumption slc
+              where slc.company_id = ${co.id} and slc.expense_account_id is not null)`;
+  check("the 200 a unit it was under-costed by reaches the account it was charged to",
     Math.abs(n(variance[0].v) - 2000) < 0.0001, String(n(variance[0].v)));
 
   // ---- the confirmation is recorded ---------------------------------------
@@ -249,6 +269,7 @@ try {
     await postSaleWithDelivery({
       companyId: co.id, partnerId: cust.id, locationId: wh.id, docDate: today, dueDate: null,
       allowNegativeStock: true,
+      negativeStockReason: "Stock on the shelf, its receipt not yet keyed",
       lines: [{ itemId: item2, qty: 10, unitPrice: 90000 }],
     });
 
@@ -314,6 +335,6 @@ try {
   console.log(`\n  ${failures === 0 ? "all negative stock tests pass" : failures + " FAILED"}\n`);
 } finally {
   await releaseTestLock(sql);
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }
 process.exit(failures === 0 ? 0 : 1);

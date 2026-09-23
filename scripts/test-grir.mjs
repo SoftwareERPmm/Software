@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 
 import { takeTestLock, releaseTestLock } from "./test-lock.mjs";
+import { resetTransactions } from "./test-reset.mjs";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
@@ -59,10 +60,7 @@ const balance = async (code) =>
                 join account a on a.id = jl.account_id where a.code = ${code}`)[0].v);
 
 const wipe = async () => {
-  await sql.unsafe(`truncate table payment_allocation, stock_lot_consumption, stock_lot,
-    stock_movement, document_line, document, journal_line, journal_entry
-    restart identity cascade`);
-  await sql`update number_series set next_value = 1`;
+  await resetTransactions(sql);
 };
 
 try {
@@ -271,11 +269,7 @@ try {
 
   console.log("\n  a bill and an order that never met\n");
 
-  await sql.unsafe(`truncate table document_history, fulfilment_link, order_closure,
-    payment_allocation, stock_lot_adjustment, stock_lot_consumption, stock_lot,
-    stock_movement, document_line, document, journal_line, journal_entry
-    restart identity cascade`);
-  await sql`update number_series set next_value = 1`;
+  await resetTransactions(sql);
 
   const collisions = async () => getGrirCollisions(co.id);
   const sideOf = (rows, side) => rows.filter((r) => r.side === side);
@@ -342,7 +336,7 @@ try {
   failures++;
 } finally {
   await releaseTestLock(sql);
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }
 
 process.exit(failures === 0 ? 0 : 1);
