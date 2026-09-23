@@ -1,7 +1,7 @@
 import Link from "next/link";
-import { ArrowLeft, ChevronRight, Printer, Truck, UserRound } from "lucide-react";
+import { ArrowLeft, ChevronRight, Truck, UserRound } from "lucide-react";
 import { money, qty as fmtQty, shortDate } from "@/lib/format";
-import { ErpCopyNumber } from "@/components/erp-doc-toolbar";
+import { ErpCopyNumber, ErpPrintButton } from "@/components/erp-doc-toolbar";
 import { ErpMore } from "@/components/erp-more";
 import type { ChainStage } from "@/components/erp-doc-shell";
 
@@ -170,10 +170,13 @@ export function ErpOrderForm({
               : config.typeLabel}
           </span>
         </div>
+        {/* The same three tools every other document header carries — star,
+            print, copy link. This page used to offer a single wide "Print"
+            button instead, so moving between an order and the receipt it
+            became changed where printing lived and lost starring and copying
+            on the way. */}
         <div className="erp-head-tools">
-          <a href={`/documents/${docId}/print`} className="erp-hbtn">
-            <Printer size={15} aria-hidden="true" /> Print
-          </a>
+          <ErpPrintButton docId={docId} />
           {menuActions && <ErpMore>{menuActions}</ErpMore>}
         </div>
       </header>

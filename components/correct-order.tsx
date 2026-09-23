@@ -166,7 +166,10 @@ export function CorrectOrder({
       {/* .btn is the class that makes an <a> look like a button; on a real
           button it adds nothing, and carrying it here implied a difference
           from the one beside it that does not exist. */}
-      <button type="button" className="ghost" onClick={() => setOpen(true)}>
+      {/* `btn ghost`, not `ghost`. The overflow menu restyles its children
+          with `.erp-more-menu > * > .btn`, so a trigger without the class
+          keeps its own border and renders as a box inside a box. */}
+      <button type="button" className="btn ghost" onClick={() => setOpen(true)}>
         <Pencil size={14} aria-hidden="true" /> Correct {noun}
       </button>
 
