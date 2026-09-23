@@ -47,7 +47,12 @@ export default async function CashCyclePage({
         </HelpHint>
       </div>
 
-      <CashCycle cycle={cycle} currency={company.base_currency} />
+      <CashCycle
+        current={cycle.current}
+        previous={cycle.previous}
+        trend={cycle.trend}
+        currency={company.base_currency}
+      />
     </>
   );
 }

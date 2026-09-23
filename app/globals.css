@@ -2578,6 +2578,36 @@ dialog.drawer .drawer-panel {
 }
 .dash-card-pad { padding: 1.15rem 1.35rem; }
 
+/* The cycle's top row: the headline, three dials and the liquidity pair.
+   Five tiles need a narrower minimum than the dashboard's cards or the last
+   one wraps and leaves a dial stranded on a row of its own. */
+.ccc-top {
+  display: grid; gap: var(--dash-gap); margin-bottom: var(--dash-gap);
+  grid-template-columns: repeat(auto-fit, minmax(12.5rem, 1fr));
+}
+
+/* A legend whose keys are buttons, because they switch a series off. They
+   read as controls rather than as a caption: a border, a pressed state,
+   and the swatch hollowing out when the series is hidden. */
+.chart-legend {
+  display: flex; flex-wrap: wrap; gap: 0.3rem;
+  justify-content: center; margin-top: 0.5rem;
+}
+.chart-legend button {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  padding: 0.12rem 0.55rem;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--surface); color: var(--ink);
+  font: inherit; font-size: var(--t-xs); line-height: 1.6;
+  cursor: pointer;
+}
+.chart-legend button:hover { border-color: var(--muted); }
+.chart-legend button.off { color: var(--muted); }
+.chart-legend-swatch {
+  display: inline-block; width: 0.6rem; height: 0.6rem;
+  border-radius: 2px; border: 1.5px solid;
+}
+
 /* KPI ------------------------------------------------------------------- */
 .dash-kpi { display: flex; flex-direction: column; gap: 0.5rem; }
 .dash-kpi-label {

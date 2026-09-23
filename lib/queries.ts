@@ -3769,65 +3769,170 @@ export async function getDiscountsByPartner(companyId: string, from: string, to:
  * the whole metric; the question is how much was tied up *through* the
  * period.
  */
-export async function getCashConversionCycle(companyId: string, from: string, to: string) {
-  // Movement within the window, ignoring the year-end close.
-  const flow = async (types: string[]) => {
-    const [r] = await sql`
-      select coalesce(sum(jl.base_amount), 0)::float as v
-        from journal_line jl
-        join account a on a.id = jl.account_id
-        join journal_entry je on je.id = jl.journal_entry_id
-        left join document d on d.journal_entry_id = je.id
-       where jl.company_id = ${companyId}
-         and a.account_type = any(${types})
-         and je.entry_date >= ${from}::date and je.entry_date < ${to}::date
-         and coalesce(d.doc_type, '') <> 'YEAR_END_CLOSE'`;
-    return Number(r.v);
-  };
+export type CycleMetrics = {
+  from: string; to: string; days: number;
+  revenue: number; cogs: number;
+  inventory: number; receivable: number; payable: number;
+  dio: number | null; dso: number | null; dpo: number | null; ccc: number | null;
+  currentRatio: number | null; quickRatio: number | null;
+};
 
-  // Balance on a role's account as at a date — everything posted before it.
-  const balanceAt = async (role: string, on: string) => {
-    const [r] = await sql`
-      select coalesce(sum(jl.base_amount), 0)::float as v
-        from journal_line jl
-        join journal_entry je on je.id = jl.journal_entry_id
-       where jl.company_id = ${companyId}
-         and je.entry_date < ${on}::date
-         and jl.account_id in (
-               select account_id from account_determination
-                where company_id = ${companyId} and role = ${role})`;
-    return Number(r.v);
-  };
+/** Roles resolved once: the accounts each figure is read from. */
+const CYCLE_ROLE = {
+  inventory: "INVENTORY",
+  receivable: "AR_CONTROL",
+  payable: "AP_CONTROL",
+} as const;
 
-  const avg = async (role: string) =>
-    ((await balanceAt(role, from)) + (await balanceAt(role, to))) / 2;
+const ratio = (num: number, den: number, days: number) =>
+  den > 0.0001 ? (num / den) * days : null;
 
-  const [revenue, cogs] = [-(await flow(["REVENUE"])), await flow(["COGS"])];
-  const [inventory, receivable, payable] = [
-    await avg("INVENTORY"), await avg("AR_CONTROL"), -(await avg("AP_CONTROL")),
-  ];
+async function cycleWindow(
+  companyId: string, from: string, to: string,
+): Promise<CycleMetrics> {
+  // Trading within the window. Year-end closes are excluded: closing a year
+  // empties revenue and cost of sales into retained earnings, so a window
+  // containing the close sums to zero — and a cycle divided by zero revenue
+  // is not a large number, it is a missing one.
+  const [flow] = await sql`
+    select
+      -coalesce(sum(jl.base_amount) filter (where a.account_type = 'REVENUE'), 0)::float as revenue,
+       coalesce(sum(jl.base_amount) filter (where a.account_type = 'COGS'), 0)::float as cogs
+      from journal_line jl
+      join account a on a.id = jl.account_id
+      join journal_entry je on je.id = jl.journal_entry_id
+      left join document d on d.journal_entry_id = je.id
+     where jl.company_id = ${companyId}
+       and je.entry_date >= ${from}::date and je.entry_date < ${to}::date
+       and coalesce(d.doc_type, '') <> 'YEAR_END_CLOSE'`;
+
+  // Averaged across the window, not taken at its end: a closing balance on a
+  // day a big delivery happened to land would swing the whole metric, and
+  // the question is how much was tied up *through* the period.
+  const [bal] = await sql`
+    with roles as (
+      select role, account_id from account_determination where company_id = ${companyId}
+    ),
+    at_date as (
+      select r.role, d.which,
+             coalesce(sum(jl.base_amount), 0)::float as v
+        from roles r
+        cross join (values ('open', ${from}::date), ('close', ${to}::date)) as d(which, on_date)
+        left join journal_line jl
+               on jl.account_id = r.account_id and jl.company_id = ${companyId}
+        left join journal_entry je
+               on je.id = jl.journal_entry_id and je.entry_date < d.on_date
+       where jl.id is null or je.id is not null
+       group by r.role, d.which
+    )
+    select
+      (coalesce(max(v) filter (where role='INVENTORY'  and which='open'), 0)
+     + coalesce(max(v) filter (where role='INVENTORY'  and which='close'), 0)) / 2 as inventory,
+      (coalesce(max(v) filter (where role='AR_CONTROL' and which='open'), 0)
+     + coalesce(max(v) filter (where role='AR_CONTROL' and which='close'), 0)) / 2 as receivable,
+     -(coalesce(max(v) filter (where role='AP_CONTROL' and which='open'), 0)
+     + coalesce(max(v) filter (where role='AP_CONTROL' and which='close'), 0)) / 2 as payable
+      from at_date`;
+
+  // Current and quick ratios, from the chart's own Current Assets and
+  // Current Liabilities headings rather than from account_type — the split
+  // between current and fixed is a position in the tree, not a type.
+  const [liq] = await sql`
+    with tree as (
+      select id, parent_id, code from account where company_id = ${companyId}
+    ),
+    under as (
+      select t.id, h.code as heading
+        from tree t
+        join lateral (
+          with recursive up(id, parent_id, code) as (
+            select t.id, t.parent_id, t.code
+            union all
+            select p.id, p.parent_id, p.code from tree p join up on p.id = up.parent_id
+          )
+          select code from up where code in ('1-CA', '2-CL') limit 1
+        ) h on true
+    )
+    select
+      coalesce(sum(jl.base_amount) filter (where u.heading = '1-CA'), 0)::float as ca,
+     -coalesce(sum(jl.base_amount) filter (where u.heading = '2-CL'), 0)::float as cl,
+      coalesce(sum(jl.base_amount) filter (
+        where u.heading = '1-CA' and jl.account_id in (
+          select account_id from account_determination
+           where company_id = ${companyId} and role = 'INVENTORY')), 0)::float as inv
+      from journal_line jl
+      join under u on u.id = jl.account_id
+      join journal_entry je on je.id = jl.journal_entry_id
+     where jl.company_id = ${companyId} and je.entry_date < ${to}::date`;
 
   const days = Math.max(
-    1,
-    Math.round((new Date(to).getTime() - new Date(from).getTime()) / 86_400_000),
+    1, Math.round((new Date(to).getTime() - new Date(from).getTime()) / 86_400_000));
+
+  const revenue = Number(flow.revenue);
+  const cogs = Number(flow.cogs);
+  const inventory = Number(bal.inventory);
+  const receivable = Number(bal.receivable);
+  const payable = Number(bal.payable);
+
+  const dio = ratio(inventory, cogs, days);
+  const dso = ratio(receivable, revenue, days);
+  const dpo = ratio(payable, cogs, days);
+
+  const ca = Number(liq.ca), cl = Number(liq.cl), inv = Number(liq.inv);
+  return {
+    from, to, days, revenue, cogs, inventory, receivable, payable, dio, dso, dpo,
+    ccc: dio !== null && dso !== null && dpo !== null ? dio + dso - dpo : null,
+    currentRatio: cl > 0.0001 ? ca / cl : null,
+    quickRatio: cl > 0.0001 ? (ca - inv) / cl : null,
+  };
+}
+
+/**
+ * The cash conversion cycle, its previous period, and a month-by-month trend.
+ *
+ *   DIO  days the goods sit on the shelf      inventory / cost of sales
+ *   DSO  days a customer takes to pay         receivables / revenue
+ *   DPO  days we take to pay a supplier       payables / cost of sales
+ *   CCC  = DIO + DSO − DPO
+ *
+ * A distributor's working capital lives in that number: how many days of
+ * trading must be funded between paying for goods and being paid for them.
+ * Lower is better; negative means suppliers are funding the business.
+ *
+ * The previous period is the same length immediately before, so "24 days
+ * worse" compares like with like rather than a quarter against a year.
+ */
+export async function getCashConversionCycle(companyId: string, from: string, to: string) {
+  const span = new Date(to).getTime() - new Date(from).getTime();
+  const prevFrom = new Date(new Date(from).getTime() - span).toISOString().slice(0, 10);
+
+  const [current, previous] = await Promise.all([
+    cycleWindow(companyId, from, to),
+    cycleWindow(companyId, prevFrom, from),
+  ]);
+
+  // Twelve months to the window's end, each a rolling twelve-month view —
+  // a single month of a seasonal trade reads as brilliance or disaster, and
+  // the cycle is a question about the year.
+  const end = new Date(to);
+  const months: { label: string; to: string; from: string }[] = [];
+  for (let i = 11; i >= 0; i--) {
+    const mEnd = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - i, 1));
+    const mFrom = new Date(Date.UTC(mEnd.getUTCFullYear() - 1, mEnd.getUTCMonth(), 1));
+    months.push({
+      label: mEnd.toLocaleDateString("en-GB", { month: "short", timeZone: "UTC" }),
+      from: mFrom.toISOString().slice(0, 10),
+      to: mEnd.toISOString().slice(0, 10),
+    });
+  }
+  const trend = await Promise.all(
+    months.map(async (m) => {
+      const w = await cycleWindow(companyId, m.from, m.to);
+      return { label: m.label, ccc: w.ccc, dio: w.dio, dso: w.dso, dpo: w.dpo };
+    }),
   );
 
-  // A ratio with no denominator is not zero, it is unanswerable — said so
-  // rather than shown as 0, which would read as "money comes back the same
-  // day".
-  const ratio = (num: number, den: number) =>
-    den > 0.0001 ? (num / den) * days : null;
-
-  const dio = ratio(inventory, cogs);
-  const dso = ratio(receivable, revenue);
-  const dpo = ratio(payable, cogs);
-
-  return {
-    from, to, days,
-    revenue, cogs, inventory, receivable, payable,
-    dio, dso, dpo,
-    ccc: dio !== null && dso !== null && dpo !== null ? dio + dso - dpo : null,
-  };
+  return { current, previous, trend };
 }
 
 // -------------------------------------------------------------- year end --
