@@ -4046,6 +4046,40 @@ export async function getRevenueByCustomerCategory(
      order by revenue desc`;
 }
 
+/**
+ * Spend by the kind of supplier it went to, for the period on the dashboard.
+ *
+ * The mirror of the customer breakdown, and it has to read the second of the
+ * two category columns: a partner that both buys and sells is filed twice,
+ * as the kind of shop it is when we sell and the kind of supplier it is when
+ * we buy. Reading category_id here would file a wholesaler you also sell to
+ * under whatever kind of customer it is.
+ *
+ * Invoice totals rather than line amounts, matching the customer side: the
+ * category belongs to the partner, not to the goods, so the whole bill was
+ * spent with that kind of supplier, carriage included.
+ */
+export async function getSpendBySupplierCategory(
+  companyId: string, from: string, to: string,
+) {
+  return sql`
+    select coalesce(c.name, 'Not categorised') as name,
+           coalesce(c.id::text, 'none')        as id,
+           sum(d.net_total)                    as revenue,
+           count(*)::int                       as invoices
+      from document d
+      join business_partner p on p.id = d.partner_id
+      left join partner_category c
+             on c.id = p.supplier_category_id and c.kind = 'SUPPLIER'
+     where d.company_id = ${companyId}
+       and d.doc_type = 'PURCHASE_INVOICE'
+       and d.status = 'POSTED'
+       and d.posting_date >= ${from}::date and d.posting_date < ${to}::date
+     group by 1, 2
+     having sum(d.net_total) > 0
+     order by revenue desc`;
+}
+
 // ------------------------------------------------------------------ routes --
 
 export async function getRoutes(companyId: string) {

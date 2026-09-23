@@ -7,7 +7,7 @@ import {
   getCompany, getKpis, getHealth, getAging, getDocuments, getStock, getActionItems,
   getNegativeStock, getLowStock, getOverCreditLimit,
   getRevenueTrend, getTopItems, getTopCategories, getRevenueByRegion,
-  getRevenueByCustomerCategory,
+  getRevenueByCustomerCategory, getSpendBySupplierCategory,
   getOnboardingStatus,
 } from "@/lib/queries";
 import { RevenueBars, ShareDonut } from "@/components/charts";
@@ -41,6 +41,11 @@ export default async function Dashboard({
     items: resolvePeriod(sp.items),
     cat: resolvePeriod(sp.cat),
     reg: resolvePeriod(sp.reg),
+    // The two partner breakdowns get their own windows like every other
+    // card. They used to borrow the region card's, so changing where-the-
+    // money-came-from silently changed who-it-came-from as well.
+    cust: resolvePeriod(sp.cust),
+    supp: resolvePeriod(sp.supp),
   };
   /* Changing one card's window leaves the other three where the reader put
      them, so the URL carries all four and each link edits one key. */
@@ -54,8 +59,8 @@ export default async function Dashboard({
   };
 
   const [kpis, health, aging, docs, stock, actionItems, revenueTrend, topItems, topCategories,
-         regionRevenue, custCategoryRevenue, onboarding, negativeStock, lowStock,
-         overLimit] = await Promise.all([
+         regionRevenue, custCategoryRevenue, suppCategorySpend, onboarding,
+         negativeStock, lowStock, overLimit] = await Promise.all([
     getKpis(company.id),
     getHealth(company.id),
     getAging(company.id),
@@ -66,7 +71,8 @@ export default async function Dashboard({
     getTopItems(company.id, period.items.from, period.items.to),
     getTopCategories(company.id, period.cat.from, period.cat.to),
     getRevenueByRegion(company.id, period.reg.from, period.reg.to),
-    getRevenueByCustomerCategory(company.id, period.reg.from, period.reg.to),
+    getRevenueByCustomerCategory(company.id, period.cust.from, period.cust.to),
+    getSpendBySupplierCategory(company.id, period.supp.from, period.supp.to),
     getOnboardingStatus(company.id),
     getNegativeStock(company.id),
     getLowStock(company.id),
@@ -244,6 +250,15 @@ export default async function Dashboard({
 
   const custCategories = custCategoryRevenue as unknown as
     { id: string; name: string; revenue: number | string }[];
+
+  const suppCategories = suppCategorySpend as unknown as
+    { id: string; name: string; revenue: number | string }[];
+
+  /* A breakdown where nothing has been filed is one slice reading "Not
+     categorised" — a circle drawn around the whole company, which tells
+     nobody anything and takes the room of something that would. */
+  const worthDrawing = (rows: { id: string }[]) =>
+    rows.length > 0 && !(rows.length === 1 && rows[0].id === "none");
 
   const items = topItems as unknown as
     { id: string; name: string; qty: number | string; revenue: number | string }[];
@@ -625,21 +640,47 @@ export default async function Dashboard({
         </div>
       </div>
 
-      {/* Only drawn once somebody has classified a customer. An empty
-          breakdown is a circle around "Not categorised", which tells nobody
-          anything and takes the space of something that would. */}
-      {custCategories.length > 0 &&
-       !(custCategories.length === 1 && custCategories[0].id === "none") && (
-        <div className="dash-card dash-card-pad" style={{ marginBottom: "var(--dash-gap)" }}>
-          <div className="dash-section-head">
-            <div>
-              <h2>Revenue by kind of customer</h2>
-              <span className="dash-sub">
-                Sales {period.reg.sentence}, by what kind of shop bought
-              </span>
+      {/* Who the money came from and who it went to, side by side. Either
+          may be missing — a company can file its customers and never file a
+          supplier — and dash-duo auto-fits, so the one that is drawn takes
+          the full width rather than sitting in half a row. */}
+      {(worthDrawing(custCategories) || worthDrawing(suppCategories)) && (
+        <div className="dash-duo">
+          {worthDrawing(custCategories) && (
+            <div className="dash-card dash-card-pad">
+              <div className="dash-section-head">
+                <div>
+                  <h2>Revenue by kind of customer</h2>
+                  <span className="dash-sub">
+                    Sales {period.cust.sentence}, by kind of shop
+                  </span>
+                </div>
+                <PeriodPicker
+                  current={period.cust} label="revenue by kind of customer"
+                  hrefFor={(k) => hrefWith("cust", k)}
+                />
+              </div>
+              <ShareDonut data={custCategories} currency={company.base_currency} />
             </div>
-          </div>
-          <ShareDonut data={custCategories} currency={company.base_currency} />
+          )}
+
+          {worthDrawing(suppCategories) && (
+            <div className="dash-card dash-card-pad">
+              <div className="dash-section-head">
+                <div>
+                  <h2>Spend by kind of supplier</h2>
+                  <span className="dash-sub">
+                    Spend {period.supp.sentence}, by kind of supplier
+                  </span>
+                </div>
+                <PeriodPicker
+                  current={period.supp} label="spend by kind of supplier"
+                  hrefFor={(k) => hrefWith("supp", k)}
+                />
+              </div>
+              <ShareDonut data={suppCategories} currency={company.base_currency} />
+            </div>
+          )}
         </div>
       )}
 
