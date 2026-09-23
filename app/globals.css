@@ -2662,6 +2662,12 @@ dialog.drawer .drawer-panel {
   font-size: var(--t-md); font-weight: 600; letter-spacing: var(--track-tight); margin: 0;
 }
 .dash-section-head .dash-sub { color: var(--muted); display: block; margin-top: 0.25rem; }
+/* The title block takes whatever room the picker leaves, and its subtitle
+   wraps inside it. Without this a subtitle a few pixels too long wraps the
+   *picker* onto a line of its own instead: flex-wrap decides where a line
+   breaks from each item's content width, before any shrinking is
+   considered, so the block has to be told it may shrink. */
+.dash-section-head > div:first-child { flex: 1 1 0; min-width: 0; }
 
 /* Business flow --------------------------------------------------------- */
 .dash-flow-label {

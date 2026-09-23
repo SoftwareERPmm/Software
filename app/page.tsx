@@ -650,13 +650,13 @@ export default async function Dashboard({
             <div className="dash-card dash-card-pad">
               <div className="dash-section-head">
                 <div>
-                  <h2>Revenue by kind of customer</h2>
+                  <h2>Revenue by customer type</h2>
                   <span className="dash-sub">
-                    Sales {period.cust.sentence}, by kind of shop
+                    Revenue {period.cust.sentence}, by customer type
                   </span>
                 </div>
                 <PeriodPicker
-                  current={period.cust} label="revenue by kind of customer"
+                  current={period.cust} label="revenue by customer type"
                   hrefFor={(k) => hrefWith("cust", k)}
                 />
               </div>
@@ -668,13 +668,13 @@ export default async function Dashboard({
             <div className="dash-card dash-card-pad">
               <div className="dash-section-head">
                 <div>
-                  <h2>Spend by kind of supplier</h2>
+                  <h2>Purchases by supplier type</h2>
                   <span className="dash-sub">
-                    Spend {period.supp.sentence}, by kind of supplier
+                    Purchases made {period.supp.sentence}, by supplier type
                   </span>
                 </div>
                 <PeriodPicker
-                  current={period.supp} label="spend by kind of supplier"
+                  current={period.supp} label="purchases by supplier type"
                   hrefFor={(k) => hrefWith("supp", k)}
                 />
               </div>
