@@ -207,17 +207,12 @@ export function CashCycle({
                 <h2 style={{ fontSize: "var(--t-md)" }}>
                   Cash conversion cycle
                   <HelpHint label="How the cycle is worked out">
-                    DIO + DSO − DPO.
+                    <strong>DIO + DSO − DPO</strong>
                     <br /><br />
-                    Days of trading you must fund between paying for goods and
-                    being paid for them. Negative means the goods are sold and
-                    collected before their bill falls due — suppliers are
-                    funding the business.
+                    Days to fund between paying for goods and being paid for
+                    them. Negative means suppliers fund it.
                     <br /><br />
-                    Year-end closing entries are excluded: closing a year
-                    empties revenue and cost of sales into retained earnings,
-                    and a cycle divided by nil revenue is a missing figure, not
-                    a large one.
+                    Year-end closing entries excluded.
                   </HelpHint>
                 </h2>
               </div>
@@ -238,8 +233,8 @@ export function CashCycle({
                 <Delta now={c.ccc} before={previous.ccc} />
                 <div className="hintbar" style={{ marginTop: "0.6rem" }}>
                   {c.ccc! < 0
-                    ? "Cash is released before you pay suppliers."
-                    : "Days of trading to fund between paying for goods and being paid."}
+                    ? "Funded by supplier credit."
+                    : "Funded from working capital."}
                 </div>
               </>
             )}
@@ -250,29 +245,26 @@ export function CashCycle({
           <CycleGauge value={c.dio} max={180} label="Days Inventory (DIO)"
                       hint="Goods sit on the shelf"
                       explain={<>
-                        Average inventory ÷ cost of sales × days in the period.
+                        <strong>Avg inventory ÷ cost of sales × days</strong>
                         <br /><br />
                         How long stock waits between arriving and being sold.
-                        Lower means less money standing on the shelf — but too
-                        low and you are running out.
+                        Lower is better.
                       </>} />
           <CycleGauge value={c.dso} max={180} label="Days Receivable (DSO)"
                       hint="Customers take to pay"
                       explain={<>
-                        Average receivable ÷ revenue × days in the period.
+                        <strong>Avg receivable ÷ revenue × days</strong>
                         <br /><br />
-                        How long a customer takes to pay after being invoiced.
-                        Lower is better: it is your money sitting in their till.
+                        How long customers take to pay after invoicing.
+                        Lower is better.
                       </>} />
           <CycleGauge value={c.dpo} max={600} label="Days Payable (DPO)"
                       hint="We take to pay suppliers" invert
                       explain={<>
-                        Average payable ÷ cost of sales × days in the period.
+                        <strong>Avg payable ÷ cost of sales × days</strong>
                         <br /><br />
-                        How long you take to pay a supplier. <strong>Higher is
-                        better here</strong> — an unpaid bill is free funding —
-                        which is why this dial runs the other way. Pushed too
-                        far it costs you the relationship.
+                        How long you take to pay suppliers. Higher is better
+                        here, so the dial runs the other way.
                       </>} />
 
           <div className="dash-card dash-card-pad">
@@ -281,15 +273,9 @@ export function CashCycle({
                 <h2 style={{ fontSize: "var(--t-md)" }}>
                   Current ratio
                   <HelpHint label="How the current ratio is worked out">
-                    Current assets ÷ current liabilities.
+                    <strong>Current assets ÷ current liabilities</strong>
                     <br /><br />
-                    Whether what you hold, or expect within the year, covers
-                    what falls due within it. Below 1 means it does not.
-                    <br /><br />
-                    Read from the chart&rsquo;s own <strong>Current
-                    Assets</strong> and <strong>Current Liabilities</strong>
-                    headings — current versus fixed is a position in the chart,
-                    not a type of account.
+                    Below 1 means what falls due this year is not covered.
                   </HelpHint>
                 </h2>
               </div>
@@ -304,11 +290,10 @@ export function CashCycle({
                 <h2 style={{ fontSize: "var(--t-md)" }}>
                   Quick ratio
                   <HelpHint label="How the quick ratio is worked out">
-                    (Current assets − inventory) ÷ current liabilities.
+                    <strong>(Current assets − inventory) ÷ current
+                    liabilities</strong>
                     <br /><br />
-                    The same test without the stock, because stock has to be
-                    sold before it can pay anybody. The stricter of the two,
-                    and the one that matters if trade slows.
+                    The same test without stock, which must be sold first.
                   </HelpHint>
                 </h2>
               </div>
@@ -328,8 +313,7 @@ export function CashCycle({
               <div>
                 <h2>CCC trend</h2>
                 <span className="dash-sub">
-                  each point a rolling twelve months — a single month of a
-                  seasonal trade reads as brilliance or disaster
+                  rolling twelve months to each month end
                 </span>
               </div>
             </div>
@@ -355,7 +339,7 @@ export function CashCycle({
               <div>
                 <h2>What makes up the cycle</h2>
                 <span className="dash-sub">
-                  inventory and receivables push it out, payables pull it in
+                  each span begins where the one before it ends
                 </span>
               </div>
             </div>
