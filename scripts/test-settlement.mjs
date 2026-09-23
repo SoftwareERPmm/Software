@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 
 import { takeTestLock, releaseTestLock } from "./test-lock.mjs";
+import { resetTransactions } from "./test-reset.mjs";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 if (!process.env.DATABASE_URL) {
   // Anchored and read line by line — .env can carry more than one
@@ -48,9 +49,7 @@ const statusOf = async (id) =>
 try {
   const [co] = await sql`select id from company limit 1`;
 
-  await sql.unsafe(`truncate table payment_allocation, stock_movement, document_line,
-    document, journal_line, journal_entry restart identity cascade`);
-  await sql`update number_series set next_value = 1`;
+  await resetTransactions(sql);
   await sql`delete from item where code like '88%'`;
   await sql`delete from item_group where code like '88%'`;
   await sql`delete from business_partner where code in ('T-SUP', 'T-CUS')`;
@@ -234,9 +233,7 @@ try {
   check("inventory reconciles",
     (await sql`select 1 from v_check_inventory_reconciliation`).length === 0);
 
-  await sql.unsafe(`truncate table payment_allocation, stock_movement, document_line,
-    document, journal_line, journal_entry restart identity cascade`);
-  await sql`update number_series set next_value = 1`;
+  await resetTransactions(sql);
   await sql`delete from item where code like '88%'`;
   await sql`delete from item_group where code like '88%'`;
   await sql`delete from business_partner where code in ('T-SUP', 'T-CUS')`;
@@ -247,7 +244,7 @@ try {
   bad++;
 } finally {
   await releaseTestLock(sql);
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }
 
 process.exit(bad === 0 ? 0 : 1);

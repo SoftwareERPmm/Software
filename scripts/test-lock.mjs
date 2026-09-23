@@ -176,7 +176,18 @@ export async function releaseTestLock(sql) {
   // it — that would let a third runner in behind both of them.
   if (!owner) return;
   try {
-    await sql`delete from test_run_lock where id = 1 and owner = ${owner}`;
+    // Raced against a deadline, not merely wrapped in try/catch. A throw was
+    // always handled; a *hang* was not — and a hang is what a dropped
+    // connection produces. postgres.js queues the delete waiting for a
+    // reconnect that never comes, so teardown blocks, sql.end() is never
+    // reached, and node exits with no signal for the handlers above to catch.
+    // The lock then outlives the run and blocks every suite after it, which
+    // is how one lost socket turned into twenty-one red results.
+    await Promise.race([
+      sql`delete from test_run_lock where id = 1 and owner = ${owner}`,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("release timed out")), 5000).unref()),
+    ]);
   } catch {
     // Teardown must not turn a passing run into a failing one, and the
     // staleness rule covers a lock that outlives its holder anyway.
@@ -216,6 +227,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       console.log("  released");
     }
   } finally {
-    await sql.end();
+    await sql.end({ timeout: 5 });
   }
 }

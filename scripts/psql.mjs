@@ -6,4 +6,4 @@ const sql = postgres(url, { ssl: local ? false : "require", onnotice: () => {}, 
 const out = await sql.unsafe(readFileSync(file, "utf8"));
 const rows = Array.isArray(out[0]) ? out.at(-1) : out;
 for (const r of rows) console.log("   ", Object.values(r).join("  "));
-await sql.end();
+await sql.end({ timeout: 5 });

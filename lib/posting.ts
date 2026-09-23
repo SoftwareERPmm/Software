@@ -1507,8 +1507,11 @@ async function settleNegativeStock(
               ${take}, ${actualUnitCost})`;
 
     // Charged out at the provisional figure, actually cost this. The
-    // difference is the same kind of thing as a purchase price variance and
-    // goes to the same place.
+    // difference is the same kind of thing as a purchase price variance —
+    // but it goes to the account the issue charged, not to the variance
+    // account, because these goods are gone. 0060: "the only right answer
+    // is the account the original issue posted to." Variance is for goods
+    // still on the shelf whose invoice disagrees with their receipt.
     const diff = round4(take * (actualUnitCost - Number(ns.provisional_unit_cost)));
     variance += diff;
     if (Math.abs(diff) > 0.0001) {

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 
 import { takeTestLock, releaseTestLock } from "./test-lock.mjs";
+import { resetTransactions } from "./test-reset.mjs";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 if (!process.env.DATABASE_URL) {
   // Anchored and read line by line — .env can carry more than one
@@ -46,9 +47,7 @@ const acct = async (code) =>
 try {
   const [co] = await sql`select id from company limit 1`;
 
-  await sql.unsafe(`truncate table payment_allocation, stock_movement, document_line,
-    document, journal_line, journal_entry restart identity cascade`);
-  await sql`update number_series set next_value = 1`;
+  await resetTransactions(sql);
 
   // Chosen by what an account *is*, not by the code the demo seed gave it.
   // On the chart this ran against, 1110 is Building — so the old fixture was
@@ -224,9 +223,7 @@ try {
   check("no unbalanced entries",
     (await sql`select 1 from v_check_unbalanced_entries`).length === 0);
 
-  await sql.unsafe(`truncate table payment_allocation, stock_movement, document_line,
-    document, journal_line, journal_entry restart identity cascade`);
-  await sql`update number_series set next_value = 1`;
+  await resetTransactions(sql);
 
   console.log(bad === 0 ? "  finance vouchers work\n" : `  ${bad} failed\n`);
 } catch (err) {
@@ -234,7 +231,7 @@ try {
   bad++;
 } finally {
   await releaseTestLock(sql);
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }
 
 process.exit(bad === 0 ? 0 : 1);

@@ -57,4 +57,4 @@ const out = { orderId: so.id, orderNo: so.docNo, invoiceNo: inv.docNo, deliveryN
 writeFileSync(join(root, ".playwright-cli", "seed.json"),
   JSON.stringify(out, null, 1) + "\n", { flag: "w" });
 console.log(JSON.stringify(out));
-await sql.end();
+await sql.end({ timeout: 5 });

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 
 import { takeTestLock, releaseTestLock } from "./test-lock.mjs";
+import { resetTransactions } from "./test-reset.mjs";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 if (!process.env.DATABASE_URL) {
   // Anchored and read line by line — .env can carry more than one
@@ -41,10 +42,7 @@ try {
   // Start from a known state. These tests post real documents, and journal
   // entries and stock movements refuse row deletion by design, so anything a
   // previous run left has to go through TRUNCATE.
-  await sql.unsafe(`truncate table payment_allocation, stock_lot_consumption, stock_lot,
-    stock_movement, document_line, document, journal_line, journal_entry
-    restart identity cascade`);
-  await sql`update number_series set next_value = 1`;
+  await resetTransactions(sql);
   // Promotions reference categories, so they have to go first.
   await sql`delete from promotion`;
   await sql`delete from account_determination where item_group_id is not null`;
@@ -148,6 +146,6 @@ try {
   // exited, which is exactly the situation the lock is careful not to clear
   // on its own.
   await releaseTestLock(sql);
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }
 process.exit(bad === 0 ? 0 : 1);

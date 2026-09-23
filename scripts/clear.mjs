@@ -144,7 +144,7 @@ try {
 
   if (!confirm) {
     console.log(`\n  Nothing removed. Re-run with --confirm to wipe ${all ? "transactions and demo masters" : "transactions"}.\n`);
-    await sql.end();
+    await sql.end({ timeout: 5 });
     process.exit(0);
   }
 
@@ -194,5 +194,5 @@ try {
   console.error(`\n  error: ${err.message}\n`);
   process.exit(1);
 } finally {
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }

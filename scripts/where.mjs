@@ -60,7 +60,7 @@ async function inspect(url, label) {
   } catch (err) {
     console.log(`  UNREACHABLE: ${err.message}`);
   } finally {
-    await sql.end();
+    await sql.end({ timeout: 5 });
   }
 }
 

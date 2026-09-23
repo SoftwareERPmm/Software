@@ -282,5 +282,5 @@ try {
   console.error("\n  error:", e.message, "\n");
   process.exitCode = 1;
 } finally {
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }

@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 
 import { takeTestLock, releaseTestLock } from "./test-lock.mjs";
+import { resetTransactions } from "./test-reset.mjs";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
@@ -54,9 +55,7 @@ try {
   const [loc] = await sql`
     select id from location where company_id = ${co.id} and is_stock_location order by code limit 1`;
 
-  await sql.unsafe(`truncate table payment_allocation, stock_lot_consumption, stock_lot,
-    stock_movement, document_line, document, journal_line, journal_entry
-    restart identity cascade`);
+  await resetTransactions(sql);
   await sql`delete from number_series`;
 
   // The year the company already trades in, and the one it is about to enter.
@@ -171,7 +170,7 @@ try {
   failures++;
 } finally {
   await releaseTestLock(sql);
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }
 
 process.exit(failures === 0 ? 0 : 1);

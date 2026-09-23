@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 
 import { takeTestLock, releaseTestLock } from "./test-lock.mjs";
+import { resetTransactions } from "./test-reset.mjs";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
   for (const line of readFileSync(join(root, ".env"), "utf8").split("\n")) {
@@ -31,10 +32,7 @@ const check = (l, ok, d = "") => { if (!ok) bad++; console.log(`  ${ok ? "PASS" 
 try {
   const [co] = await sql`select id from company limit 1`;
 
-  await sql.unsafe(`truncate table payment_allocation, stock_lot_consumption, stock_lot,
-    stock_movement, document_line, document, journal_line, journal_entry
-    restart identity cascade`);
-  await sql`update number_series set next_value = 1`;
+  await resetTransactions(sql);
   await sql`delete from business_partner where code = 'ABC'`;
   await sql`delete from item where code like 'SP%'`;
   await sql`delete from item_group where code like 'SP%'`;
@@ -96,10 +94,7 @@ try {
     Number(ap.outstanding) === 10000 && Number(ar.outstanding) === 4000,
     `owes ${ap.outstanding}, owed ${ar.outstanding}`);
 
-  await sql.unsafe(`truncate table payment_allocation, stock_lot_consumption, stock_lot,
-    stock_movement, document_line, document, journal_line, journal_entry
-    restart identity cascade`);
-  await sql`update number_series set next_value = 1`;
+  await resetTransactions(sql);
   await sql`delete from business_partner where code = 'ABC'`;
   await sql`delete from item where code like 'SP%'`;
   await sql`delete from item_group where code like 'SP%'`;
@@ -110,7 +105,7 @@ try {
   bad++;
 } finally {
   await releaseTestLock(sql);
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }
 
 process.exit(bad === 0 ? 0 : 1);

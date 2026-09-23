@@ -14,6 +14,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { takeTestLock, releaseTestLock } from "./test-lock.mjs";
+import { resetTransactions } from "./test-reset.mjs";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
   for (const line of readFileSync(join(root, ".env"), "utf8").split("\n")) {
@@ -40,6 +41,13 @@ try {
     catch (e) { if (i >= 5) throw e; await new Promise((r) => setTimeout(r, 2000)); }
   }
   const [co] = await sql`select id, name from company order by created_at limit 1`;
+
+  // This suite asserts the *first* number of each series — R…001, CR…001 —
+  // so it needs the series at 1 and the documents gone. It never truncated,
+  // which was survivable while it ran alone and wrong the moment it ran
+  // after anything else: it inherited whatever numbering the previous suite
+  // had reached and reported R…003 as a failure of the engine.
+  await resetTransactions(sql);
   console.log(`\n  ${co.name}\n`);
 
   const D = "2026-09-01";                       // the customer's own example date
@@ -140,8 +148,17 @@ try {
         and is_postable and is_active limit 1`;
     const today = new Date().toISOString().slice(0, 10);
 
+    // The engine infers the branch only when there is one to infer. This
+    // company has two, so it asks — correctly, since a voucher that does not
+    // say where it happened cannot be reported by branch. The suite was
+    // written against a single-branch company and had been assuming that.
+    const [branch] = await sql`
+      select id from location
+       where company_id = ${co.id} and parent_id is null and is_active
+       order by code limit 1`;
+
     const rec = await postCashVoucher({
-      companyId: co.id, docDate: today,
+      companyId: co.id, docDate: today, locationId: branch.id,
       lines: [{ accountId: cash.id, amount: 150000 }, { accountId: income.id, amount: -150000 }],
     });
     check("a cash receipt is numbered R and recorded as money in",
@@ -151,7 +168,7 @@ try {
       recDoc.voucher_direction === "IN", String(recDoc.voucher_direction));
 
     const pay = await postCashVoucher({
-      companyId: co.id, docDate: today,
+      companyId: co.id, docDate: today, locationId: branch.id,
       lines: [{ accountId: cash.id, amount: -80000 }, { accountId: income.id, amount: 80000 }],
     });
     check("a cash payment is numbered P and recorded as money out",
@@ -161,9 +178,19 @@ try {
   }
 
   // ---- nothing repeats ----------------------------------------------------
+  //
+  // Among documents that *stand*. A version deliberately keeps its
+  // predecessor's number — an amendment that got a new one would read as a
+  // second document rather than a second version of one — so the whole table
+  // legitimately holds DS20260923001 twice, once POSTED and once REVERSED.
+  // The invariant worth asserting is that no two live documents share a
+  // number, which is what a reader of a list or a ledger would rely on.
   const dupes = await sql`
     select doc_no, count(*)::int n from document
-     where company_id = ${co.id} group by doc_no having count(*) > 1`;
+     where company_id = ${co.id}
+       and superseded_by_document_id is null
+       and status not in ('REVERSED', 'CANCELLED')
+     group by doc_no having count(*) > 1`;
   check("no document number is used twice", dupes.length === 0,
     dupes.map((d) => d.doc_no).join(", "));
 
@@ -176,6 +203,6 @@ try {
   console.log(`\n  ${failures === 0 ? "all reference number tests pass" : failures + " FAILED"}\n`);
 } finally {
   await releaseTestLock(sql);
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }
 process.exit(failures === 0 ? 0 : 1);

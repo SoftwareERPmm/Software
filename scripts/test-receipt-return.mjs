@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 
 import { takeTestLock, releaseTestLock } from "./test-lock.mjs";
+import { resetTransactions } from "./test-reset.mjs";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
   for (const line of readFileSync(join(root, ".env"), "utf8").split("\n")) {
@@ -85,10 +86,7 @@ try {
      where company_id = ${co.id} and is_supplier order by code limit 1`;
   console.log(`\n  ${co.name}\n`);
 
-  const wipe = () => sql.unsafe(`truncate table posting_attempt, document_history,
-    fulfilment_link, order_closure, payment_allocation, stock_lot_adjustment,
-    stock_lot_consumption, stock_lot, stock_movement, document_line, document,
-    journal_line, journal_entry restart identity cascade`);
+  const wipe = () => resetTransactions(sql);
   const today = new Date().toISOString().slice(0, 10);
   const base = { companyId: co.id, partnerId: supp.id, locationId: loc.id, docDate: today };
 
@@ -418,5 +416,5 @@ try {
   process.exitCode = 1;
 } finally {
   await releaseTestLock(sql);
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }
