@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { sql } from "./db";
+import { money, sql } from "./db";
 import { parseCsv, planImport, type MasterData } from "./import-items";
 import { xlsxToRows, type UploadFormat } from "./read-spreadsheet";
 import { planVoucherImport, voucherColumns, type VoucherMasterData, type VoucherKind }
@@ -3353,6 +3353,7 @@ export async function setCompanyPlan(_prev: unknown, fd: FormData): Promise<Acti
 
 export async function closeFiscalYear(_prev: unknown, fd: FormData): Promise<ActionResult> {
   let docId: string;
+  let moved: string;
   try {
     const co = await companyId();
     const fiscalYearId = str(fd, "fiscal_year_id");
@@ -3360,13 +3361,18 @@ export async function closeFiscalYear(_prev: unknown, fd: FormData): Promise<Act
 
     const result = await postOnce(co, attemptKey(fd), (tx) =>
       postYearEndClose({ companyId: co, fiscalYearId, memo: str(fd, "memo") || null }, tx));
-    docId = (result as { id: string }).id;
+    const closed = result as { id: string; profit: number };
+    docId = closed.id;
+    // What the close did, not that it happened. "Year closed" left the reader
+    // to go and find where the profit went.
+    moved = `${closed.profit < 0 ? "Loss" : "Profit"} transferred to Retained `
+          + `Earnings: ${money(Math.abs(closed.profit))}`;
     revalidatePath("/finance/year-end");
     revalidatePath("/documents");
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
-  redirectWithToast(`/documents/${docId}`, "Year closed");
+  redirectWithToast(`/documents/${docId}`, moved);
 }
 
 export async function reopenYear(_prev: unknown, fd: FormData): Promise<ActionResult> {

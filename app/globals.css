@@ -2669,6 +2669,20 @@ dialog.drawer .drawer-panel {
    considered, so the block has to be told it may shrink. */
 .dash-section-head > div:first-child { flex: 1 1 0; min-width: 0; }
 
+/* A group row in a statement carries the total of the rows indented beneath
+   it. Nothing said so: the class was in the markup and had no rule anywhere,
+   so a heading with a subtotal was drawn exactly like one of its own detail
+   lines — and on the balance sheet that put "Owner Equity" and the retained
+   earnings inside it side by side at the same weight, reading as one figure
+   counted twice. Semibold, on a band strong enough to beat the zebra
+   stripe, so it reads as the sum of what follows rather than as another
+   line of it. */
+tbody tr.stmt-group > td,
+table:not(.linetable) tbody tr.stmt-group > td {
+  font-weight: 600;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
 /* Business flow --------------------------------------------------------- */
 .dash-flow-label {
   display: inline-block; padding: 0.3rem 0.7rem; border-radius: 6px;
