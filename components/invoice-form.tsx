@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useState } from "react";
+import { useActionState, useEffect, useMemo, useState } from "react";
 import type { ActionResult, PickerItem } from "@/lib/actions";
 import type { AwaitingLine } from "@/lib/queries";
 import { ItemPicker } from "./item-picker";
@@ -68,7 +68,7 @@ function addDays(iso: string, days: number) {
 
 export function InvoiceForm({
   kind,
-  action,
+  action, saveDraft, draft,
   partners,
   items: initialItems,
   locations,
@@ -83,6 +83,10 @@ export function InvoiceForm({
 }: {
   kind: "sales" | "purchase";
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
+  /** Keeps the voucher without posting it. Absent where drafts do not apply. */
+  saveDraft?: (prev: unknown, fd: FormData) => Promise<ActionResult>;
+  /** A draft being resumed: its row id, and the editor state it was saved with. */
+  draft?: { id: string; state: string } | null;
   partners: Partner[];
   items: Item[];
   locations: Location[];
@@ -112,14 +116,29 @@ export function InvoiceForm({
   /** See the hidden field below. */
   const [attemptKey] = useState(() => crypto.randomUUID());
 
+  // A resumed draft, as the editor last held it. The `lines` field this form
+  // posts is a derived payload, so the draft keeps the editor's own state and
+  // this reads it back. Unparseable means a blank form, never a crash.
+  const restored = useMemo(() => {
+    if (!draft?.state) return null;
+    try {
+      const v = JSON.parse(draft.state);
+      return v && typeof v === "object" ? v as Record<string, any> : null;
+    } catch { return null; }
+  }, [draft]);
+
   const [items, setItems] = useState<Item[]>(initialItems);
   const addItem = (i: Item) => setItems((xs) => [...xs, i]);
 
-  const [lines, setLines] = useState<Line[]>([{ key: 1, itemId: "", qty: "", unitPrice: "" }]);
-  const [partnerId, setPartnerId] = useState("");
-  const [docDate, setDocDate] = useState(today);
-  const [dueDate, setDueDate] = useState("");
-  const [cashOut, setCashOut] = useState("");
+  const [lines, setLines] = useState<Line[]>(
+    Array.isArray(restored?.lines) && restored!.lines.length > 0
+      ? restored!.lines as Line[]
+      : [{ key: 1, itemId: "", qty: "", unitPrice: "" }],
+  );
+  const [partnerId, setPartnerId] = useState(restored?.partnerId ?? "");
+  const [docDate, setDocDate] = useState(restored?.docDate ?? today);
+  const [dueDate, setDueDate] = useState(restored?.dueDate ?? "");
+  const [cashOut, setCashOut] = useState(restored?.cashOut ?? "");
   const [cashAccountId, setCashAccountId] = useState("");
   const [matchedGrId, setMatchedGrId] = useState("");
   /**
@@ -137,7 +156,7 @@ export function InvoiceForm({
    * invoice billing goods that went into Magway is an invoice for Magway, and
    * asking again is asking a question whose answer is already on the screen.
    */
-  const [locationId, setLocationId] = useState(locations[0]?.id ?? "");
+  const [locationId, setLocationId] = useState(restored?.locationId ?? locations[0]?.id ?? "");
   /**
    * Bill less than arrived — asked for, not typed into.
    *
@@ -151,7 +170,7 @@ export function InvoiceForm({
    * stays on the receipt, waiting for the next bill.
    */
   const [billPart, setBillPart] = useState(false);
-  const [reference, setReference] = useState("");
+  const [reference, setReference] = useState(restored?.reference ?? "");
   /** Which open order this bill was filled from, if any. */
   const [fromOrderId, setFromOrderId] = useState<string | null>(null);
 
@@ -424,6 +443,26 @@ export function InvoiceForm({
   const cashOverpaid = !isSales && Number(cashOut) > total;
   const leavesBalance = !isSales && Number(cashOut) < total;
 
+  /**
+   * Saving a draft, and remembering which row it became, so pressing Save
+   * twice updates one draft rather than leaving a trail of copies.
+   */
+  const [draftId, setDraftId] = useState(draft?.id ?? "");
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [draftResult, draftFormAction, savingDraft] =
+    useActionState<ActionResult | null, FormData>(
+      (saveDraft ?? (async () => ({ ok: true } as ActionResult))) as never, null);
+
+  useEffect(() => {
+    if (!draftResult || !("ok" in draftResult)) return;
+    if (draftResult.draftId) setDraftId(draftResult.draftId);
+    setSavedAt(new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }));
+  }, [draftResult]);
+
+  const draftState = JSON.stringify({
+    lines, partnerId, docDate, dueDate, cashOut, reference, locationId,
+  });
+
   return (
     <form action={formAction} className="form wide">
       {/* One submission, one posting. Generated when this form mounts, so a
@@ -431,7 +470,22 @@ export function InvoiceForm({
           the document the first one posted; a new form is a new key. */}
       <input type="hidden" name="idempotency_key" value={attemptKey} />
 
+      {/* What the editor holds, for a draft to put back — distinct from the
+          posting payload, which has already dropped everything only the
+          editor cares about. */}
+      {saveDraft && (
+        <>
+          <input type="hidden" name="draft_id" value={draftId} />
+          <input type="hidden" name="draft_doc_type"
+                 value={isSales ? "SALES_INVOICE" : "PURCHASE_INVOICE"} />
+          <input type="hidden" name="draft_state" value={draftState} />
+        </>
+      )}
+
       {state && "error" in state && <div className="alert">{state.error}</div>}
+      {draftResult && "error" in draftResult && (
+        <div className="alert">{draftResult.error}</div>
+      )}
 
       <input type="hidden" name="lines" value={payload} />
 
@@ -973,6 +1027,17 @@ export function InvoiceForm({
           disabled={pending || total === 0 || shortages.length > 0 || cashOverpaid || (Number(cashOut) > 0 && !cashAccountId)}>
           {pending ? "Posting…" : `Post ${isSales ? "sales" : "purchase"} invoice`}
         </button>
+        {saveDraft && (
+          <button type="submit" formAction={draftFormAction} className="btn ghost"
+                  formNoValidate disabled={savingDraft || pending}>
+            {savingDraft ? "Saving…" : draftId ? "Update draft" : "Save as draft"}
+          </button>
+        )}
+        {savedAt && (
+          <span className="page-sub" style={{ color: "var(--ok)" }}>
+            Draft saved {savedAt}
+          </span>
+        )}
         <span className="page-sub">
           Posting writes the stock movement and the journal entry together, or neither.
         </span>

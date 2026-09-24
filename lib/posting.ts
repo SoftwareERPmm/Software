@@ -7450,6 +7450,82 @@ export async function reopenFiscalYear(
   });
 }
 
+/* ------------------------------------------------------------- drafts --
+ *
+ * A draft is not a document. It has no number, no journal entry, no stock
+ * movement and no effect on any report — it is the form, kept, so that
+ * leaving a half-written voucher does not throw the work away.
+ *
+ * It lives in lib/posting.ts anyway, because everything that writes a
+ * document-shaped thing lives here and a second place to look would be one
+ * too many.
+ */
+
+/** The document kinds a draft may hold — mirrors document_draft's check. */
+export type DraftDocType =
+  | "SALES_INVOICE" | "PURCHASE_INVOICE" | "SALES_ORDER" | "PURCHASE_ORDER";
+
+export type DraftInput = {
+  companyId: string;
+  /** Set when replacing a draft already saved, so Save twice makes one row. */
+  draftId?: string | null;
+  docType: DraftDocType;
+  partnerId?: string | null;
+  docDate?: string | null;
+  /** The form as submitted. Read back verbatim; never interpreted here. */
+  payload: Record<string, unknown>;
+  /** For the list only — what the draft is worth and how many lines it has. */
+  total?: number;
+  lineCount?: number;
+};
+
+export async function saveDocumentDraft(input: DraftInput): Promise<{ id: string }> {
+  const {
+    companyId, draftId, docType, partnerId, docDate,
+    payload, total = 0, lineCount = 0,
+  } = input;
+
+  if (draftId) {
+    const rows = await sql`
+      update document_draft
+         set partner_id = ${partnerId ?? null},
+             doc_date   = ${docDate ?? null},
+             total      = ${total},
+             line_count = ${lineCount},
+             payload    = ${sql.json(payload as never)},
+             updated_at = now()
+       where id = ${draftId} and company_id = ${companyId}
+       returning id`;
+    // Gone while the form was open — saving again should keep the work
+    // rather than fail, so it falls through and writes a new one.
+    if (rows.length > 0) return { id: rows[0].id as string };
+  }
+
+  const [row] = await sql`
+    insert into document_draft
+      (company_id, doc_type, partner_id, doc_date, total, line_count, payload)
+    values
+      (${companyId}, ${docType}, ${partnerId ?? null}, ${docDate ?? null},
+       ${total}, ${lineCount}, ${sql.json(payload as never)})
+    returning id`;
+  return { id: row.id as string };
+}
+
+/**
+ * Throw a draft away.
+ *
+ * Takes an optional transaction so posting can discard the draft it came
+ * from in the same breath as writing the invoice — a draft that outlived
+ * its own posting would invite the work being entered twice.
+ */
+export async function deleteDocumentDraft(
+  companyId: string, draftId: string, tx?: TransactionSql,
+): Promise<void> {
+  const db = tx ?? sql;
+  await db`delete from document_draft
+            where id = ${draftId} and company_id = ${companyId}`;
+}
+
 export async function voidDocument(input: {
   documentId: string;
   reason?: string | null;

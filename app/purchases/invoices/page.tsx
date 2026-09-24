@@ -4,7 +4,7 @@ import {
   invoiceDisplayStatus, INVOICE_STATUS_LABEL, INVOICE_STATUS_PILL,
   type InvoiceDisplayStatus,
 } from "@/lib/format";
-import { getCompany, getInvoiceList } from "@/lib/queries";
+import { getCompany, getInvoiceList, getDocumentDrafts } from "@/lib/queries";
 import { DataTable, type DataRow } from "@/components/data-table";
 import { HelpHint } from "@/components/help-hint";
 
@@ -28,7 +28,24 @@ export default async function PurchaseInvoices({
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
-  const all = (await getInvoiceList(company.id, "PURCHASE_INVOICE")) as any[];
+  const postedRows = (await getInvoiceList(company.id, "PURCHASE_INVOICE")) as any[];
+
+  // Unfinished bills, in the same shape as the rest of the list. They live in
+  // their own table rather than in `document` (migration 0103), so they are
+  // joined on here. Nil paid and nil outstanding are the truth: a draft has
+  // never been a payable.
+  const drafts = (await getDocumentDrafts(company.id, "PURCHASE_INVOICE")) as any[];
+  const draftRows = drafts.map((d) => ({
+    document_id: d.id, draft_id: d.id as string,
+    doc_no: null, posting_date: d.doc_date, due_date: null,
+    partner_id: null, partner_code: d.partner_code,
+    partner_name: d.partner_name ?? "No supplier yet",
+    gross_total: d.total, paid: 0, outstanding: 0,
+    doc_status: "DRAFT", payment_status: null, days_overdue: null,
+    line_count: Number(d.line_count ?? 0),
+  }));
+
+  const all = [...draftRows, ...postedRows];
 
   const withStatus = all.map((r) => ({
     ...r,
@@ -67,16 +84,28 @@ export default async function PurchaseInvoices({
     node: (
       <tr className="link">
         <td className="code">
-          <Link href={`/documents/${i.document_id}`} style={{ color: "var(--brand)" }}>
-            {i.doc_no ?? "draft"}
+          {/* A draft has no document to open — the link goes back to the
+              form it came out of. */}
+          <Link href={i.draft_id ? `/purchases/new?draft=${i.draft_id}` : `/documents/${i.document_id}`}
+                style={{ color: "var(--brand)" }}>
+            {i.doc_no ?? "Resume"}
           </Link>
         </td>
         <td className="code">{shortDate(i.posting_date)}</td>
         <td className="code">{i.due_date ? shortDate(i.due_date) : "—"}</td>
         <td className="wrap">
-          <Link href={`/purchases/invoices?supplier=${i.partner_id}`} style={{ color: "inherit" }}>
-            {i.partner_name}
-          </Link>
+          {i.draft_id ? (
+            <>
+              {i.partner_name}
+              <div className="subline">
+                {i.line_count === 1 ? "1 line" : `${i.line_count} lines`} · not posted
+              </div>
+            </>
+          ) : (
+            <Link href={`/purchases/invoices?supplier=${i.partner_id}`} style={{ color: "inherit" }}>
+              {i.partner_name}
+            </Link>
+          )}
         </td>
         <td className="r">{money(i.gross_total)}</td>
         <td className="r">{money(i.paid)}</td>

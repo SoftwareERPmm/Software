@@ -1,5 +1,5 @@
-import { getFormData, createSalesInvoice } from "@/lib/actions";
-import { getOpenDeliveries, getOwnershipMap, getOpenOrdersAwaitingGoods } from "@/lib/queries";
+import { getFormData, createSalesInvoice, saveInvoiceDraft } from "@/lib/actions";
+import { getOpenDeliveries, getOwnershipMap, getOpenOrdersAwaitingGoods, getDocumentDraft } from "@/lib/queries";
 import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { SalesVoucher } from "@/components/sales-voucher";
@@ -9,9 +9,9 @@ import { HelpHint } from "@/components/help-hint";
 export default async function NewSalesInvoice({
   searchParams,
 }: {
-  searchParams: Promise<{ delivery_id?: string }>;
+  searchParams: Promise<{ delivery_id?: string; draft?: string }>;
 }) {
-  const { delivery_id } = await searchParams;
+  const { delivery_id, draft: draftId } = await searchParams;
   const d = await getFormData();
   const [co] = await sql`select id from company order by created_at limit 1`;
   const categories = await allCategories(co.id);
@@ -25,6 +25,17 @@ export default async function NewSalesInvoice({
   // has to be able to say which pool it came out of.
   const ownership = await getOwnershipMap(co.id);
   const today = new Date().toISOString().slice(0, 10);
+
+  // Resuming an unfinished voucher. A draft deleted meanwhile opens a blank
+  // form rather than an error — the work is gone either way, and a dead end
+  // helps nobody.
+  const draftRow = draftId ? await getDocumentDraft(co.id, draftId) : null;
+  const draft = draftRow
+    ? {
+        id: draftRow.id as string,
+        state: String((draftRow.payload as Record<string, unknown>)?.draft_state ?? ""),
+      }
+    : null;
 
   // Items are deliberately not required: a product can be created from the
   // voucher itself. A category is, since nothing unclassified may enter stock.
@@ -56,7 +67,7 @@ export default async function NewSalesInvoice({
       <ErpCrumbs steps={[
         { label: "Sales invoices", href: "/sales/invoices" },
         ...(from ? [{ label: from.doc_no, href: `/documents/${from.id}` }] : []),
-        { label: "Sales voucher" },
+        { label: draft ? "Resuming a draft" : "Sales voucher" },
       ]} />
       <div className="page-head">
         <h1>Sales voucher</h1>
@@ -71,6 +82,8 @@ export default async function NewSalesInvoice({
 
       <SalesVoucher
         action={createSalesInvoice}
+        saveDraft={saveInvoiceDraft}
+        draft={draft}
         ownership={ownership.consigned as never}
         customers={d.customers as never}
         items={d.items as never}

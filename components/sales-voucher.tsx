@@ -98,7 +98,7 @@ function addDays(iso: string, days: number) {
 }
 
 export function SalesVoucher({
-  action, customers, items: initialItems, locations, salesmen, cashAccounts, promotions,
+  action, saveDraft, draft, customers, items: initialItems, locations, salesmen, cashAccounts, promotions,
   volumeDiscounts,
   currencyScale = 4,
   focReasons, openInvoices, nextInvoiceNo, today, categories, uoms,
@@ -109,6 +109,10 @@ export function SalesVoucher({
   awaiting = [],
 }: {
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
+  /** Keeps the voucher without posting it. Absent where drafts do not apply. */
+  saveDraft?: (prev: unknown, fd: FormData) => Promise<ActionResult>;
+  /** A draft being resumed: its row id, and the editor state it was saved with. */
+  draft?: { id: string; state: string } | null;
   customers: Customer[];
   items: Item[];
   categories: Node[];
@@ -163,15 +167,35 @@ export function SalesVoucher({
   /** See the hidden field below. */
   const [attemptKey] = useState(() => crypto.randomUUID());
 
+  /**
+   * A resumed draft, as the editor last held it.
+   *
+   * The `lines` field this form posts is a derived payload — free goods are
+   * split onto their own rows, editor-only fields are dropped — so restoring
+   * from it would hand back something subtly different from what was typed.
+   * The draft keeps the editor's own state instead, and this reads it back.
+   * A payload that will not parse is ignored rather than fatal: a blank form
+   * is a poor outcome, a crashing one is worse.
+   */
+  const restored = useMemo(() => {
+    if (!draft?.state) return null;
+    try {
+      const v = JSON.parse(draft.state);
+      return v && typeof v === "object" ? v as Record<string, any> : null;
+    } catch { return null; }
+  }, [draft]);
+
   // Items created mid-voucher join the list without a page reload.
   const [items, setItems] = useState<Item[]>(initialItems);
   const addItem = (i: Item) => setItems((xs) => [...xs, i]);
 
-  const [lines, setLines] = useState<Line[]>([
-    { key: 1, itemId: "", qty: "", unitPrice: "", discountPct: "", focQty: "", focReasonId: "", source: "OWNED" },
-  ]);
-  const [customerId, setCustomerId] = useState("");
-  const [locationId, setLocationId] = useState(locations[0]?.id ?? "");
+  const [lines, setLines] = useState<Line[]>(
+    Array.isArray(restored?.lines) && restored!.lines.length > 0
+      ? restored!.lines as Line[]
+      : [{ key: 1, itemId: "", qty: "", unitPrice: "", discountPct: "", focQty: "", focReasonId: "", source: "OWNED" }],
+  );
+  const [customerId, setCustomerId] = useState(restored?.customerId ?? "");
+  const [locationId, setLocationId] = useState(restored?.locationId ?? locations[0]?.id ?? "");
   const [matchedDeliveryId, setMatchedDeliveryId] = useState("");
   /**
    * Bill less than went out — asked for, not typed into. The purchase side's
@@ -182,7 +206,7 @@ export function SalesVoucher({
    * has unbilled.
    */
   const [billPart, setBillPart] = useState(false);
-  const [reference, setReference] = useState("");
+  const [reference, setReference] = useState(restored?.reference ?? "");
   /** Which open order this invoice was filled from, if any. */
   const [fromOrderId, setFromOrderId] = useState<string | null>(null);
   // Set only by answering the dialog. It rides along as a hidden field, so
@@ -190,11 +214,11 @@ export function SalesVoucher({
   // from the fact that stock happened to be short.
   const [negativeConfirmed, setNegativeConfirmed] = useState(false);
   const [askNegative, setAskNegative] = useState(false);
-  const [docDate, setDocDate] = useState(today);
-  const [dueDate, setDueDate] = useState("");
-  const [paymentType, setPaymentType] = useState<"CASH" | "CREDIT">("CREDIT");
-  const [cashIn, setCashIn] = useState("");
-  const [toDeliver, setToDeliver] = useState(false);
+  const [docDate, setDocDate] = useState(restored?.docDate ?? today);
+  const [dueDate, setDueDate] = useState(restored?.dueDate ?? "");
+  const [paymentType, setPaymentType] = useState<"CASH" | "CREDIT">(restored?.paymentType === "CASH" ? "CASH" : "CREDIT");
+  const [cashIn, setCashIn] = useState(restored?.cashIn ?? "");
+  const [toDeliver, setToDeliver] = useState(!!restored?.toDeliver);
   /**
    * Whether the goods have gone, are going, or go later.
    *
@@ -211,7 +235,7 @@ export function SalesVoucher({
    */
   const [fulfilMode, setFulfilMode] = useState<"counter" | "send" | "later" | "match">("counter");
   const [sourceFor, setSourceFor] = useState<number | null>(null);
-  const [fee, setFee] = useState("");
+  const [fee, setFee] = useState(restored?.fee ?? "");
   const [tab, setTab] = useState<"invoices" | "promotions">("invoices");
 
   const byId = (id: string) => items.find((i) => i.id === id);
@@ -681,6 +705,30 @@ export function SalesVoucher({
 
   const cashTooMuch = cashAmount > total;
 
+  /**
+   * Saving a draft, and remembering which row it became.
+   *
+   * The id comes back from the first save and rides along on the next one,
+   * so pressing Save twice updates one draft instead of leaving a trail of
+   * half-written copies.
+   */
+  const [draftId, setDraftId] = useState(draft?.id ?? "");
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [draftResult, draftFormAction, savingDraft] =
+    useActionState<ActionResult | null, FormData>(
+      (saveDraft ?? (async () => ({ ok: true } as ActionResult))) as never, null);
+
+  useEffect(() => {
+    if (!draftResult || !("ok" in draftResult)) return;
+    if (draftResult.draftId) setDraftId(draftResult.draftId);
+    setSavedAt(new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }));
+  }, [draftResult]);
+
+  const draftState = JSON.stringify({
+    lines, customerId, locationId, reference, docDate, dueDate,
+    paymentType, cashIn, toDeliver, fee,
+  });
+
   return (
     <form action={formAction} className="form wide">
       {/* One submission, one posting. Generated when this form mounts, so a
@@ -688,7 +736,21 @@ export function SalesVoucher({
           the document the first one posted; a new form is a new key. */}
       <input type="hidden" name="idempotency_key" value={attemptKey} />
 
+      {/* What the editor holds, for a draft to put back. Separate from the
+          `lines` field below, which is the posting payload and has already
+          thrown away everything only the editor cares about. */}
+      {saveDraft && (
+        <>
+          <input type="hidden" name="draft_id" value={draftId} />
+          <input type="hidden" name="draft_doc_type" value="SALES_INVOICE" />
+          <input type="hidden" name="draft_state" value={draftState} />
+        </>
+      )}
+
       {state && "error" in state && <div className="alert">{state.error}</div>}
+      {draftResult && "error" in draftResult && (
+        <div className="alert">{draftResult.error}</div>
+      )}
 
       <input type="hidden" name="lines" value={payload} />
       <input type="hidden" name="payment_type" value={paymentType} />
@@ -1531,6 +1593,17 @@ export function SalesVoucher({
           disabled={pending || total === 0 || cashTooMuch}>
           {pending ? "Posting…" : "Post voucher"}
         </button>
+        {saveDraft && (
+          <button type="submit" formAction={draftFormAction} className="btn ghost"
+                  formNoValidate disabled={savingDraft || pending}>
+            {savingDraft ? "Saving…" : draftId ? "Update draft" : "Save as draft"}
+          </button>
+        )}
+        {savedAt && (
+          <span className="page-sub" style={{ color: "var(--ok)" }}>
+            Draft saved {savedAt}
+          </span>
+        )}
         <span className="page-sub">
           Stock, the receivable{cashAmount > 0 ? ", the receipt" : ""} and the journal entry are
           written together, or none of them are.

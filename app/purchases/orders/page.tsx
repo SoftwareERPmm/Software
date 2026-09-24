@@ -4,7 +4,7 @@ import {
   orderDisplayStatus, ORDER_STATUS_LABEL, ORDER_STATUS_PILL,
   type OrderDisplayStatus,
 } from "@/lib/format";
-import { getCompany, getOrderList } from "@/lib/queries";
+import { getCompany, getOrderList, getDocumentDrafts } from "@/lib/queries";
 import { DataTable, type DataRow } from "@/components/data-table";
 import { HelpHint } from "@/components/help-hint";
 
@@ -43,7 +43,26 @@ export default async function PurchaseOrders({
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
-  const all = (await getOrderList(company.id, "PURCHASE_ORDER")) as any[];
+  const saved = (await getOrderList(company.id, "PURCHASE_ORDER")) as any[];
+
+  /**
+   * Unfinished orders, in the same shape as the rest of the list.
+   *
+   * They live in their own table rather than in `document` (migration 0103),
+   * so they are joined on here. Nil ordered and nil fulfilled are the truth,
+   * not placeholders: nothing has been promised to anybody yet, which is why
+   * the Draft pill has always existed and never had a row.
+   */
+  const drafts = (await getDocumentDrafts(company.id, "PURCHASE_ORDER")) as any[];
+  const draftRows = drafts.map((d) => ({
+    document_id: d.id, id: d.id, draft_id: d.id as string,
+    doc_no: null, posting_date: d.doc_date, due_date: null,
+    partner_id: null, partner_name: d.partner_name ?? "Nobody chosen yet",
+    gross_total: d.total, ordered_qty: 0, fulfilled_qty: 0,
+    doc_status: "DRAFT", line_count: Number(d.line_count ?? 0),
+  }));
+
+  const all = [...draftRows, ...saved];
 
   const withStatus = all.map((r) => ({
     ...r,
@@ -72,12 +91,22 @@ export default async function PurchaseOrders({
     node: (
       <tr className="link">
         <td className="code">
-          <Link href={`/documents/${o.document_id}`} style={{ color: "var(--brand)" }}>
-            {o.doc_no ?? "draft"}
+          {/* A draft has no document to open — the link goes back to the
+              form it came out of. */}
+          <Link href={o.draft_id ? `/purchases/orders/new?draft=${o.draft_id}` : `/documents/${o.document_id}`}
+                style={{ color: "var(--brand)" }}>
+            {o.doc_no ?? "Resume"}
           </Link>
         </td>
         <td className="code">{shortDate(o.posting_date)}</td>
-        <td className="wrap">{o.partner_name}</td>
+        <td className="wrap">
+          {o.partner_name}
+          {o.draft_id && (
+            <div className="subline">
+              {o.line_count === 1 ? "1 line" : `${o.line_count} lines`} · not saved yet
+            </div>
+          )}
+        </td>
         {/* Why an order is overdue is a date, so the date is on the row.
             Marked where it has passed with something still outstanding —
             the same test the Overdue filter and the dashboard count use. */}
