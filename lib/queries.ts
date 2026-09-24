@@ -1,5 +1,5 @@
 import { sql } from "./db";
-import { grirMatcher, type MatchableLine } from "./posting";
+import { grirMatcher, type MatchableLine, type DraftDocType } from "./posting";
 
 export type Company = { id: string; code: string; name: string; name_my: string | null; base_currency: string };
 
@@ -372,6 +372,34 @@ export async function getInvoiceList(companyId: string, docType: "SALES_INVOICE"
       where d.company_id = ${companyId} and d.doc_type = ${docType} and d.status = 'DRAFT'
 
      order by posting_date desc, doc_no desc`;
+}
+
+/**
+ * Unfinished vouchers of one type, newest first.
+ *
+ * Deliberately separate from getInvoiceList: a draft has no number, no
+ * status worth colouring and nothing owing, so putting it in that union
+ * would mean four columns of nulls on every row for the sake of one list.
+ */
+export async function getDocumentDrafts(
+  companyId: string, docType: DraftDocType,
+) {
+  return sql`
+    select dd.id, dd.doc_date, dd.total, dd.line_count, dd.updated_at,
+           p.name as partner_name, p.code as partner_code
+      from document_draft dd
+      left join business_partner p on p.id = dd.partner_id
+     where dd.company_id = ${companyId} and dd.doc_type = ${docType}
+     order by dd.updated_at desc`;
+}
+
+/** One draft's payload, to put back on the form it came from. */
+export async function getDocumentDraft(companyId: string, id: string) {
+  const [row] = await sql`
+    select id, doc_type, payload
+      from document_draft
+     where company_id = ${companyId} and id = ${id}`;
+  return row ?? null;
 }
 
 /** What each customer/supplier owes or is owed, for a per-partner rollup. */

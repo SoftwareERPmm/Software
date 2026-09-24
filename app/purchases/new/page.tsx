@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
-import { getFormData, createPurchaseInvoice } from "@/lib/actions";
-import { getOpenGoodsReceipts, getOpenOrdersAwaitingGoods } from "@/lib/queries";
+import { getFormData, createPurchaseInvoice, saveInvoiceDraft } from "@/lib/actions";
+import { getOpenGoodsReceipts, getOpenOrdersAwaitingGoods, getDocumentDraft } from "@/lib/queries";
 import { allCategories } from "@/lib/tree";
 import { sql } from "@/lib/db";
 import { InvoiceForm } from "@/components/invoice-form";
@@ -11,11 +11,21 @@ import { HelpHint } from "@/components/help-hint";
 export default async function NewPurchaseInvoice({
   searchParams,
 }: {
-  searchParams: Promise<{ goods_receipt_id?: string }>;
+  searchParams: Promise<{ goods_receipt_id?: string; draft?: string }>;
 }) {
-  const { goods_receipt_id } = await searchParams;
+  const { goods_receipt_id, draft: draftId } = await searchParams;
   const { suppliers, items, locations, uoms, cashAccounts, taxCodes } = await getFormData();
   const [co] = await sql`select id from company order by created_at limit 1`;
+
+  // Resuming an unfinished bill. A draft deleted meanwhile opens a blank
+  // form rather than an error.
+  const draftRow = draftId ? await getDocumentDraft(co.id, draftId) : null;
+  const draft = draftRow
+    ? {
+        id: draftRow.id as string,
+        state: String((draftRow.payload as Record<string, unknown>)?.draft_state ?? ""),
+      }
+    : null;
   const categories = await allCategories(co.id);
   const goodsReceipts = await getOpenGoodsReceipts(co.id);
   // Raised from one receipt's own page: the crumb names it, so the way back
@@ -77,6 +87,8 @@ export default async function NewPurchaseInvoice({
       <InvoiceForm
         kind="purchase"
         action={createPurchaseInvoice}
+        saveDraft={saveInvoiceDraft}
+        draft={draft}
         partners={suppliers as never}
         items={items as never}
         locations={locations as never}

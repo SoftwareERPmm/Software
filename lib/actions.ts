@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { sql } from "./db";
+import { money, sql } from "./db";
 import { parseCsv, planImport, type MasterData } from "./import-items";
 import { xlsxToRows, type UploadFormat } from "./read-spreadsheet";
 import { planVoucherImport, voucherColumns, type VoucherMasterData, type VoucherKind }
@@ -29,11 +29,17 @@ import {
   type InvoiceLine, type OrderLine, type FulfillmentLine, type Allocation, type VoucherLine,
   type AdjustmentLine, type ReturnLine, type TransferLine, type ConsignmentReceiptLine,
   postYearEndClose,
+  saveDocumentDraft, deleteDocumentDraft,
   reopenFiscalYear,
 } from "./posting";
 import { postOnce, alreadyPosted } from "./idempotency";
 
-export type ActionResult = { error: string } | { ok: true };
+export type ActionResult =
+  | { error: string }
+  // draftId comes back so a form that saves twice updates one row instead of
+  // leaving a trail of half-written copies. Optional, so every existing
+  // caller that only asks whether "ok" is in the result is unaffected.
+  | { ok: true; draftId?: string };
 
 function str(fd: FormData, key: string): string {
   return String(fd.get(key) ?? "").trim();
@@ -1534,6 +1540,13 @@ export async function createSalesInvoice(_prev: unknown, fd: FormData): Promise<
 
     docId = result.id;
     toastMsg = `Invoice ${result.docNo} posted`;
+
+    // The draft has become an invoice, so it stops being a draft. Outside
+    // the posting transaction on purpose: a delete that fails must not undo
+    // a posting that succeeded. The worst case is a draft left behind, which
+    // the list lets somebody throw away.
+    const fromDraft = str(fd, "draft_id");
+    if (fromDraft) await deleteDocumentDraft(co, fromDraft);
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
@@ -1602,6 +1615,13 @@ export async function createPurchaseInvoice(_prev: unknown, fd: FormData): Promi
 
     docId = result.id;
     toastMsg = `Invoice ${result.docNo} posted`;
+
+    // The draft has become an invoice, so it stops being a draft. Outside
+    // the posting transaction on purpose: a delete that fails must not undo
+    // a posting that succeeded. The worst case is a draft left behind, which
+    // the list lets somebody throw away.
+    const fromDraft = str(fd, "draft_id");
+    if (fromDraft) await deleteDocumentDraft(co, fromDraft);
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
@@ -1785,6 +1805,10 @@ export async function createSalesOrder(_prev: unknown, fd: FormData): Promise<Ac
 
     docId = result.id;
     toastMsg = `Order ${result.docNo} saved`;
+
+    // The draft has become an order, so it stops being a draft.
+    const fromDraft = str(fd, "draft_id");
+    if (fromDraft) await deleteDocumentDraft(co, fromDraft);
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
@@ -1820,6 +1844,10 @@ export async function createPurchaseOrder(_prev: unknown, fd: FormData): Promise
 
     docId = result.id;
     toastMsg = `Order ${result.docNo} saved`;
+
+    // The draft has become an order, so it stops being a draft.
+    const fromDraft = str(fd, "draft_id");
+    if (fromDraft) await deleteDocumentDraft(co, fromDraft);
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
@@ -3349,10 +3377,99 @@ export async function setCompanyPlan(_prev: unknown, fd: FormData): Promise<Acti
   return { ok: true };
 }
 
+// --------------------------------------------------------------- drafts --
+
+/**
+ * Keep an unfinished voucher.
+ *
+ * Stores the form exactly as submitted rather than a parsed subset, so a
+ * field added to the voucher next month is kept without this function
+ * learning about it. Nothing is validated: the whole point is to hold work
+ * that is not yet good enough to post.
+ */
+export async function saveInvoiceDraft(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    // Whatever the form says it is, checked against the four the draft table
+    // accepts rather than trusted — a hidden field is a suggestion.
+    const KINDS = ["SALES_INVOICE", "PURCHASE_INVOICE",
+                   "SALES_ORDER", "PURCHASE_ORDER"] as const;
+    const asked = str(fd, "draft_doc_type") as (typeof KINDS)[number];
+    const docType = KINDS.includes(asked) ? asked : "SALES_INVOICE";
+
+    const payload: Record<string, string> = {};
+    for (const [k, v] of fd.entries()) {
+      // Files have no place in a draft, and draft_id is the row's identity
+      // rather than part of the form it holds.
+      if (typeof v === "string" && k !== "draft_id") payload[k] = v;
+    }
+
+    // Indicative only, for the list. Tax is not applied — working it out
+    // needs rate lookups the draft has no reason to do, and the real totals
+    // are computed by the posting engine when it eventually posts.
+    let total = num(fd, "delivery_fee");
+    let lineCount = 0;
+    try {
+      const parsed = JSON.parse(String(fd.get("lines") ?? "[]"));
+      if (Array.isArray(parsed)) {
+        for (const l of parsed as Array<Record<string, unknown>>) {
+          const qty = Number(l.qty) || 0;
+          if (qty <= 0) continue;
+          lineCount += 1;
+          const price = Number(l.unitPrice) || 0;
+          const disc = Number(l.discountPct) || 0;
+          total += qty * price * (1 - disc / 100);
+        }
+      }
+    } catch {
+      // A payload we cannot read is still worth keeping; it just lists as nil.
+    }
+
+    if (!str(fd, "partner_id") && lineCount === 0) {
+      return { error: "Nothing to save yet — choose a partner or enter a line" };
+    }
+
+    const { id } = await saveDocumentDraft({
+      companyId: co,
+      draftId: str(fd, "draft_id") || null,
+      docType,
+      partnerId: str(fd, "partner_id") || null,
+      docDate: str(fd, "doc_date") || null,
+      payload,
+      total,
+      lineCount,
+    });
+
+    revalidatePath({
+      SALES_INVOICE: "/sales/invoices", PURCHASE_INVOICE: "/purchases/invoices",
+      SALES_ORDER: "/sales/orders",     PURCHASE_ORDER: "/purchases/orders",
+    }[docType]);
+    return { ok: true, draftId: id };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** Throw a draft away. Nothing was posted, so nothing is reversed. */
+export async function discardInvoiceDraft(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "draft_id");
+    if (!id) return { error: "Which draft?" };
+    await deleteDocumentDraft(co, id);
+    for (const path of ["/sales/invoices", "/purchases/invoices",
+                        "/sales/orders", "/purchases/orders"]) revalidatePath(path);
+    return { ok: true };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 // -------------------------------------------------------------- year end --
 
 export async function closeFiscalYear(_prev: unknown, fd: FormData): Promise<ActionResult> {
   let docId: string;
+  let moved: string;
   try {
     const co = await companyId();
     const fiscalYearId = str(fd, "fiscal_year_id");
@@ -3360,13 +3477,18 @@ export async function closeFiscalYear(_prev: unknown, fd: FormData): Promise<Act
 
     const result = await postOnce(co, attemptKey(fd), (tx) =>
       postYearEndClose({ companyId: co, fiscalYearId, memo: str(fd, "memo") || null }, tx));
-    docId = (result as { id: string }).id;
+    const closed = result as { id: string; profit: number };
+    docId = closed.id;
+    // What the close did, not that it happened. "Year closed" left the reader
+    // to go and find where the profit went.
+    moved = `${closed.profit < 0 ? "Loss" : "Profit"} transferred to Retained `
+          + `Earnings: ${money(Math.abs(closed.profit))}`;
     revalidatePath("/finance/year-end");
     revalidatePath("/documents");
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
-  redirectWithToast(`/documents/${docId}`, "Year closed");
+  redirectWithToast(`/documents/${docId}`, moved);
 }
 
 export async function reopenYear(_prev: unknown, fd: FormData): Promise<ActionResult> {

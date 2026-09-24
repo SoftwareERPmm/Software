@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useMemo, useState } from "react";
+import { useActionState, useEffect, useMemo, useState } from "react";
 import type { ActionResult, PickerItem } from "@/lib/actions";
 import type { AwaitingLine } from "@/lib/queries";
 import { ItemPicker } from "./item-picker";
@@ -28,7 +28,7 @@ function addDays(iso: string, days: number) {
  */
 export function OrderForm({
   kind,
-  action,
+  action, saveDraft, draft,
   partners,
   items: initialItems,
   locations,
@@ -39,6 +39,10 @@ export function OrderForm({
 }: {
   kind: "sales" | "purchase";
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
+  /** Keeps the order without saving it as a real one. */
+  saveDraft?: (prev: unknown, fd: FormData) => Promise<ActionResult>;
+  /** A draft being resumed: its row id, and the editor state it held. */
+  draft?: { id: string; state: string } | null;
   partners: Partner[];
   items: Item[];
   locations: Location[];
@@ -56,15 +60,47 @@ export function OrderForm({
   /** See the hidden field below. */
   const [attemptKey] = useState(() => crypto.randomUUID());
 
+  // A resumed draft, as the editor last held it. Unparseable means a blank
+  // form rather than a crash.
+  const restored = useMemo(() => {
+    if (!draft?.state) return null;
+    try {
+      const v = JSON.parse(draft.state);
+      return v && typeof v === "object" ? v as Record<string, any> : null;
+    } catch { return null; }
+  }, [draft]);
+
   const [items, setItems] = useState<Item[]>(initialItems);
   const addItem = (i: Item) => setItems((xs) => [...xs, i]);
 
-  const [lines, setLines] = useState<Line[]>([{ key: 1, itemId: "", qty: "", unitPrice: "" }]);
-  const [partnerId, setPartnerId] = useState("");
-  const [docDate, setDocDate] = useState(today);
-  const [dueDate, setDueDate] = useState("");
+  const [lines, setLines] = useState<Line[]>(
+    Array.isArray(restored?.lines) && restored!.lines.length > 0
+      ? restored!.lines as Line[]
+      : [{ key: 1, itemId: "", qty: "", unitPrice: "" }],
+  );
+  const [partnerId, setPartnerId] = useState(restored?.partnerId ?? "");
+  const [docDate, setDocDate] = useState(restored?.docDate ?? today);
+  const [dueDate, setDueDate] = useState(restored?.dueDate ?? "");
 
   const isSales = kind === "sales";
+
+  /**
+   * Saving a draft, and remembering which row it became, so pressing Save
+   * twice updates one draft rather than leaving a trail of copies.
+   */
+  const [draftId, setDraftId] = useState(draft?.id ?? "");
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [draftResult, draftFormAction, savingDraft] =
+    useActionState<ActionResult | null, FormData>(
+      (saveDraft ?? (async () => ({ ok: true } as ActionResult))) as never, null);
+
+  useEffect(() => {
+    if (!draftResult || !("ok" in draftResult)) return;
+    if (draftResult.draftId) setDraftId(draftResult.draftId);
+    setSavedAt(new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }));
+  }, [draftResult]);
+
+  const draftState = JSON.stringify({ lines, partnerId, docDate, dueDate });
   const byId = (id: string) => items.find((i) => i.id === id);
 
   // Everything already awaited from whoever is chosen. Held for the whole
@@ -112,6 +148,19 @@ export function OrderForm({
           double-click or a resent request carries the same key and is handed
           the document the first one posted; a new form is a new key. */}
       <input type="hidden" name="idempotency_key" value={attemptKey} />
+
+      {/* What the editor holds, for a draft to put back. */}
+      {saveDraft && (
+        <>
+          <input type="hidden" name="draft_id" value={draftId} />
+          <input type="hidden" name="draft_doc_type"
+                 value={isSales ? "SALES_ORDER" : "PURCHASE_ORDER"} />
+          <input type="hidden" name="draft_state" value={draftState} />
+        </>
+      )}
+      {draftResult && "error" in draftResult && (
+        <div className="alert">{draftResult.error}</div>
+      )}
 
       {state && "error" in state && <div className="alert">{state.error}</div>}
 
@@ -235,6 +284,17 @@ export function OrderForm({
         <button type="submit" disabled={pending || total === 0}>
           {pending ? "Saving…" : `Save ${isSales ? "sales" : "purchase"} order`}
         </button>
+        {saveDraft && (
+          <button type="submit" formAction={draftFormAction} className="btn ghost"
+                  formNoValidate disabled={savingDraft || pending}>
+            {savingDraft ? "Saving…" : draftId ? "Update draft" : "Save as draft"}
+          </button>
+        )}
+        {savedAt && (
+          <span className="page-sub" style={{ color: "var(--ok)" }}>
+            Draft saved {savedAt}
+          </span>
+        )}
         <span className="page-sub">
           Commits nothing yet — no stock moves and nothing posts to the ledger
           until this is delivered {isSales ? "" : "or received"}.

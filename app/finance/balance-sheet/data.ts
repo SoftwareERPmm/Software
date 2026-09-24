@@ -53,10 +53,16 @@ export async function getBalanceSheetData({ asOf: asOfParam, branch }: Params) {
    * own row rather than folded into one, because a reader has to be able to
    * tell what the books recorded from what the statement is adding on their
    * behalf.
+   *
+   * Named for what it is rather than for where it will end up. Calling it
+   * "retained earnings (current, unclosed)" put the words "retained
+   * earnings" on a second row directly beneath account 3020 of the same
+   * name, and the two read as one figure counted twice — which is the
+   * question it actually prompted.
    */
   const retained: StatementNode = {
     id: "retained-earnings-current", code: "", depth: 0, postable: true,
-    name: "Retained earnings (current, unclosed)", amount: netIncome, children: [],
+    name: "Current Year Earnings (Unclosed)", amount: netIncome, children: [],
   };
   const equityNodes = netIncome !== 0
     ? [...equityTree.nodes, retained]
