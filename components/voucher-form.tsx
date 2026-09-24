@@ -159,6 +159,18 @@ export function VoucherForm({
               <label htmlFor="doc_date">Date</label>
               <input id="doc_date" name="doc_date" type="date" value={docDate}
                      onChange={(e) => setDocDate(e.target.value)} required />
+              {/* Said, not refused. Dating September's depreciation the 30th
+                  on the 2nd is correct practice, so the form cannot treat a
+                  date ahead of today as a mistake — but it can say what the
+                  reader is about to get, because a document that reads POSTED
+                  before its own date has confused somebody at least once. ISO
+                  dates compare correctly as strings. */}
+              {docDate > today && (
+                <span className="hint" style={{ color: "var(--warn)" }}>
+                  Dated ahead of today. It posts now, and no report dated
+                  before then will include it.
+                </span>
+              )}
             </div>
 
             {branches.length > 1 ? (
