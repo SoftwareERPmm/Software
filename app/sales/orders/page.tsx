@@ -124,8 +124,14 @@ export default async function SalesOrders({
           </span>
         </td>
         <td className="tight">
+          {/* document_id, not id: getOrderList selects `o.id as document_id`
+              and returns no `id` at all, so this read undefined and sent
+              every Deliver click to ?order=undefined — which the deliver
+              page can only answer with "nothing left to deliver". The order
+              number beside it was always right because it uses the same
+              field this now does. */}
           {(o.display === "OPEN" || o.display === "PARTIALLY_FULFILLED") && (
-            <Link href={`/sales/deliver?order=${o.id}`} className="btn ghost tiny">Deliver</Link>
+            <Link href={`/sales/deliver?order=${o.document_id}`} className="btn ghost tiny">Deliver</Link>
           )}
         </td>
       </tr>

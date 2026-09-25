@@ -124,8 +124,11 @@ export default async function PurchaseOrders({
           </span>
         </td>
         <td className="tight">
+          {/* document_id, not id — see the sales list: getOrderList returns
+              `o.id as document_id` and no `id`, so this sent every Receive
+              click to ?order=undefined. */}
           {(o.display === "OPEN" || o.display === "PARTIALLY_FULFILLED") && (
-            <Link href={`/purchases/receive?order=${o.id}`} className="btn ghost tiny">Receive</Link>
+            <Link href={`/purchases/receive?order=${o.document_id}`} className="btn ghost tiny">Receive</Link>
           )}
         </td>
       </tr>
