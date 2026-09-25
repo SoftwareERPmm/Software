@@ -25,6 +25,11 @@
   --warn:      #B4691A;
   --bad:       #B4283C;
   --ghost:     #6E7787;
+  /* A fifth semantic colour, alongside ok/warn/bad: "open and on track" is
+     not good news or bad news, it is simply in progress, which is what the
+     other three don't say. Added for the order status pills, not scoped to
+     them — anywhere else that needs the same distinction can use it too. */
+  --info:      #1D5FA8;
 
   /* DM Sans carries the interface, Plex Mono every figure and document
      number. The dashboard was built on DM Sans and the rest of the product on
@@ -99,6 +104,7 @@
     --warn:      #DDA24E;
     --bad:       #E8697C;
     --ghost:     #7A8494;
+    --info:      #5B9FE0;
   }
 }
 
@@ -446,6 +452,37 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-num
   border-color: color-mix(in srgb, var(--bad) 36%, transparent);
 }
 
+/* A second, higher-contrast pill family — solid fill, no border, one colour
+   per state rather than a shared translucent-plus-border look. Requested for
+   the order lists specifically, defined here rather than inline so the same
+   five classes can be dropped onto any other document list's status column
+   without writing the colours again: add `pill pill-status-open` (etc.) to
+   a pill and it matches. Nothing else references these class names yet, so
+   nothing else changes until it does. */
+.pill-status-open, .pill-status-overdue, .pill-status-draft,
+.pill-status-fulfilled, .pill-status-partial { border: 0; }
+
+.pill-status-open {
+  background: color-mix(in srgb, var(--info) 20%, transparent);
+  color: color-mix(in srgb, var(--info) 95%, var(--ink));
+}
+.pill-status-overdue {
+  background: color-mix(in srgb, var(--bad) 20%, transparent);
+  color: color-mix(in srgb, var(--bad) 95%, var(--ink));
+}
+.pill-status-draft {
+  background: color-mix(in srgb, var(--muted) 18%, transparent);
+  color: color-mix(in srgb, var(--muted) 90%, var(--ink));
+}
+.pill-status-fulfilled {
+  background: color-mix(in srgb, var(--ok) 20%, transparent);
+  color: color-mix(in srgb, var(--ok) 95%, var(--ink));
+}
+.pill-status-partial {
+  background: color-mix(in srgb, var(--warn) 22%, transparent);
+  color: color-mix(in srgb, var(--warn) 95%, var(--ink));
+}
+
 .dr { color: var(--dr); }
 .cr { color: var(--cr); }
 
@@ -465,6 +502,35 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-num
 .flow-node { padding: 0.25rem 0.65rem; border: 1px solid var(--line); border-radius: var(--r-md); }
 .flow-node.here { border-color: var(--brand); color: var(--brand); background: var(--brand-weak); }
 .flow-arrow { color: var(--muted); }
+
+/* ------------------------------------------------------- orders list ---- *
+ * Sales Orders and Purchase Orders only. Everywhere else, .page-head,
+ * .actions and .flow are three siblings in .inner's flex column, so each
+ * gets its own --s5 (36px) gap on top of .page-head's own margin — three
+ * gaps stacked before the table even starts. Fine for a page with one
+ * heading and one control, too much for a list whose header is title,
+ * actions and six status tabs all at once.
+ *
+ * Wrapping the three in one element gives them exactly one .inner gap
+ * between the whole cluster and the card, and lets this rule set the
+ * spacing inside the cluster deliberately instead of by accident. */
+.orders-head { display: flex; flex-direction: column; gap: 0.6rem;
+  border-bottom: 1px solid var(--line); padding-bottom: 0.75rem; }
+.orders-head-row { display: flex; align-items: flex-start; justify-content: space-between;
+  gap: var(--s3); flex-wrap: wrap; }
+/* .page-head carries its own border, padding and min-height for the pages
+   where it stands alone as the whole header. Here it shares a row with the
+   action buttons and .orders-head draws the one dividing line for both, so
+   its own box model is switched off rather than left to draw a second,
+   narrower line under the title alone. */
+.orders-head-row .page-head { border-bottom: 0; padding-bottom: 0; margin-bottom: 0; min-height: auto; }
+.orders-head-row .actions { flex: none; }
+
+/* A status badge in a list of a dozen rows is read a dozen times a page; it
+   should not carry as much weight as a single figure would. One step down
+   the type scale, scoped to these two pages rather than every .pill in the
+   app — a document's own status still reads at the size everywhere else. */
+.orders-page .pill { padding: 0.12rem 0.5rem; font-size: var(--t-2xs); }
 
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--s3); align-items: start; }
 

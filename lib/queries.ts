@@ -1980,9 +1980,22 @@ export async function getOpenSalesOrders(companyId: string) {
       join business_partner p on p.id = o.partner_id
       left join location l on l.id = o.location_id
       left join (
+        -- Named only where no link already speaks for the same delivery
+        -- line — the fix 0099 gave v_order_outstanding, repeated here
+        -- because this query keeps its own per-line tally rather than
+        -- reading that view, which aggregates by item and loses the line.
+        -- Without it, a delivery both named on the order line and linked
+        -- via fulfilment_link was subtracted twice: one delivery of 20 read
+        -- as 40 gone, and a partly-fulfilled order looked fully delivered —
+        -- "nothing left to deliver" here while its own document page,
+        -- reading the fixed view, still showed the true remainder.
         select dl.source_line_id, sum(dl.base_qty) as delivered_qty
           from document_line dl join document dd on dd.id = dl.document_id
          where dd.doc_type = 'DELIVERY' and dd.status = 'POSTED'
+           and not exists (
+                 select 1 from fulfilment_link fl2
+                  where fl2.fulfilment_line_id = dl.id
+                    and fl2.order_line_id is not distinct from dl.source_line_id)
          group by dl.source_line_id
       ) d on d.source_line_id = ol.id
       left join (
@@ -2021,9 +2034,18 @@ export async function getOpenPurchaseOrders(companyId: string) {
       join business_partner p on p.id = o.partner_id
       left join location l on l.id = o.location_id
       left join (
+        -- Named only where no link already speaks for the same receipt line
+        -- — see getOpenSalesOrders for why: without this, a receipt both
+        -- named on the order line and linked via fulfilment_link was
+        -- subtracted twice, and a partly-received order looked fully
+        -- received here while its own document page still showed the truth.
         select dl.source_line_id, sum(dl.base_qty) as received_qty
           from document_line dl join document dd on dd.id = dl.document_id
          where dd.doc_type = 'GOODS_RECEIPT' and dd.status = 'POSTED'
+           and not exists (
+                 select 1 from fulfilment_link fl2
+                  where fl2.fulfilment_line_id = dl.id
+                    and fl2.order_line_id is not distinct from dl.source_line_id)
          group by dl.source_line_id
       ) r on r.source_line_id = ol.id
       left join (
