@@ -185,12 +185,18 @@ export const ORDER_STATUS_LABEL: Record<OrderDisplayStatus, string> = {
   OPEN: "Open",
 };
 
+// The solid, borderless family (see .pill-status-* in globals.css) rather
+// than the app-wide translucent-and-bordered one every other list's pills
+// use — asked for on the order lists specifically. Overdue is not a member
+// of OrderDisplayStatus (it is a date past due on an otherwise-open order,
+// which the page already computes with isOverdue) and is applied over this
+// mapping at render time rather than added here.
 export const ORDER_STATUS_PILL: Record<OrderDisplayStatus, string> = {
-  DRAFT: "draft",
-  CANCELLED: "draft",
-  FULFILLED: "ok",
-  PARTIALLY_FULFILLED: "warn",
-  OPEN: "posted",
+  DRAFT: "pill-status-draft",
+  CANCELLED: "pill-status-draft",
+  FULFILLED: "pill-status-fulfilled",
+  PARTIALLY_FULFILLED: "pill-status-partial",
+  OPEN: "pill-status-open",
 };
 
 /**

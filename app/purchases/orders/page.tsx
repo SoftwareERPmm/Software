@@ -115,8 +115,12 @@ export default async function PurchaseOrders({
         </td>
         <td className="r">{money(o.gross_total)}</td>
         <td>
-          <span className={`pill ${ORDER_STATUS_PILL[o.display as OrderDisplayStatus]}`}>
-            {ORDER_STATUS_LABEL[o.display as OrderDisplayStatus]}
+          {/* Overdue overrides the fulfilment pill rather than sitting beside
+              it — the same fact isOverdue() already colours the due date
+              with, read once and shown consistently in both places. */}
+          <span className={`pill ${isOverdue(o) ? "pill-status-overdue"
+            : ORDER_STATUS_PILL[o.display as OrderDisplayStatus]}`}>
+            {isOverdue(o) ? "Overdue" : ORDER_STATUS_LABEL[o.display as OrderDisplayStatus]}
           </span>
         </td>
         <td className="tight">
@@ -129,33 +133,42 @@ export default async function PurchaseOrders({
   }));
 
   return (
-    <>
-      <div className="page-head">
-        <span className="eyebrow">Purchases</span>
-        <h1>Purchase Orders</h1>
-        <HelpHint>
-          What has been ordered from suppliers. An order posts nothing on its
-          own — stock and payables move on the goods receipt and invoice that follow it.
-        </HelpHint>
-      </div>
+    <div className="orders-page">
+      {/* Title, actions and status tabs share one compact band instead of
+          three separately-spaced blocks — see the .orders-head rule for why. */}
+      <div className="orders-head">
+        <div className="orders-head-row">
+          <div className="page-head">
+            <span className="eyebrow">Purchases</span>
+            <h1>Purchase Orders</h1>
+            <HelpHint>
+              What has been ordered from suppliers. An order posts nothing on its
+              own — stock and payables move on the goods receipt and invoice that follow it.
+            </HelpHint>
+          </div>
 
-      <div className="actions">
-        <Link href="/purchases/orders/new" className="btn">+ New Purchase Order</Link>
-        {openCount > 0 && (
-          <Link href="/purchases/receive" className="btn ghost">{openCount} awaiting receipt</Link>
-        )}
-      </div>
+          {/* The primary action sits rightmost and stays there whether or
+              not the awaiting-receipt chip is present, rather than shifting
+              position depending on the day's data. */}
+          <div className="actions">
+            {openCount > 0 && (
+              <Link href="/purchases/receive" className="btn ghost">{openCount} awaiting receipt</Link>
+            )}
+            <Link href="/purchases/orders/new" className="btn">+ New Purchase Order</Link>
+          </div>
+        </div>
 
-      <div className="flow">
-        {TABS.map(([value, label]) => (
-          <Link
-            key={value}
-            href={value ? `/purchases/orders?status=${value}` : "/purchases/orders"}
-            className={`flow-node ${(status ?? "") === value ? "here" : ""}`}
-          >
-            {label}
-          </Link>
-        ))}
+        <div className="flow">
+          {TABS.map(([value, label]) => (
+            <Link
+              key={value}
+              href={value ? `/purchases/orders?status=${value}` : "/purchases/orders"}
+              className={`flow-node ${(status ?? "") === value ? "here" : ""}`}
+            >
+              {label}
+            </Link>
+          ))}
+        </div>
       </div>
 
       <section>
@@ -181,6 +194,6 @@ export default async function PurchaseOrders({
           />
         </div>
       </section>
-    </>
+    </div>
   );
 }
