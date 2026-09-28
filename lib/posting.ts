@@ -5023,6 +5023,15 @@ export type AdjustmentLine = {
   qty: number;
   /** Only meaningful for an increase — a decrease always leaves at its carried cost. */
   unitCost?: number;
+  /**
+   * Which lot found stock belongs to, for an item that tracks batches.
+   *
+   * Only an increase can carry these: a decrease consumes layers that already
+   * exist, and FIFO picks which, so naming a batch on the way out would be a
+   * claim the engine has no way to honour.
+   */
+  batchNo?: string | null;
+  expiryDate?: string | null;
 };
 export type AdjustmentInput = {
   companyId: string;
@@ -5061,6 +5070,9 @@ async function _postStockAdjustment(
   {
     const { companyId, locationId, docDate } = input;
     const receivedAt = input.receivedAt || docDate;
+    // Which of these items keep lots, so a found-stock line can be held to
+    // naming one — read once for the whole adjustment, as the receipt does.
+    const tracking = await batchTracking(tx, lines.map((l) => l.itemId));
 
     const fyRows = await tx`select fn_fiscal_year_for(${companyId}, ${docDate}::date) as fy`;
     const fiscalYear = fyRows[0]?.fy ?? null;
@@ -5111,6 +5123,13 @@ async function _postStockAdjustment(
         unitCost = plan.unitCost;
         totalCost = -plan.totalCost;
       } else {
+        // Found stock is stock arriving, and arriving stock has to say which
+        // lot it is — the same rule a goods receipt answers to. This was the
+        // one door into inventory that never asked: an adjustment could put
+        // a batch-tracked, expiry-tracked item on the shelf with neither,
+        // creating exactly the layer nobody can trace that assertBatchGiven
+        // exists to prevent.
+        assertBatchGiven(item as never, tracking.get(line.itemId), line);
         unitCost = line.unitCost ?? await estimateCurrentCost(tx, companyId, line.itemId, locationId);
         totalCost = round4(unitCost * line.qty);
       }
@@ -5120,10 +5139,13 @@ async function _postStockAdjustment(
       await tx`
         insert into document_line
           (company_id, document_id, line_no, item_id, location_id,
-           entered_qty, entered_uom_id, base_qty, unit_price, net_amount, gross_amount)
+           entered_qty, entered_uom_id, base_qty, unit_price, net_amount, gross_amount,
+           batch_no, expiry_date)
         values
           (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
-           ${line.qty}, ${item.base_uom_id}, ${line.qty}, ${unitCost}, ${totalCost}, ${totalCost})`;
+           ${line.qty}, ${item.base_uom_id}, ${line.qty}, ${unitCost}, ${totalCost}, ${totalCost},
+           ${line.qty > 0 ? (line.batchNo?.trim() || null) : null},
+           ${line.qty > 0 ? (line.expiryDate || null) : null})`;
 
       const [movement] = await tx`
         insert into stock_movement
@@ -5141,7 +5163,8 @@ async function _postStockAdjustment(
             tx, companyId, movement.id, plan, adjAcct[0].a as string);
         }
       } else {
-        await createFifoLot(tx, companyId, line.itemId, locationId, receivedAt, unitCost, line.qty, movement.id);
+        await createFifoLot(tx, companyId, line.itemId, locationId, receivedAt, unitCost, line.qty, movement.id,
+          { batchNo: line.batchNo, expiryDate: line.expiryDate });
       }
 
       const inventory = await tx`

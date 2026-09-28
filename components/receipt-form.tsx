@@ -556,11 +556,25 @@ export function ReceiptForm({
                           aria-label={`Expiry date for ${item.code}`}
                         />
                       )}
-                      <span className="hint">
-                        {item.tracks_expiry
-                          ? "Sold before any batch that lasts longer."
-                          : "Recorded so a recall can name these units."}
-                      </span>
+                      {/* Said, not refused. Goods do arrive already
+                          expired — a supplier ships short-dated stock and it
+                          has to be recorded before it can be returned — so
+                          the form notices out loud and lets the posting
+                          through. Compared against the document date rather
+                          than today, or every back-dated receipt would trip
+                          it. */}
+                      {l.expiryDate && docDate && l.expiryDate <= docDate ? (
+                        <span className="hint" style={{ color: "var(--warn)" }}>
+                          Already expired on the receipt date — it will post,
+                          and land in Expired on the stock page.
+                        </span>
+                      ) : (
+                        <span className="hint">
+                          {item.tracks_expiry
+                            ? "Both required — sold before any batch that lasts longer."
+                            : "Required — recorded so a recall can name these units."}
+                        </span>
+                      )}
                     </td>
                   </tr>
                 );
