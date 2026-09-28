@@ -10,6 +10,7 @@ import { planVoucherImport, voucherColumns, type VoucherMasterData, type Voucher
 import { getImportMasterData, getVoucherImportMasterData, getPendingDeliveryLines } from "./queries";
 import { scaffoldCompany } from "./setup";
 import { encodeItemPhoto } from "./item-photo";
+import { putObject, deleteObject, newKey } from "./r2";
 import { asRegion } from "./regions";
 import {
   postSalesInvoice, postPurchaseInvoice, postSaleWithDelivery, postPurchaseWithReceipt,
@@ -73,11 +74,25 @@ async function companyId(): Promise<string> {
  * removal, or a form that never touched the field. Only the first two write,
  * so saving a name never disturbs a photo that was already there.
  */
-type PhotoChange = { set: { bytes: Buffer; mime: string } } | { clear: true } | null;
+type PhotoChange = { set: { key: string } } | { clear: true } | null;
 
 async function photoFrom(fd: FormData): Promise<PhotoChange> {
   const data = str(fd, "photo_data");
-  if (data) return { set: await encodeItemPhoto(data) };
+  if (data) {
+    // Re-encoded first and uploaded second, so what reaches the bucket is
+    // always a WebP this app produced — never the file as it arrived. The
+    // upload happens before the row is written, which means a transaction
+    // that then fails leaves an object nobody references. That is the same
+    // trade the delete makes in the other direction: an orphan costs a
+    // fraction of a cent, and the alternative is a row pointing at bytes
+    // that were never stored.
+    const encoded = await encodeItemPhoto(data);
+    const key = newKey("item", "photo.webp");
+    await putObject({
+      bucket: "public", key, body: encoded.bytes, contentType: encoded.mime,
+    });
+    return { set: { key } };
+  }
   if (str(fd, "photo_remove") === "1") return { clear: true };
   return null;
 }
@@ -604,7 +619,7 @@ export async function createItem(_prev: unknown, fd: FormData): Promise<ActionRe
       if (photo && "set" in photo) {
         await tx`
           update item
-             set photo = ${photo.set.bytes}, photo_mime = ${photo.set.mime},
+             set photo_key = ${photo.set.key}, photo_mime = ${"image/webp"},
                  photo_updated_at = now()
            where id = ${item.id}`;
       }
@@ -678,6 +693,9 @@ export async function updateItem(_prev: unknown, fd: FormData): Promise<ActionRe
     }
 
     const photo = await photoFrom(fd);
+    /** The object the old picture lived in, removed once the row is safely
+     *  saved. Set inside the transaction, acted on after it. */
+    let replaced: string | null = null;
 
     await sql.begin(async (tx) => {
       await tx`
@@ -701,19 +719,36 @@ export async function updateItem(_prev: unknown, fd: FormData): Promise<ActionRe
 
       // Left alone unless the picker said otherwise. A form submitted with
       // the field untouched carries neither key, and the photo stays put.
+      if (photo) {
+        // The picture being replaced, read before it is overwritten so the
+        // object it points at can be removed afterwards. Collected rather
+        // than deleted here: a bucket is not part of this transaction, and
+        // deleting inside one that then rolls back would take away the
+        // picture of an item that still claims to have it.
+        const [old] = await tx`
+          select photo_key from item where id = ${id} and company_id = ${co}`;
+        if (old?.photo_key) replaced = old.photo_key as string;
+      }
+
       if (photo && "set" in photo) {
         await tx`
           update item
-             set photo = ${photo.set.bytes}, photo_mime = ${photo.set.mime},
+             set photo_key = ${photo.set.key}, photo_mime = ${"image/webp"},
                  photo_updated_at = now()
            where id = ${id} and company_id = ${co}`;
       } else if (photo) {
         await tx`
           update item
-             set photo = null, photo_mime = null, photo_updated_at = null
+             set photo_key = null, photo = null, photo_mime = null,
+                 photo_updated_at = null
            where id = ${id} and company_id = ${co}`;
       }
     });
+
+    // After the commit, and best effort. An object that outlives its row is
+    // unreachable and costs almost nothing; a failed delete that undid the
+    // save would cost the edit.
+    if (replaced) await deleteObject("public", replaced);
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
