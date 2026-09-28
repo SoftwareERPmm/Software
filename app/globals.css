@@ -1397,7 +1397,13 @@ tbody tr.coa-section > td { padding-top: 10px; padding-bottom: 10px; }
 /* Print: the ledger is a document people hand to an accountant, so what
    surrounds it on screen has no business on the page. */
 @media print {
-  .sidebar, .nav, .noprint, .doc-meta, .form-commit { display: none !important; }
+  /* .navbar and .navscrim belong here even though they are invisible on a
+     desktop screen: they are shown by a max-width: 820px query, and A4 is
+     about 794px at 96dpi, so paper counts as a narrow screen. Every printed
+     page — invoices customers are sent included — carried the dark mobile
+     header across the top until this line existed. */
+  .sidebar, .nav, .noprint, .doc-meta, .form-commit,
+  .navbar, .navscrim { display: none !important; }
   .main { padding: 0; }
   .card { border: none; }
   .card-head { background: transparent; border-bottom: 1px solid #000; }
