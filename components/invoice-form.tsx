@@ -43,6 +43,10 @@ type OpenDoc = {
 // at, rather than at an average across every line of the same item.
 type Line = {
   key: number; itemId: string; qty: string; unitPrice: string;
+  /** The lot these goods arrive under, when the bill receives them itself
+   *  and the item keeps lots. Ignored on the Receive-later and Match paths,
+   *  where the goods arrive on a receipt that asks for its own. */
+  batchNo?: string; expiryDate?: string;
   /** The unit the quantity and price are in. Empty means the item's own
    *  unit, which is every line not filled from a packed receipt. */
   uomId?: string;
@@ -404,6 +408,11 @@ export function InvoiceForm({
         // Whichever this line came from. A receipt line and an order line
         // never both apply — matching a receipt replaces the lines.
         sourceLineId: l.sourceLineId ?? l.orderLineId,
+        // Only this mode puts goods on the shelf, so only this mode names
+        // the lot. Receive-later and Match both arrive on a receipt of their
+        // own, which asks there.
+        batchNo: receiveMode === "now" ? (l.batchNo ?? "") : "",
+        expiryDate: receiveMode === "now" ? (l.expiryDate ?? "") : "",
       }))
   );
 
@@ -867,6 +876,55 @@ export function InvoiceForm({
                       >
                         ×
                       </button>
+                    </td>
+                  </tr>
+                );
+              })}
+              {/* Goods arriving on the bill itself still have to say which
+                  lot they are — the engine refuses a tracked item without
+                  one, and before this the Receive-now path had nowhere to
+                  say it, so those items could not be bought this way at all. */}
+              {receiveMode === "now"
+                && lines.filter((l) => byId(l.itemId)?.tracks_batch).map((l) => {
+                const item = byId(l.itemId)!;
+                return (
+                  <tr key={`batch-${l.key}`} className="batchrow">
+                    <td colSpan={9}>
+                      <span className="batchrow-label">{item.code} — which lot?</span>
+                      <input
+                        type="text"
+                        value={l.batchNo ?? ""}
+                        onChange={(e) => setLine(l.key, { batchNo: e.target.value })}
+                        placeholder="Batch number"
+                        aria-label={`Batch number for ${item.code}`}
+                      />
+                      {item.tracks_expiry && (
+                        <input
+                          type="date"
+                          value={l.expiryDate ?? ""}
+                          onChange={(e) => setLine(l.key, { expiryDate: e.target.value })}
+                          aria-label={`Expiry date for ${item.code}`}
+                        />
+                      )}
+                      {/* Said, not refused. Goods do arrive already
+                          expired — a supplier ships short-dated stock and it
+                          has to be recorded before it can be returned — so
+                          the form notices out loud and lets the posting
+                          through. Compared against the document date rather
+                          than today, or every back-dated receipt would trip
+                          it. */}
+                      {l.expiryDate && docDate && l.expiryDate <= docDate ? (
+                        <span className="hint" style={{ color: "var(--warn)" }}>
+                          Already expired on the bill date — it will post,
+                          and land in Expired on the stock page.
+                        </span>
+                      ) : (
+                        <span className="hint">
+                          {item.tracks_expiry
+                            ? "Required — these goods are going on the shelf now."
+                            : "Recorded so a recall can name these units."}
+                        </span>
+                      )}
                     </td>
                   </tr>
                 );

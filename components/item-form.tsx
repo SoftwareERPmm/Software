@@ -257,33 +257,66 @@ export function ItemForm({
             Stocked — this item moves through inventory
           </label>
 
-          {/* Two switches, not one. A batch is traceability — which lot are
-              these units from, so a recall can name them — and plenty of
-              goods have that without a shelf life. Expiry is the extra that
-              perishables need, and it needs a batch to belong to, so it only
-              appears once batches are on. */}
-          <label className="check" htmlFor="tracks_batch" style={{ marginTop: "0.5rem" }}>
-            <input
-              id="tracks_batch" name="tracks_batch" type="checkbox"
-              checked={tracksBatch}
-              onChange={(e) => {
-                setTracksBatch(e.target.checked);
-                if (!e.target.checked) setTracksExpiry(false);
-              }}
-            />
-            Track batches — every receipt says which lot the goods came from
-          </label>
-          {tracksBatch && (
-            <label className="check" htmlFor="tracks_expiry"
-                   style={{ marginTop: "0.4rem", marginLeft: "1.6rem" }}>
+          {/* Its own panel, not two more ticks at the foot of the card.
+              Whether an item keeps lots decides what every future receipt of
+              it will ask for and whether a recall can name the units — a
+              bigger decision than the fields above it, and it was reading as
+              the smallest thing on the form. Two switches rather than one: a
+              batch is traceability, which plenty of goods need without a
+              shelf life, and expiry is the extra perishables need, which has
+              to belong to a batch. */}
+          <fieldset className="trackbox">
+            <legend>Traceability</legend>
+
+            <label className="trackbox-opt" htmlFor="tracks_batch">
+              <input
+                id="tracks_batch" name="tracks_batch" type="checkbox"
+                checked={tracksBatch}
+                onChange={(e) => {
+                  setTracksBatch(e.target.checked);
+                  if (!e.target.checked) setTracksExpiry(false);
+                }}
+              />
+              <span>
+                <strong>Track batches</strong>
+                <span className="trackbox-note">
+                  Every receipt of this item says which lot the goods came from,
+                  so a recall can name the units.
+                </span>
+              </span>
+            </label>
+
+            <label className={`trackbox-opt sub${tracksBatch ? "" : " off"}`}
+                   htmlFor="tracks_expiry">
               <input
                 id="tracks_expiry" name="tracks_expiry" type="checkbox"
                 checked={tracksExpiry}
+                disabled={!tracksBatch}
                 onChange={(e) => setTracksExpiry(e.target.checked)}
               />
-              Batches expire — and the oldest-expiring stock is sold first
+              <span>
+                <strong>Batches expire</strong>
+                <span className="trackbox-note">
+                  {tracksBatch
+                    ? "The oldest-expiring stock is sold first, ahead of any batch that lasts longer."
+                    : "Needs batches on first — an expiry date belongs to a lot, not to the item."}
+                </span>
+              </span>
             </label>
-          )}
+
+            {/* Said here because this is where somebody expects to type a
+                date and finds only a tick. The date is not the item's: one
+                item has many lots, each with its own, so it is asked for per
+                batch on the way in — and typed by whoever is holding the
+                carton, since nothing derives it. */}
+            {tracksBatch && (
+              <p className="trackbox-where">
+                {tracksExpiry
+                  ? "No date here — one item has many batches, each with its own. The batch number and its expiry date are typed on the document that brings the goods in: a goods receipt, a purchase bill that receives, or a stock adjustment that finds stock."
+                  : "No number here — the batch is typed on the document that brings the goods in: a goods receipt, a purchase bill that receives, or a stock adjustment that finds stock."}
+              </p>
+            )}
+          </fieldset>
         </div>
       </div>
 

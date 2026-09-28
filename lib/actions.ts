@@ -1443,6 +1443,12 @@ function parseLines(fd: FormData): InvoiceLine[] {
       taxCodeId: l.taxCodeId || null,
       focReasonId: l.focReasonId || null,
       sourceLineId: l.sourceLineId || null,
+      // The lot, where a bill receives the goods itself. Meaningless on the
+      // sales side and on a bill that receives nothing, and the engine
+      // ignores it there; dropping it here instead is what stopped a
+      // batch-tracked item being buyable through the purchase voucher.
+      batchNo: l.batchNo || null,
+      expiryDate: l.expiryDate || null,
       // Which pool the goods came out of, and whose. A parser that drops
       // these turns a deliberate choice on the form into owned stock leaving
       // the building — silently, because the entry still balances.
@@ -4595,6 +4601,11 @@ function parseAdjustmentLines(fd: FormData): AdjustmentLine[] {
       itemId: String(l.itemId ?? ""),
       qty: Number(l.qty),
       unitCost: l.unitCost !== "" && l.unitCost != null ? Number(l.unitCost) : undefined,
+      // The lot found stock belongs to. Dropped for a loss, which consumes
+      // layers FIFO already chose, and dropped here rather than trusted from
+      // the form — the engine refuses a tracked increase without one.
+      batchNo: l.batchNo ? String(l.batchNo) : null,
+      expiryDate: l.expiryDate ? String(l.expiryDate) : null,
     }))
     .filter((l) => l.itemId && l.qty !== 0);
 }

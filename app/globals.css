@@ -666,6 +666,46 @@ textarea { min-height: 4.6rem; line-height: 1.5; resize: vertical; }
 .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--s3); }
 
 .check { display: flex; align-items: center; gap: var(--s2); font-size: var(--t-base); cursor: pointer; }
+
+/* Whether an item keeps lots is not a footnote. It decides what every
+   future receipt of it asks for, and whether a recall can name the units —
+   so it gets an edge and a name of its own instead of sitting as two more
+   ticks under the price. The checkbox is larger here than elsewhere for the
+   same reason: it is the control, not an option on something else. */
+.trackbox {
+  margin: 1rem 0 0; padding: 0.85rem 1rem 0.9rem;
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--brand) 3%, transparent);
+}
+.trackbox > legend {
+  padding: 0 0.4rem; margin-left: -0.4rem;
+  font-family: var(--mono); font-size: var(--t-2xs);
+  letter-spacing: var(--track-caps); text-transform: uppercase;
+  color: var(--muted);
+}
+.trackbox-opt {
+  display: flex; align-items: flex-start; gap: 0.7rem;
+  padding: 0.5rem 0; cursor: pointer;
+}
+.trackbox-opt + .trackbox-opt { border-top: 1px solid var(--line-soft); }
+.trackbox-opt input {
+  width: 20px; height: 20px; margin: 0.1rem 0 0; flex: none;
+  accent-color: var(--brand); cursor: pointer;
+}
+.trackbox-opt > span { display: flex; flex-direction: column; gap: 0.15rem; }
+.trackbox-opt strong { font-weight: 600; font-size: var(--t-base); }
+.trackbox-note { color: var(--muted); font-size: var(--t-sm); line-height: 1.45; }
+/* The second switch stays visible while it is unavailable rather than
+   appearing out of nowhere once the first is ticked — a control that is not
+   there cannot be understood, and this one explains its own precondition. */
+.trackbox-opt.sub { margin-left: 1.7rem; }
+.trackbox-opt.off { cursor: not-allowed; }
+.trackbox-opt.off strong { color: var(--muted); }
+.trackbox-where {
+  margin: 0.6rem 0 0; padding-top: 0.6rem;
+  border-top: 1px solid var(--line-soft);
+  color: var(--ink-soft, var(--muted)); font-size: var(--t-sm); line-height: 1.5;
+}
 .check input {
   width: 16px; height: 16px; margin: 0; flex: none;
   accent-color: var(--brand); cursor: pointer;
@@ -3683,12 +3723,19 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
 
 /* The batch line under a receipt row: only some items need one, so it is a
    row of its own rather than two columns every item pays for. */
+/* Raised out of the footnote it used to read as. A batch number and an
+   expiry date are not optional extras on these items — the engine refuses
+   the posting without them — so the row that asks has an edge, a tint you
+   can actually see, and a label in the text colour rather than the muted
+   one. It was quiet enough that people filled in the line above, pressed
+   post, and only then learned a date was wanted. */
 .batchrow > td {
-  background: color-mix(in srgb, var(--brand) 4%, transparent);
+  background: color-mix(in srgb, var(--brand) 9%, transparent);
+  border-left: 3px solid color-mix(in srgb, var(--brand) 55%, transparent);
   white-space: normal;
   display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
 }
-.batchrow-label { color: var(--muted); font-size: var(--t-sm); }
+.batchrow-label { color: var(--ink); font-size: var(--t-sm); font-weight: 600; }
 .batchrow input[type="text"] { width: 200px; }
 .batchrow input[type="date"] { width: 170px; }
 .batchrow .hint { display: inline; }
