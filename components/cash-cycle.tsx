@@ -349,7 +349,18 @@ export function CashCycle({
                 <XAxis dataKey="name" tick={{ fontSize: 11 }} stroke="var(--muted)" />
                 <YAxis tick={{ fontSize: 11 }} stroke="var(--muted)" />
                 <ReferenceLine y={0} stroke="var(--muted)" />
-                <Bar dataKey="range" radius={[3, 3, 3, 3]}>
+                {/* minPointSize keeps a span of nil on the chart as a
+                    hairline instead of nothing. Two reasons, and the second
+                    is the load-bearing one. A reader cannot tell a missing
+                    figure from a zero one when the bar simply is not there —
+                    pilot sells for cash, so its DSO is a true nil and looked
+                    like a gap. And Recharts numbers labels by *rendered*
+                    rectangle: drop one and every label after it slides onto
+                    the bar below, which put DSO's "0 days" on the payables
+                    bar and left the cycle's own total unlabelled. Same
+                    class of fault as the hidden-series case above, arriving
+                    through a different door. */}
+                <Bar dataKey="range" radius={[3, 3, 3, 3]} minPointSize={2}>
                   {/* Outside the bar whichever way it points — "top" puts a
                       negative bar's label underneath the axis, on top of the
                       bar it belongs to. */}
