@@ -1,5 +1,6 @@
 "use client";
 
+import { VariantPicker, type PickerAttribute } from "./variant-picker";
 import { useActionState, useState, useTransition } from "react";
 import type { ActionResult } from "@/lib/actions";
 import { createBrandInline, type PickerBrand } from "@/lib/actions";
@@ -27,6 +28,7 @@ export function ItemForm({
   brands,
   returnTo,
   presetGroupId,
+  variantAttributes,
 }: {
   action: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   nodes: Node[];
@@ -34,6 +36,9 @@ export function ItemForm({
   brands: Brand[];
   returnTo: string;
   presetGroupId?: string;
+  /** The ways products may vary here. Empty where none are set up, which is
+   *  the state every catalogue starts in. */
+  variantAttributes?: PickerAttribute[];
 }) {
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     action as never,
@@ -317,6 +322,10 @@ export function ItemForm({
               </p>
             )}
           </fieldset>
+
+          {/* This form creates; adding variants to a product that already has
+              stock and history is a larger question and is not offered here. */}
+          <VariantPicker attributes={variantAttributes ?? []} serial={serial} />
         </div>
       </div>
 

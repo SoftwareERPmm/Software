@@ -18,6 +18,10 @@ type Row = {
   last_purchase_price: string | null;
   last_purchase_doc_no: string | null;
   last_purchase_date: string | null;
+  parent_item_id: string | null;
+  variant_count: number;
+  barcode: string | null;
+  qty_on_hand: string | number | null;
 };
 
 export default async function Items({
@@ -67,7 +71,28 @@ export default async function Items({
     return id;
   };
 
-  const items = all.filter((i) =>
+  /**
+   * Variants are folded into the product they belong to.
+   *
+   * A shirt in four sizes and three colours is twelve item rows, and a
+   * catalogue that lists all twelve buries everything else. The parent
+   * stands for them here and the row expands to show them; the twelve are
+   * still ordinary items everywhere it matters — stock, prices, documents,
+   * search by barcode.
+   *
+   * A variant whose parent is filtered out of this view would vanish
+   * entirely, so the fold happens before the filters rather than after.
+   */
+  const variantsByParent = new Map<string, Row[]>();
+  for (const i of all) {
+    if (!i.parent_item_id) continue;
+    const list = variantsByParent.get(i.parent_item_id) ?? [];
+    list.push(i);
+    variantsByParent.set(i.parent_item_id, list);
+  }
+  const catalogue = all.filter((i) => !i.parent_item_id);
+
+  const items = catalogue.filter((i) =>
     (!category || rootOf(i.item_group_id) === category) &&
     (!sub || i.item_group_id === sub) &&
     (!brand || (brand === "none" ? i.brand_id === null : i.brand_id === brand)) &&
@@ -79,7 +104,13 @@ export default async function Items({
 
   const rows: DataRow[] = items.map((i) => ({
     key: i.id,
-    searchText: [i.code, i.name, i.name_my, i.group_name, i.parent_group_name, i.brand_name, i.uom_code]
+    // The variants' own codes and barcodes belong here too. Folding them
+    // under the parent must not make them unfindable: scanning a barcode for
+    // "POLO-M-Red" has to land somewhere, and the row it lands on is the one
+    // that opens to show it.
+    searchText: [i.code, i.name, i.name_my, i.group_name, i.parent_group_name, i.brand_name, i.uom_code,
+                 i.barcode,
+                 ...(variantsByParent.get(i.id) ?? []).flatMap((v) => [v.code, v.name, v.barcode])]
       .filter(Boolean).join(" "),
     sort: {
       code: i.code,
@@ -123,6 +154,12 @@ export default async function Items({
         deactivateAction={deactivateItem}
         activateAction={activateItem}
         deleteAction={deleteItem}
+        variants={(variantsByParent.get(i.id) ?? []).map((v) => ({
+          id: v.id, code: v.code, name: v.name,
+          barcode: v.barcode ?? null,
+          qty_on_hand: Number(v.qty_on_hand ?? 0),
+          is_active: v.is_active,
+        }))}
       />
     ),
   }));

@@ -2,7 +2,7 @@ import Link from "next/link";
 import { sql } from "@/lib/db";
 import { createItem } from "@/lib/actions";
 import { allCategories } from "@/lib/tree";
-import { getBrands } from "@/lib/queries";
+import { getBrands, getVariantAttributes} from "@/lib/queries";
 import { ItemForm } from "@/components/item-form";
 import { HelpHint } from "@/components/help-hint";
 
@@ -10,10 +10,11 @@ export default async function NewItem() {
   const [co] = await sql`select id from company order by created_at limit 1`;
   if (!co) return <div className="empty">No company found.</div>;
 
-  const [nodes, uoms, brands] = await Promise.all([
+  const [nodes, uoms, brands, variantAttributes] = await Promise.all([
     allCategories(co.id),
     sql`select id, code, name from uom where company_id = ${co.id} and is_active order by code`,
     getBrands(co.id),
+    getVariantAttributes(co.id),
   ]);
 
   if (nodes.length === 0) {
@@ -45,6 +46,7 @@ export default async function NewItem() {
       </div>
 
       <ItemForm
+        variantAttributes={variantAttributes as never}
         action={createItem}
         nodes={nodes}
         uoms={uoms as never}

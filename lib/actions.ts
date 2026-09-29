@@ -10,6 +10,7 @@ import { planVoucherImport, voucherColumns, type VoucherMasterData, type Voucher
 import { getImportMasterData, getVoucherImportMasterData, getPendingDeliveryLines } from "./queries";
 import { scaffoldCompany } from "./setup";
 import { encodeItemPhoto } from "./item-photo";
+import { putObject, deleteObject, newKey } from "./r2";
 import { asRegion } from "./regions";
 import {
   postSalesInvoice, postPurchaseInvoice, postSaleWithDelivery, postPurchaseWithReceipt,
@@ -73,11 +74,25 @@ async function companyId(): Promise<string> {
  * removal, or a form that never touched the field. Only the first two write,
  * so saving a name never disturbs a photo that was already there.
  */
-type PhotoChange = { set: { bytes: Buffer; mime: string } } | { clear: true } | null;
+type PhotoChange = { set: { key: string } } | { clear: true } | null;
 
 async function photoFrom(fd: FormData): Promise<PhotoChange> {
   const data = str(fd, "photo_data");
-  if (data) return { set: await encodeItemPhoto(data) };
+  if (data) {
+    // Re-encoded first and uploaded second, so what reaches the bucket is
+    // always a WebP this app produced — never the file as it arrived. The
+    // upload happens before the row is written, which means a transaction
+    // that then fails leaves an object nobody references. That is the same
+    // trade the delete makes in the other direction: an orphan costs a
+    // fraction of a cent, and the alternative is a row pointing at bytes
+    // that were never stored.
+    const encoded = await encodeItemPhoto(data);
+    const key = newKey("item", "photo.webp");
+    await putObject({
+      bucket: "public", key, body: encoded.bytes, contentType: encoded.mime,
+    });
+    return { set: { key } };
+  }
   if (str(fd, "photo_remove") === "1") return { clear: true };
   return null;
 }
@@ -564,6 +579,28 @@ export async function createItem(_prev: unknown, fd: FormData): Promise<ActionRe
     const uomId = str(fd, "base_uom_id");
     const brandId = str(fd, "brand_id") || null;
     const salePrice = num(fd, "sale_price");
+    const nameMy = str(fd, "name_my") || null;
+    /**
+     * Which attributes this product varies by and which of their values it
+     * uses. Absent for the overwhelming majority of items, which are one
+     * thing and not twelve.
+     */
+    const variantPlan: { attributeId: string; optionIds: string[] }[] = (() => {
+      const raw = str(fd, "variant_plan");
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed
+          .map((v: any) => ({
+            attributeId: String(v.attributeId ?? ""),
+            optionIds: Array.isArray(v.optionIds) ? v.optionIds.map(String) : [],
+          }))
+          // An attribute with nothing ticked would multiply the combinations
+          // by zero and produce no variants at all.
+          .filter((v) => v.attributeId && v.optionIds.length > 0);
+      } catch { return []; }
+    })();
 
     if (!serial) return { error: "Serial is required" };
     if (!name) return { error: "Name is required" };
@@ -604,7 +641,7 @@ export async function createItem(_prev: unknown, fd: FormData): Promise<ActionRe
       if (photo && "set" in photo) {
         await tx`
           update item
-             set photo = ${photo.set.bytes}, photo_mime = ${photo.set.mime},
+             set photo_key = ${photo.set.key}, photo_mime = ${"image/webp"},
                  photo_updated_at = now()
            where id = ${item.id}`;
       }
@@ -617,6 +654,72 @@ export async function createItem(_prev: unknown, fd: FormData): Promise<ActionRe
             insert into item_price
               (company_id, item_id, price_level_id, uom_id, currency, price)
             values (${co}, ${item.id}, ${level.id}, ${uomId}, 'MMK', ${salePrice})`;
+        }
+      }
+
+      /**
+       * The combinations, if this product varies.
+       *
+       * Every combination becomes an ordinary item with the row just created
+       * as its parent, which is what lets stock, cost, price and barcode work
+       * with no change anywhere: a variant is an item, so everything that
+       * knows about items already knows about it.
+       *
+       * Generated here rather than typed, because four sizes and three
+       * colours is twelve rows and nobody should enter twelve rows by hand
+       * to sell one shirt.
+       */
+      if (variantPlan.length > 0) {
+        for (const [attributeId, , order] of variantPlan.map(
+          (v, i) => [v.attributeId, v.optionIds, i] as const)) {
+          await tx`
+            insert into item_variant_attribute (item_id, attribute_id, sort_order)
+            values (${item.id}, ${attributeId}, ${order})`;
+        }
+
+        // Every option of the first attribute against every option of the
+        // next, and so on — the cartesian product, built one attribute at a
+        // time so the number of attributes is not fixed at two.
+        const optionRows = await tx`
+          select id, code, name, attribute_id from variant_option
+           where id = any(${variantPlan.flatMap((v) => v.optionIds)})`;
+        const byId = new Map(optionRows.map((o: any) => [o.id, o]));
+
+        let combos: string[][] = [[]];
+        for (const v of variantPlan) {
+          combos = combos.flatMap((c) => v.optionIds.map((o) => [...c, o]));
+        }
+
+        for (const combo of combos) {
+          const parts = combo.map((id) => byId.get(id));
+          const suffix = parts.map((p: any) => p.code).join("-");
+          const label = parts.map((p: any) => p.name).join(" / ");
+          const [child] = await tx`
+            insert into item
+              (company_id, item_group_id, parent_item_id, serial, name, name_my,
+               base_uom_id, valuation_method, is_stocked, brand_id,
+               tracks_batch, tracks_expiry)
+            values
+              (${co}, ${groupId}, ${item.id}, ${serial + "-" + suffix},
+               ${name + " " + label}, ${nameMy ? nameMy + " " + label : null},
+               ${uomId}, 'FIFO', ${fd.get("is_stocked") !== null}, ${brandId},
+               ${fd.get("tracks_batch") !== null},
+               ${fd.get("tracks_batch") !== null && fd.get("tracks_expiry") !== null})
+            returning id`;
+          for (const id of combo) {
+            await tx`insert into item_variant_option (item_id, option_id)
+                     values (${child.id}, ${id})`;
+          }
+          if (salePrice > 0) {
+            const [level] = await tx`
+              select id from price_level where company_id = ${co} order by sort_order limit 1`;
+            if (level) {
+              await tx`
+                insert into item_price
+                  (company_id, item_id, price_level_id, uom_id, currency, price)
+                values (${co}, ${child.id}, ${level.id}, ${uomId}, 'MMK', ${salePrice})`;
+            }
+          }
         }
       }
     });
@@ -678,6 +781,9 @@ export async function updateItem(_prev: unknown, fd: FormData): Promise<ActionRe
     }
 
     const photo = await photoFrom(fd);
+    /** The object the old picture lived in, removed once the row is safely
+     *  saved. Set inside the transaction, acted on after it. */
+    let replaced: string | null = null;
 
     await sql.begin(async (tx) => {
       await tx`
@@ -701,19 +807,36 @@ export async function updateItem(_prev: unknown, fd: FormData): Promise<ActionRe
 
       // Left alone unless the picker said otherwise. A form submitted with
       // the field untouched carries neither key, and the photo stays put.
+      if (photo) {
+        // The picture being replaced, read before it is overwritten so the
+        // object it points at can be removed afterwards. Collected rather
+        // than deleted here: a bucket is not part of this transaction, and
+        // deleting inside one that then rolls back would take away the
+        // picture of an item that still claims to have it.
+        const [old] = await tx`
+          select photo_key from item where id = ${id} and company_id = ${co}`;
+        if (old?.photo_key) replaced = old.photo_key as string;
+      }
+
       if (photo && "set" in photo) {
         await tx`
           update item
-             set photo = ${photo.set.bytes}, photo_mime = ${photo.set.mime},
+             set photo_key = ${photo.set.key}, photo_mime = ${"image/webp"},
                  photo_updated_at = now()
            where id = ${id} and company_id = ${co}`;
       } else if (photo) {
         await tx`
           update item
-             set photo = null, photo_mime = null, photo_updated_at = null
+             set photo_key = null, photo = null, photo_mime = null,
+                 photo_updated_at = null
            where id = ${id} and company_id = ${co}`;
       }
     });
+
+    // After the commit, and best effort. An object that outlives its row is
+    // unreachable and costs almost nothing; a failed delete that undid the
+    // save would cost the edit.
+    if (replaced) await deleteObject("public", replaced);
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
@@ -3381,6 +3504,262 @@ export async function setCompanyPlan(_prev: unknown, fd: FormData): Promise<Acti
     return { error: e instanceof Error ? e.message : String(e) };
   }
   return { ok: true };
+}
+
+// -------------------------------------------------------------- variants --
+
+/**
+ * The ways products vary, and the values each way can take.
+ *
+ * Master data rather than text typed on each product, so that Red is one
+ * colour instead of four spellings of one, and so that "which colours sold"
+ * is a question with an answer.
+ */
+export async function createVariantAttribute(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  const code = str(fd, "code").toUpperCase();
+  try {
+    const co = await companyId();
+    const name = str(fd, "name");
+    if (!code) return { error: "Code is required" };
+    if (!name) return { error: "Name is required" };
+
+    await sql`
+      insert into variant_attribute (company_id, code, name, name_my, sort_order)
+      values (${co}, ${code}, ${name}, ${str(fd, "name_my") || null},
+              coalesce((select max(sort_order) + 1 from variant_attribute
+                         where company_id = ${co}), 0))`;
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/items/attributes");
+  redirectWithToast("/items/attributes", `${code} added`);
+}
+
+export async function updateVariantAttribute(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    const name = str(fd, "name");
+    if (!id) return { error: "Which attribute?" };
+    if (!name) return { error: "Name is required" };
+    await sql`
+      update variant_attribute
+         set name = ${name}, name_my = ${str(fd, "name_my") || null},
+             is_active = ${fd.get("is_active") !== null}
+       where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/items/attributes");
+  return { ok: true };
+}
+
+/**
+ * Removing one, which is only allowed while nothing is built on it.
+ *
+ * A product already varying by Size cannot have Size taken away underneath
+ * it — its variants would stop meaning anything. Deactivating is the answer
+ * there: it disappears from the pickers and leaves what exists alone.
+ */
+export async function deleteVariantAttribute(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    const [used] = await sql`
+      select count(*)::int as n from item_variant_attribute where attribute_id = ${id}`;
+    if (Number(used.n) > 0) {
+      return {
+        error: `${used.n} product${Number(used.n) === 1 ? " uses" : "s use"} this. `
+             + `Switch it off instead — that hides it from new products and leaves `
+             + `the existing ones as they are.`,
+      };
+    }
+    await sql`delete from variant_attribute where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/items/attributes");
+  return { ok: true };
+}
+
+export async function createVariantOption(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  const code = str(fd, "code");
+  try {
+    const co = await companyId();
+    const attributeId = str(fd, "attribute_id");
+    if (!attributeId) return { error: "Which attribute?" };
+    if (!code) return { error: "A value is required" };
+
+    // Appended rather than sorted in: S, M, L, XL is the order somebody
+    // means, and it is not the order a computer would choose.
+    await sql`
+      insert into variant_option (company_id, attribute_id, code, name, name_my, sort_order)
+      values (${co}, ${attributeId}, ${code}, ${str(fd, "name") || code},
+              ${str(fd, "name_my") || null},
+              coalesce((select max(sort_order) + 1 from variant_option
+                         where attribute_id = ${attributeId}), 0))`;
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `${code} is already on this list` };
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/items/attributes");
+  return { ok: true };
+}
+
+export async function deleteVariantOption(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    const [used] = await sql`
+      select count(*)::int as n from item_variant_option where option_id = ${id}`;
+    if (Number(used.n) > 0) {
+      return { error: `${used.n} variant${Number(used.n) === 1 ? "" : "s"} already `
+                    + `${Number(used.n) === 1 ? "is" : "are"} this value, so it cannot be removed.` };
+    }
+    await sql`delete from variant_option where id = ${id}
+               and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/items/attributes");
+  return { ok: true };
+}
+
+/** Moves one value up or down its list, since the order is meaningful. */
+export async function moveVariantOption(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    const dir = str(fd, "direction") === "up" ? -1 : 1;
+
+    await sql.begin(async (tx) => {
+      const [me] = await tx`
+        select id, attribute_id, sort_order from variant_option
+         where id = ${id} and company_id = ${co}`;
+      if (!me) throw new Error("That value is gone");
+      const [swap] = dir < 0
+        ? await tx`select id, sort_order from variant_option
+                    where attribute_id = ${me.attribute_id} and sort_order < ${me.sort_order}
+                    order by sort_order desc limit 1`
+        : await tx`select id, sort_order from variant_option
+                    where attribute_id = ${me.attribute_id} and sort_order > ${me.sort_order}
+                    order by sort_order asc limit 1`;
+      if (!swap) return;
+      await tx`update variant_option set sort_order = ${swap.sort_order} where id = ${me.id}`;
+      await tx`update variant_option set sort_order = ${me.sort_order} where id = ${swap.id}`;
+    });
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/items/attributes");
+  return { ok: true };
+}
+
+// ----------------------------------------------------------- attachments --
+
+/**
+ * What may be kept beside a document.
+ *
+ * A deliberately short list. Everything here is either a scan or a
+ * photograph of one — the paper that arrived from outside — and an
+ * attachment feature that accepts anything is a file share with an ERP
+ * bolted to it. Checked against the browser's claim and then again against
+ * the extension, because both are the uploader's word and agreeing with each
+ * other is the least they can do.
+ */
+const ATTACHMENT_TYPES: Record<string, string[]> = {
+  "application/pdf": [".pdf"],
+  "image/jpeg": [".jpg", ".jpeg"],
+  "image/png": [".png"],
+  "image/webp": [".webp"],
+  "image/heic": [".heic"],
+};
+
+/** Matches next.config's bodySizeLimit with room for the rest of the form. */
+const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+
+export async function uploadAttachment(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const documentId = str(fd, "document_id");
+    if (!documentId) return { error: "Which document?" };
+
+    const file = fd.get("file");
+    if (!(file instanceof File) || file.size === 0) return { error: "Choose a file" };
+
+    if (file.size > ATTACHMENT_MAX_BYTES) {
+      return {
+        error: `${file.name} is ${(file.size / 1024 / 1024).toFixed(1)}MB — the limit is `
+             + `${ATTACHMENT_MAX_BYTES / 1024 / 1024}MB. Scan it at a lower resolution, or `
+             + `photograph the page instead.`,
+      };
+    }
+
+    const allowedExts = ATTACHMENT_TYPES[file.type];
+    const ext = file.name.includes(".")
+      ? "." + file.name.split(".").pop()!.toLowerCase() : "";
+    if (!allowedExts || !allowedExts.includes(ext)) {
+      return {
+        error: `${file.name} is not a kind of file that can be attached. `
+             + `A PDF or a photograph — JPG, PNG, WebP or HEIC.`,
+      };
+    }
+
+    // The document has to exist and belong to this company before anything
+    // reaches the bucket: an upload against a bad id would otherwise leave an
+    // object with no row to find it by.
+    const [doc] = await sql`
+      select id from document where id = ${documentId} and company_id = ${co}`;
+    if (!doc) return { error: "That document does not exist" };
+
+    const key = newKey("attach", file.name);
+    const body = Buffer.from(await file.arrayBuffer());
+
+    await putObject({
+      bucket: "private", key, body, contentType: file.type, downloadName: file.name,
+    });
+
+    try {
+      await sql`
+        insert into document_attachment
+          (company_id, document_id, r2_key, filename, mime, size_bytes, note)
+        values
+          (${co}, ${documentId}, ${key}, ${file.name}, ${file.type}, ${file.size},
+           ${str(fd, "note") || null})`;
+    } catch (e) {
+      // The row is what makes the object findable. Without it the upload is
+      // just litter, so it goes rather than being left behind.
+      await deleteObject("private", key);
+      throw e;
+    }
+
+    revalidatePath(`/documents/${documentId}`);
+    return { ok: true };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** Removes the row, then the object. Nothing here is posted, so nothing is reversed. */
+export async function deleteAttachment(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "attachment_id");
+    if (!id) return { error: "Which file?" };
+
+    const [row] = await sql`
+      delete from document_attachment
+       where id = ${id} and company_id = ${co}
+       returning r2_key, document_id`;
+    if (!row) return { error: "That file is already gone" };
+
+    await deleteObject("private", row.r2_key as string);
+    revalidatePath(`/documents/${row.document_id}`);
+    return { ok: true };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 // --------------------------------------------------------------- drafts --

@@ -532,6 +532,95 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-num
    app — a document's own status still reads at the size everywhere else. */
 .orders-page .pill { padding: 0.12rem 0.5rem; font-size: var(--t-2xs); }
 
+/* A variant sits under the product it belongs to: indented by its empty
+   first cell, quieter than the row above, and never mistakable for one. */
+.variantrow > td {
+  background: color-mix(in srgb, var(--ink) 2%, transparent);
+  color: var(--ink-soft, var(--muted));
+  font-size: var(--t-sm);
+}
+
+/* ----------------------------------------------------- variant picker --- */
+
+.varpick { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.4rem; }
+.varpick-attr { display: flex; flex-direction: column; gap: 0.35rem; }
+.varpick-opts { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-left: 1.7rem; }
+
+/* A value reads as something to press rather than as a line of a form: the
+   list is short, and ticking four of six sizes is the whole interaction. */
+.varchip {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  padding: 0.2rem 0.6rem; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 999px;
+  font-size: var(--t-sm); background: var(--surface);
+}
+.varchip:hover { border-color: var(--muted); }
+.varchip.on {
+  border-color: var(--brand); color: var(--brand);
+  background: color-mix(in srgb, var(--brand) 10%, transparent);
+}
+.varchip input { width: 13px; height: 13px; margin: 0; accent-color: var(--brand); }
+
+/* What is about to be created, before it is. Twelve rows appearing without
+   warning is the kind of thing somebody undoes by deleting them one by one. */
+.varpreview {
+  margin-top: 0.6rem; padding-top: 0.6rem;
+  border-top: 1px solid var(--line-soft); font-size: var(--t-sm);
+}
+.varpreview ul { list-style: none; margin: 0.35rem 0 0; padding: 0;
+  display: flex; flex-direction: column; gap: 0.15rem; color: var(--muted); }
+
+/* -------------------------------------------------------- attributes ---- */
+
+.attradd { display: flex; align-items: flex-end; gap: var(--s3); flex-wrap: wrap; }
+.attradd .field { flex: 1 1 10rem; min-width: 0; }
+
+.attrgrid {
+  display: grid; gap: var(--s3); margin-top: var(--s3);
+  grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr));
+  align-items: start;
+}
+.attrcard .card-body { display: flex; flex-direction: column; gap: 0.7rem; }
+
+.optlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.optrow {
+  display: flex; align-items: center; gap: 0.3rem;
+  padding: 0.35rem 0; border-bottom: 1px solid var(--line-soft);
+}
+.optrow:last-child { border-bottom: none; }
+.optrow-name { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.optrow form { flex: none; display: inline-flex; }
+/* The first move button carries the gap that separates the value from its
+   controls, so the three sit as a group rather than drifting apart. */
+.optrow-move { margin-left: auto; }
+
+.optadd { display: flex; gap: 0.5rem; align-items: center; }
+.optadd input { flex: 1 1 auto; min-width: 0; }
+
+.attrcard-foot {
+  display: flex; gap: 0.5rem; padding-top: 0.5rem;
+  border-top: 1px solid var(--line-soft);
+}
+
+/* ------------------------------------------------------- attachments ---- */
+
+.attachlist { list-style: none; margin: 0 0 0.9rem; padding: 0; display: flex; flex-direction: column; }
+.attachrow {
+  display: flex; align-items: center; gap: 0.7rem;
+  padding: 0.55rem 0; border-bottom: 1px solid var(--line-soft);
+}
+.attachrow:last-child { border-bottom: none; }
+.attachrow-icon { flex: none; color: var(--muted); display: inline-flex; }
+.attachrow-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 0.1rem; }
+.attachrow-main a { color: var(--brand); word-break: break-all; }
+.attachrow form { flex: none; }
+
+/* The picker, the note and the button on one line, wrapping on a phone
+   rather than forcing a horizontal scroll. */
+.attachadd { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.attachadd input[type="text"] { flex: 1 1 14rem; min-width: 0; }
+.attachadd input[type="file"] { font-size: var(--t-sm); max-width: 100%; }
+
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--s3); align-items: start; }
 
 .kv { display: grid; grid-template-columns: auto 1fr; gap: var(--s1) var(--s3); font-size: var(--t-md); }
@@ -1397,7 +1486,13 @@ tbody tr.coa-section > td { padding-top: 10px; padding-bottom: 10px; }
 /* Print: the ledger is a document people hand to an accountant, so what
    surrounds it on screen has no business on the page. */
 @media print {
-  .sidebar, .nav, .noprint, .doc-meta, .form-commit { display: none !important; }
+  /* .navbar and .navscrim belong here even though they are invisible on a
+     desktop screen: they are shown by a max-width: 820px query, and A4 is
+     about 794px at 96dpi, so paper counts as a narrow screen. Every printed
+     page — invoices customers are sent included — carried the dark mobile
+     header across the top until this line existed. */
+  .sidebar, .nav, .noprint, .doc-meta, .form-commit,
+  .navbar, .navscrim { display: none !important; }
   .main { padding: 0; }
   .card { border: none; }
   .card-head { background: transparent; border-bottom: 1px solid #000; }

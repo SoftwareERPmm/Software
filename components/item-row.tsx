@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useActionState, useState } from "react";
+import { ChevronRight } from "lucide-react";
 import type { ActionResult } from "@/lib/actions";
 import { ConfirmDelete } from "./confirm-delete";
 import { PackSizes } from "./pack-sizes";
@@ -30,6 +31,11 @@ type Item = {
 type Brand = { id: string; code: string; name: string };
 type Uom = { id: string; code: string; name: string };
 
+export type RowVariant = {
+  id: string; code: string; name: string;
+  barcode: string | null; qty_on_hand: number; is_active: boolean;
+};
+
 export function ItemRow({
   item,
   brands,
@@ -38,8 +44,12 @@ export function ItemRow({
   deleteAction,
   deactivateAction,
   activateAction,
+  variants = [],
 }: {
   item: Item;
+  /** The things on the shelf, where this row is a product that varies.
+   *  Empty for an ordinary item, which is nearly every row. */
+  variants?: RowVariant[];
   brands: Brand[];
   uoms: Uom[];
   updateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
@@ -48,6 +58,7 @@ export function ItemRow({
   activateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
 }) {
   const [editing, setEditing] = useState(false);
+  const [open, setOpen] = useState(false);
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     updateAction as never,
     null
@@ -140,6 +151,7 @@ export function ItemRow({
   }
 
   return (
+    <>
     <tr>
       <td className="thumbcell">
         <ItemThumb
@@ -148,6 +160,16 @@ export function ItemRow({
         />
       </td>
       <td className="code">
+        {/* A product that varies opens to show what it varies into. The
+            twelve rows are still twelve items; this is only whether the
+            catalogue lists them all at once. */}
+        {variants.length > 0 && (
+          <button type="button" className="stmt-toggle" onClick={() => setOpen(!open)}
+                  aria-expanded={open} aria-label={`${variants.length} variants of ${item.code}`}>
+            <ChevronRight size={13} aria-hidden="true"
+                          style={{ transform: open ? "rotate(90deg)" : "none" }} />
+          </button>
+        )}
         <Link href={`/items/categories/${item.item_group_id}`} style={{ color: "var(--brand)" }}>
           {item.code}
         </Link>
@@ -210,5 +232,26 @@ export function ItemRow({
         )}
       </td>
     </tr>
+
+    {open && variants.map((v) => (
+      <tr key={v.id} className="variantrow">
+        <td />
+        <td className="code">{v.code}</td>
+        <td className="wrap">
+          {v.name}
+          {!v.is_active && <span className="pill" style={{ marginLeft: "0.4rem" }}>Off</span>}
+          <div className="subline">
+            {v.barcode ? <span className="m">{v.barcode}</span> : "no barcode"}
+            {" · "}{v.qty_on_hand} on hand
+          </div>
+        </td>
+        {/* Category, brand and unit are the product's, not the variant's,
+            and repeating them down twelve rows says nothing twelve times.
+            The table has no barcode or quantity column, so those ride under
+            the name rather than being put in somebody else's. */}
+        <td colSpan={7} />
+      </tr>
+    ))}
+    </>
   );
 }

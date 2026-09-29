@@ -402,6 +402,72 @@ export async function getDocumentDraft(companyId: string, id: string) {
   return row ?? null;
 }
 
+/**
+ * The files kept beside one document.
+ *
+ * The row is the record — it says a file exists, what it was called and how
+ * big it is. The bytes are in the private bucket and are only ever fetched
+ * through this app, so nothing here hands out a location.
+ */
+export async function getDocumentAttachments(companyId: string, documentId: string) {
+  return sql`
+    select a.id, a.filename, a.mime, a.size_bytes, a.note, a.uploaded_at,
+           u.name as uploaded_by_name
+      from document_attachment a
+      left join app_user u on u.id = a.uploaded_by
+     where a.company_id = ${companyId} and a.document_id = ${documentId}
+     order by a.uploaded_at desc`;
+}
+
+/** One attachment, for the route that streams it. */
+export async function getAttachment(companyId: string, id: string) {
+  const [row] = await sql`
+    select id, document_id, r2_key, filename, mime, size_bytes
+      from document_attachment
+     where company_id = ${companyId} and id = ${id}`;
+  return row ?? null;
+}
+
+/** The attributes a product may vary by, each with its values in order. */
+export async function getVariantAttributes(companyId: string) {
+  const attributes = await sql`
+    select id, code, name from variant_attribute
+     where company_id = ${companyId} and is_active
+     order by sort_order, name`;
+  if (attributes.length === 0) return [];
+  const options = await sql`
+    select id, attribute_id, code, name from variant_option
+     where company_id = ${companyId} and is_active
+     order by sort_order, name`;
+  return attributes.map((a: any) => ({
+    ...a,
+    options: options.filter((o: any) => o.attribute_id === a.id),
+  }));
+}
+
+/**
+ * A parent and the variants under it, with what each one is.
+ *
+ * The label reads in the order the parent declared its attributes, so a
+ * shirt is "M / Red" and never "Red / M".
+ */
+export async function getItemVariants(companyId: string, parentId: string) {
+  return sql`
+    select i.id, i.code, i.name, i.barcode, i.is_active,
+           coalesce(s.qty_on_hand, 0) as on_hand,
+           string_agg(o.name, ' / ' order by va.sort_order) as variant
+      from item i
+      left join item_variant_option ivo on ivo.item_id = i.id
+      left join variant_option o on o.id = ivo.option_id
+      left join item_variant_attribute va
+             on va.item_id = i.parent_item_id and va.attribute_id = o.attribute_id
+      left join (select item_id, sum(qty_on_hand) as qty_on_hand
+                   from v_stock_on_hand group by item_id) s on s.item_id = i.id
+     where i.company_id = ${companyId} and i.parent_item_id = ${parentId}
+     group by i.id, i.code, i.name, i.barcode, i.is_active, s.qty_on_hand
+     order by i.code`;
+}
+
 /** What each customer/supplier owes or is owed, for a per-partner rollup. */
 export async function getPartnerBalances(companyId: string, docType: "SALES_INVOICE" | "PURCHASE_INVOICE") {
   return sql`
@@ -1814,6 +1880,11 @@ export async function getItems(companyId: string) {
     select i.id, i.code, i.name, i.name_my, i.item_group_id, i.brand_id,
            i.base_uom_id, i.is_stocked, i.is_active,
            i.tracks_batch, i.tracks_expiry,
+           i.parent_item_id,
+           -- How many things on a shelf this one product is. Zero for an
+           -- ordinary item, which is nearly all of them; the catalogue folds
+           -- the rest away so a shirt is one line and not twelve.
+           (select count(*)::int from item c where c.parent_item_id = i.id) as variant_count,
            -- Not the picture — just whether there is one and when it changed.
            -- The bytes are served from their own URL, keyed by this; selecting
            -- them here would put every photo in the catalogue into one query.
