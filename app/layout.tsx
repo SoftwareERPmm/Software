@@ -189,6 +189,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <NavGroup label="Inventory" icon={<Boxes size={14} />} match={["/items/stock", "/inventory"]}>
               <NavLink href="/items/stock">Stock overview</NavLink>
               <NavLink href="/inventory/consignment" exact>Consignment</NavLink>
+              <NavLink href="/inventory/replenishment">Replenishment</NavLink>
               <NavLink href="/inventory/movements">Stock movements</NavLink>
               <NavLink href="/inventory/adjustments">Adjustments</NavLink>
               <NavLink href="/inventory/negative-stock">Negative stock</NavLink>
@@ -208,6 +209,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <NavLink href="/items/brands">Brands</NavLink>
               <NavLink href="/items/attributes">Variant attributes</NavLink>
               <NavLink href="/items/units">Units</NavLink>
+              <NavLink href="/items/purchasing">Purchasing terms</NavLink>
               <NavLink href="/items/prices">Price list</NavLink>
               <NavLink href="/warehouses">Branches &amp; warehouses</NavLink>
               <NavLink href="/salespersons">Salespersons</NavLink>

@@ -232,6 +232,9 @@ export async function updatePartner(_prev: unknown, fd: FormData): Promise<Actio
         region = ${asRegion(str(fd, "region"))},
         township = ${str(fd, "township") || null}, address = ${str(fd, "address") || null},
         phone = ${str(fd, "phone") || null}, payment_terms_days = ${num(fd, "payment_terms_days")},
+        -- Blank means "measure it", not zero: an empty override falls back
+        -- to what the receipts say, and nought would claim same-day supply.
+        lead_time_days = ${fd.get("lead_time_days") ? num(fd, "lead_time_days") : null},
         credit_limit = ${fd.get("credit_limit") ? num(fd, "credit_limit") : null},
         price_level_id = ${str(fd, "price_level_id") || null},
         category_id = ${str(fd, "category_id") || null},
@@ -3671,6 +3674,169 @@ export async function createVariantOption(_prev: unknown, fd: FormData): Promise
  * send a name, a unit and a category to change a photograph is how one of
  * them eventually gets sent blank.
  */
+/**
+ * Carrying a replenishment list into a purchase order.
+ *
+ * The order form already knows how to open a saved draft — that is what
+ * "Save as draft" writes and `?draft=` reads — so the suggestions travel as
+ * one, rather than needing the form to learn a second way of being filled
+ * in from a query string.
+ *
+ * One draft per supplier, reused. Pressing the button four times used to
+ * mean four half-written orders on the purchases page, none of which anyone
+ * asked for; the marker in the payload is what tells this page's drafts
+ * apart from one somebody wrote by hand, which must never be overwritten.
+ */
+/**
+ * An item that does not come at its supplier's usual speed.
+ *
+ * Upsert rather than separate create and update: there is one row per
+ * supplier-and-item by definition, and asking the caller to know whether
+ * it exists yet is asking it to race itself.
+ */
+export async function saveSupplierItem(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const supplierId = str(fd, "supplier_id");
+    const itemId = str(fd, "item_id");
+    if (!supplierId) return { error: "Choose a supplier" };
+    if (!itemId) return { error: "Choose an item" };
+
+    // Blank means "no exception" and falls back to the supplier's own
+    // figure. Nought would be a claim that this arrives the day it is
+    // ordered, which is a different thing entirely.
+    const raw = str(fd, "lead_time_days");
+    const lead = raw === "" ? null : Number(raw);
+    if (lead !== null && (!Number.isFinite(lead) || lead < 0 || lead > 365)) {
+      return { error: "Lead time must be between 0 and 365 days, or blank" };
+    }
+
+    await sql`
+      insert into supplier_item
+        (company_id, supplier_id, item_id, lead_time_days, supplier_sku, note)
+      values (${co}, ${supplierId}, ${itemId}, ${lead},
+              ${str(fd, "supplier_sku") || null}, ${str(fd, "note") || null})
+      on conflict (company_id, supplier_id, item_id) do update
+         set lead_time_days = excluded.lead_time_days,
+             supplier_sku = excluded.supplier_sku,
+             note = excluded.note,
+             updated_at = now()`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/items/purchasing");
+  revalidatePath("/inventory/replenishment");
+  return { ok: true };
+}
+
+export async function deleteSupplierItem(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    await sql`delete from supplier_item
+               where id = ${str(fd, "id")} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/items/purchasing");
+  revalidatePath("/inventory/replenishment");
+  return { ok: true };
+}
+
+export async function draftOrderFromReplenishment(
+  _prev: unknown, fd: FormData,
+): Promise<ActionResult> {
+  let target = "";
+  try {
+    const co = await companyId();
+    const supplierId = str(fd, "supplier_id") || null;
+
+    const raw = JSON.parse(str(fd, "suggestions") || "[]") as {
+      itemId: string; qty: number; unitPrice?: number;
+      leadDays?: number; leadSource?: string;
+    }[];
+    const lines = raw.filter((l) => l.itemId && Number(l.qty) > 0);
+    if (lines.length === 0) return { error: "Nothing on this list to order" };
+
+    const today = new Date().toISOString().slice(0, 10);
+    const plus = (days: number) =>
+      new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+
+    /*
+     * The assumptions, frozen onto the lines.
+     *
+     * A lead time is a setting, and settings change. Without a snapshot,
+     * editing a supplier's lead time next month would silently restate
+     * what this order was expecting when it was drafted — and nobody could
+     * say why it had been placed for that quantity on that date.
+     *
+     * Per line, not per header, because three items on one order can each
+     * have come from a different level of the hierarchy: this one from an
+     * item exception, that one from the supplier, the third from the
+     * company default. A single header field would lose which was which.
+     *
+     * These ride in the draft's editor state. The order form keeps keys it
+     * does not recognise, and what it posts is built explicitly from item,
+     * quantity and price — so the snapshot survives editing and never
+     * reaches the posting engine.
+     */
+    const snapped = lines.map((l, i) => ({
+      key: i + 1,
+      itemId: l.itemId,
+      qty: String(l.qty),
+      unitPrice: l.unitPrice ? String(l.unitPrice) : "",
+      leadDays: l.leadDays ?? null,
+      leadSource: l.leadSource ?? null,
+      expectedArrival: l.leadDays === undefined ? null : plus(Number(l.leadDays)),
+    }));
+
+    // The header date is the last of them: the order is not fully answered
+    // until its slowest line has landed.
+    const arrivals = snapped.map((l) => l.expectedArrival).filter(Boolean) as string[];
+    const dueDate = arrivals.length > 0 ? arrivals.sort().at(-1)! : "";
+
+    const draftState = JSON.stringify({
+      lines: snapped,
+      partnerId: supplierId ?? "",
+      docDate: today,
+      dueDate,
+    });
+
+    const [existing] = await sql`
+      select id from document_draft
+       where company_id = ${co} and doc_type = 'PURCHASE_ORDER'
+         and partner_id is not distinct from ${supplierId}
+         and payload->>'from_replenishment' = '1'
+       order by updated_at desc limit 1`;
+
+    const total = lines.reduce((t, l) => t + Number(l.qty) * Number(l.unitPrice ?? 0), 0);
+    const { id } = await saveDocumentDraft({
+      companyId: co,
+      draftId: (existing?.id as string) ?? null,
+      docType: "PURCHASE_ORDER",
+      partnerId: supplierId,
+      docDate: today,
+      payload: {
+        draft_state: draftState,
+        draft_doc_type: "PURCHASE_ORDER",
+        from_replenishment: "1",
+        // What the page believed when it handed this over, so the order can
+        // still explain itself after the settings move on.
+        replenishment_generated_at: new Date().toISOString(),
+        replenishment_expected_arrival: dueDate,
+      },
+      total,
+      lineCount: lines.length,
+    });
+    target = `/purchases/orders/new?draft=${id}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/purchases/orders");
+  // Outside the try: redirect works by throwing, and catching it here would
+  // turn a successful handoff into an error message.
+  redirect(target);
+}
+
 export async function setVariantPhoto(_prev: unknown, fd: FormData): Promise<ActionResult> {
   try {
     const co = await companyId();

@@ -1,11 +1,16 @@
 import { sql } from "./db";
 import { grirMatcher, type MatchableLine, type DraftDocType } from "./posting";
 
-export type Company = { id: string; code: string; name: string; name_my: string | null; base_currency: string };
+export type Company = { id: string; code: string; name: string; name_my: string | null;
+  base_currency: string;
+  /** Assumed when a supplier has none of its own, and for an item nobody
+   *  has bought yet. Replenishment turns it into a date to order by. */
+  default_lead_time_days: number };
 
 export async function getCompany(): Promise<Company | null> {
   const rows = await sql<Company[]>`
-    select id, code, name, name_my, base_currency from company order by created_at limit 1`;
+    select id, code, name, name_my, base_currency, default_lead_time_days
+      from company order by created_at limit 1`;
   return rows[0] ?? null;
 }
 
@@ -1914,7 +1919,7 @@ export async function getPartners(companyId: string) {
     select bp.id, bp.code, bp.name, bp.name_my, bp.company_name,
            bp.is_customer, bp.is_supplier, bp.is_active,
            bp.region, bp.township, bp.address, bp.phone,
-           bp.payment_terms_days, bp.credit_limit, bp.price_level_id,
+           bp.payment_terms_days, bp.lead_time_days, bp.credit_limit, bp.price_level_id,
            (select pl.name from price_level pl where pl.id = bp.price_level_id) as price_level_name,
            bp.category_id,
            (select pc.name from partner_category pc where pc.id = bp.category_id) as category_name,
@@ -3113,6 +3118,163 @@ export async function getPendingDeliveries(companyId: string) {
  * Dates are inclusive on both ends, because a person asking for September
  * means the whole of it.
  */
+/**
+ * How fast an item actually leaves, per warehouse.
+ *
+ * Deliveries only, net of customer returns. Not every outflow is demand: a
+ * transfer moves goods between our own shelves and a stocktake write-off is
+ * stock that was never there. Counting those would let one adjustment of a
+ * hundred and sixty units teach the system to buy a hundred and sixty more.
+ *
+ * Returned as the total issued over the window rather than a rate, because
+ * the window is the caller's choice and a rate hides how much it rests on —
+ * three units over ninety days is not the same claim as three over three.
+ */
+export async function getConsumptionRate(companyId: string, days: number) {
+  return sql`
+    select sm.item_id, sm.location_id, sum(-sm.qty) as issued
+      from stock_movement sm
+      join document d on d.id = sm.document_id
+     where sm.company_id = ${companyId}
+       and d.doc_type in ('DELIVERY', 'SALES_RETURN')
+       and d.status = 'POSTED'
+       and sm.movement_date >= ((now() at time zone 'Asia/Yangon')::date - ${days}::int)
+     group by sm.item_id, sm.location_id
+    having sum(-sm.qty) > 0`;
+}
+
+/**
+ * How long a supplier actually takes, measured rather than typed.
+ *
+ * The gap between the day an order was placed and the day the goods landed,
+ * for the last ten receipts that answered one of their orders. Same reason
+ * the purchase price is not kept on the item master: a figure somebody
+ * typed once is a second source of truth, and it goes stale the first time
+ * the supplier gets slower without telling anyone.
+ *
+ * Quantity-weighted, which is the answer to the partial-receipt question:
+ * a supplier who sends 90% in five days and the last 10% in thirty is not
+ * a five-day supplier (first receipt flatters them) nor a thirty-day one
+ * (final receipt condemns them). Weighting by how much actually arrived on
+ * each date is the only reading that does not bias in one direction.
+ *
+ * Calendar days throughout, here and in every date this app computes. A
+ * working-day convention would need a holiday calendar the app does not
+ * have, and half the arithmetic would silently use the other convention.
+ *
+ * A cancelled remainder contributes nothing: only receipts that happened
+ * are measured, so an order closed short is measured on what arrived.
+ *
+ * ADVISORY ONLY. This never sets the lead time a suggestion uses — that
+ * comes from what somebody configured. It is here so a manager can see
+ * their expectation drifting from reality and decide what to do about it.
+ *
+ * Both ways a receipt can answer an order are counted, the same as
+ * everywhere else, and the named route is skipped where a link already
+ * speaks for it so one receipt is not measured twice. A receipt dated
+ * before its own order is somebody backdating, and is left out rather than
+ * contributing a negative lead time.
+ */
+/**
+ * The recorded exceptions, with what they are an exception to.
+ *
+ * The supplier's own figure travels alongside so a screen can show what
+ * the override is overriding — "21 days where they usually take 14" is a
+ * sentence somebody can check; "21 days" alone is not.
+ */
+export async function getSupplierItems(companyId: string) {
+  return sql`
+    select si.id, si.supplier_id, si.item_id, si.lead_time_days,
+           si.supplier_sku, si.note,
+           bp.code as supplier_code, bp.name as supplier_name,
+           bp.lead_time_days as supplier_default_days,
+           i.code as item_code, i.name as item_name
+      from supplier_item si
+      join business_partner bp on bp.id = si.supplier_id
+      join item i on i.id = si.item_id
+     where si.company_id = ${companyId}
+     order by bp.code, i.code`;
+}
+
+export async function getSupplierLeadTimes(companyId: string) {
+  return sql`
+    with pairs as (
+      select po.partner_id, (gr.doc_date - po.doc_date)::int as days,
+             gl.base_qty as qty, gr.doc_date
+        from document gr
+        join document_line gl on gl.document_id = gr.id
+        join document_line ol on ol.id = gl.source_line_id
+        join document po on po.id = ol.document_id
+       where gr.company_id = ${companyId}
+         and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+         and po.doc_type = 'PURCHASE_ORDER'
+         and not exists (
+               select 1 from fulfilment_link fl2
+                where fl2.fulfilment_line_id = gl.id
+                  and fl2.order_line_id is not distinct from gl.source_line_id)
+      union all
+      select po.partner_id, (gr.doc_date - po.doc_date)::int as days,
+             fl.qty as qty, gr.doc_date
+        from fulfilment_link fl
+        join document_line gl on gl.id = fl.fulfilment_line_id
+        join document gr on gr.id = gl.document_id
+        join document_line ol on ol.id = fl.order_line_id
+        join document po on po.id = ol.document_id
+       where fl.company_id = ${companyId}
+         and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+         and po.doc_type = 'PURCHASE_ORDER'
+    ),
+    recent as (
+      select partner_id, days, qty,
+             row_number() over (partition by partner_id order by doc_date desc) as rn
+        from pairs
+       where days >= 0 and qty > 0
+    )
+    select partner_id,
+           round(sum(days * qty) / nullif(sum(qty), 0))::int as observed_days,
+           count(*)::int as sample
+      from recent
+     where rn <= 20
+     group by partner_id`;
+}
+
+/**
+ * Who last sold us this, and how long they take.
+ *
+ * There is no supplier on the item master, deliberately — the same reason
+ * there is no purchase price there: it would be a second source of truth
+ * that goes stale. Who supplies something is answered by who last did.
+ *
+ * The lead time falls back to the company's, so a suggestion still gets a
+ * date to order by for an item nobody has ever bought.
+ */
+export async function getItemSupply(companyId: string) {
+  return sql`
+    select i.id as item_id,
+           lp.partner_id as supplier_id,
+           bp.code as supplier_code, bp.name as supplier_name,
+           bp.lead_time_days as supplier_days,
+           si.lead_time_days as item_days
+      from item i
+      left join lateral (
+            select d.partner_id
+              from document_line dl
+              join document d on d.id = dl.document_id
+             where dl.item_id = i.id and d.company_id = i.company_id
+               and d.doc_type in ('PURCHASE_INVOICE', 'GOODS_RECEIPT', 'PURCHASE_ORDER')
+               and d.status = 'POSTED' and d.partner_id is not null
+             order by d.doc_date desc, d.created_at desc
+             limit 1
+      ) lp on true
+      left join business_partner bp on bp.id = lp.partner_id
+      -- The exception, where somebody recorded one for this pairing.
+      left join supplier_item si
+             on si.company_id = i.company_id
+            and si.supplier_id = lp.partner_id
+            and si.item_id = i.id
+     where i.company_id = ${companyId}`;
+}
+
 export async function getStockMovements(
   companyId: string,
   itemId: string | null,
@@ -3240,18 +3402,46 @@ export async function getReservedQty(companyId: string) {
 
 export async function getIncomingQty(companyId: string) {
   return sql`
-    select ol.item_id, ol.location_id, sum(ol.base_qty - coalesce(r.received_qty, 0)) as incoming_qty
+    /*
+     * What is still coming, counting both ways a receipt can answer a
+     * purchase order line — the line that names it, and a fulfilment_link
+     * written when the two were matched up afterwards.
+     *
+     * The same gap reservation had, in the other direction: goods already
+     * on the shelf went on being counted as on their way. Overstated
+     * incoming is the more dangerous half of the pair, because anything
+     * deciding what to buy subtracts it and therefore orders too little.
+     *
+     * The named route is ignored where a link already speaks for the same
+     * receipt line, or one receipt of twenty is subtracted twice.
+     */
+    select ol.item_id, ol.location_id,
+           sum(greatest(ol.base_qty - coalesce(r.received_qty, 0)
+                                    - coalesce(fl.linked_qty, 0), 0)) as incoming_qty
       from document o
       join document_line ol on ol.document_id = o.id
       left join (
         select dl.source_line_id, sum(dl.base_qty) as received_qty
           from document_line dl join document dd on dd.id = dl.document_id
          where dd.doc_type = 'GOODS_RECEIPT' and dd.status = 'POSTED'
+           and not exists (
+                 select 1 from fulfilment_link fl2
+                  where fl2.fulfilment_line_id = dl.id
+                    and fl2.order_line_id is not distinct from dl.source_line_id)
          group by dl.source_line_id
       ) r on r.source_line_id = ol.id
+      left join (
+            select order_line_id, sum(qty) as linked_qty
+              from fulfilment_link group by order_line_id
+      ) fl on fl.order_line_id = ol.id
      where o.company_id = ${companyId} and o.doc_type = 'PURCHASE_ORDER' and o.status = 'POSTED'
+       -- A purchase order closed short is not bringing the rest.
+       and not exists (
+             select 1 from v_order_outstanding v
+              where v.order_id = o.id and v.is_closed)
      group by ol.item_id, ol.location_id
-    having sum(ol.base_qty - coalesce(r.received_qty, 0)) > 0`;
+    having sum(greatest(ol.base_qty - coalesce(r.received_qty, 0)
+                                    - coalesce(fl.linked_qty, 0), 0)) > 0`;
 }
 
 export async function getBrands(companyId: string) {
@@ -3804,7 +3994,7 @@ export async function getLowStock(companyId: string) {
 /** Every configured reorder point, for the management list on the Stock page — not just the ones currently violated. */
 export async function getReorderPoints(companyId: string) {
   return sql`
-    select r.id, r.item_id, r.location_id, r.min_qty,
+    select r.id, r.item_id, r.location_id, r.min_qty, r.max_qty,
            i.code as item_code, i.name as item_name,
            l.code as location_code
       from item_reorder r

@@ -29,6 +29,9 @@ export function ConfirmDelete({
   pendingLabel = "Deleting…",
   confirmLabel = "Delete",
   className = "danger tiny",
+  /** The confirm button. Red suits deleting; a dialog that merely
+   *  wants a second look before writing something should not shout. */
+  confirmClassName = "danger",
   children,
 }: {
   action: (fd: FormData) => void;
@@ -41,6 +44,7 @@ export function ConfirmDelete({
   label?: string;
   pendingLabel?: string;
   confirmLabel?: string;
+  confirmClassName?: string;
   /** The trigger button's class. Defaults to the standalone red button; a
    *  row menu passes its own so the item sits flush with the others. */
   className?: string;
@@ -86,7 +90,7 @@ export function ConfirmDelete({
             <button type="button" className="ghost" onClick={() => ref.current?.close()}>
               Cancel
             </button>
-            <button type="submit" className="danger" disabled={pending}>
+            <button type="submit" className={confirmClassName} disabled={pending}>
               {pending ? pendingLabel : confirmLabel}
             </button>
           </form>
