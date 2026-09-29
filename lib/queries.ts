@@ -506,6 +506,53 @@ export async function getVariantStock(companyId: string) {
      order by p.code, i.code`;
 }
 
+/**
+ * A product's variants, as a grid to edit.
+ *
+ * Twelve sizes of a shirt each need their own barcode and may need their
+ * own price, and a form that edits one row at a time is the wrong shape
+ * for that — it is twelve page loads to do one job.
+ *
+ * The price is the one on the first price level, because that is the one
+ * createItem writes and the one nearly every catalogue has. A product sold
+ * at several levels still needs the price list screen; this is the normal
+ * selling price, kept where somebody is already looking.
+ */
+export async function getVariantGrid(companyId: string, parentId: string) {
+  const [level] = await sql`
+    select id, name from price_level where company_id = ${companyId}
+     order by sort_order limit 1`;
+
+  const rows = await sql`
+    select i.id, i.code, i.name, i.barcode, i.is_active, i.base_uom_id,
+           to_char(i.photo_updated_at, 'YYYYMMDDHH24MISSMS') as photo_version,
+           coalesce(s.qty_on_hand, 0) as on_hand,
+           ip.price,
+           json_agg(json_build_object(
+                      'attributeId', attr.id, 'attribute', attr.name,
+                      'optionId', o.id, 'option', o.name,
+                      'optionSort', o.sort_order,
+                      'attributeSort', coalesce(iva.sort_order, 0))
+                    order by coalesce(iva.sort_order, 0), attr.name)
+             filter (where o.id is not null) as parts
+      from item i
+      left join item_variant_option ivo on ivo.item_id = i.id
+      left join variant_option o on o.id = ivo.option_id
+      left join variant_attribute attr on attr.id = o.attribute_id
+      left join item_variant_attribute iva
+             on iva.item_id = i.parent_item_id and iva.attribute_id = attr.id
+      left join (select item_id, sum(qty_on_hand) as qty_on_hand
+                   from v_stock_on_hand group by item_id) s on s.item_id = i.id
+      left join item_price ip
+             on ip.item_id = i.id and ip.price_level_id = ${level?.id ?? null}
+     where i.company_id = ${companyId} and i.parent_item_id = ${parentId}
+     group by i.id, i.code, i.name, i.barcode, i.is_active, i.base_uom_id,
+              i.photo_updated_at, s.qty_on_hand, ip.price
+     order by i.code`;
+
+  return { level: level ?? null, rows };
+}
+
 export async function getItemVariants(companyId: string, parentId: string) {
   return sql`
     select i.id, i.code, i.name, i.barcode, i.is_active,

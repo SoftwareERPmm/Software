@@ -249,6 +249,19 @@ export function ItemRow({
       </td>
     </tr>
 
+    {open && variants.length > 0 && (
+      <tr className="variantrow">
+        <td />
+        <td colSpan={9}>
+          {/* Where somebody already is when they notice the twelve sizes
+              they just made have no barcodes on them. */}
+          <Link href={`/items/${item.id}/variants`} className="linkbtn">
+            Edit all {variants.length} variants — barcodes and prices →
+          </Link>
+        </td>
+      </tr>
+    )}
+
     {open && variants.map((v) => (
       <Fragment key={v.id}>
         <tr className="variantrow">

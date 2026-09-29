@@ -3694,6 +3694,105 @@ export async function createVariantOption(_prev: unknown, fd: FormData): Promise
  * supplier-and-item by definition, and asking the caller to know whether
  * it exists yet is asking it to race itself.
  */
+/**
+ * A product's variants, saved together.
+ *
+ * Barcode and selling price for every size and colour in one submission,
+ * because entering them one row at a time is twelve page loads to do one
+ * job — and it is the only practical way to get barcodes onto a product
+ * that comes in twelve.
+ *
+ * Duplicates are caught before anything is written. item_barcode_unique
+ * (0033) already refuses them at the boundary, but a constraint violation
+ * arrives as a message about an index, and the person holding the scanner
+ * needs to know which two rows clash.
+ */
+export async function saveVariantGrid(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const parentId = str(fd, "parent_id");
+    if (!parentId) return { error: "Which product?" };
+
+    const rows = JSON.parse(str(fd, "rows") || "[]") as {
+      id: string; barcode: string; price: string; isActive: boolean;
+    }[];
+    if (rows.length === 0) return { error: "Nothing to save" };
+
+    // Only this product's variants, so a crafted form cannot reach elsewhere.
+    const mine = await sql`
+      select id, code from item
+       where company_id = ${co} and parent_item_id = ${parentId}`;
+    const byId = new Map((mine as any[]).map((r) => [r.id as string, r.code as string]));
+    for (const r of rows) {
+      if (!byId.has(r.id)) return { error: "That variant does not belong to this product" };
+    }
+
+    // Within the batch first: two rows here can clash with each other
+    // before either reaches the table.
+    const seen = new Map<string, string>();
+    for (const r of rows) {
+      const bc = r.barcode.trim();
+      if (!bc) continue;
+      const already = seen.get(bc);
+      if (already) {
+        return { error: `${byId.get(r.id)} and ${already} both have barcode ${bc}. `
+                      + `A barcode names one thing on a shelf.` };
+      }
+      seen.set(bc, byId.get(r.id)!);
+    }
+
+    // Then against everything else in the company.
+    const codes = [...seen.keys()];
+    if (codes.length > 0) {
+      const clash = await sql`
+        select code, barcode from item
+         where company_id = ${co} and barcode = any(${codes})
+           and id <> all(${rows.map((r) => r.id)})`;
+      if ((clash as any[]).length > 0) {
+        const c = (clash as any[])[0];
+        return { error: `Barcode ${c.barcode} is already on ${c.code}. `
+                      + `Scanning it would find two different things.` };
+      }
+    }
+
+    const [level] = await sql`
+      select id from price_level where company_id = ${co} order by sort_order limit 1`;
+
+    await sql.begin(async (tx) => {
+      for (const r of rows) {
+        const bc = r.barcode.trim();
+        await tx`
+          update item set barcode = ${bc || null}, is_active = ${r.isActive}
+           where id = ${r.id} and company_id = ${co}`;
+
+        if (!level) continue;
+        const price = r.price.trim() === "" ? null : Number(r.price);
+        if (price === null) {
+          await tx`delete from item_price
+                    where item_id = ${r.id} and price_level_id = ${level.id}`;
+          continue;
+        }
+        if (!Number.isFinite(price) || price < 0) continue;
+        const [uom] = await tx`select base_uom_id from item where id = ${r.id}`;
+        await tx`
+          insert into item_price
+            (company_id, item_id, price_level_id, uom_id, currency, price)
+          values (${co}, ${r.id}, ${level.id}, ${uom.base_uom_id}, 'MMK', ${price})
+          on conflict (company_id, item_id, price_level_id, uom_id, currency, valid_from)
+            do update set price = excluded.price`;
+      }
+    });
+  } catch (e) {
+    if (isUniqueViolation(e)) {
+      return { error: "Two of those share a barcode, or one is already used elsewhere." };
+    }
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/items");
+  revalidatePath("/items/stock");
+  return { ok: true };
+}
+
 export async function saveSupplierItem(_prev: unknown, fd: FormData): Promise<ActionResult> {
   try {
     const co = await companyId();
