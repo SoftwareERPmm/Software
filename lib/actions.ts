@@ -585,21 +585,34 @@ export async function createItem(_prev: unknown, fd: FormData): Promise<ActionRe
      * uses. Absent for the overwhelming majority of items, which are one
      * thing and not twelve.
      */
-    const variantPlan: { attributeId: string; optionIds: string[] }[] = (() => {
+    /**
+     * What this product varies by, and which combinations of it exist.
+     *
+     * The two travel separately because they are different facts. The
+     * attributes are recorded against the parent and stay true even for a
+     * combination nobody stocks — a shirt varies by size whether or not it
+     * is sold in XL. The combinations are the items to create, and the form
+     * decides them: a shop selling Black in S/M/L and White only in M asks
+     * for four, not the six the grid would produce.
+     */
+    const variantPlan: { attributes: string[]; combos: string[][] } = (() => {
+      const empty = { attributes: [] as string[], combos: [] as string[][] };
       const raw = str(fd, "variant_plan");
-      if (!raw) return [];
+      if (!raw) return empty;
       try {
         const parsed = JSON.parse(raw);
-        if (!Array.isArray(parsed)) return [];
-        return parsed
-          .map((v: any) => ({
-            attributeId: String(v.attributeId ?? ""),
-            optionIds: Array.isArray(v.optionIds) ? v.optionIds.map(String) : [],
-          }))
-          // An attribute with nothing ticked would multiply the combinations
-          // by zero and produce no variants at all.
-          .filter((v) => v.attributeId && v.optionIds.length > 0);
-      } catch { return []; }
+        const attributes: string[] = Array.isArray(parsed?.attributes)
+          ? parsed.attributes.map(String).filter(Boolean) : [];
+        const combos: string[][] = Array.isArray(parsed?.combos)
+          ? parsed.combos
+              .map((c: any) => (Array.isArray(c) ? c.map(String).filter(Boolean) : []))
+              .filter((c: string[]) => c.length > 0)
+          : [];
+        // Neither half means anything alone: attributes with no combinations
+        // build nothing, and combinations with no attributes leave the parent
+        // unable to say what it varies by. Either way it is an ordinary item.
+        return attributes.length > 0 && combos.length > 0 ? { attributes, combos } : empty;
+      } catch { return empty; }
     })();
 
     if (!serial) return { error: "Serial is required" };
@@ -667,30 +680,37 @@ export async function createItem(_prev: unknown, fd: FormData): Promise<ActionRe
        *
        * Generated here rather than typed, because four sizes and three
        * colours is twelve rows and nobody should enter twelve rows by hand
-       * to sell one shirt.
+       * to sell one shirt — and the form has already dropped the ones this
+       * shop does not sell, so what arrives is the list, not a grid to
+       * expand.
        */
-      if (variantPlan.length > 0) {
-        for (const [attributeId, , order] of variantPlan.map(
-          (v, i) => [v.attributeId, v.optionIds, i] as const)) {
+      if (variantPlan.combos.length > 0) {
+        for (const [order, attributeId] of variantPlan.attributes.entries()) {
           await tx`
             insert into item_variant_attribute (item_id, attribute_id, sort_order)
             values (${item.id}, ${attributeId}, ${order})`;
         }
 
-        // Every option of the first attribute against every option of the
-        // next, and so on — the cartesian product, built one attribute at a
-        // time so the number of attributes is not fixed at two.
         const optionRows = await tx`
           select id, code, name, attribute_id from variant_option
-           where id = any(${variantPlan.flatMap((v) => v.optionIds)})`;
+           where id = any(${[...new Set(variantPlan.combos.flat())]})`;
         const byId = new Map(optionRows.map((o: any) => [o.id, o]));
 
-        let combos: string[][] = [[]];
-        for (const v of variantPlan) {
-          combos = combos.flatMap((c) => v.optionIds.map((o) => [...c, o]));
-        }
+        // The declared order of the attributes, so a shirt is "M / Red" and
+        // never "Red / M" however the form happened to send it.
+        const rank = new Map(variantPlan.attributes.map((a, i) => [a, i]));
+        const ordered = (combo: string[]) => [...combo].sort((x, y) =>
+          (rank.get(byId.get(x)?.attribute_id) ?? 0) -
+          (rank.get(byId.get(y)?.attribute_id) ?? 0));
 
-        for (const combo of combos) {
+        for (const raw of variantPlan.combos) {
+          // An option id the form invented, or one deleted between loading
+          // the page and saving it, would otherwise become "undefined" in
+          // the middle of a code.
+          if (raw.some((id) => !byId.has(id))) {
+            throw new Error("One of the chosen variant values no longer exists");
+          }
+          const combo = ordered(raw);
           const parts = combo.map((id) => byId.get(id));
           const suffix = parts.map((p: any) => p.code).join("-");
           const label = parts.map((p: any) => p.name).join(" / ");
@@ -1439,6 +1459,10 @@ export type PickerItem = {
   /** Whether goods of this item arrive in identifiable lots, and whether
    *  those lots have a shelf life. A receipt form asks for what these say. */
   tracks_batch?: boolean; tracks_expiry?: boolean;
+  /** Which size, which colour — `[{a: "Colour", o: "Red"}]`. Null for an
+   *  ordinary item, which is most of a catalogue. Typed loosely because it
+   *  arrives as json; asVariant() in variant-tags is what checks it. */
+  variant?: unknown;
 };
 
 /**
@@ -3198,6 +3222,17 @@ export async function getFormData() {
          where company_id = ${co} and is_supplier and is_active order by code`,
     sql`select i.id, i.code, i.name, i.is_stocked, i.item_group_id,
                 i.tracks_batch, i.tracks_expiry,
+                -- What a variant is, so the line says "Colour Red, Size M"
+                -- rather than leaving it buried in a name the picker has
+                -- already truncated. Null for an ordinary item.
+                (select json_agg(json_build_object('a', attr.name, 'o', o.name)
+                                 order by coalesce(iva.sort_order, 0), attr.name)
+                   from item_variant_option ivo
+                   join variant_option o on o.id = ivo.option_id
+                   join variant_attribute attr on attr.id = o.attribute_id
+                   left join item_variant_attribute iva
+                          on iva.item_id = i.parent_item_id and iva.attribute_id = attr.id
+                  where ivo.item_id = i.id) as variant,
                 -- The unit every quantity of this item is counted in, so a
                 -- figure quoted back to the user can carry it rather than
                 -- being a bare number.
@@ -3224,6 +3259,11 @@ export async function getFormData() {
            left join (select item_id, sum(qty_on_hand) as qty
                         from v_stock_on_hand group by item_id) s on s.item_id = i.id
           where i.company_id = ${co} and i.is_active
+            -- A product with variants is a name for a group, not a thing on
+            -- a shelf, and fn_document_line_not_parent refuses it at posting.
+            -- Leaving it in the list only lets somebody fill in a whole
+            -- voucher before being told the first line was never possible.
+            and not exists (select 1 from item c where c.parent_item_id = i.id)
           order by i.code`,
     sql`select id, code, name from location
          where company_id = ${co} and is_stock_location and is_active order by code`,
@@ -3566,13 +3606,18 @@ export async function deleteVariantAttribute(_prev: unknown, fd: FormData): Prom
   try {
     const co = await companyId();
     const id = str(fd, "id");
-    const [used] = await sql`
-      select count(*)::int as n from item_variant_attribute where attribute_id = ${id}`;
-    if (Number(used.n) > 0) {
+    const users = await sql`
+      select i.code, i.name from item_variant_attribute iva
+        join item i on i.id = iva.item_id
+       where iva.attribute_id = ${id}
+       order by i.code`;
+    if (users.length > 0) {
+      const named = users.slice(0, 3).map((u: any) => `${u.code} ${u.name}`).join(", ");
+      const rest = users.length > 3 ? ` and ${users.length - 3} more` : "";
       return {
-        error: `${used.n} product${Number(used.n) === 1 ? " uses" : "s use"} this. `
-             + `Switch it off instead — that hides it from new products and leaves `
-             + `the existing ones as they are.`,
+        error: `${users.length} product${users.length === 1 ? " uses" : "s use"} this — `
+             + `${named}${rest}. Switch it off instead — that hides it from new products `
+             + `and leaves the existing ones as they are.`,
       };
     }
     await sql`delete from variant_attribute where id = ${id} and company_id = ${co}`;
@@ -3607,15 +3652,156 @@ export async function createVariantOption(_prev: unknown, fd: FormData): Promise
   return { ok: true };
 }
 
+/**
+ * A picture of one variant.
+ *
+ * A red shirt and a black shirt are two things on a shelf and two pictures.
+ * Hanging one photograph on the parent would put the black one beside the
+ * red row in every list that shows it, which is worse than showing none —
+ * a picker exists so somebody can recognise what they are choosing.
+ *
+ * Its own action rather than updateItem because a variant row has no form
+ * behind it: there is nothing else on it to save, and asking the caller to
+ * send a name, a unit and a category to change a photograph is how one of
+ * them eventually gets sent blank.
+ */
+export async function setVariantPhoto(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Which variant?" };
+
+    const [target] = await sql`
+      select parent_item_id from item where id = ${id} and company_id = ${co}`;
+    if (!target) return { error: "That item no longer exists" };
+
+    const photo = await photoFrom(fd);
+    if (!photo) return { error: "No picture was sent" };
+
+    let replaced: string | null = null;
+    await sql.begin(async (tx) => {
+      // Read before overwriting, removed after the commit — a bucket is not
+      // part of this transaction. Same trade updateItem makes.
+      const [old] = await tx`
+        select photo_key from item where id = ${id} and company_id = ${co}`;
+      if (old?.photo_key) replaced = old.photo_key as string;
+
+      if ("set" in photo) {
+        await tx`
+          update item set photo_key = ${photo.set.key}, photo_mime = 'image/webp',
+                          photo_updated_at = now()
+           where id = ${id} and company_id = ${co}`;
+      } else {
+        await tx`
+          update item set photo_key = null, photo = null, photo_mime = null,
+                          photo_updated_at = null
+           where id = ${id} and company_id = ${co}`;
+      }
+    });
+    if (replaced) await deleteObject("public", replaced);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/items");
+  revalidatePath("/items/stock");
+  return { ok: true };
+}
+
+/**
+ * Renaming a value.
+ *
+ * The name is free to change: "Blk" becoming "Black" is a correction, and
+ * every screen reads the name live.
+ *
+ * The code is not, once anything is using it. It was pasted into the
+ * variant's own code when the item was made — APPAREL001-BLK is a stored
+ * string, not a view — so editing it here would not rename those and the
+ * next variant created would be APPAREL001-BLACK beside them. Two spellings
+ * of one colour is the exact thing this table exists to prevent, so the
+ * code is fixed from the moment the first variant carries it.
+ */
+export async function updateVariantOption(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  const code = str(fd, "code");
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    const name = str(fd, "name");
+    if (!id) return { error: "Which value?" };
+    if (!name) return { error: "A name is required" };
+
+    const [current] = await sql`
+      select code from variant_option where id = ${id} and company_id = ${co}`;
+    if (!current) return { error: "That value no longer exists" };
+
+    if (code && code !== current.code) {
+      const [used] = await sql`
+        select count(*)::int as n from item_variant_option where option_id = ${id}`;
+      if (Number(used.n) > 0) {
+        return {
+          error: `The code cannot change once variants carry it — ${used.n} `
+               + `already ${Number(used.n) === 1 ? "does" : "do"}, and their own codes `
+               + `were built from ${current.code}. The name can be changed freely.`,
+        };
+      }
+    }
+
+    await sql`
+      update variant_option
+         set name = ${name}, name_my = ${str(fd, "name_my") || null},
+             code = ${code || current.code}
+       where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `${code} is already on this list` };
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/items/attributes");
+  return { ok: true };
+}
+
 export async function deleteVariantOption(_prev: unknown, fd: FormData): Promise<ActionResult> {
   try {
     const co = await companyId();
     const id = str(fd, "id");
-    const [used] = await sql`
-      select count(*)::int as n from item_variant_option where option_id = ${id}`;
-    if (Number(used.n) > 0) {
-      return { error: `${used.n} variant${Number(used.n) === 1 ? "" : "s"} already `
-                    + `${Number(used.n) === 1 ? "is" : "are"} this value, so it cannot be removed.` };
+    /**
+     * What is standing in the way, by name.
+     *
+     * "3 variants are this value" tells somebody there is a problem and
+     * nothing about what to do next. The codes are what they need: which
+     * three, and whether any of them is real stock rather than a row made
+     * by mistake ten minutes ago and safe to delete.
+     */
+    const blockers = await sql`
+      select i.code, i.name,
+             coalesce(s.qty, 0) as on_hand,
+             (select count(*)::int from document_line dl where dl.item_id = i.id) as lines
+        from item_variant_option ivo
+        join item i on i.id = ivo.item_id
+        left join (select item_id, sum(qty_on_hand) as qty
+                     from v_stock_on_hand group by item_id) s on s.item_id = i.id
+       where ivo.option_id = ${id}
+       order by coalesce(s.qty, 0) desc, i.code`;
+
+    if (blockers.length > 0) {
+      const named = blockers.slice(0, 3).map((b: any) => b.code).join(", ");
+      const rest = blockers.length > 3 ? ` and ${blockers.length - 3} more` : "";
+      const held = blockers.filter((b: any) => Number(b.on_hand) !== 0);
+      const onDocs = blockers.filter((b: any) => Number(b.lines) > 0);
+
+      const why = held.length > 0
+        ? ` ${held.length === 1 ? "One of them holds" : `${held.length} of them hold`} stock`
+          + ` (${held.slice(0, 2).map((b: any) =>
+                `${b.code}: ${Number(b.on_hand).toLocaleString("en-US",
+                   { maximumFractionDigits: 2 })}`).join(", ")}).`
+        : onDocs.length > 0
+          ? ` ${onDocs.length === 1 ? "One of them appears" : `${onDocs.length} of them appear`}`
+            + ` on posted documents.`
+          : " None of them holds stock or appears on a document, so deleting those"
+            + " variants first would free this value.";
+
+      return {
+        error: `${blockers.length} variant${blockers.length === 1 ? " is" : "s are"} this `
+             + `value — ${named}${rest}.${why}`,
+      };
     }
     await sql`delete from variant_option where id = ${id}
                and company_id = ${co}`;

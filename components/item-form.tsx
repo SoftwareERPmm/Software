@@ -88,6 +88,9 @@ export function ItemForm({
 
   const [chain, setChain] = useState<string[]>(initialChain);
   const [serial, setSerial] = useState("");
+  // Controlled only so the variant preview can name the product it is
+  // about to make twelve of.
+  const [itemName, setItemName] = useState("");
 
   const childrenOf = (parentId: string | null) =>
     nodes.filter((n) => n.parent_id === parentId);
@@ -194,7 +197,8 @@ export function ItemForm({
 
             <div className="field">
               <label htmlFor="name">Name</label>
-              <input id="name" name="name" type="text" required placeholder="Apolo Exercise Book" />
+              <input id="name" name="name" type="text" required placeholder="Apolo Exercise Book"
+                     value={itemName} onChange={(e) => setItemName(e.target.value)} />
             </div>
 
             <div className="field">
@@ -325,7 +329,7 @@ export function ItemForm({
 
           {/* This form creates; adding variants to a product that already has
               stock and history is a larger question and is not offered here. */}
-          <VariantPicker attributes={variantAttributes ?? []} serial={serial} />
+          <VariantPicker attributes={variantAttributes ?? []} serial={serial} name={itemName} />
         </div>
       </div>
 

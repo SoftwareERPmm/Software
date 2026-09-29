@@ -451,20 +451,81 @@ export async function getVariantAttributes(companyId: string) {
  * The label reads in the order the parent declared its attributes, so a
  * shirt is "M / Red" and never "Red / M".
  */
+/**
+ * Every variant that exists, with what it is and what is on the shelf.
+ *
+ * One row per variant, flat — the grouping is done in the page, because the
+ * same rows are read two ways: colours with their sizes under them, and
+ * sizes with their colours. Asking the database for both would be two
+ * queries returning the same facts in two shapes.
+ *
+ * Not filtered to items holding stock. "No Black left in M" is the answer
+ * somebody is looking for, and a row missing because it is zero cannot say
+ * it.
+ */
+export async function getVariantStock(companyId: string) {
+  return sql`
+    select i.id, i.code, i.name, i.is_active,
+           i.parent_item_id,
+           p.code as parent_code, p.name as parent_name,
+           g.name as category_name,
+           to_char(i.photo_updated_at, 'YYYYMMDDHH24MISSMS') as photo_version,
+           coalesce(s.qty, 0) as qty_on_hand,
+           coalesce(s.val, 0) as value_on_hand,
+           u.code as uom_code,
+           -- Which option of which attribute this variant is, carrying the
+           -- ids so the page can group on them without matching by name.
+           json_agg(json_build_object(
+                      'attributeId', attr.id, 'attribute', attr.name,
+                      'optionId', o.id, 'option', o.name,
+                      -- Hand-kept, because S/M/L/XL is not alphabetical.
+                      'optionSort', o.sort_order,
+                      'attributeSort', coalesce(iva.sort_order, 0))
+                    order by coalesce(iva.sort_order, 0), attr.name) as parts
+      from item i
+      join item p on p.id = i.parent_item_id
+      join item_group g on g.id = i.item_group_id
+      join uom u on u.id = i.base_uom_id
+      join item_variant_option ivo on ivo.item_id = i.id
+      join variant_option o on o.id = ivo.option_id
+      join variant_attribute attr on attr.id = o.attribute_id
+      left join item_variant_attribute iva
+             on iva.item_id = i.parent_item_id and iva.attribute_id = attr.id
+      left join (
+            select item_id, sum(qty_on_hand) as qty, sum(value_on_hand) as val
+              from v_stock_on_hand group by item_id
+      ) s on s.item_id = i.id
+     where i.company_id = ${companyId} and i.is_active
+     group by i.id, i.code, i.name, i.is_active, i.parent_item_id,
+              p.code, p.name, g.name, i.photo_updated_at, s.qty, s.val, u.code
+     order by p.code, i.code`;
+}
+
 export async function getItemVariants(companyId: string, parentId: string) {
   return sql`
     select i.id, i.code, i.name, i.barcode, i.is_active,
            coalesce(s.qty_on_hand, 0) as on_hand,
-           string_agg(o.name, ' / ' order by va.sort_order) as variant
+           -- Each variant has its own picture: a red shirt and a black one
+           -- are two things, and one photograph on the parent would show
+           -- the wrong colour beside half the rows.
+           to_char(i.photo_updated_at, 'YYYYMMDDHH24MISSMS') as photo_version,
+           string_agg(o.name, ' / ' order by va.sort_order) as variant,
+           -- The same thing with the attribute kept alongside its value, so
+           -- a tag can say which "Small" it means.
+           json_agg(json_build_object('a', attr.name, 'o', o.name)
+                    order by va.sort_order) filter (where o.id is not null)
+             as variant_parts
       from item i
       left join item_variant_option ivo on ivo.item_id = i.id
       left join variant_option o on o.id = ivo.option_id
+      left join variant_attribute attr on attr.id = o.attribute_id
       left join item_variant_attribute va
              on va.item_id = i.parent_item_id and va.attribute_id = o.attribute_id
       left join (select item_id, sum(qty_on_hand) as qty_on_hand
                    from v_stock_on_hand group by item_id) s on s.item_id = i.id
      where i.company_id = ${companyId} and i.parent_item_id = ${parentId}
-     group by i.id, i.code, i.name, i.barcode, i.is_active, s.qty_on_hand
+     group by i.id, i.code, i.name, i.barcode, i.is_active, s.qty_on_hand,
+              i.photo_updated_at
      order by i.code`;
 }
 
@@ -1885,6 +1946,17 @@ export async function getItems(companyId: string) {
            -- ordinary item, which is nearly all of them; the catalogue folds
            -- the rest away so a shirt is one line and not twelve.
            (select count(*)::int from item c where c.parent_item_id = i.id) as variant_count,
+           -- What this one is, when it is a variant: Colour Red, Size M, in
+           -- the order its parent declared them so a shirt reads "M / Red"
+           -- and never "Red / M". Null for an ordinary item, which is most.
+           (select json_agg(json_build_object('a', attr.name, 'o', o.name)
+                            order by coalesce(iva.sort_order, 0), attr.name)
+              from item_variant_option ivo
+              join variant_option o on o.id = ivo.option_id
+              join variant_attribute attr on attr.id = o.attribute_id
+              left join item_variant_attribute iva
+                     on iva.item_id = i.parent_item_id and iva.attribute_id = attr.id
+             where ivo.item_id = i.id) as variant,
            -- Not the picture — just whether there is one and when it changed.
            -- The bytes are served from their own URL, keyed by this; selecting
            -- them here would put every photo in the catalogue into one query.
@@ -3031,17 +3103,56 @@ export async function getPendingDeliveries(companyId: string) {
  * and supply committed but not yet received (purchase orders).
  */
 /** Every movement of one item, oldest first — a stock card. */
-export async function getStockMovements(companyId: string, itemId: string) {
+/**
+ * The stock ledger, for one item or for everything.
+ *
+ * Null itemId is every item — a log rather than a stock card. The two read
+ * differently on purpose: a running balance belongs to one item, and adding
+ * shirts to tins would produce a column of numbers that mean nothing.
+ *
+ * Dates are inclusive on both ends, because a person asking for September
+ * means the whole of it.
+ */
+export async function getStockMovements(
+  companyId: string,
+  itemId: string | null,
+  from?: string | null,
+  to?: string | null,
+) {
   return sql`
     select sm.id, sm.movement_date, sm.qty, sm.unit_cost, sm.total_cost,
            sm.batch_no, sm.expiry_date, sm.created_at,
            d.doc_no, d.doc_type, d.id as document_id,
-           l.code as location_code
+           l.code as location_code,
+           i.code as item_code, i.name as item_name
       from stock_movement sm
       left join document d on d.id = sm.document_id
       join location l on l.id = sm.location_id
-     where sm.company_id = ${companyId} and sm.item_id = ${itemId}
+      join item i on i.id = sm.item_id
+     where sm.company_id = ${companyId}
+       and (${itemId ?? null}::uuid is null or sm.item_id = ${itemId ?? null})
+       and (${from ?? null}::date is null or sm.movement_date >= ${from ?? null})
+       and (${to ?? null}::date is null or sm.movement_date <= ${to ?? null})
      order by sm.movement_date, sm.created_at`;
+}
+
+/**
+ * What the balance already was before the window opens.
+ *
+ * A stock card filtered to September that starts its running balance at
+ * nought says the item was empty on the first, which is a different claim
+ * from the one the filter made. The figure carried in is what makes the
+ * column true.
+ */
+export async function getStockOpeningBalance(
+  companyId: string, itemId: string, before: string,
+) {
+  const [row] = await sql`
+    select coalesce(sum(qty), 0) as qty
+      from stock_movement
+     where company_id = ${companyId} and item_id = ${itemId}
+       and movement_date < ${before}`;
+  return Number(row?.qty ?? 0);
 }
 
 export async function getReservedQty(companyId: string) {

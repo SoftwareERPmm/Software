@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useActionState, useState } from "react";
+import { Fragment, useActionState, useState } from "react";
 import { ChevronRight } from "lucide-react";
 import type { ActionResult } from "@/lib/actions";
 import { ConfirmDelete } from "./confirm-delete";
@@ -9,6 +9,7 @@ import { PackSizes } from "./pack-sizes";
 import { RowMenu } from "./row-menu";
 import { ItemPhotoField } from "./item-photo-field";
 import { ItemThumb } from "./item-thumb";
+import { VariantTags, type VariantPart } from "./variant-tags";
 
 // lib/db.ts opens a real Postgres connection at import time — never import
 // it into a client component. Same formatting as money() there, kept local.
@@ -34,6 +35,11 @@ type Uom = { id: string; code: string; name: string };
 export type RowVariant = {
   id: string; code: string; name: string;
   barcode: string | null; qty_on_hand: number; is_active: boolean;
+  /** Each variant carries its own, because a red shirt and a black one are
+   *  two things and one picture on the parent would be wrong for one. */
+  photo_version: string | null;
+  /** What it is, with the attribute kept beside each value. */
+  variant_parts: VariantPart[] | null;
 };
 
 export function ItemRow({
@@ -44,6 +50,7 @@ export function ItemRow({
   deleteAction,
   deactivateAction,
   activateAction,
+  setPhotoAction,
   variants = [],
 }: {
   item: Item;
@@ -56,9 +63,18 @@ export function ItemRow({
   deleteAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   deactivateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
   activateAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
+  /** Sets one variant's picture. Only a photo — a variant row has no other
+   *  form behind it. */
+  setPhotoAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
 }) {
   const [editing, setEditing] = useState(false);
   const [open, setOpen] = useState(false);
+  /** Which variant's photo is being changed, if any. One at a time: the
+   *  panel is a file picker and two open at once is two answers to one
+   *  question. */
+  const [photoFor, setPhotoFor] = useState<string | null>(null);
+  const [photoRes, photoFormAction, photoPending] =
+    useActionState<ActionResult | null, FormData>(setPhotoAction as never, null);
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     updateAction as never,
     null
@@ -234,24 +250,65 @@ export function ItemRow({
     </tr>
 
     {open && variants.map((v) => (
-      <tr key={v.id} className="variantrow">
-        <td />
-        <td className="code">{v.code}</td>
-        <td className="wrap">
-          {v.name}
-          {!v.is_active && <span className="pill" style={{ marginLeft: "0.4rem" }}>Off</span>}
-          <div className="subline">
-            {v.barcode ? <span className="m">{v.barcode}</span> : "no barcode"}
-            {" · "}{v.qty_on_hand} on hand
-          </div>
-        </td>
-        {/* Category, brand and unit are the product's, not the variant's,
-            and repeating them down twelve rows says nothing twelve times.
-            The table has no barcode or quantity column, so those ride under
-            the name rather than being put in somebody else's. */}
-        <td colSpan={7} />
-      </tr>
+      <Fragment key={v.id}>
+        <tr className="variantrow">
+          <td className="variantrow-thumb">
+            <ItemThumb
+              src={v.photo_version ? `/items/${v.id}/photo?v=${v.photo_version}` : null}
+              name={v.name}
+            />
+          </td>
+          <td className="code">{v.code}</td>
+          <td className="wrap">
+            {v.name}
+            <VariantTags variant={v.variant_parts} className="vartags-inline" />
+            {!v.is_active && <span className="pill" style={{ marginLeft: "0.4rem" }}>Off</span>}
+            <div className="subline">
+              {v.barcode ? <span className="m">{v.barcode}</span> : "no barcode"}
+              {" \u00b7 "}{v.qty_on_hand} on hand
+              {" \u00b7 "}
+              <button type="button" className="linkbtn"
+                      onClick={() => setPhotoFor(photoFor === v.id ? null : v.id)}>
+                {v.photo_version ? "Change photo" : "Add photo"}
+              </button>
+            </div>
+          </td>
+          {/* Category, brand and unit are the product's, not the variant's,
+              and repeating them down twelve rows says nothing twelve times.
+              The table has no barcode or quantity column, so those ride under
+              the name rather than being put in somebody else's. */}
+          <td colSpan={7} />
+        </tr>
+
+        {photoFor === v.id && (
+          <tr className="variantrow">
+            <td />
+            <td colSpan={9}>
+              {photoRes && "error" in photoRes && (
+                <div className="alert">{photoRes.error}</div>
+              )}
+              <form action={photoFormAction} className="variantphoto">
+                <input type="hidden" name="id" value={v.id} />
+                <ItemPhotoField
+                  label={`Photo of ${v.name}`}
+                  currentSrc={
+                    v.photo_version ? `/items/${v.id}/photo?v=${v.photo_version}` : null
+                  }
+                />
+                <div className="actions">
+                  <button type="submit" disabled={photoPending}>
+                    {photoPending ? "Saving\u2026" : "Save photo"}
+                  </button>
+                  <button type="button" className="ghost tiny"
+                          onClick={() => setPhotoFor(null)}>Cancel</button>
+                </div>
+              </form>
+            </td>
+          </tr>
+        )}
+      </Fragment>
     ))}
     </>
   );
 }
+

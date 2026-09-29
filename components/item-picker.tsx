@@ -3,6 +3,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useTransition } from "react";
 import { createPortal } from "react-dom";
 import { createItemInline, type PickerItem } from "@/lib/actions";
+import { VariantTags, asVariant } from "@/components/variant-tags";
 
 type Node = { id: string; code: string; segment: string; name: string; parent_id: string | null };
 type Uom = { id: string; code: string; name: string };
@@ -94,7 +95,11 @@ export function ItemPicker({
     const q = query.trim().toLowerCase();
     if (!q) return items.slice(0, 12);
     return items
-      .filter((i) => i.code.toLowerCase().includes(q) || i.name.toLowerCase().includes(q))
+      .filter((i) =>
+        i.code.toLowerCase().includes(q) ||
+        i.name.toLowerCase().includes(q) ||
+        (asVariant(i.variant) ?? []).some(
+          (v) => v.a.toLowerCase().includes(q) || v.o.toLowerCase().includes(q)))
       .slice(0, 12);
   }, [items, query]);
 
@@ -154,6 +159,7 @@ export function ItemPicker({
         title="Change item"
       >
         <span className="m">{selected.code}</span> · {selected.name}
+        <VariantTags variant={asVariant(selected.variant)} />
       </button>
     );
   }
@@ -181,7 +187,10 @@ export function ItemPicker({
                 onClick={() => { onPick(i.id); setOpen(false); setQuery(""); }}
               >
                 <span className="m">{i.code}</span>
-                <span className="picker-name">{i.name}</span>
+                <span className="picker-name">
+                  {i.name}
+                  <VariantTags variant={asVariant(i.variant)} labelled />
+                </span>
                 <span className="picker-meta">
                   {i.is_stocked
                     ? `${fmt(Number(i.on_hand))} on hand`

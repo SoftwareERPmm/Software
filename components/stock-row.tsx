@@ -3,6 +3,8 @@
 import { useState } from "react";
 import Link from "next/link";
 import { ChevronRight, Home, Users } from "lucide-react";
+import { VariantTags, type VariantPart } from "@/components/variant-tags";
+import { ItemThumb } from "./item-thumb";
 
 /**
  * One item's stock position, with the detail folded underneath it.
@@ -27,6 +29,15 @@ export type StockWarehouseRow = {
   /** Held here but owned by a consignor. Never part of onHand. */
   consigned: number;
   reserved: number;
+};
+
+/** One variant folded under its product. */
+export type StockVariantRow = {
+  id: string; code: string; name: string;
+  variant: VariantPart[] | null;
+  photoSrc: string | null;
+  uomCode: string;
+  onHand: number; reservedQty: number; incomingQty: number; valueOnHand: number;
 };
 
 export type StockRowItem = {
@@ -65,6 +76,13 @@ export type StockRowItem = {
   }[];
   tracksBatch: boolean;
   tracksExpiry: boolean;
+  /** Empty for an ordinary item, which is most of a catalogue. */
+  variants: StockVariantRow[];
+  /** Which size, which colour. Null for an ordinary item. */
+  variant: VariantPart[] | null;
+  /** Already resolved: for a variant this is its colour's picture,
+   *  whichever size it was uploaded against. Null when there is none. */
+  photoSrc: string | null;
 };
 
 /** The page's own formatters cannot cross the boundary, so they live here. */
@@ -124,8 +142,20 @@ export function StockRow(
         </td>
 
         <td className="wrap">
-          {item.name}
-          {item.nameMy && <div className="subline">{item.nameMy}</div>}
+          {/* The picture, the name and what the variant is, all on the line.
+              A size and a colour are what distinguishes this row from the
+              one under it, so they belong where the eye already is rather
+              than behind the chevron. */}
+          <span className="stockname">
+            <ItemThumb src={item.photoSrc} name={item.name} />
+            <span className="stockname-text">
+              {item.name}
+              {item.variant && (
+                <VariantTags variant={item.variant} className="vartags-inline" />
+              )}
+              {item.nameMy && <div className="subline">{item.nameMy}</div>}
+            </span>
+          </span>
         </td>
 
         <td>
@@ -185,6 +215,66 @@ export function StockRow(
       {open && (
         <tr className="stockdetail-row">
           <td colSpan={columnCount}>
+            {/* The variants first, because on a product that has them the
+                figures on the line above are their sum and this is what the
+                sum is made of. Everything else in the panel describes the
+                product and reads the same either way. */}
+            {item.variants.length > 0 && (
+              <div className="stockvariants">
+                <h3>
+                  Variants
+                  <span className="page-sub">
+                    {item.variants.length} on this product · the line above is these added up
+                  </span>
+                </h3>
+                <div className="tablewrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th colSpan={2}>Variant</th>
+                        <th>Code</th>
+                        <th>Unit</th>
+                        <th className="r">On hand</th>
+                        <th className="r">Reserved</th>
+                        <th className="r">Available</th>
+                        <th className="r">Incoming</th>
+                        <th className="r">Value (MMK)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {item.variants.map((v) => (
+                        <tr key={v.id}>
+                          <td className="vgroup-thumb">
+                            <ItemThumb src={v.photoSrc} name={v.name} />
+                          </td>
+                          <td className="wrap">
+                            {v.name}
+                            <VariantTags variant={v.variant} className="vartags-inline" />
+                          </td>
+                          <td className="code">{v.code}</td>
+                          <td className="code">{v.uomCode}</td>
+                          <td className="r"
+                              style={{ color: v.onHand === 0 ? "var(--muted)" : undefined }}>
+                            {qty(v.onHand)}
+                          </td>
+                          <td className="r" style={{ color: v.reservedQty > 0 ? "var(--warn)" : undefined }}>
+                            {v.reservedQty > 0 ? qty(v.reservedQty) : DASH}
+                          </td>
+                          <td className="r" style={{ fontWeight: 600 }}>
+                            {qty(v.onHand - v.reservedQty)}
+                          </td>
+                          <td className="r" style={{ color: v.incomingQty > 0 ? "var(--ok)" : undefined }}>
+                            {v.incomingQty > 0 ? qty(v.incomingQty) : DASH}
+                          </td>
+                          <td className="r">{money(v.valueOnHand)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
             <div className="stockdetail">
               <section className="stockpanel">
                 <h3>Item details</h3>

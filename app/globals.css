@@ -540,6 +540,17 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-num
   font-size: var(--t-sm);
 }
 
+/* The variant's own picture, in the column the chevron occupies on the row
+   above — the only spare width in a table already twelve columns wide. */
+.variantrow-thumb { text-align: right; padding-right: 0; white-space: nowrap; }
+
+/* Changing one variant's picture, opened under its row. */
+.variantphoto {
+  display: flex; flex-wrap: wrap; align-items: flex-end;
+  gap: var(--s3); padding: 0.4rem 0;
+}
+.variantphoto .actions { margin: 0; }
+
 /* ----------------------------------------------------- variant picker --- */
 
 .varpick { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.4rem; }
@@ -569,6 +580,56 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-num
 }
 .varpreview ul { list-style: none; margin: 0.35rem 0 0; padding: 0;
   display: flex; flex-direction: column; gap: 0.15rem; color: var(--muted); }
+
+.varpreview-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--s3);
+}
+.varpreview-acts { display: inline-flex; gap: 0.6rem; }
+
+/* A control that is a word, for an action too small to spend a button on. */
+.linkbtn {
+  border: 0; background: none; padding: 0; cursor: pointer;
+  font: inherit; font-size: var(--t-sm); color: var(--brand);
+}
+.linkbtn:hover { text-decoration: underline; }
+
+/* One row per combination, each droppable. Nearly all of them stay, so the
+   ticked state is the quiet one and an unticked row is what stands out. */
+.varcombos { gap: 0 !important; }
+.varcombo {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.2rem 0.4rem; border-radius: var(--r1); cursor: pointer;
+  opacity: 0.45;
+}
+.varcombo:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
+.varcombo.on { opacity: 1; }
+.varcombo input { width: 15px; height: 15px; margin: 0; accent-color: var(--brand); flex: none; }
+.varcombo .m { flex: none; }
+.varcombo-label { color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.varcombo.on .varcombo-label { color: var(--ink); }
+
+/* --------------------------------------------------------- variant tags --- */
+
+/* What a row is, not how it is doing — so deliberately not a .pill. A status
+   earns colour because it changes; a size never does. Same definite edge as
+   everything else here, one step quieter in weight and ink. */
+.vartags {
+  display: inline-flex; flex-wrap: wrap; gap: 0.25rem;
+  vertical-align: middle;
+}
+.vartag {
+  display: inline-flex; align-items: baseline; gap: 0.3rem;
+  padding: 0.08rem 0.4rem; border-radius: var(--r-sm);
+  font-size: var(--t-xs); line-height: 1.6; white-space: nowrap;
+  color: color-mix(in srgb, var(--muted) 55%, var(--ink));
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  border: 1px solid var(--line);
+}
+/* The attribute names the value rather than competing with it. */
+.vartag-a { color: var(--muted); font-size: 0.92em; }
+
+/* Following a name in a table cell, rather than standing on its own line. */
+.vartags-inline { margin-left: 0.4rem; }
 
 /* -------------------------------------------------------- attributes ---- */
 
@@ -1106,7 +1167,13 @@ button.tiny { padding: 0.16rem 0.5rem; font-size: var(--t-sm); }
 .picker-row:hover { background: var(--line-soft); opacity: 1; }
 .picker-row:last-child { border-bottom: none; }
 
-.picker-name { flex: 1; }
+/* The name and what the variant is share a line while they fit, and the tags
+   drop under it when they don't — rather than the tag touching the last
+   letter of the name, which read as part of it. */
+.picker-name {
+  flex: 1; min-width: 0;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4rem;
+}
 .picker-meta { font-family: var(--mono); font-size: var(--t-xs); color: var(--muted); white-space: nowrap; }
 
 .picker-empty { padding: 0.6rem var(--s3); color: var(--muted); font-size: var(--t-md); }
@@ -3440,10 +3507,13 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
   white-space: normal;
   overflow-wrap: anywhere;
 }
+/* Variant codes are long — APPAREL002-M-Black is three tokens joined. The
+   old rule broke anywhere, which split it as "APPAREL002-M-" / "Black" and
+   read as two different things. Kept on one line instead; the table already
+   scrolls sideways, and a code that wraps is a code somebody misreads. */
 .stockrow > td.codecell {
-  max-width: 7.5rem;
-  white-space: normal;
-  overflow-wrap: anywhere;
+  max-width: none;
+  white-space: nowrap;
 }
 .rowexpand {
   display: inline-flex; align-items: center; justify-content: center;
@@ -3862,3 +3932,122 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
   display: inline-flex; align-items: center; min-height: 2.1rem;
   padding: 0.2rem 0; font-size: var(--t-md); color: var(--ink);
 }
+
+/* Renaming in place: the row becomes its own small form rather than opening
+   a dialog for two fields. */
+.optrow-edit { display: flex; align-items: center; gap: 0.35rem; flex: 1; flex-wrap: wrap; }
+.optrow-edit input { padding: 0.2rem 0.4rem; font-size: var(--t-sm); min-width: 5rem; flex: 1 1 5rem; }
+.optrow-edit input:disabled { opacity: 0.55; cursor: not-allowed; }
+.optrow-code { color: var(--muted); margin-left: 0.4rem; font-size: var(--t-xs); }
+
+/* ------------------------------------------------------- variant stock --- */
+
+/* One product's variants, folded on whichever attribute the tab chose.
+   A table inside a card rather than cards inside a card: these are still
+   rows of figures and they line up with the stock table above. */
+.vgroup + .vgroup { margin-top: var(--s4); padding-top: var(--s4); border-top: 1px solid var(--line-soft); }
+.vgroup-head { display: flex; align-items: baseline; gap: var(--s2); flex-wrap: wrap; margin-bottom: var(--s2); }
+
+.vgroup-table { width: 100%; }
+.vgroup-table th { white-space: nowrap; }
+.vgroup-thumb { width: 1px; padding-right: 0; }
+
+/* The other attribute's values along the row: S 4 · M 0 · L 2. Reads as
+   one fact per cell rather than a nested table, which at this size would
+   be more rules than numbers. */
+.vbreak { display: inline-flex; flex-wrap: wrap; gap: 0.3rem; }
+.vbreak-cell {
+  display: inline-flex; align-items: baseline; gap: 0.35rem;
+  padding: 0.08rem 0.45rem; border-radius: var(--r-sm);
+  border: 1px solid var(--line); background: color-mix(in srgb, var(--ink) 3%, transparent);
+  font-size: var(--t-xs); white-space: nowrap;
+}
+.vbreak-label { color: var(--muted); }
+.vbreak-qty { font-family: var(--mono); font-weight: 600; }
+/* Nothing on the shelf is worth seeing but not worth reading first. */
+.vbreak-cell.zero { opacity: 0.5; }
+.vbreak-cell.zero .vbreak-qty { font-weight: 400; }
+/* A colour's picture inside a breakdown cell, where the row is a size and
+   the colour is the thing in the cell. */
+.vbreak-cell .item-thumb { width: 16px; height: 16px; border-radius: 3px; }
+
+/* The picture beside the name in a stock line. Baseline-aligned with the
+   text rather than centred on the cell, so rows with a Burmese second line
+   do not push their thumbnail out of step with the rest of the column. */
+.stockname { display: flex; align-items: flex-start; gap: 0.5rem; }
+.stockname > .item-thumb { flex: none; margin-top: 1px; }
+.stockname-text { min-width: 0; }
+
+/* --------------------------------------------------------- stock views --- */
+
+/* Three readings of the same stock. Above the card rather than inside it,
+   because the choice governs which card appears at all. */
+.viewtabs { margin: 0 0 var(--s3); }
+
+/* The variants folded under a product, opened by its chevron. */
+.stockvariants { padding: var(--s3) var(--s3) 0; }
+.stockvariants > h3 {
+  display: flex; align-items: baseline; gap: var(--s2); flex-wrap: wrap;
+  margin: 0 0 var(--s2); font-size: var(--t-md);
+}
+
+/* ------------------------------------------------------------- matrix --- */
+
+.matrixlayout {
+  display: grid; gap: var(--s3); align-items: start;
+  grid-template-columns: minmax(0, 18rem) minmax(0, 1fr);
+}
+/* One column once the grid would be squeezed: a matrix needs its width
+   more than the picker needs to sit beside it. */
+@media (max-width: 62rem) { .matrixlayout { grid-template-columns: minmax(0, 1fr); } }
+
+.matrixpick-list { display: flex; flex-direction: column; }
+.matrixpick-row {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.55rem var(--s3); border-top: 1px solid var(--line-soft);
+  color: inherit; text-decoration: none;
+}
+.matrixpick-row:hover { background: color-mix(in srgb, var(--ink) 3%, transparent); }
+.matrixpick-row[data-active] {
+  background: color-mix(in srgb, var(--brand) 9%, transparent);
+  box-shadow: inset 2px 0 0 var(--brand);
+}
+.matrixpick-row .item-thumb { width: 34px; height: 34px; flex: none; }
+.matrixpick-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.35; }
+.matrixpick-text .m { font-size: var(--t-xs); color: var(--muted); }
+
+.matrixmain { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
+.matrixhead { display: flex; align-items: center; gap: var(--s3); }
+.matrixhead .item-thumb { width: 52px; height: 52px; flex: none; }
+.matrixhead-text { min-width: 0; }
+.matrixhead-title { display: flex; align-items: baseline; gap: var(--s2); flex-wrap: wrap; }
+
+/* The colour down the side of the grid, with the garment beside it. */
+.matrixrow-label { display: inline-flex; align-items: center; gap: 0.5rem; }
+/* A combination nobody created, as against one that exists and is empty. */
+.matrixcell-none { color: var(--line); }
+
+.matrixcharts {
+  display: grid; gap: var(--s3);
+  grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr));
+}
+.matrixdonut { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; }
+
+.matrixlegend { list-style: none; margin: 0; padding: 0; flex: 1 1 9rem; min-width: 0; }
+.matrixlegend li {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.15rem 0; font-size: var(--t-sm);
+}
+.matrixlegend-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.matrixlegend-name { flex: 1 1 auto; min-width: 0; }
+.matrixlegend-qty { font-family: var(--mono); font-weight: 600; }
+.matrixlegend-pct { color: var(--muted); font-size: var(--t-xs); width: 2.6rem; text-align: right; }
+
+/* The item a stock card is about, with its garment beside the heading. */
+.movehead { display: flex; align-items: center; gap: 0.6rem; }
+.movehead .item-thumb { width: 30px; height: 30px; flex: none; }
+
+/* Item and date range on one line, wrapping to two on a narrow screen. */
+.movefilters { align-items: flex-end; flex-wrap: wrap; gap: var(--s3); }
+.daterange { display: flex; align-items: flex-end; gap: var(--s2); flex-wrap: wrap; }
+.daterange .field { min-width: 9rem; }
