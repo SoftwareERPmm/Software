@@ -532,6 +532,76 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-num
    app — a document's own status still reads at the size everywhere else. */
 .orders-page .pill { padding: 0.12rem 0.5rem; font-size: var(--t-2xs); }
 
+/* A variant sits under the product it belongs to: indented by its empty
+   first cell, quieter than the row above, and never mistakable for one. */
+.variantrow > td {
+  background: color-mix(in srgb, var(--ink) 2%, transparent);
+  color: var(--ink-soft, var(--muted));
+  font-size: var(--t-sm);
+}
+
+/* ----------------------------------------------------- variant picker --- */
+
+.varpick { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.4rem; }
+.varpick-attr { display: flex; flex-direction: column; gap: 0.35rem; }
+.varpick-opts { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-left: 1.7rem; }
+
+/* A value reads as something to press rather than as a line of a form: the
+   list is short, and ticking four of six sizes is the whole interaction. */
+.varchip {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  padding: 0.2rem 0.6rem; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 999px;
+  font-size: var(--t-sm); background: var(--surface);
+}
+.varchip:hover { border-color: var(--muted); }
+.varchip.on {
+  border-color: var(--brand); color: var(--brand);
+  background: color-mix(in srgb, var(--brand) 10%, transparent);
+}
+.varchip input { width: 13px; height: 13px; margin: 0; accent-color: var(--brand); }
+
+/* What is about to be created, before it is. Twelve rows appearing without
+   warning is the kind of thing somebody undoes by deleting them one by one. */
+.varpreview {
+  margin-top: 0.6rem; padding-top: 0.6rem;
+  border-top: 1px solid var(--line-soft); font-size: var(--t-sm);
+}
+.varpreview ul { list-style: none; margin: 0.35rem 0 0; padding: 0;
+  display: flex; flex-direction: column; gap: 0.15rem; color: var(--muted); }
+
+/* -------------------------------------------------------- attributes ---- */
+
+.attradd { display: flex; align-items: flex-end; gap: var(--s3); flex-wrap: wrap; }
+.attradd .field { flex: 1 1 10rem; min-width: 0; }
+
+.attrgrid {
+  display: grid; gap: var(--s3); margin-top: var(--s3);
+  grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr));
+  align-items: start;
+}
+.attrcard .card-body { display: flex; flex-direction: column; gap: 0.7rem; }
+
+.optlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.optrow {
+  display: flex; align-items: center; gap: 0.3rem;
+  padding: 0.35rem 0; border-bottom: 1px solid var(--line-soft);
+}
+.optrow:last-child { border-bottom: none; }
+.optrow-name { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.optrow form { flex: none; display: inline-flex; }
+/* The first move button carries the gap that separates the value from its
+   controls, so the three sit as a group rather than drifting apart. */
+.optrow-move { margin-left: auto; }
+
+.optadd { display: flex; gap: 0.5rem; align-items: center; }
+.optadd input { flex: 1 1 auto; min-width: 0; }
+
+.attrcard-foot {
+  display: flex; gap: 0.5rem; padding-top: 0.5rem;
+  border-top: 1px solid var(--line-soft);
+}
+
 /* ------------------------------------------------------- attachments ---- */
 
 .attachlist { list-style: none; margin: 0 0 0.9rem; padding: 0; display: flex; flex-direction: column; }

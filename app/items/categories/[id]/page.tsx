@@ -6,7 +6,7 @@ import {
   createCategory, createItem, insertCategoryAbove, moveCategory,
   updateCategory, deactivateCategory, activateCategory, deleteCategory,
 } from "@/lib/actions";
-import { getBrands } from "@/lib/queries";
+import { getBrands, getVariantAttributes} from "@/lib/queries";
 import { allCategories, childrenOf, trail, depthOf, levelCounts, branchIds, levelLabel, levelLabelPlural, MAX_CATEGORY_DEPTH } from "@/lib/tree";
 import { AddCategoryForm } from "@/components/level-form";
 import { ItemForm } from "@/components/item-form";
@@ -24,6 +24,7 @@ export default async function CategoryLevel({ params }: { params: Promise<{ id: 
   if (!here) notFound();
 
   const counts = await levelCounts(co.id);
+  const variantAttributes = await getVariantAttributes(co.id);
   const kids = childrenOf(nodes, id);
   const crumbs = trail(nodes, id);
   const depth = depthOf(nodes, id);
@@ -148,6 +149,7 @@ export default async function CategoryLevel({ params }: { params: Promise<{ id: 
           </div>
           <div className="card-body">
             <ItemForm
+              variantAttributes={variantAttributes as never}
               action={createItem}
               nodes={nodes}
               uoms={uoms as never}
