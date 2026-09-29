@@ -402,6 +402,32 @@ export async function getDocumentDraft(companyId: string, id: string) {
   return row ?? null;
 }
 
+/**
+ * The files kept beside one document.
+ *
+ * The row is the record — it says a file exists, what it was called and how
+ * big it is. The bytes are in the private bucket and are only ever fetched
+ * through this app, so nothing here hands out a location.
+ */
+export async function getDocumentAttachments(companyId: string, documentId: string) {
+  return sql`
+    select a.id, a.filename, a.mime, a.size_bytes, a.note, a.uploaded_at,
+           u.name as uploaded_by_name
+      from document_attachment a
+      left join app_user u on u.id = a.uploaded_by
+     where a.company_id = ${companyId} and a.document_id = ${documentId}
+     order by a.uploaded_at desc`;
+}
+
+/** One attachment, for the route that streams it. */
+export async function getAttachment(companyId: string, id: string) {
+  const [row] = await sql`
+    select id, document_id, r2_key, filename, mime, size_bytes
+      from document_attachment
+     where company_id = ${companyId} and id = ${id}`;
+  return row ?? null;
+}
+
 /** What each customer/supplier owes or is owed, for a per-partner rollup. */
 export async function getPartnerBalances(companyId: string, docType: "SALES_INVOICE" | "PURCHASE_INVOICE") {
   return sql`

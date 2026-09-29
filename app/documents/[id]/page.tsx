@@ -1,4 +1,7 @@
 import { Fragment } from "react";
+import { DocumentAttachments } from "@/components/document-attachments";
+import { uploadAttachment, deleteAttachment } from "@/lib/actions";
+import { storageConfigured } from "@/lib/r2";
 import { planVoid } from "@/lib/void";
 import { RelatedDocumentsPanel } from "@/components/related-documents";
 import { ReplaceSettlement } from "@/components/replace-settlement";
@@ -41,6 +44,7 @@ import {
   getOpenSalesOrders,
   getOpenPurchaseOrders,
   getChainDocuments,
+  getDocumentAttachments,
   getSettlingPayment,
   isGrirOutstanding,
   getMatchStatus,
@@ -136,13 +140,15 @@ export default async function DocumentPage({
   const doc = await getDocument(id);
   if (!doc) notFound();
 
-  const [lines, docBatches, journal, downstream, chainDocuments] = await Promise.all([
-    getDocumentLines(id),
-    getDocumentBatches(id),
-    getJournalForDocument(doc.journal_entry_id),
-    getDownstream(id),
-    getChainDocuments(id),
-  ]);
+  const [lines, docBatches, journal, downstream, chainDocuments, attachments] =
+    await Promise.all([
+      getDocumentLines(id),
+      getDocumentBatches(id),
+      getJournalForDocument(doc.journal_entry_id),
+      getDownstream(id),
+      getChainDocuments(id),
+      getDocumentAttachments(doc.company_id, id),
+    ]);
 
   // Goods already in and a bill already waiting for them, from this order's
   // supplier: shown on the receive form this page carries, since receiving
@@ -1454,6 +1460,17 @@ export default async function DocumentPage({
           </div>
         </section>
       )}
+
+      {/* The paper that came from outside, kept with the record it is about
+          — above the posting, because somebody checking a bill against its
+          scan is doing that before they read the journal lines. */}
+      <DocumentAttachments
+        documentId={doc.id}
+        attachments={attachments as never}
+        upload={uploadAttachment}
+        remove={deleteAttachment}
+        storageReady={storageConfigured()}
+      />
 
       <section>
         <div className="card">

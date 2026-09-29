@@ -532,6 +532,25 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-num
    app — a document's own status still reads at the size everywhere else. */
 .orders-page .pill { padding: 0.12rem 0.5rem; font-size: var(--t-2xs); }
 
+/* ------------------------------------------------------- attachments ---- */
+
+.attachlist { list-style: none; margin: 0 0 0.9rem; padding: 0; display: flex; flex-direction: column; }
+.attachrow {
+  display: flex; align-items: center; gap: 0.7rem;
+  padding: 0.55rem 0; border-bottom: 1px solid var(--line-soft);
+}
+.attachrow:last-child { border-bottom: none; }
+.attachrow-icon { flex: none; color: var(--muted); display: inline-flex; }
+.attachrow-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 0.1rem; }
+.attachrow-main a { color: var(--brand); word-break: break-all; }
+.attachrow form { flex: none; }
+
+/* The picker, the note and the button on one line, wrapping on a phone
+   rather than forcing a horizontal scroll. */
+.attachadd { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.attachadd input[type="text"] { flex: 1 1 14rem; min-width: 0; }
+.attachadd input[type="file"] { font-size: var(--t-sm); max-width: 100%; }
+
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--s3); align-items: start; }
 
 .kv { display: grid; grid-template-columns: auto 1fr; gap: var(--s1) var(--s3); font-size: var(--t-md); }

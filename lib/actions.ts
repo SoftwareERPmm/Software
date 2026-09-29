@@ -3418,6 +3418,112 @@ export async function setCompanyPlan(_prev: unknown, fd: FormData): Promise<Acti
   return { ok: true };
 }
 
+// ----------------------------------------------------------- attachments --
+
+/**
+ * What may be kept beside a document.
+ *
+ * A deliberately short list. Everything here is either a scan or a
+ * photograph of one — the paper that arrived from outside — and an
+ * attachment feature that accepts anything is a file share with an ERP
+ * bolted to it. Checked against the browser's claim and then again against
+ * the extension, because both are the uploader's word and agreeing with each
+ * other is the least they can do.
+ */
+const ATTACHMENT_TYPES: Record<string, string[]> = {
+  "application/pdf": [".pdf"],
+  "image/jpeg": [".jpg", ".jpeg"],
+  "image/png": [".png"],
+  "image/webp": [".webp"],
+  "image/heic": [".heic"],
+};
+
+/** Matches next.config's bodySizeLimit with room for the rest of the form. */
+const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+
+export async function uploadAttachment(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const documentId = str(fd, "document_id");
+    if (!documentId) return { error: "Which document?" };
+
+    const file = fd.get("file");
+    if (!(file instanceof File) || file.size === 0) return { error: "Choose a file" };
+
+    if (file.size > ATTACHMENT_MAX_BYTES) {
+      return {
+        error: `${file.name} is ${(file.size / 1024 / 1024).toFixed(1)}MB — the limit is `
+             + `${ATTACHMENT_MAX_BYTES / 1024 / 1024}MB. Scan it at a lower resolution, or `
+             + `photograph the page instead.`,
+      };
+    }
+
+    const allowedExts = ATTACHMENT_TYPES[file.type];
+    const ext = file.name.includes(".")
+      ? "." + file.name.split(".").pop()!.toLowerCase() : "";
+    if (!allowedExts || !allowedExts.includes(ext)) {
+      return {
+        error: `${file.name} is not a kind of file that can be attached. `
+             + `A PDF or a photograph — JPG, PNG, WebP or HEIC.`,
+      };
+    }
+
+    // The document has to exist and belong to this company before anything
+    // reaches the bucket: an upload against a bad id would otherwise leave an
+    // object with no row to find it by.
+    const [doc] = await sql`
+      select id from document where id = ${documentId} and company_id = ${co}`;
+    if (!doc) return { error: "That document does not exist" };
+
+    const key = newKey("attach", file.name);
+    const body = Buffer.from(await file.arrayBuffer());
+
+    await putObject({
+      bucket: "private", key, body, contentType: file.type, downloadName: file.name,
+    });
+
+    try {
+      await sql`
+        insert into document_attachment
+          (company_id, document_id, r2_key, filename, mime, size_bytes, note)
+        values
+          (${co}, ${documentId}, ${key}, ${file.name}, ${file.type}, ${file.size},
+           ${str(fd, "note") || null})`;
+    } catch (e) {
+      // The row is what makes the object findable. Without it the upload is
+      // just litter, so it goes rather than being left behind.
+      await deleteObject("private", key);
+      throw e;
+    }
+
+    revalidatePath(`/documents/${documentId}`);
+    return { ok: true };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** Removes the row, then the object. Nothing here is posted, so nothing is reversed. */
+export async function deleteAttachment(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "attachment_id");
+    if (!id) return { error: "Which file?" };
+
+    const [row] = await sql`
+      delete from document_attachment
+       where id = ${id} and company_id = ${co}
+       returning r2_key, document_id`;
+    if (!row) return { error: "That file is already gone" };
+
+    await deleteObject("private", row.r2_key as string);
+    revalidatePath(`/documents/${row.document_id}`);
+    return { ok: true };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 // --------------------------------------------------------------- drafts --
 
 /**
