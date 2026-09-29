@@ -3158,18 +3158,51 @@ export async function getStockOpeningBalance(
 export async function getReservedQty(companyId: string) {
   return sql`
     with so_remaining as (
-      select ol.item_id, ol.location_id, sum(ol.base_qty - coalesce(d.delivered_qty, 0)) as qty
+      /*
+       * What an open order still holds back.
+       *
+       * Both ways a delivery can answer an order line are counted, the same
+       * way getOpenSalesOrders counts them: the line that names the order,
+       * and a fulfilment_link written when somebody matched them up
+       * afterwards. Only the first was subtracted here, so goods shipped
+       * against a hand-matched order never released their reservation —
+       * the order list called it fulfilled while the stock page went on
+       * committing the stock, permanently.
+       *
+       * The named route is ignored where a link already speaks for the same
+       * delivery line, or one delivery of twenty would be subtracted twice.
+       *
+       * greatest(..., 0) is per line: over-delivering one line does not free
+       * stock reserved by another line of the same item.
+       */
+      select ol.item_id, ol.location_id,
+             sum(greatest(ol.base_qty - coalesce(d.delivered_qty, 0)
+                                      - coalesce(fl.linked_qty, 0), 0)) as qty
         from document o
         join document_line ol on ol.document_id = o.id
         left join (
           select dl.source_line_id, sum(dl.base_qty) as delivered_qty
             from document_line dl join document dd on dd.id = dl.document_id
            where dd.doc_type = 'DELIVERY' and dd.status = 'POSTED'
+             and not exists (
+                   select 1 from fulfilment_link fl2
+                    where fl2.fulfilment_line_id = dl.id
+                      and fl2.order_line_id is not distinct from dl.source_line_id)
            group by dl.source_line_id
         ) d on d.source_line_id = ol.id
+        left join (
+              select order_line_id, sum(qty) as linked_qty
+                from fulfilment_link group by order_line_id
+        ) fl on fl.order_line_id = ol.id
        where o.company_id = ${companyId} and o.doc_type = 'SALES_ORDER' and o.status = 'POSTED'
+         -- An order closed short is expecting nothing more, so it commits
+         -- nothing more either.
+         and not exists (
+               select 1 from v_order_outstanding v
+                where v.order_id = o.id and v.is_closed)
        group by ol.item_id, ol.location_id
-      having sum(ol.base_qty - coalesce(d.delivered_qty, 0)) > 0
+      having sum(greatest(ol.base_qty - coalesce(d.delivered_qty, 0)
+                                      - coalesce(fl.linked_qty, 0), 0)) > 0
     ),
     -- Committed to a customer and not yet shipped. Per invoice and item,
     -- because "no delivery at all" both over-reserved (the whole invoice
