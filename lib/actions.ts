@@ -1463,6 +1463,8 @@ export type PickerItem = {
    *  ordinary item, which is most of a catalogue. Typed loosely because it
    *  arrives as json; asVariant() in variant-tags is what checks it. */
   variant?: unknown;
+  /** What a scanner reads off the packet. */
+  barcode?: string | null;
 };
 
 /**
@@ -3222,6 +3224,10 @@ export async function getFormData() {
          where company_id = ${co} and is_supplier and is_active order by code`,
     sql`select i.id, i.code, i.name, i.is_stocked, i.item_group_id,
                 i.tracks_batch, i.tracks_expiry,
+                -- What a scanner types. Without it the one moment
+                -- scanning exists for — putting a line on a document —
+                -- could not find the item it had just read.
+                i.barcode,
                 -- What a variant is, so the line says "Colour Red, Size M"
                 -- rather than leaving it buried in a name the picker has
                 -- already truncated. Null for an ordinary item.
