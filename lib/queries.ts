@@ -3177,6 +3177,144 @@ export async function getPendingDeliveries(companyId: string) {
  * the window is the caller's choice and a rate hides how much it rests on —
  * three units over ninety days is not the same claim as three over three.
  */
+/**
+ * What each item earned and what it cost, over a period.
+ *
+ * Revenue is dl.net_amount on a posted sales invoice — the same expression
+ * getTopItems uses, so the two screens cannot disagree about what a product
+ * sold for. Cost is what the stock ledger actually released: total_cost on
+ * the movements a delivery made, which is the figure the COGS posting is
+ * built from and therefore ties to the profit and loss exactly.
+ *
+ * A FULL JOIN, deliberately. Revenue lives on the invoice and cost on the
+ * delivery, and they are not always the same document or even the same
+ * month — bill in September, ship in October, and the two halves land in
+ * different windows. An inner join would quietly drop those rows and show
+ * a tidy, wrong answer. Here they appear with one side empty, which is the
+ * truth and is worth seeing.
+ */
+export async function getVariantProfitability(
+  companyId: string, from: string, to: string,
+) {
+  return sql`
+    with revenue as (
+      select dl.item_id, sum(dl.base_qty) as qty_sold,
+             sum(dl.net_amount) as revenue
+        from document_line dl
+        join document d on d.id = dl.document_id
+       where d.company_id = ${companyId}
+         and d.doc_type = 'SALES_INVOICE' and d.status = 'POSTED'
+         and d.posting_date >= ${from}::date and d.posting_date < ${to}::date
+       group by dl.item_id
+    ),
+    cost as (
+      select sm.item_id, sum(-sm.qty) as qty_shipped,
+             sum(-sm.total_cost) as cogs
+        from stock_movement sm
+        join document d on d.id = sm.document_id
+       where sm.company_id = ${companyId}
+         and d.doc_type = 'DELIVERY' and d.status = 'POSTED' and sm.qty < 0
+         and sm.movement_date >= ${from}::date and sm.movement_date < ${to}::date
+       group by sm.item_id
+    )
+    select i.id, i.code, i.name, i.parent_item_id,
+           p.code as parent_code, p.name as parent_name,
+           u.code as uom_code,
+           coalesce(r.qty_sold, 0)  as qty_sold,
+           coalesce(r.revenue, 0)   as revenue,
+           coalesce(c.qty_shipped, 0) as qty_shipped,
+           coalesce(c.cogs, 0)      as cogs,
+           coalesce(r.revenue, 0) - coalesce(c.cogs, 0) as margin,
+           to_char(i.photo_updated_at, 'YYYYMMDDHH24MISSMS') as photo_version,
+           json_agg(json_build_object('a', attr.name, 'o', o.name)
+                    order by coalesce(iva.sort_order, 0), attr.name)
+             filter (where o.id is not null) as variant
+      from revenue r
+      full join cost c on c.item_id = r.item_id
+      join item i on i.id = coalesce(r.item_id, c.item_id)
+      join uom u on u.id = i.base_uom_id
+      left join item p on p.id = i.parent_item_id
+      left join item_variant_option ivo on ivo.item_id = i.id
+      left join variant_option o on o.id = ivo.option_id
+      left join variant_attribute attr on attr.id = o.attribute_id
+      left join item_variant_attribute iva
+             on iva.item_id = i.parent_item_id and iva.attribute_id = attr.id
+     where i.company_id = ${companyId}
+     group by i.id, i.code, i.name, i.parent_item_id, p.code, p.name, u.code,
+              r.qty_sold, r.revenue, c.qty_shipped, c.cogs, i.photo_updated_at
+     order by (coalesce(r.revenue, 0) - coalesce(c.cogs, 0)) desc`;
+}
+
+/**
+ * How long what is on the shelf has been sitting there.
+ *
+ * Read from the open FIFO layers, which is the only place that knows when
+ * a particular unit arrived — an item's on-hand figure is a single number
+ * and cannot say whether it is last week's delivery or last year's.
+ *
+ * Because it reads the same layers the costing does, it reconciles with
+ * stock on hand by construction, in quantity and in value. That is the
+ * point: an aging report that does not add up to the stock figure is two
+ * answers to one question.
+ *
+ * Consigned goods are absent, and should be: they sit in consignment_lot,
+ * they are somebody else's, and no capital of ours is tied up in them.
+ *
+ * The average age is weighted by value rather than by units, because the
+ * question behind this report is how much money has been sitting still.
+ */
+export async function getInventoryAging(companyId: string) {
+  return sql`
+    with layers as (
+      select l.item_id,
+             l.qty_remaining as qty,
+             l.qty_remaining * l.unit_cost as value,
+             -- received_date is a timestamptz; both sides go to a local
+             -- date first, or the subtraction is an interval and the cast
+             -- fails. Yangon, like every other date this app computes.
+             ((now() at time zone 'Asia/Yangon')::date
+                - (l.received_date at time zone 'Asia/Yangon')::date) as age,
+             l.received_date
+        from v_stock_lot_open l
+       where l.company_id = ${companyId} and l.qty_remaining > 0
+    )
+    select i.id, i.code, i.name, u.code as uom_code,
+           to_char(i.photo_updated_at, 'YYYYMMDDHH24MISSMS') as photo_version,
+           sum(x.qty) as qty, sum(x.value) as value,
+           to_char(min(x.received_date) at time zone 'Asia/Yangon', 'YYYY-MM-DD') as oldest,
+           max(x.age) as oldest_days,
+           round(sum(x.age * x.value) / nullif(sum(x.value), 0)) as avg_age,
+           sum(x.value) filter (where x.age <= 30)                as v0,
+           sum(x.value) filter (where x.age > 30 and x.age <= 60) as v30,
+           sum(x.value) filter (where x.age > 60 and x.age <= 90) as v60,
+           sum(x.value) filter (where x.age > 90 and x.age <= 180) as v90,
+           sum(x.value) filter (where x.age > 180)                as v180,
+           /*
+            * A subquery, not a join.
+            *
+            * Joining the variant tables here multiplied every lot by the
+            * number of attributes the item has — a shirt with a size and a
+            * colour counted its stock twice, and the report stopped adding
+            * up to the stock figure. Reconciling against v_stock_on_hand is
+            * what caught it.
+            */
+           (select jsonb_agg(jsonb_build_object('a', attr.name, 'o', o.name)
+                             order by coalesce(iva.sort_order, 0), attr.name)
+              from item_variant_option ivo
+              join variant_option o on o.id = ivo.option_id
+              join variant_attribute attr on attr.id = o.attribute_id
+              left join item_variant_attribute iva
+                     on iva.item_id = i.parent_item_id
+                    and iva.attribute_id = attr.id
+             where ivo.item_id = i.id) as variant
+      from layers x
+      join item i on i.id = x.item_id
+      join uom u on u.id = i.base_uom_id
+     where i.company_id = ${companyId}
+     group by i.id, i.code, i.name, u.code, i.photo_updated_at
+     order by round(sum(x.age * x.value) / nullif(sum(x.value), 0)) desc nulls last`;
+}
+
 export async function getConsumptionRate(companyId: string, days: number) {
   return sql`
     select sm.item_id, sm.location_id, sum(-sm.qty) as issued

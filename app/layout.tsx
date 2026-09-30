@@ -190,6 +190,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <NavLink href="/items/stock">Stock overview</NavLink>
               <NavLink href="/inventory/consignment" exact>Consignment</NavLink>
               <NavLink href="/inventory/replenishment">Replenishment</NavLink>
+              <NavLink href="/inventory/intelligence">Intelligence</NavLink>
               <NavLink href="/inventory/movements">Stock movements</NavLink>
               <NavLink href="/inventory/adjustments">Adjustments</NavLink>
               <NavLink href="/inventory/negative-stock">Negative stock</NavLink>
