@@ -4051,3 +4051,10 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
 .movefilters { align-items: flex-end; flex-wrap: wrap; gap: var(--s3); }
 .daterange { display: flex; align-items: flex-end; gap: var(--s2); flex-wrap: wrap; }
 .daterange .field { min-width: 9rem; }
+
+/* How a matched figure was arrived at, listed before the figures are read. */
+.matchnotes { list-style: none; margin: 0.5rem 0 0; padding: 0;
+  display: flex; flex-direction: column; gap: 0.4rem; }
+.matchnotes li { display: flex; align-items: baseline; gap: 0.5rem;
+  font-size: var(--t-sm); color: var(--muted); }
+.matchnotes .pill { flex: none; }

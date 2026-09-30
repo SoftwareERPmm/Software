@@ -3178,6 +3178,188 @@ export async function getPendingDeliveries(companyId: string) {
  * three units over ninety days is not the same claim as three over three.
  */
 /**
+ * Profit matched to the units that earned it.
+ *
+ * Not revenue for a period set against whatever cost the period happened to
+ * release — that is the reconciliation report, and it answers a different
+ * question. This follows each invoice line to the goods it billed and takes
+ * what those goods actually cost, layer by layer.
+ *
+ *   invoice line
+ *     -> source_line_id, the delivery line it names            (exact)
+ *     -> else the linked delivery, same item                   (by item)
+ *     -> else nothing                                          (unmatched)
+ *
+ * stock_lot_consumption is where the truth is: it records which FIFO layers
+ * a movement drew on and at what cost. So the cost of a line is a sum of
+ * real layers, never an average across a catalogue.
+ *
+ * Where an invoice bills only part of what was delivered, the cost is
+ * apportioned by quantity across that delivery's own consumption. That is
+ * still the cost of those goods — not a blended figure from elsewhere — but
+ * it is apportioned, and the report says so rather than implying exactness
+ * it does not have.
+ *
+ * Nothing that cannot be matched is quietly given a cost. It is returned
+ * unmatched and counted, because a margin invented from nothing is worse
+ * than a gap somebody can see.
+ */
+export async function getMatchedProfitability(
+  companyId: string, from: string, to: string, locationId?: string | null,
+) {
+  return sql`
+    with line_cost as (
+      -- What a delivery line actually cost, from the layers it consumed.
+      select sm.document_line_id as line_id,
+             sum(slc.qty * slc.unit_cost) as cost,
+             sum(slc.qty) as qty
+        from stock_lot_consumption slc
+        join stock_movement sm on sm.id = slc.stock_movement_id
+       where slc.company_id = ${companyId} and sm.document_line_id is not null
+       group by sm.document_line_id
+    ),
+    inv as (
+      select dl.id, dl.item_id, dl.base_qty, dl.net_amount,
+             dl.source_line_id, d.id as invoice_id, d.source_document_id
+        from document_line dl
+        join document d on d.id = dl.document_id
+       where d.company_id = ${companyId}
+         and d.doc_type = 'SALES_INVOICE' and d.status = 'POSTED'
+         and d.posting_date >= ${from}::date and d.posting_date < ${to}::date
+         -- The warehouse the invoice line was raised against.
+         and (${locationId ?? null}::uuid is null
+              or dl.location_id = ${locationId ?? null})
+    ),
+    found as (
+      select inv.*,
+             coalesce(named.cost, byitem.cost)     as src_cost,
+             coalesce(named.qty,  byitem.qty)      as src_qty,
+             case when named.cost is not null then 'exact'
+                  when byitem.cost is not null then 'by item'
+                  else 'unmatched' end             as basis
+        from inv
+        left join lateral (
+              select lc.cost, lc.qty from line_cost lc
+               where lc.line_id = inv.source_line_id
+        ) named on true
+        left join lateral (
+              /*
+               * Both directions.
+               *
+               * An invoice raised against a delivery names it in
+               * source_document_id. An invoice raised first — billed ahead
+               * of shipping — is named BY the delivery instead, and looking
+               * only one way reported those as wholly unmatched even though
+               * the goods had since gone out.
+               */
+              select sum(lc.cost) as cost, sum(lc.qty) as qty
+                from line_cost lc
+                join document_line ddl on ddl.id = lc.line_id
+                join document dd on dd.id = ddl.document_id
+               where ddl.item_id = inv.item_id
+                 and dd.doc_type = 'DELIVERY' and dd.status = 'POSTED'
+                 and (dd.id = inv.source_document_id
+                      or dd.source_document_id = inv.invoice_id)
+        ) byitem on true
+    ),
+    returned as (
+      /*
+       * Goods that came back.
+       *
+       * A sales return is its own document type, and its movement is an
+       * inflow — it creates lots rather than consuming them — so neither
+       * half of the matching above can see it. Left out, a product sold
+       * eight and returned three reported the profit of eight.
+       *
+       * Both sides are reversed together. The cost is the movement's own,
+       * because the engine returns stock at the cost the original sale
+       * drew it out at rather than at today's, so what comes off is what
+       * went on.
+       */
+      select dl.item_id,
+             -dl.base_qty                  as base_qty,
+             -dl.net_amount                as net_amount,
+             'return'                      as basis,
+             -coalesce((select sum(sm.total_cost) from stock_movement sm
+                         where sm.document_line_id = dl.id), 0) as cost,
+             -dl.net_amount                as revenue_matched,
+             false                         as part_shipped
+        from document_line dl
+        join document d on d.id = dl.document_id
+       where d.company_id = ${companyId}
+         and d.doc_type = 'SALES_RETURN' and d.status = 'POSTED'
+         and d.posting_date >= ${from}::date and d.posting_date < ${to}::date
+         and (${locationId ?? null}::uuid is null
+              or dl.location_id = ${locationId ?? null})
+    ),
+    costed as (
+      /*
+       * Only the units that have both a price and a cost are matched.
+       *
+       * Ten invoiced against six delivered is six units of trade and four
+       * units of promise. Scaling the six units' cost up to ten would
+       * invent cost for goods still on the shelf; leaving all ten unmatched
+       * would throw away a margin that is genuinely known. So the matched
+       * quantity is the lesser of the two, revenue is taken in that
+       * proportion, and the rest is reported unmatched.
+       */
+      select f.item_id, f.base_qty, f.net_amount, f.basis,
+             case when f.src_cost is null then null
+                  else f.src_cost
+                       * (least(f.base_qty, f.src_qty) / nullif(f.src_qty, 0))
+             end as cost,
+             case when f.src_cost is null then 0
+                  else f.net_amount
+                       * (least(f.base_qty, f.src_qty) / nullif(f.base_qty, 0))
+             end as revenue_matched,
+             coalesce(f.src_qty, 0) < f.base_qty as part_shipped
+        from found f
+      union all
+      select item_id, base_qty, net_amount, basis, cost, revenue_matched, part_shipped
+        from returned
+    )
+    select i.id, i.code, i.name, u.code as uom_code,
+           to_char(i.photo_updated_at, 'YYYYMMDDHH24MISSMS') as photo_version,
+           sum(c.base_qty)                                   as qty,
+           sum(c.net_amount)                                 as revenue,
+           sum(c.cost)                                       as cost,
+           /*
+            * Margin over the matched part only, and null when nothing
+            * matched.
+            *
+            * Coalescing an absent cost to nought made an unmatched line
+            * read as pure profit — 5,000 of revenue showing a 5,000 margin
+            * because the goods had not shipped yet. A hundred per cent
+            * margin is a more dangerous lie than a negative one: nobody
+            * questions good news.
+            */
+           nullif(sum(c.revenue_matched), 0)                 as revenue_matched,
+           case when sum(c.revenue_matched) = 0 then null
+                else sum(c.revenue_matched) - coalesce(sum(c.cost), 0)
+           end                                               as margin,
+           count(*) filter (where c.basis = 'exact')::int     as n_exact,
+           count(*) filter (where c.basis = 'by item')::int   as n_by_item,
+           count(*) filter (where c.basis = 'unmatched')::int as n_unmatched,
+           count(*) filter (where c.basis = 'return')::int    as n_returned,
+           count(*) filter (where c.part_shipped)::int        as n_part_shipped,
+           sum(c.net_amount - c.revenue_matched)              as revenue_unmatched,
+           (select jsonb_agg(jsonb_build_object('a', attr.name, 'o', o.name)
+                             order by coalesce(iva.sort_order, 0), attr.name)
+              from item_variant_option ivo
+              join variant_option o on o.id = ivo.option_id
+              join variant_attribute attr on attr.id = o.attribute_id
+              left join item_variant_attribute iva
+                     on iva.item_id = i.parent_item_id and iva.attribute_id = attr.id
+             where ivo.item_id = i.id) as variant
+      from costed c
+      join item i on i.id = c.item_id
+      join uom u on u.id = i.base_uom_id
+     group by i.id, i.code, i.name, u.code, i.photo_updated_at
+     order by (coalesce(sum(c.revenue_matched), 0)
+               - coalesce(sum(c.cost), 0)) desc`;
+}
+
+/**
  * What each item earned and what it cost, over a period.
  *
  * Revenue is dl.net_amount on a posted sales invoice — the same expression
@@ -3194,7 +3376,7 @@ export async function getPendingDeliveries(companyId: string) {
  * truth and is worth seeing.
  */
 export async function getVariantProfitability(
-  companyId: string, from: string, to: string,
+  companyId: string, from: string, to: string, locationId?: string | null,
 ) {
   return sql`
     with revenue as (
@@ -3205,6 +3387,8 @@ export async function getVariantProfitability(
        where d.company_id = ${companyId}
          and d.doc_type = 'SALES_INVOICE' and d.status = 'POSTED'
          and d.posting_date >= ${from}::date and d.posting_date < ${to}::date
+         and (${locationId ?? null}::uuid is null
+              or dl.location_id = ${locationId ?? null})
        group by dl.item_id
     ),
     cost as (
@@ -3215,6 +3399,8 @@ export async function getVariantProfitability(
        where sm.company_id = ${companyId}
          and d.doc_type = 'DELIVERY' and d.status = 'POSTED' and sm.qty < 0
          and sm.movement_date >= ${from}::date and sm.movement_date < ${to}::date
+         and (${locationId ?? null}::uuid is null
+              or sm.location_id = ${locationId ?? null})
        group by sm.item_id
     )
     select i.id, i.code, i.name, i.parent_item_id,
@@ -3263,7 +3449,9 @@ export async function getVariantProfitability(
  * The average age is weighted by value rather than by units, because the
  * question behind this report is how much money has been sitting still.
  */
-export async function getInventoryAging(companyId: string) {
+export async function getInventoryAging(
+  companyId: string, locationId?: string | null,
+) {
   return sql`
     with layers as (
       select l.item_id,
@@ -3277,6 +3465,8 @@ export async function getInventoryAging(companyId: string) {
              l.received_date
         from v_stock_lot_open l
        where l.company_id = ${companyId} and l.qty_remaining > 0
+         and (${locationId ?? null}::uuid is null
+              or l.location_id = ${locationId ?? null})
     )
     select i.id, i.code, i.name, u.code as uom_code,
            to_char(i.photo_updated_at, 'YYYYMMDDHH24MISSMS') as photo_version,
