@@ -2646,7 +2646,7 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
     // cost is not lost. It stays in net_amount, which is what the document
     // total and the journal are both built from, and the stock movement
     // carries its own unit_cost for FIFO regardless.
-    await tx`
+    const [docLine] = await tx`
       insert into document_line
         (company_id, document_id, line_no, item_id, location_id,
          entered_qty, entered_uom_id, conversion_factor, base_qty, unit_price,
@@ -2655,15 +2655,29 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
         (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
          ${line.qty}, ${pack.uomId}, ${pack.factor}, ${baseQty},
          ${line.focReasonId ? 0 : unitCost}, ${totalCost},
-         ${totalCost}, ${line.focReasonId ?? null}, ${line.sourceLineId ?? null})`;
+         ${totalCost}, ${line.focReasonId ?? null}, ${line.sourceLineId ?? null})
+      returning id`;
 
+    /*
+     * The movement names the line it came from.
+     *
+     * stock_movement.document_line_id has existed unused since the
+     * beginning: every movement knew which document it belonged to and
+     * none knew which line. For one line per item that is the same thing,
+     * but it stops being so the moment a document lists an item twice —
+     * and it makes the exact FIFO cost of a particular sale unrecoverable,
+     * because the lot consumptions hang off the movement.
+     *
+     * Recorded here so profit can be matched to the units that earned it
+     * rather than apportioned across a document.
+     */
     const [movement] = await tx`
       insert into stock_movement
         (company_id, item_id, location_id, movement_date, qty,
-         unit_cost, total_cost, document_id)
+         unit_cost, total_cost, document_id, document_line_id)
       values
         (${companyId}, ${line.itemId}, ${locationId}, ${docDate}::date,
-         ${-baseQty}, ${unitCost}, ${-totalCost}, ${doc.id})
+         ${-baseQty}, ${unitCost}, ${-totalCost}, ${doc.id}, ${docLine.id})
       returning id`;
     // Resolved before the consumption is written, so the consumption can carry
     // it: the cost of these goods went here, and a correction to that cost has
