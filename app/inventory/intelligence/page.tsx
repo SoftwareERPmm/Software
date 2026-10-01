@@ -610,7 +610,10 @@ async function Matched({
                 <tr>
                   <th colSpan={2}>Item</th>
                   <th className="r">Sold</th>
-                  <th className="r">Revenue</th>
+                  <th className="r">
+                    Revenue
+                    <div className="subline">invoiced</div>
+                  </th>
                   <th className="r">Cost</th>
                   <th className="r">Margin</th>
                   <th className="r">%</th>
@@ -673,10 +676,27 @@ async function Matched({
                   );
                 })}
               </tbody>
+              {/* Two totals, because they are two different numbers. The
+                  column adds up every invoice; the margin below it is only
+                  ever over the part that found its goods, and one row
+                  carrying both made the table look as though it disagreed
+                  with the card above it. */}
               <tfoot>
                 <tr>
-                  <td colSpan={3}><strong>Total</strong></td>
+                  <td colSpan={3}><strong>Total invoiced revenue</strong></td>
                   <td className="r"><strong>{money(revenue)}</strong></td>
+                  <td colSpan={4} />
+                </tr>
+                <tr>
+                  <td colSpan={3}>
+                    <strong>Matched revenue</strong>
+                    {unmatchedRev > 0 && (
+                      <div className="subline">
+                        {money(unmatchedRev)} not yet costed, left out below
+                      </div>
+                    )}
+                  </td>
+                  <td className="r"><strong>{money(matchedRev)}</strong></td>
                   <td className="r"><strong>{money(cost)}</strong></td>
                   <td className="r"><strong>{money(margin)}</strong></td>
                   <td className="r">
