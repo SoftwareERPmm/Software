@@ -51,6 +51,32 @@ export function SupplierRadar({
 
   const colours = ["var(--brand)", "var(--accent-2, #B4691A)"];
 
+  // How much of the chart is actually drawable. A radar whose points are
+  // all absent is a bare web, which reads as a broken chart rather than as
+  // a supplier nobody has enough history for — and the reason sits in a
+  // table further down the page that nobody scrolls to first.
+  const scored = (s: RadarSupplier) =>
+    axes.filter((id) => s.metrics[id]?.score !== null && s.metrics[id]?.score !== undefined).length;
+  const best = Math.max(...suppliers.map(scored));
+
+  if (best === 0) {
+    return (
+      <div className="empty">
+        <strong>Not enough history to chart yet</strong>
+        <p className="page-sub">
+          {suppliers.length > 1
+            ? "Neither supplier has"
+            : `${suppliers[0].name} does not have`}{" "}
+          enough comparable transactions in this period for any of the{" "}
+          {axes.length} axes to be scored. Each metric needs a handful of
+          observations before a figure means anything — the table below says
+          how many each one has and how many it wants. Widen the dates, or
+          wait for more orders.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div>
       <ResponsiveContainer width="100%" height={340}>
@@ -89,6 +115,21 @@ export function SupplierRadar({
           )}
         </RadarChart>
       </ResponsiveContainer>
+
+      {/* Said on the chart, not only in the table underneath it: a gap in
+          the outline is deliberate and should not be read as a zero. */}
+      {suppliers.map((s) => {
+        const missing = axes.length - scored(s);
+        if (missing === 0) return null;
+        return (
+          <p className="page-sub" key={s.partnerId}>
+            {suppliers.length > 1 ? `${s.name}: ` : ""}
+            {missing} of {axes.length} axes could not be scored, so{" "}
+            {missing === 1 ? "it carries" : "they carry"} no point rather than
+            a zero.
+          </p>
+        );
+      })}
     </div>
   );
 }

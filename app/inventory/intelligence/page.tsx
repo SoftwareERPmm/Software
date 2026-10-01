@@ -29,6 +29,17 @@ const TABS = [
   { key: "aging", label: "Inventory aging" },
 ] as const;
 
+/**
+ * Whether any row in this table has a picture at all.
+ *
+ * The thumbnail column is 25px of nothing in a catalogue nobody has
+ * photographed, and a column of empty boxes reads as a page that failed to
+ * load rather than as a catalogue without photos. When one row has a photo
+ * the column earns its place for all of them; when none does, it goes.
+ */
+const anyPhoto = (ids: string[], srcOf: (id: string) => string | null) =>
+  ids.some((id) => srcOf(id) !== null);
+
 /** Only a real date gets through; anything else is treated as not set. */
 const asDate = (v: string | undefined) =>
   v && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null;
@@ -198,6 +209,7 @@ async function Profitability({
     const v = variantStock.find((x) => x.id === id);
     return v ? photos.srcFor(v as never) : null;
   };
+  const showThumbs = anyPhoto(rows.map((r: any) => r.id), srcOf);
 
   const revenue = rows.reduce((t, r) => t + Number(r.revenue), 0);
   const cogs = rows.reduce((t, r) => t + Number(r.cogs), 0);
@@ -281,7 +293,7 @@ async function Profitability({
             <table>
               <thead>
                 <tr>
-                  <th colSpan={2}>Item</th>
+                  <th colSpan={showThumbs ? 2 : 1}>Item</th>
                   <th className="r">Sold</th>
                   <th className="r">Revenue</th>
                   <th className="r">Shipped</th>
@@ -297,9 +309,11 @@ async function Profitability({
                   const gap = Math.abs(Number(r.qty_sold) - Number(r.qty_shipped)) > 0.0001;
                   return (
                     <tr key={r.id}>
-                      <td className="vgroup-thumb">
-                        <ItemThumb src={srcOf(r.id)} name={r.name} />
-                      </td>
+                      {showThumbs && (
+                        <td className="vgroup-thumb">
+                          <ItemThumb src={srcOf(r.id)} name={r.name} />
+                        </td>
+                      )}
                       <td className="wrap">
                         <ItemLink id={r.id} code={r.code} />
                         <div className="subline">
@@ -357,6 +371,7 @@ async function Aging({
     const v = variantStock.find((x) => x.id === id);
     return v ? photos.srcFor(v as never) : null;
   };
+  const showThumbs = anyPhoto(rows.map((r: any) => r.id), srcOf);
 
   if (rows.length === 0) {
     return <div className="empty">Nothing is in stock, so nothing is aging.</div>;
@@ -421,7 +436,7 @@ async function Aging({
             <table>
               <thead>
                 <tr>
-                  <th colSpan={2}>Item</th>
+                  <th colSpan={showThumbs ? 2 : 1}>Item</th>
                   <th className="r">On hand</th>
                   <th className="r">Value</th>
                   <th className="r">Avg age</th>
@@ -432,9 +447,11 @@ async function Aging({
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.id}>
-                    <td className="vgroup-thumb">
-                      <ItemThumb src={srcOf(r.id)} name={r.name} />
-                    </td>
+                    {showThumbs && (
+                      <td className="vgroup-thumb">
+                        <ItemThumb src={srcOf(r.id)} name={r.name} />
+                      </td>
+                    )}
                     <td className="wrap">
                       <ItemLink id={r.id} code={r.code} />
                       <div className="subline">
@@ -464,7 +481,7 @@ async function Aging({
                 <tr>
                   <td colSpan={3}><strong>Total</strong></td>
                   <td className="r"><strong>{money(total)}</strong></td>
-                  <td colSpan={2} />
+                  <td colSpan={showThumbs ? 2 : 1} />
                   {BUCKETS.map((b) => (
                     <td key={b.key} className="r"><strong>
                       {bucket(b.key) === 0 ? "—" : money(bucket(b.key))}
@@ -501,6 +518,7 @@ async function Matched({
     const v = variantStock.find((x) => x.id === id);
     return v ? photos.srcFor(v as never) : null;
   };
+  const showThumbs = anyPhoto(rows.map((r: any) => r.id), srcOf);
 
   if (rows.length === 0) {
     return <div className="empty">Nothing was invoiced in that period.</div>;
@@ -608,7 +626,7 @@ async function Matched({
             <table>
               <thead>
                 <tr>
-                  <th colSpan={2}>Item</th>
+                  <th colSpan={showThumbs ? 2 : 1}>Item</th>
                   <th className="r">Sold</th>
                   <th className="r">
                     Revenue
@@ -626,9 +644,11 @@ async function Matched({
                   const m = r.margin === null ? null : Number(r.margin);
                   return (
                     <tr key={r.id}>
-                      <td className="vgroup-thumb">
-                        <ItemThumb src={srcOf(r.id)} name={r.name} />
-                      </td>
+                      {showThumbs && (
+                        <td className="vgroup-thumb">
+                          <ItemThumb src={srcOf(r.id)} name={r.name} />
+                        </td>
+                      )}
                       <td className="wrap">
                         <ItemLink id={r.id} code={r.code} />
                         <div className="subline">
