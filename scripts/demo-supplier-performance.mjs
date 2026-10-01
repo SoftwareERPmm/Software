@@ -40,8 +40,8 @@ if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
 }
 
 const { sql } = await import("../lib/db.ts");
-const { postPurchaseOrder, postGoodsReceipt, postPurchaseInvoice } =
-  await import("../lib/posting.ts");
+const { postPurchaseOrder, postGoodsReceipt, postPurchaseInvoice,
+        postSaleWithDelivery } = await import("../lib/posting.ts");
 
 const [co] = await sql`select id, name, plan from company limit 1`;
 const [loc] = await sql`select id, code from location
@@ -322,7 +322,80 @@ for (const [si, s] of SUPPLIERS.entries()) {
   }
 }
 
-console.log(`\n  ${posted} documents posted across ${SUPPLIERS.length} suppliers`);
-console.log("  Purchases -> Supplier performance\n");
+/* --------------------------------------------------------------- selling */
+
+// Buying alone leaves the profitability screens empty, and an empty report
+// reads as a broken one. These sell part of what was bought, at a margin,
+// so matched profitability has revenue to set against the FIFO layers the
+// purchases created and Revenue vs COGS has both halves.
+//
+// Sold out of stock on the day, which posts the delivery and the invoice
+// together — the common case, and the one that gives every line a cost.
+console.log("\n  selling some of it on");
+
+const CUSTOMERS = [
+  { code: "CUS-YGN", name: "Yangon Retail" },
+  { code: "CUS-MDY", name: "Mandalay Trading" },
+  { code: "CUS-EXP", name: "Export Partner" },
+];
+
+let sales = 0;
+for (const [ci, c] of CUSTOMERS.entries()) {
+  const [found] = await sql`
+    select id from business_partner where company_id = ${co.id} and code = ${c.code}`;
+  const cust = found ?? (await sql`
+    insert into business_partner (company_id, code, name, is_customer)
+    values (${co.id}, ${c.code}, ${c.name}, true) returning id`)[0];
+
+  for (const [mi, month] of ["2026-06", "2026-07", "2026-08", "2026-09"].entries()) {
+    const docDate = `${month}-${String(18 + ci).padStart(2, "0")}`;
+    // Only a standing sale counts as "already here". A reversed one is a
+    // decision somebody undid, and the reversal posted against it carries
+    // no lines at all — so "is there an invoice on this date" answers yes
+    // to a day whose sale was taken back. Ask for the lines instead.
+    const [already] = await sql`
+      select d.id from document d
+       where d.company_id = ${co.id} and d.partner_id = ${cust.id}
+         and d.doc_type = 'SALES_INVOICE' and d.doc_date = ${docDate}::date
+         and d.status = 'POSTED'
+         and exists (select 1 from document_line dl where dl.document_id = d.id)`;
+    if (already) continue;
+
+    // Only what is actually on the shelf, and never all of it: a report
+    // that empties the warehouse leaves inventory aging nothing to age.
+    const onHand = await sql`
+      select item_id, sum(qty_on_hand) q from v_stock_on_hand
+       where company_id = ${co.id} group by item_id having sum(qty_on_hand) > 8
+       order by sum(qty_on_hand) desc limit 3`;
+    if (onHand.length === 0) break;
+
+    const pick = onHand[(ci + mi) % onHand.length];
+    const qty = Math.max(1, Math.floor(Number(pick.q) * 0.18));
+    const [cost] = await sql`
+      select avg(unit_cost)::float8 c from stock_lot
+       where item_id = ${pick.item_id} and company_id = ${co.id}`;
+    // A margin that varies by item, so the profitability table has a spread
+    // worth sorting rather than one number repeated.
+    const price = Math.max(1, Math.round((cost?.c ?? 100) * (1.25 + 0.1 * ((ci + mi) % 4))));
+
+    // postSaleWithDelivery, not postSalesInvoice: the latter posts revenue
+    // and no goods, which is a real case (invoiced before shipping) but
+    // leaves every line unmatched and the profitability report empty. This
+    // is the counter sale — the delivery and the invoice in one
+    // transaction, so each line has a FIFO cost to set against it.
+    await postSaleWithDelivery({
+      companyId: co.id, partnerId: cust.id, locationId: loc.id,
+      docDate, dueDate: addDays(docDate, 30), paymentType: "CREDIT",
+      lines: [{ itemId: pick.item_id, qty, unitPrice: price }],
+    });
+    sales += 1;
+    process.stdout.write(`    ${docDate}  ${c.name.padEnd(18)} ${String(qty).padStart(3)} @ ${price}\n`);
+  }
+}
+
+console.log(`\n  ${posted} purchase documents across ${SUPPLIERS.length} suppliers`);
+console.log(`  ${sales} sales invoices across ${CUSTOMERS.length} customers`);
+console.log("  Purchases -> Supplier performance");
+console.log("  Inventory -> Intelligence\n");
 
 await sql.end();
