@@ -3,7 +3,7 @@
 // to reach a promotion expense account instead of COGS, no revenue may be
 // recognised, and the customer must not be billed a single kyat for it.
 //
-//   node scripts/test-foc.mjs
+//   npx tsx scripts/test-foc.mjs
 //
 // Posts real documents. Run against a scratch database.
 //

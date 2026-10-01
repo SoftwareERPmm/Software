@@ -1,7 +1,7 @@
 // The evil accountant: everything someone would try in order to make these
 // books say something they should not.
 //
-//   node scripts/test-evil.mjs
+//   npx tsx scripts/test-evil.mjs
 //
 // Posts real documents and tampers with real rows. Run against a scratch
 // database — it deliberately attempts destructive things, and several of

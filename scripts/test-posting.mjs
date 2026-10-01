@@ -2,7 +2,7 @@
 // goods receipt and the delivery, never on the invoice. Costing is FIFO, so a
 // sale draws from the oldest cost layer first.
 //
-//   node scripts/test-posting.mjs
+//   npx tsx scripts/test-posting.mjs
 //
 // Posts real documents. Run against a scratch database.
 

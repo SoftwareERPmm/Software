@@ -1,6 +1,6 @@
 // Returns: what comes back, how much of it, and at what cost.
 //
-//   node scripts/test-returns.mjs
+//   npx tsx scripts/test-returns.mjs
 //
 // Posts real documents. Run against a scratch database.
 //

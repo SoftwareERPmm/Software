@@ -76,6 +76,9 @@ try {
      -- A plain item first. These suites test ordering and fulfilment,
      -- not batch tracking, and a tracked item makes every receipt
      -- demand a lot number the suite has no reason to care about.
+       -- A product with variants is a name for a group and cannot be
+       -- sold or received; fn_document_line_not_parent refuses it.
+       and not exists (select 1 from item c where c.parent_item_id = item.id)
      order by tracks_batch, code limit 1`)[0];
   if (!svc) {
     // The code is set by a trigger from the group and the serial, so both go

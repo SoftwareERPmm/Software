@@ -27,6 +27,15 @@ const ROOTS = [
   // and again on route_stop. Suites build their own, so clearing them
   // between runs costs nothing.
   "consignment_agreement", "route",
+  // A half-written document is not a document — nothing points at it and
+  // nothing points from it to one, so the walk below never reaches it from
+  // "document". But it names a partner and the items on it, so a suite that
+  // replaces the catalogue cannot delete what a draft still references:
+  // test-empty died on "violates foreign key constraint
+  // document_draft_partner_id_fkey" for exactly that reason, once
+  // replenishment started handing people draft purchase orders as a matter
+  // of course. Same class as the two above, and cleared for the same reason.
+  "document_draft",
 ];
 
 /** Every table that depends on a transaction root, transitively. */

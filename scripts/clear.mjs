@@ -91,6 +91,11 @@ const sql = postgres(url, { ssl: local ? false : "require", prepare: !pooled, on
 // nothing to show for it and no way to open them again.
 const TXN = ["payment_allocation", "stock_movement", "document_line", "document",
              "journal_line", "journal_entry", "opening_batch",
+             // Work somebody started and has not posted. It references the
+             // partner and the items on it, so leaving it behind stops
+             // business_partner being deleted below — which is how a wipe
+             // failed once replenishment began creating draft orders.
+             "document_draft",
              // The keys that say which submissions have already been posted.
              // A key whose document has been wiped is a claim on nothing: left
              // behind, it would hand a later submission a document that no

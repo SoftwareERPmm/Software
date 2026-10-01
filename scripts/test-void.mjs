@@ -412,8 +412,10 @@ try {
     insert into business_partner (company_id, code, name, is_supplier, payment_terms_days)
     values (${co.id}, ${"VOID-S" + Date.now().toString().slice(-5)}, 'Void test supplier', true, 30)
     returning id`)[0];
-  const vItem = (await sql`
-    select id from item where company_id = ${co.id} and is_stocked limit 1`)[0];
+  const vItem = (await sql`select id from item where company_id = ${co.id} and is_stocked
+       -- A product with variants is a name for a group and cannot be
+       -- sold or received; fn_document_line_not_parent refuses it.
+       and not exists (select 1 from item c where c.parent_item_id = item.id) limit 1`)[0];
   const vLoc = (await sql`
     select id from location where company_id = ${co.id} and is_stock_location limit 1`)[0];
 
@@ -453,8 +455,10 @@ try {
 
   const [ccCust] = await sql`
     select id from business_partner where company_id = ${co.id} and is_customer limit 1`;
-  const [ccItem] = await sql`
-    select id from item where company_id = ${co.id} and is_stocked limit 1`;
+  const [ccItem] = await sql`select id from item where company_id = ${co.id} and is_stocked
+       -- A product with variants is a name for a group and cannot be
+       -- sold or received; fn_document_line_not_parent refuses it.
+       and not exists (select 1 from item c where c.parent_item_id = item.id) limit 1`;
   const [ccWh] = await sql`
     select id from location where company_id = ${co.id} and is_stock_location and is_active
      order by code limit 1`;

@@ -1,6 +1,6 @@
 // Posting across a fiscal year boundary.
 //
-//   node scripts/test-year-rollover.mjs
+//   npx tsx scripts/test-year-rollover.mjs
 //
 // Posts real documents. Run against a scratch database.
 //
