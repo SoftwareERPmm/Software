@@ -142,7 +142,7 @@ export default async function InventoryIntelligence({
         ))}
       </div>
 
-      <div className="row movefilters">
+      <div className="filterbar">
         {warehouses.length > 1 && (
           <AccountPicker
             accounts={[{ id: "all", code: "\u2014", name: "All warehouses" }, ...warehouses]}
@@ -180,7 +180,7 @@ export default async function InventoryIntelligence({
 
         {/* The same queries, as a file — so it cannot disagree with the
             screen it was downloaded from. */}
-        <div className="field">
+        <div className="field exportfield">
           <label>&nbsp;</label>
           <Link className="btn ghost" href={exportHref}>Export CSV</Link>
         </div>
@@ -340,7 +340,7 @@ async function Profitability({
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan={3}><strong>Total</strong></td>
+                  <td colSpan={showThumbs ? 3 : 2}><strong>Total</strong></td>
                   <td className="r"><strong>{money(revenue)}</strong></td>
                   <td />
                   <td className="r"><strong>{money(cogs)}</strong></td>
@@ -479,9 +479,9 @@ async function Aging({
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan={3}><strong>Total</strong></td>
+                  <td colSpan={showThumbs ? 3 : 2}><strong>Total</strong></td>
                   <td className="r"><strong>{money(total)}</strong></td>
-                  <td colSpan={showThumbs ? 2 : 1} />
+                  <td colSpan={2} />
                   {BUCKETS.map((b) => (
                     <td key={b.key} className="r"><strong>
                       {bucket(b.key) === 0 ? "—" : money(bucket(b.key))}
@@ -701,14 +701,20 @@ async function Matched({
                   ever over the part that found its goods, and one row
                   carrying both made the table look as though it disagreed
                   with the card above it. */}
+              {/* The spans follow the thumbnail column. They were written
+                  for a table that always had one, so when it drops out
+                  every total slides one column to the right of the figures
+                  it is totalling. */}
               <tfoot>
                 <tr>
-                  <td colSpan={3}><strong>Total invoiced revenue</strong></td>
+                  <td colSpan={showThumbs ? 3 : 2}>
+                    <strong>Total invoiced revenue</strong>
+                  </td>
                   <td className="r"><strong>{money(revenue)}</strong></td>
                   <td colSpan={4} />
                 </tr>
                 <tr>
-                  <td colSpan={3}>
+                  <td colSpan={showThumbs ? 3 : 2}>
                     <strong>Matched revenue</strong>
                     {unmatchedRev > 0 && (
                       <div className="subline">

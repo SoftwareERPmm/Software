@@ -4192,8 +4192,32 @@ tbody tr.row-selected > td:first-child { box-shadow: inset 2px 0 0 var(--brand);
    carry a mark give that up. */
 .card:has(.helphint) { overflow: visible; }
 
-/* .row is a grid of equal columns, which gave the export button half the
-   strip. Here the controls should size to what they hold, with the export
-   pushed to the far end. */
-.perf-filters { display: flex; align-items: flex-end; flex-wrap: wrap; gap: var(--s3); }
-.perf-filters .exportfield { margin-left: auto; }
+/* A row of filters above a report.
+   .row is a grid of equal columns, which gave a one-word export button the
+   same width as a date range and left the controls stranded in the middle
+   of their cells. These should size to what they hold, sit on one baseline,
+   and push the export to the far end. */
+.filterbar { display: flex; align-items: flex-end; flex-wrap: wrap; gap: var(--s3); }
+.filterbar > * { margin: 0; }
+.filterbar .exportfield { margin-left: auto; }
+/* The warehouse picker brings its own label block, which is taller than a
+   bare field label and lifted its control off the shared baseline. */
+.filterbar .picker, .filterbar .field { align-self: flex-end; }
+
+/* The chart keeps up with the list.
+   A long supplier list scrolls past a chart that is a third its height, so
+   the chart would be off screen exactly while somebody is choosing what to
+   compare with it. Sticky keeps it beside the row being clicked. align-self
+   is what makes it work: a grid item stretches to its row by default, and a
+   stretched item has nothing to stick within. */
+@media (min-width: 900px) {
+  .perf-compare > .stickycol { align-self: stretch; }
+  .perf-compare > .stickycol > .card { position: sticky; top: var(--s3); }
+}
+
+/* The second supplier on the radar, picked beside the radar. */
+.comparepick {
+  display: flex; align-items: center; gap: 0.4rem;
+  margin-bottom: var(--s2);
+}
+.comparepick select { max-width: 16rem; }

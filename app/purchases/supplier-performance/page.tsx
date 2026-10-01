@@ -17,6 +17,8 @@ import {
 } from "@/lib/supplier-metrics";
 import { buildPerformance, buildTrend, formatRaw } from "@/lib/supplier-performance";
 import { SupplierRadar } from "@/components/supplier-radar";
+import { ComparePicker } from "@/components/compare-picker";
+import { DataTable } from "@/components/data-table";
 import { RadarAxisPicker } from "@/components/radar-axis-picker";
 import { MethodologyPanel } from "@/components/methodology-panel";
 
@@ -41,15 +43,6 @@ const pct = (v: number | null, dp = 1) =>
 
 const days = (v: number | null) =>
   v === null ? "—" : `${v.toFixed(1)} days`;
-
-/** Columns the comparison table can be ordered by. No rank, no total. */
-const SORTS = [
-  { key: "spend", label: "Spend" },
-  { key: "on_time", label: "On-time" },
-  { key: "fulfilment", label: "Fulfillment" },
-  { key: "lead", label: "Avg lead time" },
-  { key: "name", label: "Name" },
-] as const;
 
 export default async function SupplierPerformancePage({
   searchParams,
@@ -129,16 +122,11 @@ export default async function SupplierPerformancePage({
   const fromPreset = sanitizeAxes(presets.find((p) => p.is_default)?.axes);
   const axes = fromUrl ?? fromPreset ?? DEFAULT_RADAR;
 
-  const sort = SORTS.find((s) => s.key === q.sort)?.key ?? "spend";
-  const sorted = [...rows].sort((a, b) => {
-    switch (sort) {
-      case "name": return a.name.localeCompare(b.name);
-      case "on_time": return (b.actuals.onTimePct ?? -1) - (a.actuals.onTimePct ?? -1);
-      case "fulfilment": return (b.actuals.fulfilmentPct ?? -1) - (a.actuals.fulfilmentPct ?? -1);
-      case "lead": return (a.actuals.averageLeadDays ?? 1e9) - (b.actuals.averageLeadDays ?? 1e9);
-      default: return b.spend - a.spend;
-    }
-  });
+  // Biggest spender first, which is where a buyer looks. The table sorts
+  // itself from here on — the column headings are DataTable's and the
+  // ordering never reaches the URL, so this only decides what the picker
+  // lists and which supplier is charted when none was asked for.
+  const sorted = [...rows].sort((a, b) => b.spend - a.spend);
 
   const selected = sorted.find((r) => r.partnerId === q.supplier) ?? sorted[0];
   const compare = q.compare && q.compare !== selected.partnerId
@@ -161,7 +149,7 @@ export default async function SupplierPerformancePage({
   const link = (patch: Record<string, string | null>) => {
     const p = new URLSearchParams();
     const base: Record<string, string | undefined> = {
-      from, to, sort, supplier: selected.partnerId,
+      from, to, supplier: selected.partnerId,
       compare: compare?.partnerId, axes: axes.join(","),
     };
     for (const [k, v] of Object.entries({ ...base, ...patch })) {
@@ -213,7 +201,7 @@ export default async function SupplierPerformancePage({
           which four are missing and why. */}
       <UnavailableNote />
 
-      <section className="grid2">
+      <section className="grid2 perf-compare">
         <div className="card">
           <div className="card-head">
             <div className="headwith">
@@ -227,58 +215,95 @@ export default async function SupplierPerformancePage({
               </HelpHint>
             </div>
           </div>
-          <div className="tablewrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Supplier</th>
-                  {SORTS.filter((s) => s.key !== "name").map((s) => (
-                    <th key={s.key} className="r">
-                      <Link href={link({ sort: s.key })} className="plain">
-                        {s.label}{sort === s.key ? " ↓" : ""}
+          {/* The shared list table, so this behaves like every other list
+              in the product: search, sort, choose columns, and pages rather
+              than one unbounded run of rows. A company with two hundred
+              suppliers gets twenty at a time and a search box, not two
+              hundred rows pushing the chart off the screen. */}
+          <DataTable
+            rows={sorted.map((r) => {
+              const isSelected = r.partnerId === selected.partnerId;
+              const isCompare = r.partnerId === compare?.partnerId;
+              return {
+                key: r.partnerId,
+                searchText: `${r.name} ${r.code}`.toLowerCase(),
+                sort: {
+                  supplier: r.name.toLowerCase(),
+                  spend: r.spend,
+                  // Unmeasured sorts last whichever way the column is
+                  // pointed, rather than counting as nought and leading
+                  // the "worst suppliers" list with suppliers nobody
+                  // has measured.
+                  on_time: r.actuals.onTimePct ?? -1,
+                  fulfilment: r.actuals.fulfilmentPct ?? -1,
+                  lead: r.actuals.averageLeadDays ?? Number.MAX_SAFE_INTEGER,
+                  revisions: r.actuals.supplierRevisions,
+                },
+                csv: {
+                  supplier: r.name, code: r.code, spend: r.spend,
+                  on_time: r.actuals.onTimePct, fulfilment: r.actuals.fulfilmentPct,
+                  lead: r.actuals.averageLeadDays,
+                  revisions: r.actuals.supplierRevisions,
+                },
+                node: (
+                  <tr className={isSelected ? "row-selected" : undefined}>
+                    <td className="wrap">
+                      <Link href={link({ supplier: r.partnerId, compare: null })}
+                            className="plain">
+                        <strong>{r.name}</strong>
                       </Link>
-                    </th>
-                  ))}
-                  <th className="r">Revisions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sorted.map((r) => {
-                  const isSelected = r.partnerId === selected.partnerId;
-                  const isCompare = r.partnerId === compare?.partnerId;
-                  return (
-                    <tr key={r.partnerId}
-                        className={isSelected ? "row-selected" : undefined}>
-                      <td className="wrap">
-                        <Link href={link({ supplier: r.partnerId, compare: null })}
-                              className="plain">
-                          <strong>{r.name}</strong>
+                      {r.code && <div className="subline code">{r.code}</div>}
+                    </td>
+                    <td className="r">{money(r.spend)}</td>
+                    <td className="r">{pct(r.actuals.onTimePct)}</td>
+                    <td className="r">{pct(r.actuals.fulfilmentPct)}</td>
+                    <td className="r">{days(r.actuals.averageLeadDays)}</td>
+                    <td className="r">
+                      {r.actuals.supplierRevisions > 0
+                        ? <span className="pill warn">{r.actuals.supplierRevisions}</span>
+                        : <span className="page-sub">—</span>}
+                    </td>
+                    <td>
+                      {isSelected ? (
+                        <span className="pill ok">charted</span>
+                      ) : isCompare ? (
+                        <Link className="chip" href={link({ compare: null })}>
+                          stop comparing
                         </Link>
-                        {r.code && <div className="subline code">{r.code}</div>}
-                        {!isSelected && (
-                          <Link className="subline" href={link({ compare: r.partnerId })}>
-                            compare
-                          </Link>
-                        )}
-                        {isCompare && <span className="pill">comparing</span>}
-                      </td>
-                      <td className="r">{money(r.spend)}</td>
-                      <td className="r">{pct(r.actuals.onTimePct)}</td>
-                      <td className="r">{pct(r.actuals.fulfilmentPct)}</td>
-                      <td className="r">{days(r.actuals.averageLeadDays)}</td>
-                      <td className="r">
-                        {r.actuals.supplierRevisions > 0
-                          ? <span className="pill warn">{r.actuals.supplierRevisions}</span>
-                          : <span className="page-sub">—</span>}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                      ) : (
+                        <Link className="chip" href={link({ compare: r.partnerId })}>
+                          + compare
+                        </Link>
+                      )}
+                    </td>
+                  </tr>
+                ),
+              };
+            })}
+            emptyLabel="No supplier had a posted purchase in this period"
+            searchPlaceholder="Search suppliers…"
+            defaultSort={{ key: "spend", dir: "desc" }}
+            // Ten, not the usual twenty: a row here is two lines tall, so
+            // twenty of them make a column twice the height of the chart
+            // beside it and strand the chart at the top.
+            defaultPageSize={10}
+            columns={[
+              { key: "supplier", label: "Supplier", sortable: true },
+              { key: "spend", label: "Spend", sortable: true, align: "r" },
+              { key: "on_time", label: "On-time", sortable: true, align: "r" },
+              { key: "fulfilment", label: "Fulfillment", sortable: true, align: "r" },
+              { key: "lead", label: "Avg lead time", sortable: true, align: "r" },
+              { key: "revisions", label: "Revisions", sortable: true, align: "r" },
+              { key: "chart", label: "" },
+            ]}
+          />
         </div>
 
+        {/* The wrapper is what stretches; the card inside it is what
+            sticks. A sticky grid item can only travel within its own grid
+            area, and .grid2 aligns its children to the start, so the area
+            is exactly the card's height and there is nowhere to go. */}
+        <div className="stickycol">
         <div className="card">
           <div className="card-head">
             <div className="headwith">
@@ -297,6 +322,11 @@ export default async function SupplierPerformancePage({
             </span>
           </div>
           <div className="card-body">
+            <ComparePicker
+              suppliers={sorted.map((r) => ({ id: r.partnerId, name: r.name }))}
+              selectedId={selected.partnerId}
+              compareId={compare?.partnerId ?? null}
+            />
             <SupplierRadar
               axes={axes}
               suppliers={[
@@ -316,14 +346,8 @@ export default async function SupplierPerformancePage({
               presets={presets}
               saveAction={saveRadarPreset}
             />
-            {compare && (
-              <div className="actions">
-                <Link className="subline" href={link({ compare: null })}>
-                  stop comparing
-                </Link>
-              </div>
-            )}
           </div>
+        </div>
         </div>
       </section>
 
@@ -441,7 +465,7 @@ function Header({ from, to }: { from: string; to: string }) {
           it. Inside the page-head the form was laying out as a column
           against a class the stylesheet does not define, which pushed the
           title into a narrow column beside it. */}
-      <div className="row movefilters perf-filters">
+      <div className="filterbar">
         <form method="get" action="/purchases/supplier-performance"
               className="daterange">
           <div className="field">
