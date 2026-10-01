@@ -49,8 +49,15 @@
   --erp-radius-pill: 999px;
 
   /* ---- type ---- */
-  --erp-font: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
-  --erp-font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Was a bare system stack, so the handful of ERP-shell rules that use it
+     rendered in whatever face the OS supplies — a third typeface on screens
+     that already carried two. It follows the house face like everything
+     else now. */
+  --erp-font: var(--sans, -apple-system, system-ui, "Segoe UI", Roboto, sans-serif);
+  /* Follows --mono in globals.css, which now resolves to the house face.
+     See the note there: one typeface across the product, at the cost of
+     tabular figures, and both tokens revert together. */
+  --erp-font-mono: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   --erp-text: 14px;
   --erp-text-sm: 13px;
   --erp-text-xs: 12px;

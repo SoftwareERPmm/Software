@@ -66,7 +66,8 @@ export type OrderFormConfig = {
 export function ErpOrderForm({
   config, docId, docNo, status, partnerName, partnerCode, docDate, dueDate,
   locationName, reference, memo, lines, netTotal, chain, related,
-  banner, footer, badges, fulfilActions, menuActions, openLineCount, unitWord,
+  banner, footer, badges, fulfilActions, menuActions, commitments,
+  openLineCount, unitWord,
   fulfilments = [], billing, backHref, backLabel,
 }: {
   config: OrderFormConfig;
@@ -102,6 +103,12 @@ export function ErpOrderForm({
   fulfilActions?: React.ReactNode;
   /** Correcting and cancelling: rare, consequential, behind the overflow menu. */
   menuActions?: React.ReactNode;
+  /**
+   * What the supplier committed to, and the record of them moving it.
+   * Below the lines rather than beside the dates: it is a conversation with
+   * a history, not a field, and it grows a row every time they ring.
+   */
+  commitments?: React.ReactNode;
   /** How many lines still have something outstanding. */
   openLineCount?: number;
   /** The unit the quantities are counted in — CTN, PCS. */
@@ -394,6 +401,7 @@ export function ErpOrderForm({
         </div>
       </section>
 
+      {commitments}
       {related}
       {footer}
     </div>

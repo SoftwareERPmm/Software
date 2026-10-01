@@ -39,8 +39,32 @@
      Latin face has Myanmar glyphs, so Burmese falls through to the Noto face
      rather than to whatever the OS happens to ship. Order matters: Latin
      resolves in DM Sans first, Burmese in Noto. */
-  --sans: var(--font-dm-sans), var(--font-plex-sans), var(--font-myanmar), system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --mono: var(--font-plex-mono), var(--font-myanmar), ui-monospace, "Cascadia Mono", "SF Mono", "Segoe UI Mono", "Roboto Mono", Menlo, Consolas, monospace;
+  --sans: var(--font-ui), var(--font-myanmar), system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* One face across the product (2026-10-01).
+     --------------------------------------------
+     The dashboard was the only screen already built entirely in DM Sans,
+     and it was chosen as the house face: every other screen now follows it
+     rather than mixing a second typeface in for figures.
+
+     --mono keeps its name and its call sites so this is one line to read
+     and one line to undo, but it no longer resolves to a monospaced face.
+     Nothing is actually monospaced any more.
+
+     Columns still line up. The house face is Inter, whose tabular figures
+     switch on with font-variant-numeric: tabular-nums — measured at 16px,
+     digit width spread 0.000, the same as a monospace. That is the whole
+     reason the face is Inter and not DM Sans, which has no tabular
+     numerals and could not hold a column together.
+
+     Everything that shows a figure therefore needs tabular-nums as well as
+     this token. The two travel together; dropping the first makes "1"
+     narrower than "0" again and the column drifts.
+
+     To go back to a monospaced face for figures, point this token at one —
+     there is no longer a webfont bundled for it, so that means adding the
+     import in app/layout.tsx as well, or falling back to the system mono:
+       --mono: var(--font-myanmar), ui-monospace, "SF Mono", Menlo, monospace; */
+  --mono: var(--font-ui), var(--font-myanmar), system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 
   --s1: 0.35rem; --s2: 0.65rem; --s3: 1rem; --s4: 1.5rem; --s5: 2.25rem; --s6: 3.25rem;
 
@@ -116,6 +140,13 @@ body {
   background: var(--ground);
   color: var(--ink);
   font-family: var(--sans);
+  /* Every figure in the product lines up, by default rather than by each
+     rule remembering to ask. Two rules had already reset font-family and
+     lost the numerals that way, which is a bug that reappears every time
+     somebody adds a third. The cost is that dates and counts in running
+     prose are set in tabular figures too, which is a fair trade in an
+     application whose main job is columns of numbers. */
+  font-variant-numeric: tabular-nums;
   font-size: var(--t-base);
   line-height: var(--lh-base);
   -webkit-font-smoothing: antialiased;
@@ -209,7 +240,7 @@ a { color: inherit; text-decoration: none; }
     height: var(--navbar-h); box-sizing: border-box;
     padding: 0.55rem var(--s3);
     background: var(--rail, #101613); color: #E7EDE9;
-    font-family: var(--font-dm-sans), var(--font-myanmar), system-ui, sans-serif;
+    font-family: var(--font-ui), var(--font-myanmar), system-ui, sans-serif;
   }
   .navbar-toggle {
     display: inline-flex; align-items: center; justify-content: center;
@@ -275,7 +306,9 @@ h2 { font-size: var(--t-lg); font-weight: 600; letter-spacing: var(--track-tight
   font-family: var(--mono); font-size: var(--t-2xs); letter-spacing: var(--track-caps);
   text-transform: uppercase; color: var(--muted);
 }
-.m { font-family: var(--mono); font-size: 0.88em; }
+/* Was 0.88em to offset Plex Mono running large beside the sans. Same
+   face now, so the correction would just make it small. */
+.m { font-family: var(--mono); }
 
 /* A quieter second line under a primary one: the Burmese name under a Latin
    name, or the English gloss under Burmese copy. The same three declarations
@@ -1365,6 +1398,9 @@ thead th.r { font-family: var(--sans); }
 .kpi-value {
   font-family: var(--sans); font-size: var(--t-2xl); font-weight: 700;
   letter-spacing: var(--track-tight);
+  /* This rule resets the family and so has to restate the numerals, or it
+     silently drops the tabular figures the rule above it asked for. */
+  font-variant-numeric: tabular-nums;
 }
 
 /* The page heading becomes a control panel: one thin horizontal bar, the way
@@ -2798,7 +2834,7 @@ dialog.drawer .drawer-panel {
    few, which is what DM Sans is good at and what Plex was chosen against. */
 
 .dash {
-  font-family: var(--font-dm-sans), var(--font-myanmar), system-ui, sans-serif;
+  font-family: var(--font-ui), var(--font-myanmar), system-ui, sans-serif;
   --dash-radius: 12px;
   --dash-gap: 1.25rem;
   --dash-card: var(--surface);
@@ -2889,6 +2925,7 @@ dialog.drawer .drawer-panel {
   /* A step below the 20px ceiling. Five cards of kyat at full size read as
      five headlines; at 18px they are still the loudest thing on the card. */
   font-size: var(--t-xl); font-weight: 700;
+  font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em; line-height: 1.15;
   /* Figures wrap rather than overflow: MMK 1,234,567,890 is a real number in
      kyat and must not push the card wider than its column. */
@@ -3066,7 +3103,7 @@ table:not(.linetable) tbody tr.stmt-group > td {
   background: var(--rail);
   border-right: 0;
   color: var(--rail-ink);
-  font-family: var(--font-dm-sans), var(--font-myanmar), system-ui, sans-serif;
+  font-family: var(--font-ui), var(--font-myanmar), system-ui, sans-serif;
   padding: var(--s4) 0.65rem;
   gap: var(--s4);
 }
@@ -4058,3 +4095,105 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
 .matchnotes li { display: flex; align-items: baseline; gap: 0.5rem;
   font-size: var(--t-sm); color: var(--muted); }
 .matchnotes .pill { flex: none; }
+
+/* --- supplier performance ------------------------------------------------ */
+
+/* The selected row drives the radar and the detail table below it, so it
+   has to stay obvious after the eye has moved on. A left edge rather than a
+   fill: a filled row in a table of figures reads as a status. */
+tbody tr.row-selected > td { background: color-mix(in srgb, var(--brand) 7%, transparent); }
+tbody tr.row-selected > td:first-child { box-shadow: inset 2px 0 0 var(--brand); }
+
+/* A link that carries no decoration because the whole cell is the target. */
+.plain { color: inherit; text-decoration: none; }
+.plain:hover { color: var(--brand); }
+
+.chip {
+  border: 1px solid var(--line); background: var(--surface);
+  border-radius: 999px; padding: 0.15rem 0.6rem;
+  font-size: var(--t-sm); color: var(--fg); cursor: pointer;
+}
+.chip:hover:not(:disabled) { border-color: var(--brand); color: var(--brand); }
+.chip:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.axis-picker { margin-top: var(--s3); border-top: 1px solid var(--line); padding-top: var(--s2); }
+.axis-picker > summary { cursor: pointer; font-size: var(--t-sm); font-weight: 600; }
+.axis-picker-body { padding-top: var(--s2); display: flex; flex-direction: column; gap: var(--s2); }
+
+.axis-order { list-style: none; margin: 0; padding: 0; counter-reset: axis; }
+.axis-order li {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--s2); padding: 0.25rem 0; font-size: var(--t-sm);
+  border-bottom: 1px solid var(--line);
+}
+.axis-order li::before { counter-increment: axis; content: counter(axis) "."; color: var(--muted); }
+.axis-order li > span:first-of-type { flex: 1; }
+.axis-order-controls { display: flex; gap: 0.25rem; }
+.axis-order-controls button {
+  border: 1px solid var(--line); background: transparent; color: var(--muted);
+  width: 1.5rem; height: 1.5rem; line-height: 1; border-radius: var(--r1); cursor: pointer;
+}
+.axis-order-controls button:hover:not(:disabled) { border-color: var(--brand); color: var(--brand); }
+.axis-order-controls button:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.axis-available { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+
+/* Folded away by default: read once, then in the way for good. */
+.methodology > summary { cursor: pointer; list-style: none; }
+.methodology > summary::-webkit-details-marker { display: none; }
+.methodology > summary::after {
+  content: "show"; margin-left: auto; font-size: var(--t-sm); color: var(--muted);
+}
+.methodology[open] > summary::after { content: "hide"; }
+
+.methodology-list { margin: var(--s3) 0 0; display: grid; gap: var(--s3); }
+.methodology-list dt {
+  font-weight: 600; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;
+}
+.methodology-list dd { margin: 0.25rem 0 0; font-size: var(--t-sm); line-height: 1.55; }
+.methodology-list dd p { margin: 0 0 0.3rem; }
+.methodology-list .is-unavailable dt { color: var(--muted); }
+
+/* --- supplier performance settings and presets --------------------------- */
+
+/* A column of labelled inputs, each with its explanation under it. Not a
+   grid: the help text is the point, and two columns of prose read as a
+   wall. */
+.fields { display: flex; flex-direction: column; gap: var(--s3); }
+.fields .field { display: flex; flex-direction: column; gap: 0.2rem; }
+.fields .field .subline { max-width: 42ch; line-height: 1.5; }
+
+.axis-presets { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
+.axis-save { display: flex; flex-direction: column; gap: var(--s2);
+  border-top: 1px solid var(--line); padding-top: var(--s2); }
+
+.preset-axes { margin: 0; padding-left: 1.1rem; font-size: var(--t-sm); color: var(--muted); }
+.preset-axes li { list-style: decimal; }
+
+/* A heading and the mark that explains it, kept together.
+   .helphint carries order:3 for the page-head layout, which inside a
+   space-between card-head would fling it to the far right away from the
+   title it belongs to. */
+.headwith { display: flex; align-items: baseline; gap: 0.15rem; flex-wrap: wrap; }
+/* The title keeps the order .page-head gives it and the mark follows it.
+   Setting the mark to 0 alone was not enough: .page-head h1 carries order:2
+   of its own, which reaches inside here and put the mark in front of the
+   title it explains. */
+.headwith > * { order: 3; }
+.headwith > h1, .headwith > h2, .headwith > h3, .headwith > strong,
+.headwith > .page-sub:first-child { order: 1; }
+.headwith > .helphint { order: 2; align-self: center; }
+/* Anything after the mark — status tags, a count — is given room so it
+   does not read as part of the heading. */
+.headwith > .vartags { margin-left: 0.35rem; }
+
+/* A card clips its corners, which also clipped the hint bubble opening
+   inside it — on a short card almost all of it. Only cards that actually
+   carry a mark give that up. */
+.card:has(.helphint) { overflow: visible; }
+
+/* .row is a grid of equal columns, which gave the export button half the
+   strip. Here the controls should size to what they hold, with the export
+   pushed to the far end. */
+.perf-filters { display: flex; align-items: flex-end; flex-wrap: wrap; gap: var(--s3); }
+.perf-filters .exportfield { margin-left: auto; }

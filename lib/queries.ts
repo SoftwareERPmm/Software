@@ -1,15 +1,19 @@
 import { sql } from "./db";
 import { grirMatcher, type MatchableLine, type DraftDocType } from "./posting";
+import type { Plan } from "./plans";
 
 export type Company = { id: string; code: string; name: string; name_my: string | null;
   base_currency: string;
   /** Assumed when a supplier has none of its own, and for an item nobody
    *  has bought yet. Replenishment turns it into a date to order by. */
-  default_lead_time_days: number };
+  default_lead_time_days: number;
+  /** Which package this company is on. Read by lib/plans.ts to decide what
+   *  is offered — never to decide what may be posted. */
+  plan: Plan };
 
 export async function getCompany(): Promise<Company | null> {
   const rows = await sql<Company[]>`
-    select id, code, name, name_my, base_currency, default_lead_time_days
+    select id, code, name, name_my, base_currency, default_lead_time_days, plan
       from company order by created_at limit 1`;
   return rows[0] ?? null;
 }
@@ -6232,4 +6236,580 @@ export async function getUnsettledConsignment(companyId: string, deliveryId: str
     consumption_id: string; qty: string;
     item_code: string; item_name: string; consignor_name: string;
   }[];
+}
+
+// ---------------------------------------------------------------------------
+// Supplier performance
+//
+// Six queries, each returning observations rather than scores. Nothing here
+// normalizes, weights or decides what counts as enough data — that is
+// lib/supplier-metrics.ts, so the radar, the detail table and the CSV all
+// reach the same conclusion from the same numbers. These only read posted
+// documents and say what happened.
+//
+// Two rules run through all of them. Amended orders resolve through
+// fn_current_document, because a correction retires the version a receipt
+// names and counting the retired one reports an order as wholly outstanding.
+// And a receipt reaches its order by two routes — named on the line, or
+// linked afterwards — so every pairing here is the union of both with the
+// same anti-double-count guard v_order_outstanding uses.
+// ---------------------------------------------------------------------------
+
+/**
+ * Purchase order lines with what the supplier committed to and what arrived.
+ *
+ * Returns rows, not a figure: the commitment rules are arithmetic over a
+ * conversation and live in lib/supplier-commitments.ts where they can be
+ * tested without a database. This only fetches the conversation.
+ *
+ * `to` bounds the receipts as well as the orders, so re-running a past
+ * period gives the answer it gave then rather than one improved by what has
+ * arrived since.
+ */
+export async function getSupplierCommitmentData(
+  companyId: string, from: string, to: string, supplierIds: string[] | null = null,
+) {
+  const rows = await sql`
+    with ord as (
+      select fn_current_document(o.id) as order_id, o.partner_id,
+             ol.id as order_line_id, ol.item_id, ol.base_qty as ordered_qty,
+             o.doc_date as order_date
+        from document o
+        join document_line ol on ol.document_id = o.id
+       where o.company_id = ${companyId}
+         and o.doc_type = 'PURCHASE_ORDER' and o.status = 'POSTED'
+         and o.partner_id is not null
+         and o.doc_date <= ${to}::date
+         ${supplierIds ? sql`and o.partner_id = any(${supplierIds}::uuid[])` : sql``}
+    ),
+    -- Both routes from a receipt back to the order line it answers.
+    recv as (
+      select ol.id as order_line_id, gr.doc_date as receipt_date, gl.base_qty as qty
+        from document gr
+        join document_line gl on gl.document_id = gr.id
+        join document_line ol on ol.id = gl.source_line_id
+       where gr.company_id = ${companyId}
+         and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+         and gr.doc_date <= ${to}::date
+         and not exists (
+               select 1 from fulfilment_link fl2
+                where fl2.fulfilment_line_id = gl.id
+                  and fl2.order_line_id is not distinct from gl.source_line_id)
+      union all
+      select fl.order_line_id, gr.doc_date, fl.qty
+        from fulfilment_link fl
+        join document_line gl on gl.id = fl.fulfilment_line_id
+        join document gr on gr.id = gl.document_id
+       where fl.company_id = ${companyId}
+         and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+         and gr.doc_date <= ${to}::date
+    ),
+    -- An order closed with a reason is a cancellation, and a cancelled line
+    -- is not a supplier failure. Latest closure row wins, as everywhere else.
+    closed as (
+      select distinct on (fn_current_document(oc.document_id))
+             fn_current_document(oc.document_id) as order_id, oc.is_open
+        from order_closure oc
+       where oc.company_id = ${companyId}
+       order by fn_current_document(oc.document_id), oc.closed_at desc
+    )
+    select ord.order_id, ord.partner_id, ord.order_line_id, ord.item_id,
+           ord.ordered_qty::text, ord.order_date,
+           bp.code as partner_code, bp.name as partner_name,
+           coalesce(cl.is_open, true) as order_open,
+           coalesce((
+             select json_agg(json_build_object(
+                      'id', pc.id, 'qty', pc.qty::float8,
+                      'confirmedDate', to_char(pc.confirmed_date, 'YYYY-MM-DD'),
+                      'kind', pc.kind,
+                      'recordedOn', to_char(pc.recorded_at, 'YYYY-MM-DD'))
+                    order by pc.recorded_at, pc.id)
+               from purchase_confirmation pc
+              where pc.order_line_id = ord.order_line_id
+                -- Recorded after the cutoff is a fact this period did not
+                -- know; excluding it keeps a historical run reproducible.
+                and pc.recorded_at < (${to}::date + 1)
+           ), '[]'::json) as confirmations,
+           coalesce((
+             select json_agg(json_build_object(
+                      'date', to_char(rv.receipt_date, 'YYYY-MM-DD'),
+                      'qty', rv.qty::float8) order by rv.receipt_date)
+               from recv rv where rv.order_line_id = ord.order_line_id
+           ), '[]'::json) as receipts
+      from ord
+      join business_partner bp on bp.id = ord.partner_id
+      left join closed cl on cl.order_id = ord.order_id
+     where exists (
+             select 1 from purchase_confirmation pc
+              where pc.order_line_id = ord.order_line_id
+                and pc.confirmed_date >= ${from}::date
+                and pc.confirmed_date <= ${to}::date)`;
+
+  return rows as unknown as {
+    order_id: string; partner_id: string; order_line_id: string; item_id: string;
+    ordered_qty: string; order_date: string; order_open: boolean;
+    partner_code: string; partner_name: string;
+    confirmations: { id: string; qty: number; confirmedDate: string;
+                     kind: string; recordedOn: string }[];
+    receipts: { date: string; qty: number }[];
+  }[];
+}
+
+/**
+ * Quantity ordered and quantity received, per supplier, for order fulfilment.
+ *
+ * The cohort is order lines due by the cutoff — an order still within its
+ * lead time has not failed to arrive. Over-receipts are capped at the
+ * quantity ordered so a supplier cannot score above 100 by sending too much,
+ * and a closed order leaves the denominator because a cancellation the buyer
+ * asked for is not a supplier's miss.
+ */
+export async function getSupplierFulfilment(
+  companyId: string, from: string, to: string,
+) {
+  const rows = await sql`
+    with ord as (
+      select fn_current_document(o.id) as order_id, o.partner_id,
+             ol.id as order_line_id, ol.base_qty as ordered_qty
+        from document o
+        join document_line ol on ol.document_id = o.id
+       where o.company_id = ${companyId}
+         and o.doc_type = 'PURCHASE_ORDER' and o.status = 'POSTED'
+         and o.partner_id is not null
+         and o.doc_date >= ${from}::date and o.doc_date <= ${to}::date
+    ),
+    closed as (
+      select distinct on (fn_current_document(oc.document_id))
+             fn_current_document(oc.document_id) as order_id, oc.is_open
+        from order_closure oc
+       where oc.company_id = ${companyId}
+       order by fn_current_document(oc.document_id), oc.closed_at desc
+    ),
+    recv as (
+      select ol.id as order_line_id, sum(gl.base_qty) as qty
+        from document gr
+        join document_line gl on gl.document_id = gr.id
+        join document_line ol on ol.id = gl.source_line_id
+       where gr.company_id = ${companyId}
+         and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+         and gr.doc_date <= ${to}::date
+         and not exists (
+               select 1 from fulfilment_link fl2
+                where fl2.fulfilment_line_id = gl.id
+                  and fl2.order_line_id is not distinct from gl.source_line_id)
+       group by ol.id
+      union all
+      select fl.order_line_id, sum(fl.qty)
+        from fulfilment_link fl
+        join document_line gl on gl.id = fl.fulfilment_line_id
+        join document gr on gr.id = gl.document_id
+       where fl.company_id = ${companyId}
+         and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+         and gr.doc_date <= ${to}::date
+       group by fl.order_line_id
+    )
+    select ord.partner_id, bp.code as partner_code, bp.name as partner_name,
+           sum(ord.ordered_qty)::text as ordered,
+           -- least(), so 12 delivered against 10 ordered is 10 fulfilled and
+           -- not 120% of a promise.
+           sum(least(coalesce(rv.qty, 0), ord.ordered_qty))::text as received,
+           count(*)::int as lines
+      from ord
+      join business_partner bp on bp.id = ord.partner_id
+      left join closed cl on cl.order_id = ord.order_id
+      left join lateral (
+            select sum(qty) as qty from recv where recv.order_line_id = ord.order_line_id
+      ) rv on true
+     where coalesce(cl.is_open, true)
+     group by ord.partner_id, bp.code, bp.name`;
+
+  return rows as unknown as {
+    partner_id: string; partner_code: string; partner_name: string;
+    ordered: string; received: string; lines: number;
+  }[];
+}
+
+/**
+ * Every order-to-receipt duration, for lead-time consistency.
+ *
+ * One row per pairing rather than an average, because the metric is about
+ * the spread and an average has thrown that away. Weighted by quantity at
+ * the point of use, so a token early box does not count as much as the bulk
+ * of the order arriving late.
+ */
+export async function getSupplierLeadTimeObservations(
+  companyId: string, from: string, to: string,
+) {
+  const rows = await sql`
+    select po.partner_id, (gr.doc_date - po.doc_date)::int as days,
+           gl.base_qty::text as qty,
+           to_char(gr.doc_date, 'YYYY-MM') as month
+      from document gr
+      join document_line gl on gl.document_id = gr.id
+      join document_line ol on ol.id = gl.source_line_id
+      join document po on po.id = ol.document_id
+     where gr.company_id = ${companyId}
+       and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+       and po.doc_type = 'PURCHASE_ORDER'
+       and gr.doc_date >= ${from}::date and gr.doc_date <= ${to}::date
+       and gr.doc_date >= po.doc_date
+       and not exists (
+             select 1 from fulfilment_link fl2
+              where fl2.fulfilment_line_id = gl.id
+                and fl2.order_line_id is not distinct from gl.source_line_id)
+    union all
+    select po.partner_id, (gr.doc_date - po.doc_date)::int, fl.qty::text,
+           to_char(gr.doc_date, 'YYYY-MM')
+      from fulfilment_link fl
+      join document_line gl on gl.id = fl.fulfilment_line_id
+      join document gr on gr.id = gl.document_id
+      join document_line ol on ol.id = fl.order_line_id
+      join document po on po.id = ol.document_id
+     where fl.company_id = ${companyId}
+       and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+       and po.doc_type = 'PURCHASE_ORDER'
+       and gr.doc_date >= ${from}::date and gr.doc_date <= ${to}::date
+       and gr.doc_date >= po.doc_date`;
+
+  return rows as unknown as {
+    partner_id: string; days: number; qty: string; month: string;
+  }[];
+}
+
+/**
+ * What each supplier charged for each item, for the two price metrics.
+ *
+ * Grouped to item and supplier so competitiveness can compare across
+ * suppliers and stability can compare a supplier with itself. Currency is
+ * carried through and grouped on rather than assumed: posting writes MMK at
+ * rate 1 today, but a price comparison that silently mixed currencies if
+ * that ever changed would be wrong in a way nobody would notice.
+ *
+ * Unit prices are per base unit, so an item bought by the box from one
+ * supplier and by the piece from another compares honestly.
+ */
+export async function getSupplierPriceObservations(
+  companyId: string, from: string, to: string,
+) {
+  const rows = await sql`
+    select d.partner_id, dl.item_id, d.currency,
+           dl.base_qty::text as qty,
+           -- net_amount is after trade discount, which is what was paid.
+           (dl.net_amount / nullif(dl.base_qty, 0))::text as unit_price,
+           d.doc_date
+      from document d
+      join document_line dl on dl.document_id = d.id
+     where d.company_id = ${companyId}
+       and d.doc_type = 'PURCHASE_INVOICE' and d.status = 'POSTED'
+       and d.partner_id is not null
+       and d.doc_date >= ${from}::date and d.doc_date <= ${to}::date
+       and dl.item_id is not null
+       and dl.base_qty > 0 and dl.net_amount > 0`;
+
+  return rows as unknown as {
+    partner_id: string; item_id: string; currency: string;
+    qty: string; unit_price: string; doc_date: string;
+  }[];
+}
+
+/**
+ * How many receipts each completed order took, for delivery completeness.
+ *
+ * Only orders fully received within the period are eligible: one still
+ * arriving has not yet failed to arrive at once.
+ */
+export async function getSupplierDeliveryCompleteness(
+  companyId: string, from: string, to: string,
+) {
+  const rows = await sql`
+    with ord as (
+      select fn_current_document(o.id) as order_id, o.partner_id,
+             ol.id as order_line_id, ol.base_qty as ordered_qty
+        from document o
+        join document_line ol on ol.document_id = o.id
+       where o.company_id = ${companyId}
+         and o.doc_type = 'PURCHASE_ORDER' and o.status = 'POSTED'
+         and o.partner_id is not null and o.doc_date <= ${to}::date
+    ),
+    recv as (
+      select ol.id as order_line_id, gr.id as receipt_id, gr.doc_date,
+             gl.base_qty as qty
+        from document gr
+        join document_line gl on gl.document_id = gr.id
+        join document_line ol on ol.id = gl.source_line_id
+       where gr.company_id = ${companyId}
+         and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+         and gr.doc_date <= ${to}::date
+         and not exists (
+               select 1 from fulfilment_link fl2
+                where fl2.fulfilment_line_id = gl.id
+                  and fl2.order_line_id is not distinct from gl.source_line_id)
+      union all
+      select fl.order_line_id, gr.id, gr.doc_date, fl.qty
+        from fulfilment_link fl
+        join document_line gl on gl.id = fl.fulfilment_line_id
+        join document gr on gr.id = gl.document_id
+       where fl.company_id = ${companyId}
+         and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+         and gr.doc_date <= ${to}::date
+    ),
+    -- Collapsed to one row per order line BEFORE joining to the order.
+    -- Joining the two directly multiplies each line by its own receipts, so
+    -- a line for 100 delivered in two runs sums as 200 ordered against 100
+    -- received and never registers as complete. The same fan-out overstated
+    -- inventory aging by 78% once; pre-aggregating is the fix in both cases.
+    per_line as (
+      select order_line_id, sum(qty) as qty,
+             count(distinct receipt_id) as receipts,
+             max(doc_date) as last_receipt
+        from recv
+       group by order_line_id
+    ),
+    per_order as (
+      select ord.order_id, ord.partner_id,
+             sum(ord.ordered_qty) as ordered,
+             coalesce(sum(pl.qty), 0) as received,
+             -- Receipts across the whole order, not per line: an order of
+             -- three lines that arrived together came in one shipment.
+             (select count(distinct rv2.receipt_id)
+                from recv rv2
+                join ord o2 on o2.order_line_id = rv2.order_line_id
+               where o2.order_id = ord.order_id) as receipts,
+             max(pl.last_receipt) as completed_on
+        from ord
+        left join per_line pl on pl.order_line_id = ord.order_line_id
+       group by ord.order_id, ord.partner_id
+    )
+    select partner_id,
+           count(*)::int as completed_orders,
+           count(*) filter (where receipts = 1)::int as single_receipt_orders
+      from per_order
+     where received >= ordered and ordered > 0
+       and completed_on >= ${from}::date and completed_on <= ${to}::date
+     group by partner_id`;
+
+  return rows as unknown as {
+    partner_id: string; completed_orders: number; single_receipt_orders: number;
+  }[];
+}
+
+/**
+ * Invoices that disagree with the order or the receipt behind them.
+ *
+ * An investigative figure, not an accusation: nothing distinguishes a
+ * supplier overcharging from our own buyer keying the order wrong, or from
+ * a price change both sides agreed and nobody recorded. It says where to go
+ * and look.
+ *
+ * Counted per invoice rather than per line, so one invoice with nine wrong
+ * lines is one thing to investigate rather than nine. A receipt invoiced
+ * twice is counted once for the same reason.
+ */
+export async function getSupplierMatchingVariance(
+  companyId: string, from: string, to: string,
+) {
+  const rows = await sql`
+    with inv as (
+      select d.id, d.partner_id, dl.id as line_id, dl.item_id,
+             dl.base_qty, dl.unit_price
+        from document d
+        join document_line dl on dl.document_id = d.id
+       where d.company_id = ${companyId}
+         and d.doc_type = 'PURCHASE_INVOICE' and d.status = 'POSTED'
+         and d.partner_id is not null and dl.item_id is not null
+         and d.doc_date >= ${from}::date and d.doc_date <= ${to}::date
+    ),
+    -- What the order said, reached through whichever line the invoice names.
+    ordered as (
+      select inv.line_id,
+             ol.unit_price as ordered_price, ol.base_qty as ordered_qty
+        from inv
+        join document_line il on il.id = inv.line_id
+        join document_line ol on ol.id = il.source_line_id
+        join document po on po.id = ol.document_id
+       where po.doc_type = 'PURCHASE_ORDER'
+    ),
+    flagged as (
+      select inv.id, inv.partner_id,
+             bool_or(
+               o.ordered_price is not null
+               and abs(inv.unit_price - o.ordered_price)
+                   > greatest(o.ordered_price * 0.005, 0.01)
+             ) as price_variance,
+             bool_or(
+               o.ordered_qty is not null and inv.base_qty > o.ordered_qty
+             ) as qty_variance
+        from inv
+        left join ordered o on o.line_id = inv.line_id
+       group by inv.id, inv.partner_id
+    )
+    select partner_id,
+           count(*)::int as invoices,
+           count(*) filter (where price_variance or qty_variance)::int as with_variance
+      from flagged
+     group by partner_id`;
+
+  return rows as unknown as {
+    partner_id: string; invoices: number; with_variance: number;
+  }[];
+}
+
+/** Purchase spend per supplier in the period, for the KPI row and weighting. */
+export async function getSupplierSpend(
+  companyId: string, from: string, to: string,
+) {
+  const rows = await sql`
+    select d.partner_id, bp.code, bp.name,
+           sum(d.net_total)::text as spend,
+           count(*)::int as invoices
+      from document d
+      join business_partner bp on bp.id = d.partner_id
+     where d.company_id = ${companyId}
+       and d.doc_type = 'PURCHASE_INVOICE' and d.status = 'POSTED'
+       and d.doc_date >= ${from}::date and d.doc_date <= ${to}::date
+     group by d.partner_id, bp.code, bp.name`;
+
+  return rows as unknown as {
+    partner_id: string; code: string; name: string; spend: string; invoices: number;
+  }[];
+}
+
+/**
+ * One order's lines with every delivery date its supplier has given.
+ *
+ * Powers the panel on the order itself: what was promised, what it was
+ * changed to, and who changed it. The resolution into a schedule is done in
+ * lib/supplier-commitments.ts, the same code the metric uses, so the order
+ * screen and the scoreboard can never tell different stories about the same
+ * supplier.
+ */
+export async function getOrderConfirmations(documentId: string) {
+  const rows = await sql`
+    select dl.id as order_line_id, dl.line_no, dl.base_qty::text as ordered_qty,
+           i.code as item_code, i.name as item_name,
+           coalesce((
+             select json_agg(json_build_object(
+                      'id', pc.id, 'qty', pc.qty::float8,
+                      'confirmedDate', to_char(pc.confirmed_date, 'YYYY-MM-DD'),
+                      'kind', pc.kind,
+                      'recordedOn', to_char(pc.recorded_at, 'YYYY-MM-DD'),
+                      'source', pc.source, 'note', pc.note)
+                    order by pc.recorded_at, pc.id)
+               from purchase_confirmation pc
+              where pc.order_line_id = dl.id
+           ), '[]'::json) as confirmations
+      from document_line dl
+      left join item i on i.id = dl.item_id
+     where dl.document_id = ${documentId}
+     order by dl.line_no`;
+
+  return rows as unknown as {
+    order_line_id: string; line_no: number; ordered_qty: string;
+    item_code: string | null; item_name: string | null;
+    confirmations: {
+      id: string; qty: number; confirmedDate: string; kind: string;
+      recordedOn: string; source: string | null; note: string | null;
+    }[];
+  }[];
+}
+
+/**
+ * What this company decided good looks like.
+ *
+ * Returns the stored object as-is and leaves merging with the defaults to
+ * lib/supplier-metrics.ts. Storing a partial object matters: a company that
+ * has set only an on-time target should pick up a later change to the other
+ * defaults, and a row full of copied defaults would freeze them forever.
+ */
+export async function getSupplierPerformanceSetting(companyId: string) {
+  const [row] = await sql`
+    select thresholds, targets, calc_version, updated_at
+      from supplier_performance_setting where company_id = ${companyId}`;
+  return (row ?? null) as {
+    thresholds: Record<string, number>; targets: Record<string, number>;
+    calc_version: number; updated_at: string;
+  } | null;
+}
+
+/** Saved radar layouts, the default first. */
+export async function getRadarPresets(companyId: string) {
+  const rows = await sql`
+    select id, name, axes, is_default, updated_at
+      from supplier_radar_preset
+     where company_id = ${companyId}
+     order by is_default desc, name`;
+  return rows as unknown as {
+    id: string; name: string; axes: string[]; is_default: boolean;
+    updated_at: string;
+  }[];
+}
+
+/**
+ * Month-by-month figures for one supplier, for the trend strip.
+ *
+ * Only the metrics that genuinely have a monthly value. A price premium is
+ * measured against what *other* suppliers charged in the same window, and a
+ * month in which nobody else bought the item has no reference price at all
+ * — a monthly line for it would be mostly gaps joined by straight lines
+ * that look like measurements. Those metrics have no trend rather than a
+ * misleading one.
+ */
+export async function getSupplierFulfilmentByMonth(
+  companyId: string, partnerId: string, from: string, to: string,
+) {
+  const rows = await sql`
+    with ord as (
+      select fn_current_document(o.id) as order_id,
+             to_char(o.doc_date, 'YYYY-MM') as month,
+             ol.id as order_line_id, ol.base_qty as ordered_qty
+        from document o
+        join document_line ol on ol.document_id = o.id
+       where o.company_id = ${companyId}
+         and o.doc_type = 'PURCHASE_ORDER' and o.status = 'POSTED'
+         and o.partner_id = ${partnerId}
+         and o.doc_date >= ${from}::date and o.doc_date <= ${to}::date
+    ),
+    closed as (
+      select distinct on (fn_current_document(oc.document_id))
+             fn_current_document(oc.document_id) as order_id, oc.is_open
+        from order_closure oc
+       where oc.company_id = ${companyId}
+       order by fn_current_document(oc.document_id), oc.closed_at desc
+    ),
+    -- Pre-aggregated per line before it meets the order, or one line with
+    -- two receipts would count its ordered quantity twice.
+    recv as (
+      select order_line_id, sum(qty) as qty from (
+        select ol.id as order_line_id, gl.base_qty as qty
+          from document gr
+          join document_line gl on gl.document_id = gr.id
+          join document_line ol on ol.id = gl.source_line_id
+         where gr.company_id = ${companyId}
+           and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+           and gr.doc_date <= ${to}::date
+           and not exists (
+                 select 1 from fulfilment_link fl2
+                  where fl2.fulfilment_line_id = gl.id
+                    and fl2.order_line_id is not distinct from gl.source_line_id)
+        union all
+        select fl.order_line_id, fl.qty
+          from fulfilment_link fl
+          join document_line gl on gl.id = fl.fulfilment_line_id
+          join document gr on gr.id = gl.document_id
+         where fl.company_id = ${companyId}
+           and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+           and gr.doc_date <= ${to}::date
+      ) x group by order_line_id
+    )
+    select ord.month,
+           sum(ord.ordered_qty)::text as ordered,
+           sum(least(coalesce(rv.qty, 0), ord.ordered_qty))::text as received
+      from ord
+      left join closed cl on cl.order_id = ord.order_id
+      left join recv rv on rv.order_line_id = ord.order_line_id
+     where coalesce(cl.is_open, true)
+     group by ord.month
+     order by ord.month`;
+
+  return rows as unknown as { month: string; ordered: string; received: string }[];
 }

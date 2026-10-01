@@ -69,10 +69,13 @@ import {
   getOrderCancellation,
   getVoucherLines,
   getSettlementForCorrection,
+  getOrderConfirmations,
 } from "@/lib/queries";
 import {
   createDelivery, createGoodsReceipt, replaceConsignmentSettlement,
+  recordSupplierConfirmation,
 } from "@/lib/actions";
+import { SupplierConfirmations } from "@/components/supplier-confirmations";
 import { FulfillOrderForm } from "@/components/fulfill-order-form";
 import { ReturnedBadge } from "@/components/returned-badge";
 import { ErpOrderForm, type OrderLine as ErpOrderLine } from "@/components/erp-order-form";
@@ -481,6 +484,14 @@ export default async function DocumentPage({
     return q === 0 ? l.unit_price : Number(l.net_amount ?? 0) / q;
   };
 
+  // Every line of a posted purchase order, with whatever the supplier has
+  // said about it. Not gated on the order still being open: a supplier's
+  // record of moving a date stays worth reading after the goods are in.
+  const confirmationLines =
+    doc.doc_type === "PURCHASE_ORDER" && doc.status === "POSTED"
+      ? await getOrderConfirmations(doc.id)
+      : [];
+
   let orderLines: {
     lineId: string; itemId: string; itemCode: string; itemName: string;
     remainingQty: number; expectedPrice: number;
@@ -886,6 +897,18 @@ export default async function DocumentPage({
 
     return (
       <ErpOrderForm
+        // Where the supplier's own dates are recorded. On the order because
+        // that is where the acknowledgement is read; a metric whose only
+        // data entry is three screens away stays empty.
+        commitments={
+          doc.doc_type === "PURCHASE_ORDER" && confirmationLines.length > 0 ? (
+            <SupplierConfirmations
+              action={recordSupplierConfirmation}
+              documentId={doc.id}
+              lines={confirmationLines as never}
+            />
+          ) : null
+        }
         backHref={backHref}
         backLabel={backLabel}
         config={{

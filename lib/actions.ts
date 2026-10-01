@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { sanitizeAxes } from "./supplier-metrics";
 import { redirect } from "next/navigation";
 import { money, sql } from "./db";
 import { parseCsv, planImport, type MasterData } from "./import-items";
@@ -6647,4 +6648,186 @@ export async function replaceConsignmentSettlement(
   financeRevalidate();
   revalidatePath(`/documents/${invoiceId}`);
   redirectWithToast(`/documents/${invoiceId}`, "Replacement settlement posted");
+}
+
+/**
+ * Record what a supplier said about when an order line will arrive.
+ *
+ * Append-only: there is no edit and no delete, because the history is the
+ * point. A supplier who confirms the 10th, rings to say the 17th, and
+ * delivers on the 17th has missed a commitment, and that is only visible
+ * while the first row still exists.
+ *
+ * `kind` is required from the caller rather than inferred. The obvious
+ * inference — first row is INITIAL, the rest are revisions — would quietly
+ * file every buyer-agreed change as a supplier failure, which is the one
+ * mistake this whole design exists to avoid.
+ */
+export async function recordSupplierConfirmation(
+  _prev: unknown, fd: FormData,
+): Promise<ActionResult> {
+  let orderId = "";
+  try {
+    const co = await companyId();
+    const lineId = str(fd, "order_line_id");
+    const date = str(fd, "confirmed_date");
+    const kind = str(fd, "kind");
+    orderId = str(fd, "document_id");
+
+    if (!lineId) return { error: "Which line is being confirmed?" };
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: "Give a date" };
+    if (!["INITIAL", "SUPPLIER_REVISION", "BUYER_AGREED"].includes(kind)) {
+      return { error: "Say who moved the date" };
+    }
+
+    const qty = Number(str(fd, "qty"));
+    if (!Number.isFinite(qty) || qty <= 0) {
+      return { error: "Confirmed quantity must be more than nought" };
+    }
+
+    // The line has to belong to this company as well as to a purchase
+    // order — the trigger checks the second, nothing else checks the first.
+    const [line] = await sql`
+      select dl.id, dl.base_qty
+        from document_line dl
+        join document d on d.id = dl.document_id
+       where dl.id = ${lineId} and d.company_id = ${co}
+         and d.doc_type = 'PURCHASE_ORDER' and d.status = 'POSTED'`;
+    if (!line) return { error: "That purchase order line is not available" };
+
+    if (qty > Number(line.base_qty)) {
+      return {
+        error: `The line is for ${Number(line.base_qty)}; a supplier cannot `
+          + `confirm ${qty}`,
+      };
+    }
+
+    await sql`
+      insert into purchase_confirmation
+        (company_id, order_line_id, qty, confirmed_date, kind, source, note)
+      values (${co}, ${lineId}, ${qty}, ${date}::date, ${kind},
+              ${str(fd, "source") || null}, ${str(fd, "note") || null})`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  if (orderId) revalidatePath(`/documents/${orderId}`);
+  revalidatePath("/purchases/supplier-performance");
+  return { ok: true };
+}
+
+/**
+ * Save this company's normalization boundaries and business targets.
+ *
+ * Both go in one form because they belong to one conversation, and both
+ * are stored as partial objects: a blank field means "no opinion, use the
+ * default", which is not the same as a zero. Only fields actually filled
+ * in are written, so a later change to a default still reaches a company
+ * that never had a view on it.
+ */
+export async function saveSupplierPerformanceSettings(
+  _prev: unknown, fd: FormData,
+): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+
+    const thresholds: Record<string, number> = {};
+    for (const key of ["cvLimit", "premiumCeiling", "deviationCeiling",
+                       "varianceCeiling"]) {
+      const raw = str(fd, `t_${key}`);
+      if (raw === "") continue;
+      const v = Number(raw);
+      // Zero would score every supplier zero on that axis, which is a
+      // mistake worth refusing rather than quietly rounding up.
+      if (!Number.isFinite(v) || v <= 0) {
+        return { error: `${key} must be more than nought, or left blank` };
+      }
+      thresholds[key] = v;
+    }
+
+    const targets: Record<string, number | null> = {};
+    for (const [k] of fd.entries()) {
+      if (!k.startsWith("g_")) continue;
+      const id = k.slice(2);
+      const raw = str(fd, k);
+      if (raw === "") { targets[id] = null; continue; }
+      const v = Number(raw);
+      if (!Number.isFinite(v) || v < 0) {
+        return { error: `The target for ${id} must be nought or more` };
+      }
+      targets[id] = v;
+    }
+
+    await sql`
+      insert into supplier_performance_setting (company_id, thresholds, targets)
+      values (${co}, ${sql.json(thresholds)}, ${sql.json(targets)})
+      on conflict (company_id) do update
+         set thresholds = excluded.thresholds,
+             targets = excluded.targets,
+             updated_at = now()`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/purchases/supplier-performance");
+  revalidatePath("/purchases/supplier-performance/settings");
+  return { ok: true };
+}
+
+/**
+ * Save the axes currently on screen under a name.
+ *
+ * Order is stored with the selection, because a radar's shape changes
+ * entirely with the order of its spokes and two people comparing charts
+ * need the same sequence.
+ */
+export async function saveRadarPreset(
+  _prev: unknown, fd: FormData,
+): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const name = str(fd, "name").trim();
+    if (!name) return { error: "Give the preset a name" };
+
+    const axes = sanitizeAxes(str(fd, "axes").split(",").filter(Boolean));
+    if (!axes) {
+      return { error: "A preset needs between three and six measurable metrics" };
+    }
+
+    const makeDefault = str(fd, "is_default") === "on";
+    await sql.begin(async (tx) => {
+      // One default per company, enforced by a partial unique index — so
+      // the old one has to stand down in the same transaction rather than
+      // the insert failing on a constraint the user never sees.
+      if (makeDefault) {
+        await tx`update supplier_radar_preset set is_default = false
+                  where company_id = ${co} and is_default`;
+      }
+      await tx`
+        insert into supplier_radar_preset (company_id, name, axes, is_default)
+        values (${co}, ${name}, ${sql.json(axes)}, ${makeDefault})
+        on conflict (company_id, name) do update
+           set axes = excluded.axes,
+               is_default = excluded.is_default,
+               updated_at = now()`;
+    });
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/purchases/supplier-performance");
+  return { ok: true };
+}
+
+export async function deleteRadarPreset(
+  _prev: unknown, fd: FormData,
+): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Which preset?" };
+    await sql`delete from supplier_radar_preset
+               where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/purchases/supplier-performance");
+  return { ok: true };
 }
