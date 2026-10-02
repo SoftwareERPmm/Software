@@ -314,3 +314,50 @@ export function TwoSeriesBars({
     </ResponsiveContainer>
   );
 }
+
+/**
+ * Columns with their value written above them, one colour per column.
+ *
+ * The colours are the donut's, in the same order, so a category keeps its
+ * colour between the two charts and the eye can carry one across to the
+ * other. That is the whole reason this is not just another green bar
+ * chart: two views of the same five things should agree on which is which.
+ */
+export function MeasureBars({
+  data, height = 240, format = "money",
+}: {
+  data: { label: string; value: number | string }[];
+  height?: number;
+  /** Per cent is not money and must not be given a currency's formatting. */
+  format?: "money" | "percent" | "plain";
+}) {
+  const rows = data.map((d) => ({ label: d.label, value: Number(d.value) }));
+  const show = (v: number) =>
+    format === "percent" ? `${v.toFixed(1)}%`
+    : format === "plain" ? v.toLocaleString("en-US", { maximumFractionDigits: 0 })
+    : money(v);
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <BarChart data={rows} margin={{ top: 22, right: 8, left: 0, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" vertical={false} />
+        <XAxis dataKey="label" axisLine={false} tickLine={false}
+               tick={{ fill: "var(--muted)", fontSize: 11 }}
+               tickFormatter={(v: string) => (v.length > 12 ? `${v.slice(0, 11)}…` : v)} />
+        <YAxis axisLine={false} tickLine={false} width={46}
+               tick={{ fill: "var(--muted)", fontSize: 10, fontFamily: "var(--mono)" }}
+               tickFormatter={(v: number) =>
+                 format === "percent" ? `${v}%`
+                 : Math.abs(v) >= 1e6 ? `${Math.round(v / 1e5) / 10}M`
+                 : Math.abs(v) >= 1e3 ? `${Math.round(v / 1e3)}K` : String(v)} />
+        <Tooltip content={<ChartTooltip />} cursor={{ fill: "var(--line-soft)" }} />
+        <Bar dataKey="value" radius={[3, 3, 0, 0]} maxBarSize={56}>
+          {rows.map((r, i) => (
+            <Cell key={r.label} fill={SLICE_COLOURS[i % SLICE_COLOURS.length]} />
+          ))}
+          <LabelList dataKey="value" position="top" formatter={(v: unknown) => show(v as number)}
+                     style={{ fill: "var(--muted)", fontSize: 10, fontFamily: "var(--mono)" }} />
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}

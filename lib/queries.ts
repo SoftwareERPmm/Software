@@ -7164,8 +7164,26 @@ export async function getSalesBreakdown(
              select 1 from location l where l.id = d.location_id and l.parent_id = ${branchId}))` : sql``}
      group by 1`;
 
+  /* Credited back to the customer in the same period. Its own query rather
+     than a negative sale: a return is a document of its own, and folding it
+     into revenue would hide both the gross and the fact it came back. */
+  const returned = await sql`
+    select ${dim} as key, sum(dl.net_amount) as returned
+      from document_line dl
+      join document d on d.id = dl.document_id
+      ${joins}
+     where d.company_id = ${companyId}
+       and d.doc_type = 'SALES_RETURN'
+       and d.status = 'POSTED'
+       and d.posting_date between ${from}::date and ${to}::date
+       ${branchId ? sql`and (d.location_id = ${branchId} or exists (
+             select 1 from location l where l.id = d.location_id and l.parent_id = ${branchId}))` : sql``}
+     group by 1`;
+
   const costBy = new Map((cost as unknown as Array<{ key: string; cost: string }>)
     .map((c) => [c.key, Number(c.cost)]));
+  const returnBy = new Map((returned as unknown as Array<{ key: string; returned: string }>)
+    .map((c) => [c.key, Number(c.returned)]));
 
   return (revenue as unknown as Array<{
     key: string; code: string; name: string; qty: string; gross: string;
@@ -7177,6 +7195,7 @@ export async function getSalesBreakdown(
       key: r.key, code: r.code, name: r.name,
       qty: Number(r.qty), freeQty: Number(r.free_qty), invoices: r.invoices,
       gross: Number(r.gross), discount: Number(r.discount), revenue: rev,
+      returned: returnBy.get(r.key) ?? 0,
       cost, margin: rev - cost,
       marginPct: rev === 0 ? null : ((rev - cost) / rev) * 100,
     };

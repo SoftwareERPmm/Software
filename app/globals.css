@@ -735,6 +735,19 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-num
    time the period changes; inside this it scrolls instead. */
 .chartbox { height: 300px; overflow: auto; }
 
+/* A row of charts, two up. Same rule as .grid3: cards of different kinds
+   may size themselves, a row of charts may not — three different heights
+   read as three unrelated things. */
+.chartrow { align-items: stretch; }
+.chartrow > .card { display: flex; flex-direction: column; }
+.chartrow > .card > .card-body { flex: 1 1 auto; display: flex; flex-direction: column; }
+.chartrow .donut-wrap { flex-direction: column; align-items: stretch; gap: var(--s2); }
+.chartrow .donut-chart { align-self: center; }
+.chartrow .donut-legend { grid-template-columns: 1fr; gap: 0; font-size: var(--t-sm); }
+.chartrow .donut-legend li { padding: 0.25rem 0; gap: 0.4rem; }
+/* The measure picker sits in the card head, beside the title it changes. */
+.chartrow .card-head select { max-width: 11rem; }
+
 /* In a third of a row the donut puts its legend under the ring rather than
    beside it: side by side, neither has the width to be read. */
 .grid3 .donut-wrap { flex-direction: column; align-items: stretch; gap: var(--s2); }

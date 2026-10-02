@@ -3,7 +3,8 @@ import { money } from "@/lib/db";
 import { AutoApply } from "@/components/auto-apply";
 import { HelpHint } from "@/components/help-hint";
 import { DataTable, type DataRow } from "@/components/data-table";
-import { RankedBarChart, ShareDonut } from "@/components/charts";
+import { ShareDonut } from "@/components/charts";
+import { BreakdownPerformance } from "@/components/breakdown-performance";
 import {
   getCompany, getBranches, getSalesBreakdown, getSalesOverview, UNASSIGNED_BRANCH,
   type SalesBreakdownBy,
@@ -91,7 +92,7 @@ export default async function SalesReports({
     searchText: `${r.code} ${r.name}`.toLowerCase(),
     sort: {
       code: r.code ?? "", name: (r.name ?? "").toLowerCase(), qty: r.qty,
-      gross: r.gross, discount: r.discount, revenue: r.revenue,
+      gross: r.gross, discount: r.discount, returned: r.returned, revenue: r.revenue,
       cost: r.cost, margin: r.margin,
       // Unmeasured sorts last rather than counting as nought and topping
       // a "worst margin" list with rows nobody has costed.
@@ -117,6 +118,7 @@ export default async function SalesReports({
         <td className="r">{qty(r.qty)}</td>
         <td className="r">{money(String(r.gross))}</td>
         <td className="r">{r.discount ? money(String(r.discount)) : "—"}</td>
+        <td className="r">{r.returned ? money(String(r.returned)) : "—"}</td>
         <td className="r"><strong>{money(String(r.revenue))}</strong></td>
         <td className="r">{r.cost ? money(String(r.cost)) : "—"}</td>
         <td className="r" style={{ color: r.margin < 0 ? "var(--bad)" : undefined }}>
@@ -209,64 +211,30 @@ export default async function SalesReports({
                 : "none"} />
       </div>
 
-      {/* The same three questions every cut of this report is asked: who
-          earns the most, who moves the most units, and how concentrated it
-          is. The donut is revenue share, which the table's Share column
-          gives as figures — a ranked list answers "which", a donut answers
-          "how lopsided", and they are different questions about one set of
-          numbers. */}
+      {/* Two views of the same five things, agreeing on colour: the donut
+          says how lopsided it is, the columns say how big each one is, and
+          the measure picker turns the second into net sales, cost, profit,
+          margin, units, discounts or returns without moving the page. */}
       {rows.length > 0 && (
-        <>
-          <section className="grid3">
-            <div className="card">
-              <div className="card-head">
-                <h2>Top 10 by net sales</h2>
-                <span className="page-sub">{company.base_currency}</span>
-              </div>
-              <div className="card-body">
-                <div className="chartbox">
-                  <RankedBarChart height={280} compact
-                    data={rows.slice(0, 10).map((r) => ({
-                      label: `${r.code} ${r.name}`, value: r.revenue,
-                    }))} />
-                </div>
+        <section className="grid2 chartrow">
+          <div className="card">
+            <div className="card-head">
+              <h2>Share of net sales</h2>
+              <span className="page-sub">top 5</span>
+            </div>
+            <div className="card-body">
+              <div className="chartbox">
+                <ShareDonut
+                  currency={company.base_currency}
+                  emptyLabel="Nothing was invoiced in this period."
+                  data={donut}
+                />
               </div>
             </div>
+          </div>
 
-            <div className="card">
-              <div className="card-head">
-                <h2>Units sold (top 10)</h2>
-                <span className="page-sub">quantity, not money</span>
-              </div>
-              <div className="card-body">
-                {/* Ranked by units, which is a different order from revenue
-                    and is the point of showing both: the thing that sells
-                    most is rarely the thing that earns most. */}
-                <div className="chartbox">
-                  <RankedBarChart height={280} compact
-                    data={[...rows].sort((a, b) => b.qty - a.qty).slice(0, 10)
-                      .map((r) => ({ label: `${r.code} ${r.name}`, value: r.qty }))} />
-                </div>
-              </div>
-            </div>
-
-            <div className="card">
-              <div className="card-head">
-                <h2>Share of revenue</h2>
-                <span className="page-sub">top 5</span>
-              </div>
-              <div className="card-body">
-                <div className="chartbox">
-                  <ShareDonut
-                    currency={company.base_currency}
-                    emptyLabel="Nothing was invoiced in this period."
-                    data={donut}
-                  />
-                </div>
-              </div>
-            </div>
-          </section>
-        </>
+          <BreakdownPerformance rows={rows} label={label} />
+        </section>
       )}
 
       <section>
@@ -289,9 +257,10 @@ export default async function SalesReports({
               { key: "name", label, sortable: true },
               { key: "qty", label: "Qty sold", sortable: true, align: "r" },
               { key: "gross", label: "Gross revenue", sortable: true, align: "r" },
-              { key: "discount", label: "Discount", sortable: true, align: "r" },
-              { key: "revenue", label: "Revenue", sortable: true, align: "r" },
-              { key: "cost", label: "Cost", sortable: true, align: "r" },
+              { key: "discount", label: "Discounts", sortable: true, align: "r" },
+              { key: "returned", label: "Returns", sortable: true, align: "r" },
+              { key: "revenue", label: "Net sales", sortable: true, align: "r" },
+              { key: "cost", label: "COGS", sortable: true, align: "r" },
               { key: "margin", label: "Gross margin", sortable: true, align: "r" },
               { key: "margin_pct", label: "Gross margin %", sortable: true, align: "r" },
               { key: "share", label: "Share", sortable: true, align: "r" },
