@@ -52,8 +52,11 @@ export function ItemRow({
   activateAction,
   setPhotoAction,
   variants = [],
+  startEditing,
 }: {
   item: Item;
+  /** Opens straight into the editor, for a link that meant this item. */
+  startEditing?: boolean;
   /** The things on the shelf, where this row is a product that varies.
    *  Empty for an ordinary item, which is nearly every row. */
   variants?: RowVariant[];
@@ -67,7 +70,7 @@ export function ItemRow({
    *  form behind it. */
   setPhotoAction: (prev: unknown, fd: FormData) => Promise<ActionResult>;
 }) {
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(startEditing ?? false);
   const [open, setOpen] = useState(false);
   /** Which variant's photo is being changed, if any. One at a time: the
    *  panel is a file picker and two open at once is two answers to one

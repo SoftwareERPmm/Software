@@ -1331,6 +1331,12 @@ export async function getOpenDeliveries(companyId: string, limit: number | null 
 
   const lines = await sql`
     select dl.id, dl.document_id, dl.item_id, dl.base_qty as qty, dl.net_amount as net,
+           -- Free of charge, and therefore not billable. Without this the
+           -- giveaway was offered for invoicing like any other line, at
+           -- whatever the price list said, while its cost had already gone
+           -- to the expense account its reason resolves to — revenue with
+           -- no cost against it, for goods nobody agreed to pay for.
+           dl.foc_reason_id,
            i.code as item_code, i.name as item_name,
            -- What the sales order agreed for these goods, where the delivery
            -- came out of one. A delivery moves stock at cost and carries no
@@ -1388,7 +1394,13 @@ export async function getOpenDeliveries(companyId: string, limit: number | null 
           itemCode: l.item_code,
           itemName: l.item_name,
           qty: Math.round((Number(l.qty) - (gone.get(l.id) ?? 0)) * 10000) / 10000,
-          orderPrice: l.order_price === null ? null : Number(l.order_price),
+          // Free of charge, and billed as such: the line goes on the
+          // invoice at nothing, so the customer's paperwork shows what
+          // they were given rather than quietly omitting it. Before this
+          // the reason was not even selected, so the giveaway was offered
+          // at the price list like any other line.
+          focReasonId: (l.foc_reason_id ?? null) as string | null,
+          orderPrice: l.foc_reason_id ? 0 : (l.order_price === null ? null : Number(l.order_price)),
           orderId: (l.order_id as string) ?? null,
           orderNo: (l.order_no as string) ?? null,
         }))

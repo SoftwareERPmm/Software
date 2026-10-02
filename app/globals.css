@@ -1115,8 +1115,28 @@ button.tiny { padding: 0.16rem 0.5rem; font-size: var(--t-sm); }
 .linetable td { padding: 0.35rem 0.5rem; vertical-align: middle; }
 .linetable input, .linetable select { padding: 0.3rem 0.45rem; font-size: var(--t-md); min-height: 1.9rem; }
 .linetable select { padding-right: 1.7rem; background-position: right 0.5rem center; background-size: 12px; }
+/* A floor, not a layout. The columns have declared widths and width:100%
+   let the browser squeeze them all to fit the card — which is how a reason
+   reading "Damaged or expired" ended up in 71 pixels. .tablewrap already
+   scrolls, so a genuinely narrow window scrolls rather than crushes. */
+.linetable { min-width: 820px; }
 .linetable td.narrow { width: 120px; }
-.linetable td.tight { width: 44px; }
+/* Sized to whatever is in it rather than to 44px, which fitted the "×" it
+   was written for and not the word "Remove" — the button overflowed and
+   sat on top of the cell beside it. width:1% with nowrap is the table
+   idiom for "as narrow as the content allows, and no narrower". */
+.linetable td.tight { width: 1%; white-space: nowrap; }
+
+/* The free quantity and, under it, why it is free. A reason reads
+   "Damaged or expired", which is wider than a number column, so the cell
+   is given room and the select is kept inside it. */
+.linetable td.focqty { width: 190px; }
+/* The reason goes under the quantity, not beside it. A <select> is
+   inline-block, so a margin-top alone left it on the same line as the
+   number — together they needed about twice the column, and the select
+   ran out of the cell and under the Remove button. */
+.linetable td.focqty input,
+.linetable td.focqty select { display: block; width: 100%; max-width: 100%; }
 
 .totalbar {
   display: flex; justify-content: flex-end; gap: var(--s4);

@@ -66,6 +66,7 @@ export function DataTable({
   rows,
   columns,
   searchPlaceholder = "Search…",
+  initialQuery,
   defaultSort,
   emptyLabel = "Nothing here",
   footer,
@@ -81,6 +82,8 @@ export function DataTable({
   rows: DataRow[];
   columns: Column[];
   searchPlaceholder?: string;
+  /** Pre-fills the search box, for a link that means one row. */
+  initialQuery?: string;
   /** Narrowing by a column's value, beside the search box. A filter whose
    *  options are all one value is not offered — a dropdown with nothing to
    *  choose is furniture. */
@@ -120,7 +123,10 @@ export function DataTable({
   storageKey?: string;
   defaultPageSize?: number;
 }) {
-  const [q, setQ] = useState("");
+  // Seeded when a link arrives pointing at one row — "edit this item" from
+  // the item's own page should land on that item, not on a list to search
+  // through again. Still an ordinary search afterwards: it can be cleared.
+  const [q, setQ] = useState(initialQuery ?? "");
   const [sort, setSort] = useState<{ key: string; dir: "asc" | "desc" } | null>(defaultSort ?? null);
   const [picked, setPicked] = useState<Record<string, string>>({});
   const [hidden, setHidden] = useState<string[]>([]);

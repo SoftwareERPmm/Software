@@ -114,8 +114,10 @@ export default async function ItemPage({
 
       <div className="actions" style={{ marginBottom: "var(--s3)" }}>
         {/* Editing lives in the catalogue, so this page cannot drift from
-            the form that actually writes. */}
-        <Link className="btn ghost" href="/items">Edit in catalogue</Link>
+            the form that actually writes — but it opens on this item with
+            its editor already up, rather than dropping you into a list of
+            sixteen to find it again. */}
+        <Link className="btn ghost" href={`/items?edit=${item.id}`}>Edit this item</Link>
         {item.is_stocked && (
           <Link className="btn ghost" href={`/inventory/movements?item=${item.id}`}>
             All stock movements
@@ -144,6 +146,10 @@ export default async function ItemPage({
           </div>
           <div className="card-body">
             <div className="row">
+              <div className="field">
+                <label>Item code</label>
+                <div className="code">{item.code}</div>
+              </div>
               <div className="field">
                 <label>Base unit</label>
                 <div className="code">{item.uom_code}</div>

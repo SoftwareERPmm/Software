@@ -29,9 +29,10 @@ type Row = {
 export default async function Items({
   searchParams,
 }: {
-  searchParams: Promise<{ category?: string; sub?: string; brand?: string; status?: string }>;
+  searchParams: Promise<{ category?: string; sub?: string; brand?: string; status?: string;
+                          edit?: string }>;
 }) {
-  const { category, sub, brand, status } = await searchParams;
+  const { category, sub, brand, status, edit } = await searchParams;
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
@@ -148,6 +149,7 @@ export default async function Items({
     },
     node: (
       <ItemRow
+        startEditing={edit === i.id}
         item={{
           ...i,
           packs: packs
@@ -229,6 +231,7 @@ export default async function Items({
               rows={rows}
               emptyLabel="No items"
               searchPlaceholder="Search items…"
+              initialQuery={edit ? (items.find((i: any) => i.id === edit)?.code ?? "") : undefined}
               defaultSort={{ key: "code", dir: "asc" }}
               csvFilename="items.csv"
               storageKey="items"
