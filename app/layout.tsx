@@ -109,6 +109,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <NavLink href="/sales/credit-notes" exact>Credit notes</NavLink>
               <NavLink href="/sales/discounts" exact>Volume discounts</NavLink>
               <NavLink href="/sales/discounts-given" exact>Discounts given</NavLink>
+              <NavLink href="/sales/reports">Sales report</NavLink>
               <NavLink href="/receivables" exact>Receivables</NavLink>
               <NavLink href="/receivables/advances">Customer advances</NavLink>
               <NavLink href="/receivables/receive">Receive payment</NavLink>

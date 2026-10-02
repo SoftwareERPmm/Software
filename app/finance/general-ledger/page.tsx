@@ -8,7 +8,7 @@ import {
 } from "@/lib/queries";
 import { money } from "@/lib/db";
 import { AutoApply } from "@/components/auto-apply";
-import { AccountPicker } from "@/components/account-picker";
+import { AccountMultiPicker } from "@/components/account-multi-picker";
 import { JournalEntryList, type Entry } from "@/components/journal-entry-list";
 import { ErpCrumbs } from "@/components/erp-worklist";
 import { HelpHint } from "@/components/help-hint";
@@ -332,13 +332,11 @@ async function AccountView({
 
   return (
     <>
-      <AccountPicker accounts={list} selectedId={selected.id} tree={tree}
-                     basePath="/finance/general-ledger"
-                     label={many ? "Add another account" : "Account"}
-                     addTo={many ? ids : undefined}
-                     headings
-                     keep={{ view: "account", from: p.from, to: p.to,
-                             location: p.location, voided: p.voided }} />
+      <AccountMultiPicker accounts={list} tree={tree} selectedIds={ids}
+                          basePath="/finance/general-ledger"
+                          label={many ? "Accounts" : "Account"}
+                          keep={{ view: "account", from: p.from, to: p.to,
+                                  location: p.location, voided: p.voided }} />
 
       {many && (
         <div className="actions" style={{ marginBottom: "0.75rem", flexWrap: "wrap" }}>
@@ -471,7 +469,11 @@ async function AccountView({
           </div>
 
           {rows.length === 0 ? (
-            <div className="empty">Nothing has moved on this account yet.</div>
+            <div className="empty">
+              {many
+                ? "Nothing has moved on any of these accounts in this period."
+                : "Nothing has moved on this account yet."}
+            </div>
           ) : (
             <div className="tablewrap">
               <table>

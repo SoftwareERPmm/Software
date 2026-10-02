@@ -1,0 +1,288 @@
+import Link from "next/link";
+import { money } from "@/lib/db";
+import { AutoApply } from "@/components/auto-apply";
+import { HelpHint } from "@/components/help-hint";
+import { DataTable, type DataRow } from "@/components/data-table";
+import { RankedBarChart, ShareDonut } from "@/components/charts";
+import {
+  getCompany, getBranches, getSalesBreakdown, UNASSIGNED_BRANCH,
+  type SalesBreakdownBy,
+} from "@/lib/queries";
+
+const TABS: [SalesBreakdownBy, string, string][] = [
+  ["item", "By item", "Which products earned it"],
+  ["customer", "By customer", "Who it came from"],
+  ["category", "By category", "Which part of the catalogue"],
+  ["brand", "By brand", "Whose goods sold"],
+];
+
+const qty = (v: number) =>
+  v.toLocaleString("en-US", { maximumFractionDigits: 4 });
+const pct = (v: number | null) =>
+  v === null ? "—" : `${v.toFixed(1)}%`;
+
+const defaultFrom = () => `${new Date().getFullYear()}-01-01`;
+const today = () => new Date().toISOString().slice(0, 10);
+
+export default async function SalesReports({
+  searchParams,
+}: {
+  searchParams: Promise<{ by?: string; from?: string; to?: string; branch?: string }>;
+}) {
+  const p = await searchParams;
+  const company = await getCompany();
+  if (!company) return <div className="empty">No company found.</div>;
+
+  const by = (TABS.find(([k]) => k === p.by)?.[0] ?? "item") as SalesBreakdownBy;
+  const range = { from: p.from || defaultFrom(), to: p.to || today() };
+
+  const branches = (await getBranches(company.id)) as unknown as Array<{
+    id: string; code: string; name: string;
+  }>;
+  const branchId =
+    p.branch === UNASSIGNED_BRANCH ? UNASSIGNED_BRANCH
+    : p.branch && branches.some((b) => b.id === p.branch) ? p.branch
+    : null;
+
+  const rows = await getSalesBreakdown(company.id, range.from, range.to, by, branchId);
+
+  const tot = rows.reduce((t, r) => ({
+    qty: t.qty + r.qty, freeQty: t.freeQty + r.freeQty,
+    gross: t.gross + r.gross, discount: t.discount + r.discount,
+    revenue: t.revenue + r.revenue, cost: t.cost + r.cost, margin: t.margin + r.margin,
+  }), { qty: 0, freeQty: 0, gross: 0, discount: 0, revenue: 0, cost: 0, margin: 0 });
+
+  const TOP = 6;
+  const head = rows.slice(0, TOP);
+  const tail = rows.slice(TOP);
+  const donut = [
+    ...head.map((r) => ({ id: r.key, name: `${r.code} · ${r.name}`, revenue: r.revenue })),
+    ...(tail.length > 0
+      ? [{ id: "rest", name: `${tail.length} others`,
+           revenue: tail.reduce((t, r) => t + r.revenue, 0) }]
+      : []),
+  ].filter((d) => d.revenue > 0);
+
+  const link = (over: Record<string, string | undefined>) => {
+    const q = new URLSearchParams();
+    const all = { by, from: range.from, to: range.to,
+                  branch: branchId ?? undefined, ...over };
+    for (const [k, v] of Object.entries(all)) if (v) q.set(k, String(v));
+    return `/sales/reports?${q.toString()}`;
+  };
+
+  const label = { item: "Item", customer: "Customer", category: "Category", brand: "Brand" }[by];
+
+  const table: DataRow[] = rows.map((r) => ({
+    key: r.key,
+    searchText: `${r.code} ${r.name}`.toLowerCase(),
+    sort: {
+      code: r.code ?? "", name: (r.name ?? "").toLowerCase(), qty: r.qty,
+      gross: r.gross, discount: r.discount, revenue: r.revenue,
+      cost: r.cost, margin: r.margin,
+      // Unmeasured sorts last rather than counting as nought and topping
+      // a "worst margin" list with rows nobody has costed.
+      margin_pct: r.marginPct ?? -1e9,
+      share: r.revenue,
+    },
+    csv: {
+      code: r.code, name: r.name, qty: r.qty, free_qty: r.freeQty,
+      gross: r.gross, discount: r.discount, revenue: r.revenue,
+      cost: r.cost, margin: r.margin,
+      margin_pct: r.marginPct === null ? "" : r.marginPct.toFixed(2),
+      invoices: r.invoices,
+    },
+    node: (
+      <tr>
+        <td className="code">{r.code}</td>
+        <td className="wrap">
+          {r.name}
+          {r.freeQty > 0 && (
+            <div className="subline">{qty(r.freeQty)} given free</div>
+          )}
+        </td>
+        <td className="r">{qty(r.qty)}</td>
+        <td className="r">{money(String(r.gross))}</td>
+        <td className="r">{r.discount ? money(String(r.discount)) : "—"}</td>
+        <td className="r"><strong>{money(String(r.revenue))}</strong></td>
+        <td className="r">{r.cost ? money(String(r.cost)) : "—"}</td>
+        <td className="r" style={{ color: r.margin < 0 ? "var(--bad)" : undefined }}>
+          {money(String(r.margin))}
+        </td>
+        <td className="r">{pct(r.marginPct)}</td>
+        <td className="r">
+          {tot.revenue > 0 ? `${((r.revenue / tot.revenue) * 100).toFixed(1)}%` : "—"}
+        </td>
+        <td className="r">{r.invoices}</td>
+      </tr>
+    ),
+  }));
+
+  return (
+    <>
+      <div className="page-head">
+        <span className="eyebrow">Sales</span>
+        <h1>Sales report</h1>
+        <HelpHint label="Where these figures come from">
+          Revenue is posted sales invoices in the period. Cost is the FIFO
+          cost of the goods the deliveries actually moved, which is where
+          cost is recognised &mdash; an invoice never costs anything by
+          itself.
+          <br /><br />
+          The two are matched on the period, not line by line, because they
+          genuinely can fall in different months: goods delivered in June and
+          billed in July are June&rsquo;s cost and July&rsquo;s revenue. Over
+          a quarter or a year that washes out; over a single week a margin
+          can look strange for a reason that is not a mistake.
+          <br /><br />
+          Free-of-charge lines earn nothing and their cost goes to promotion
+          expense, so they are counted as units given away and left out of
+          both money columns.
+        </HelpHint>
+      </div>
+
+      <div className="erp-tabs">
+        {TABS.map(([k, t, hint]) => (
+          <Link key={k} href={link({ by: k })} title={hint}
+                className={`erp-tab ${by === k ? "here" : ""}`}>{t}</Link>
+        ))}
+      </div>
+
+      <form className="row" style={{ margin: "1rem 0", alignItems: "flex-end" }}>
+        <input type="hidden" name="by" value={by} />
+        <div className="field">
+          <label htmlFor="from">From</label>
+          <input id="from" name="from" type="date" defaultValue={range.from} />
+        </div>
+        <div className="field">
+          <label htmlFor="to">To</label>
+          <input id="to" name="to" type="date" defaultValue={range.to} />
+        </div>
+        <div className="field">
+          <label htmlFor="branch">Branch</label>
+          <select id="branch" name="branch" defaultValue={branchId ?? ""}>
+            <option value="">All branches</option>
+            {branches.map((b) => (
+              <option key={b.id} value={b.id}>{b.code} · {b.name}</option>
+            ))}
+          </select>
+        </div>
+        <div className="actions">
+          <AutoApply />
+          <button type="submit" data-apply>Update</button>
+        </div>
+      </form>
+
+      <div className="kpis kpis-tiled">
+        <Tile label="Revenue" value={money(String(tot.revenue))}
+              sub={`${rows.length} ${label.toLowerCase()}${rows.length === 1 ? "" : "s"} sold`} />
+        <Tile label="Cost of those goods" value={money(String(tot.cost))}
+              sub="FIFO, from the deliveries" />
+        <Tile label="Gross margin" value={money(String(tot.margin))}
+              sub={tot.revenue > 0
+                ? `${((tot.margin / tot.revenue) * 100).toFixed(1)}% of revenue`
+                : "nothing sold"} />
+        <Tile label="Discounts given" value={money(String(tot.discount))}
+              sub={tot.gross > 0
+                ? `${((tot.discount / tot.gross) * 100).toFixed(1)}% off list`
+                : "none"} />
+      </div>
+
+      {/* The same three questions every cut of this report is asked: who
+          earns the most, who moves the most units, and how concentrated it
+          is. The donut is revenue share, which the table's Share column
+          gives as figures — a ranked list answers "which", a donut answers
+          "how lopsided", and they are different questions about one set of
+          numbers. */}
+      {rows.length > 0 && (
+        <>
+          <section className="grid3">
+            <div className="card">
+              <div className="card-head">
+                <h2>Top 10 by net sales</h2>
+                <span className="page-sub">{company.base_currency}</span>
+              </div>
+              <div className="card-body">
+                <RankedBarChart height={260}
+                  data={rows.slice(0, 10).map((r) => ({
+                    label: `${r.code} ${r.name}`, value: r.revenue,
+                  }))} />
+              </div>
+            </div>
+
+            <div className="card">
+              <div className="card-head">
+                <h2>Units sold (top 10)</h2>
+                <span className="page-sub">quantity, not money</span>
+              </div>
+              <div className="card-body">
+                {/* Ranked by units, which is a different order from revenue
+                    and is the point of showing both: the thing that sells
+                    most is rarely the thing that earns most. */}
+                <RankedBarChart height={260}
+                  data={[...rows].sort((a, b) => b.qty - a.qty).slice(0, 10)
+                    .map((r) => ({ label: `${r.code} ${r.name}`, value: r.qty }))} />
+              </div>
+            </div>
+
+            <div className="card">
+              <div className="card-head">
+                <h2>Share of revenue</h2>
+                <span className="page-sub">top 6</span>
+              </div>
+              <div className="card-body">
+                <ShareDonut
+                  currency={company.base_currency}
+                  emptyLabel="Nothing was invoiced in this period."
+                  data={donut}
+                />
+              </div>
+            </div>
+          </section>
+        </>
+      )}
+
+      <section>
+        <div className="card">
+          <div className="card-head">
+            <h2>{TABS.find(([k]) => k === by)?.[1]}</h2>
+            <span className="page-sub">
+              {range.from} to {range.to}
+              {tot.freeQty > 0 && ` · ${qty(tot.freeQty)} units given free`}
+            </span>
+          </div>
+          <DataTable
+            rows={table}
+            emptyLabel="Nothing was invoiced in this period."
+            searchPlaceholder={`Search ${label.toLowerCase()}s…`}
+            defaultSort={{ key: "revenue", dir: "desc" }}
+            defaultPageSize={20}
+            columns={[
+              { key: "code", label: "Code", sortable: true },
+              { key: "name", label, sortable: true },
+              { key: "qty", label: "Qty sold", sortable: true, align: "r" },
+              { key: "gross", label: "Gross", sortable: true, align: "r" },
+              { key: "discount", label: "Discount", sortable: true, align: "r" },
+              { key: "revenue", label: "Revenue", sortable: true, align: "r" },
+              { key: "cost", label: "Cost", sortable: true, align: "r" },
+              { key: "margin", label: "Margin", sortable: true, align: "r" },
+              { key: "margin_pct", label: "Margin %", sortable: true, align: "r" },
+              { key: "share", label: "Share", sortable: true, align: "r" },
+              { key: "invoices", label: "Invoices", align: "r" },
+            ]}
+          />
+        </div>
+      </section>
+    </>
+  );
+}
+
+function Tile({ label, value, sub }: { label: string; value: string; sub: string }) {
+  return (
+    <div className="kpi">
+      <div className="kpi-label">{label}</div>
+      <div className="kpi-value">{value}</div>
+      <div className="kpi-sub">{sub}</div>
+    </div>
+  );
+}

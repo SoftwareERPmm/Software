@@ -7069,3 +7069,116 @@ export async function getInventoryCogsReconciliation(
     postedCogs, returnedToCogs,
   };
 }
+
+/** How a sales report is cut. */
+export type SalesBreakdownBy = "item" | "customer" | "category" | "brand";
+
+/**
+ * Sales for a period, cut whichever way the reader needs.
+ *
+ * Revenue comes from posted sales invoices and cost from the deliveries that
+ * moved the goods, because that is where each is recognised — this is
+ * perpetual FIFO, and an invoice never costs anything by itself. The two are
+ * matched on the dimension and the period rather than line by line, which is
+ * the honest join: a delivery in June billed in July belongs to June's cost
+ * and July's revenue, and no report can put both in one month without lying
+ * about one of them. Where that matters the margin column says so by being
+ * visibly odd, which is better than a figure that quietly reconciles.
+ *
+ * Free-of-charge lines carry no revenue and their cost goes to promotion
+ * expense, so they are counted as quantity given away and left out of both
+ * money columns.
+ */
+export async function getSalesBreakdown(
+  companyId: string, from: string, to: string,
+  by: SalesBreakdownBy, branchId?: string | null,
+) {
+  // The grouping, as the key the two halves are joined on. Category means the
+  // top of the tree an item is filed under, not the sub-category, because
+  // "which categories sell" is asked about the top level.
+  const dim = {
+    item:     sql`i.id::text`,
+    customer: sql`d.partner_id::text`,
+    category: sql`coalesce(pg.id, g.id)::text`,
+    brand:    sql`coalesce(b.id::text, 'none')`,
+  }[by];
+  const code = {
+    item:     sql`i.code`,
+    customer: sql`p.code`,
+    category: sql`coalesce(pg.code, g.code)`,
+    brand:    sql`coalesce(b.code, '—')`,
+  }[by];
+  const name = {
+    item:     sql`i.name`,
+    customer: sql`p.name`,
+    category: sql`coalesce(pg.name, g.name)`,
+    brand:    sql`coalesce(b.name, 'No brand')`,
+  }[by];
+
+  const joins = sql`
+      join item i on i.id = dl.item_id
+      left join item_group g on g.id = i.item_group_id
+      left join item_group pg on pg.id = g.parent_id
+      left join brand b on b.id = i.brand_id
+      left join business_partner p on p.id = d.partner_id`;
+
+  const revenue = await sql`
+    select ${dim} as key, ${code} as code, ${name} as name,
+           sum(case when dl.foc_reason_id is null then dl.base_qty else 0 end) as qty,
+           sum(case when dl.foc_reason_id is null then dl.base_qty else 0 end
+               * coalesce(dl.unit_price, 0)) as gross,
+           sum(coalesce(dl.discount_amount, 0)
+             + coalesce(dl.volume_discount_amount, 0)
+             + coalesce(dl.invoice_discount_amount, 0)) as discount,
+           sum(case when dl.foc_reason_id is null then dl.net_amount else 0 end) as revenue,
+           sum(case when dl.foc_reason_id is not null then dl.base_qty else 0 end) as free_qty,
+           count(distinct d.id)::int as invoices
+      from document_line dl
+      join document d on d.id = dl.document_id
+      ${joins}
+     where d.company_id = ${companyId}
+       and d.doc_type = 'SALES_INVOICE'
+       and d.status = 'POSTED'
+       and d.posting_date between ${from}::date and ${to}::date
+       ${branchId ? sql`and (d.location_id = ${branchId} or exists (
+             select 1 from location l where l.id = d.location_id and l.parent_id = ${branchId}))` : sql``}
+     group by 1, 2, 3`;
+
+  /* The cost of what went out, from the layers the deliveries consumed.
+     Only consumption charged to cost of sales: a giveaway's cost went to
+     promotion expense and is not part of what these sales cost. */
+  const cost = await sql`
+    select ${dim} as key,
+           sum(c.qty * c.unit_cost) as cost
+      from stock_lot_consumption c
+      join stock_movement sm on sm.id = c.stock_movement_id
+      join document_line dl on dl.id = sm.document_line_id
+      join document d on d.id = dl.document_id
+      ${joins}
+     where c.company_id = ${companyId}
+       and d.doc_type = 'DELIVERY'
+       and d.status = 'POSTED'
+       and d.posting_date between ${from}::date and ${to}::date
+       and c.expense_account_id = fn_resolve_account(${companyId}, 'COGS', null, null, null)
+       ${branchId ? sql`and (d.location_id = ${branchId} or exists (
+             select 1 from location l where l.id = d.location_id and l.parent_id = ${branchId}))` : sql``}
+     group by 1`;
+
+  const costBy = new Map((cost as unknown as Array<{ key: string; cost: string }>)
+    .map((c) => [c.key, Number(c.cost)]));
+
+  return (revenue as unknown as Array<{
+    key: string; code: string; name: string; qty: string; gross: string;
+    discount: string; revenue: string; free_qty: string; invoices: number;
+  }>).map((r) => {
+    const rev = Number(r.revenue);
+    const cost = costBy.get(r.key) ?? 0;
+    return {
+      key: r.key, code: r.code, name: r.name,
+      qty: Number(r.qty), freeQty: Number(r.free_qty), invoices: r.invoices,
+      gross: Number(r.gross), discount: Number(r.discount), revenue: rev,
+      cost, margin: rev - cost,
+      marginPct: rev === 0 ? null : ((rev - cost) / rev) * 100,
+    };
+  }).sort((a, b) => b.revenue - a.revenue);
+}

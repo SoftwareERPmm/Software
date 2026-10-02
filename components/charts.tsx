@@ -191,15 +191,18 @@ function SliceTooltip({ active, payload, total }: any) {
 }
 
 export function ShareDonut({
-  data, currency,
+  data, currency, emptyLabel = "Nothing to show for the last six months.",
 }: {
   data: { id: string; name: string; revenue: number | string; qty?: number | string }[];
   currency: string;
+  /** Said by whoever is showing the chart: the dashboard means its own six
+   *  months, a report means the period its filters are set to. */
+  emptyLabel?: string;
 }) {
   const rows = data.map((d) => ({ id: d.id, name: d.name, value: Number(d.revenue) }));
   const total = rows.reduce((t, r) => t + r.value, 0);
   if (rows.length === 0 || total <= 0) {
-    return <div className="empty">Nothing to show for the last six months.</div>;
+    return <div className="empty">{emptyLabel}</div>;
   }
 
   return (
@@ -210,7 +213,7 @@ export function ShareDonut({
             <Pie
               data={rows} dataKey="value" nameKey="name"
               cx="50%" cy="50%" innerRadius={52} outerRadius={82}
-              paddingAngle={rows.length > 1 ? 2 : 0} stroke="var(--card)" strokeWidth={2}
+              paddingAngle={rows.length > 1 ? 2 : 0} stroke="var(--surface)" strokeWidth={2}
             >
               {rows.map((r, i) => (
                 <Cell key={r.id} fill={SLICE_COLOURS[i % SLICE_COLOURS.length]} />
