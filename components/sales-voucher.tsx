@@ -45,6 +45,10 @@ type MatchLine = {
   itemId: string; itemCode: string; itemName: string; qty: number;
   /** What the sales order agreed, where the delivery came out of one. */
   orderPrice?: number | null;
+  /** Set where the delivery gave these goods away. Billed at nothing, and
+   *  the reason travels to the invoice so the giveaway is still accounted
+   *  to the expense it belongs to rather than to cost of sales. */
+  focReasonId?: string | null;
   orderId?: string | null;
   orderNo?: string | null;
 };
@@ -364,10 +368,16 @@ export function SalesVoucher({
     // right answer.
     setLines(
       d.lines.map((l, idx) => {
-        const agreed = l.orderPrice ?? null;
-        const p = agreed ?? priceFor(l.itemId);
-        return { key: idx + 1, itemId: l.itemId, qty: String(l.qty), unitPrice: p > 0 ? String(p) : "",
-                 discountPct: "", focQty: "", focReasonId: "", source: "OWNED",
+        // A line the delivery gave away is billed at nothing, whatever the
+        // price list says, and carries its reason so the invoice books it
+        // where the delivery already booked its cost.
+        const free = !!l.focReasonId;
+        const agreed = free ? 0 : (l.orderPrice ?? null);
+        const p = free ? 0 : (agreed ?? priceFor(l.itemId));
+        return { key: idx + 1, itemId: l.itemId, qty: String(l.qty),
+                 unitPrice: free ? "0" : (p > 0 ? String(p) : ""),
+                 discountPct: "", focQty: "",
+                 focReasonId: free ? (l.focReasonId as string) : "", source: "OWNED",
                  sourceLineId: l.lineId, sourceQty: String(l.qty),
                  agreedPrice: agreed, orderId: l.orderId ?? null, orderNo: l.orderNo ?? null };
       })
@@ -1225,7 +1235,7 @@ export function SalesVoucher({
                     {/* Given away on this line. Not a discount: these units
                         are charged at nothing and still leave the warehouse,
                         so they need a reason of their own to cost against. */}
-                    <td className="narrow">
+                    <td className="focqty">
                       <input type="number" min="0" step="any" value={l.focQty} aria-label="Free quantity"
                         placeholder="0"
                         onChange={(e) => setLine(l.key, { focQty: e.target.value })} />

@@ -238,7 +238,10 @@ export function DeliveryForm({
   const nothingToPost = lines.every((l) => !l.itemId || issuing(l) <= 0);
 
   return (
-    <form action={formAction} className="form">
+    /* wide, like every other voucher. This one was the only line-entry
+       form left at the 760px .form cap, which is what squeezed its
+       columns until the free-reason select ran under Remove. */
+    <form action={formAction} className="form wide">
       {/* One submission, one posting. Generated when this form mounts, so a
           double-click or a resent request carries the same key and is handed
           the document the first one posted; a new form is a new key. */}
@@ -307,7 +310,11 @@ export function DeliveryForm({
       <div className="card">
         <div className="card-head"><h2>Items</h2></div>
         <div className="tablewrap">
-          <table>
+          {/* linetable, like every other voucher's line table: this one was
+              a bare <table>, so the column sizing the others get never
+              applied and the free-reason select ran under the Remove
+              button. */}
+          <table className="linetable">
             <thead>
               <tr>
                 <th>Item</th>
@@ -371,7 +378,7 @@ export function DeliveryForm({
                              onChange={(e) => setLine(l.key, { qty: e.target.value })} />
                     </td>
                     {focReasons.length > 0 && (
-                      <td className="narrow">
+                      <td className="focqty">
                         <input type="number" min="0" step="any" value={l.focQty} placeholder="0"
                                aria-label="Free quantity"
                                onChange={(e) => setLine(l.key, { focQty: e.target.value })} />
