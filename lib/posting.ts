@@ -36,6 +36,13 @@ export type InvoiceLine = {
   /** The discount typed on this line, in percent. */
   discountPct?: number;
   /**
+   * The same discount typed as money rather than as a rate. Where it is
+   * given it decides the line's discount and the percentage is derived
+   * from it; the ledger treats the two identically, because what reaches
+   * Sales Discount is gross less net either way.
+   */
+  discountAmount?: number | null;
+  /**
    * Which commercial tax applies to this line. Left unset, the line is
    * taxed at the company's NONE code — which is what every document posted
    * before tax existed carried, so nothing already in the ledger changes
@@ -2748,7 +2755,17 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
   // correct rather than a sign something was skipped. journal_entry_id
   // stays null; fn_document_posting_required (0029) knows to permit that
   // specifically when every line on the document is consignment-sourced.
-  const entryId = journal.length > 0
+  /* Lines are pushed even when the cost is nil, so "are there lines" is
+     not the same question as "is there anything to post". Goods that have
+     never been received have no cost anywhere to draw a provisional one
+     from, and journal_line forbids a zero amount — so writing an entry
+     here produced one with nothing in it, which the database refused at
+     commit: "Journal entry JE… has no lines". 0112 lets a delivery worth
+     nothing go without an entry, the way an all-consigned one already
+     does; the cost reaches the ledger when a receipt arrives and the
+     negative-stock reconciliation carries it back here. */
+  const hasValue = journal.some((j) => round4(j.amount) !== 0);
+  const entryId = hasValue
     ? await writeJournal(tx, companyId, docDate, "DELIVERY", doc.id, `${docNo} delivery`, journal, locationId)
     : null;
 
@@ -3102,6 +3119,7 @@ async function _postSalesInvoice(
       baseQty: round4(l.qty * (packs.get(l)?.factor ?? 1)),
       unitPrice: l.unitPrice,
       discountPct: l.discountPct ?? 0,
+      discountAmount: l.discountAmount ?? null,
     })),
     bands as unknown as VolumeBand[],
     scale
@@ -3287,11 +3305,37 @@ async function _postSalesInvoice(
          -- adds up quantities starts counting this.
          ${line.sourceLineId ?? null})`;
 
-    // Revenue only — stock and COGS belong to the delivery, not the invoice.
-    if (net !== 0) {
+    /* Revenue only — stock and COGS belong to the delivery, not the
+       invoice.
+
+       Gross to Sales and the discount to its own account, rather than one
+       netted credit. The customer owes the same either way and profit is
+       identical: 4020 is contra-revenue, not an expense, so it reduces
+       revenue on the way to the same net. What changes is that the
+       income statement can show what was given away. Before this, ten per
+       cent off fifty million left a credit of forty-five and no record
+       anywhere that five million had been discounted.
+
+       The discount is taken in the same ex-tax terms as the revenue
+       beside it. Where prices are tax-inclusive, `net` is the amount
+       after the tax has been split out, so the discount is scaled by the
+       same proportion rather than posted at its gross figure. */
+    const priced = pricedFor.get(line);
+    const discountGross = priced ? round4(priced.gross - priced.net) : 0;
+    const chargedBeforeTaxSplit = priced ? round4(priced.net) : round4(line.qty * line.unitPrice);
+    const discount = discountGross === 0 || chargedBeforeTaxSplit === 0
+      ? 0
+      : roundMoney(discountGross * (net / chargedBeforeTaxSplit), scale);
+
+    if (net !== 0 || discount !== 0) {
       const revenue = await tx`
         select fn_resolve_account_for_item(${companyId}, 'REVENUE', ${line.itemId}) as a`;
-      journal.push({ accountId: revenue[0].a, amount: -net });
+      journal.push({ accountId: revenue[0].a, amount: -round4(net + discount) });
+      if (discount !== 0) {
+        const allowed = await tx`
+          select fn_system_account(${companyId}, 'SALES_DISCOUNT_ALLOWED') as a`;
+        journal.push({ accountId: allowed[0].a, amount: discount });
+      }
     }
   }
 

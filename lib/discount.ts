@@ -48,6 +48,16 @@ export type DiscountedLine = {
   unitPrice: number;
   /** Typed on the line by whoever raised it. */
   discountPct: number;
+  /**
+   * A discount typed as money instead of a rate — "take 20,000 off" rather
+   * than "take 10% off". Where it is set it decides the line discount and
+   * the percentage is derived from it for the record; the two are the same
+   * decision expressed differently, and everything after this point treats
+   * them identically. Which matters most at the ledger: the figure that
+   * reaches Sales Discount is gross less net, so it does not care which way
+   * the discount was entered.
+   */
+  discountAmount?: number | null;
 };
 
 export type LineDiscounts = {
@@ -155,8 +165,16 @@ export function priceLines(
 
   const stage1 = lines.map((l) => {
     const gross = r(l.qty * l.unitPrice);
-    const itemPct = l.discountPct || 0;
-    const itemAmount = r(gross * (itemPct / 100));
+
+    /* A money discount wins where it is given, and the rate is worked back
+       from it so the line still records both. Capped at the line: taking
+       more off than the goods cost is not a discount, it is a negative
+       price, and the rest of the cascade would compound it. */
+    const typedAmount = l.discountAmount == null ? null : Math.max(0, r(l.discountAmount));
+    const itemAmount = typedAmount == null
+      ? r(gross * ((l.discountPct || 0) / 100))
+      : Math.min(typedAmount, gross);
+    const itemPct = gross === 0 ? 0 : roundMoney((itemAmount / gross) * 100, 6);
     const afterItem = r(gross - itemAmount);
 
     // Matched on the base quantity: a quantity band is about units of stock,

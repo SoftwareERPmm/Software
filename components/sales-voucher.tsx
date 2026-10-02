@@ -61,6 +61,12 @@ type OpenDelivery = {
 
 type Line = {
   key: number; itemId: string; qty: string; unitPrice: string; discountPct: string;
+  /** Whether the figure beside it is a rate or money. The two are the same
+   *  decision — a tenth off, or twenty thousand off — and the ledger cannot
+   *  tell them apart, but the person typing can only have one in mind. */
+  discountMode?: "PCT" | "AMT";
+  /** The money discount, when that is the mode. */
+  discountAmt?: string;
   /** Which unit the quantity and the price are in. Empty means the item's
    *  own unit, which is every line for an item with no packs. */
   uomId?: string;
@@ -106,6 +112,7 @@ export function SalesVoucher({
   action, saveDraft, draft, customers, items: initialItems, locations, salesmen, cashAccounts, promotions,
   volumeDiscounts,
   currencyScale = 4,
+  currency = "",
   focReasons, openInvoices, nextInvoiceNo, today, categories, uoms,
   itemPrices, priceLevels, stockByLocation, deliveries, initialDeliveryId,
   taxCodes = [],
@@ -129,6 +136,8 @@ export function SalesVoucher({
   promotions: Promotion[];
   /** Decimal places this company's money has — 0 for the kyat. */
   currencyScale?: number;
+  /** The company's own currency, so a money discount can say which. */
+  currency?: string;
   /** Quantity and invoice-total discount bands, for previewing what the
    *  engine will apply. */
   volumeDiscounts?: VolumeBand[];
@@ -448,8 +457,29 @@ export function SalesVoucher({
 
   const amount = (l: Line) => {
     const gross = (Number(l.qty) || 0) * (Number(l.unitPrice) || 0);
-    return gross - gross * ((Number(l.discountPct) || 0) / 100);
+    return gross - discountOn(l);
   };
+
+  /** What comes off this line, however the discount was expressed. */
+  const discountOn = (l: Line) => {
+    const gross = (Number(l.qty) || 0) * (Number(l.unitPrice) || 0);
+    if (l.discountMode === "AMT") {
+      return Math.max(0, Math.min(Number(l.discountAmt) || 0, gross));
+    }
+    return gross * ((Number(l.discountPct) || 0) / 100);
+  };
+
+  /** The rate a money discount works out to, for the line to show back. */
+  const pctOf = (l: Line) => {
+    const gross = (Number(l.qty) || 0) * (Number(l.unitPrice) || 0);
+    return gross === 0 ? 0 : Math.round((discountOn(l) / gross) * 1000) / 10;
+  };
+
+  /* What the discount actually took off. A percentage is a rate, not a
+     figure: ten per cent of fifty million is five million, and only the
+     net was ever shown, so nobody could see what had been given away
+     without working it out. */
+  const beforeDiscount = (l: Line) => (Number(l.qty) || 0) * (Number(l.unitPrice) || 0);
 
   const promoReason = focReasons.find((r) => r.code === "PROMOTION");
 
@@ -523,6 +553,7 @@ export function SalesVoucher({
       baseQty: baseQtyOf(l),
       unitPrice: Number(l.unitPrice) || 0,
       discountPct: Number(l.discountPct) || 0,
+      discountAmount: l.discountMode === "AMT" ? Number(l.discountAmt) || 0 : null,
     })),
     volumeDiscounts ?? [],
     // Rounded the same way the posting will round it. Previewing at four
@@ -588,6 +619,8 @@ export function SalesVoucher({
   const wouldOwe = exposure + onAccount;
   const overLimit = creditLimit !== null && onAccount > 0 && wouldOwe > creditLimit;
   const totalFree = lines.reduce((s, l) => s + freeQty(l), 0);
+  const totalBeforeDiscount = r(lines.reduce((s, l) => s + beforeDiscount(l), 0));
+  const totalDiscount = r(lines.reduce((s, l) => s + discountOn(l), 0));
 
   // Cash means paid in full now — keep Cash in synced to the total so it
   // isn't a redundant retype of a number already on screen. Still a plain
@@ -637,6 +670,9 @@ export function SalesVoucher({
           uomId: l.uomId || null,
           unitPrice: Number(l.unitPrice) || 0,
           discountPct: Number(l.discountPct) || 0,
+          // The engine derives the rate from this where it is given, so the
+          // posted line records both however the typist thought about it.
+          discountAmount: l.discountMode === "AMT" ? Number(l.discountAmt) || 0 : null,
           taxCodeId: taxCodeId || null,
           // Which delivery line this bills, so the engine can hold it to what
           // went out. Free lines carry no source: a giveaway is not part of
@@ -1056,7 +1092,8 @@ export function SalesVoucher({
                 <th>Unit</th>
                 <th className="r">Qty</th>
                 <th className="r">Price</th>
-                <th className="r">Disc %</th>
+                {/* Not "Disc %" any more: the column takes a rate or a sum. */}
+                <th>Discount</th>
                 <th className="r">Free</th>
                 <th className="r">Amount</th>
                 <th />
@@ -1228,9 +1265,40 @@ export function SalesVoucher({
                           : undefined}
                         onChange={(e) => setLine(l.key, { unitPrice: e.target.value })} />
                     </td>
-                    <td className="tight">
-                      <input type="number" min="0" max="100" step="any" value={l.discountPct} aria-label="Discount percent"
-                        onChange={(e) => setLine(l.key, { discountPct: e.target.value })} />
+                    {/* A rate or a sum. Typing "20,000 off" and having to
+                        work out that it is ten per cent is arithmetic the
+                        form can do, and the one place it will be got wrong
+                        is on the invoice in front of a customer. */}
+                    <td className="disccell">
+                      {/* Toggle and field on one line, so this input sits
+                          on the same baseline as Qty, Price and Free.
+                          Stacked, it pushed the number half a row down and
+                          the line read as misaligned — because it was. */}
+                      <div className="discrow">
+                      <span className="unittoggle">
+                        <button type="button"
+                                className={(l.discountMode ?? "PCT") === "PCT" ? "on" : undefined}
+                                aria-pressed={(l.discountMode ?? "PCT") === "PCT"}
+                                title="A percentage off"
+                                onClick={() => setLine(l.key, { discountMode: "PCT" })}>%</button>
+                        <button type="button"
+                                className={l.discountMode === "AMT" ? "on" : undefined}
+                                aria-pressed={l.discountMode === "AMT"}
+                                title={currency ? `An amount off, in ${currency}` : "An amount off"}
+                                onClick={() => setLine(l.key, { discountMode: "AMT" })}>
+                          {currency || "0.00"}
+                        </button>
+                      </span>
+                      {l.discountMode === "AMT" ? (
+                        <input type="number" min="0" step="any" value={l.discountAmt ?? ""}
+                               aria-label="Discount amount" placeholder="0"
+                               onChange={(e) => setLine(l.key, { discountAmt: e.target.value })} />
+                      ) : (
+                        <input type="number" min="0" max="100" step="any" value={l.discountPct}
+                               aria-label="Discount percent" placeholder="0"
+                               onChange={(e) => setLine(l.key, { discountPct: e.target.value })} />
+                      )}
+                      </div>
                     </td>
                     {/* Given away on this line. Not a discount: these units
                         are charged at nothing and still leave the warehouse,
@@ -1249,7 +1317,19 @@ export function SalesVoucher({
                         </select>
                       )}
                     </td>
-                    <td className="r">{fmt(amount(l))}</td>
+                    <td className="r">
+                      {fmt(amount(l))}
+                      {/* What came off, and — where it was typed as money —
+                          the rate it works out to. Both belong beside the
+                          figure they were taken off, not under the field,
+                          where the row clipped them. */}
+                      {discountOn(l) > 0 && (
+                        <div className="subline">
+                          &minus;{fmt(discountOn(l))}
+                          {l.discountMode === "AMT" && ` · ${pctOf(l)}%`}
+                        </div>
+                      )}
+                    </td>
                     <td className="tight">
                       <button type="button" className="ghost tiny" aria-label="Remove line"
                         onClick={() => removeLine(l.key)} disabled={lines.length === 1}>×</button>
@@ -1261,53 +1341,14 @@ export function SalesVoucher({
             </tbody>
           </table>
         </div>
-        <div className="totalbar">
-          {totalFree > 0 && (
-            <span style={{ color: "var(--muted)" }}>
-              {fmt(totalFree)} free unit{totalFree === 1 ? "" : "s"} — cost goes to promotion expense
+        {totalFree > 0 && (
+          <div className="card-body">
+            <span className="hint">
+              {fmt(totalFree)} free unit{totalFree === 1 ? "" : "s"} — cost goes to
+              promotion expense, not to cost of sales.
             </span>
-          )}
-
-          {/* Commercial tax sits with the total it changes, not in a card
-              further down the form: it is the difference between what the
-              goods sold for and what the customer hands over. */}
-          {taxable.length > 0 && (
-            <label className="totalbar-tax">
-              <span style={{ color: "var(--muted)" }}>Commercial tax</span>
-              <select
-                value={taxCodeId}
-                onChange={(e) => setTaxCodeId(e.target.value)}
-                aria-label="Commercial tax"
-              >
-                {zeroRated && <option value={zeroRated.id}>None</option>}
-                {taxable.map((t) => (
-                  <option key={t.id} value={t.id}>{t.code} · {t.rate}%</option>
-                ))}
-              </select>
-            </label>
-          )}
-          {taxRate > 0 && (
-            <label className="totalbar-tax" title="Prices as typed already contain the tax">
-              <input
-                type="checkbox"
-                name="price_includes_tax"
-                checked={inclusive}
-                onChange={(e) => setInclusive(e.target.checked)}
-              />
-              <span style={{ color: "var(--muted)" }}>Prices include tax</span>
-            </label>
-          )}
-
-          {(deliveryFee > 0 || taxOnGoods > 0) && (
-            <span style={{ color: "var(--muted)" }}>
-              goods {fmt(goodsNet)}
-              {taxOnGoods > 0 && <> + tax {fmt(taxOnGoods)}</>}
-              {deliveryFee > 0 && <> + delivery {fmt(deliveryFee)}</>}
-            </span>
-          )}
-          <span style={{ color: "var(--muted)" }}>Invoice total</span>
-          <span className="big">{fmt(total)} MMK</span>
-        </div>
+          </div>
+        )}
       </div>
 
       <div className="grid2">
@@ -1373,6 +1414,73 @@ export function SalesVoucher({
           </div>
         </div>
 
+        {/* The summary, as a two-column grid rather than a row of inline
+            spans. The spans were the bug: every label sat immediately after
+            whatever figure preceded it, so "Commercial tax" moved along the
+            row each time a number grew or shrank a digit. Labels belong in a
+            column that does not depend on what is beside them. */}
+        <div className="card">
+          <div className="card-head"><h2>Invoice summary</h2>
+            <span className="page-sub">{currency}</span>
+          </div>
+          <div className="card-body">
+            <dl className="summary">
+              <dt>Subtotal ({chargedLines.length} item{chargedLines.length === 1 ? "" : "s"})</dt>
+              <dd>{fmt(totalBeforeDiscount)}</dd>
+
+              {totalDiscount > 0 && (
+                <>
+                  <dt>Item discounts</dt>
+                  <dd className="less">&minus;{fmt(totalDiscount)}</dd>
+                  <dt className="rule">Net items</dt>
+                  <dd className="rule">{fmt(r(totalBeforeDiscount - totalDiscount))}</dd>
+                </>
+              )}
+
+              {taxable.length > 0 && (
+                <>
+                  <dt>
+                    <label htmlFor="ct">Commercial tax</label>
+                    <select id="ct" value={taxCodeId} aria-label="Commercial tax"
+                            onChange={(e) => setTaxCodeId(e.target.value)}>
+                      {zeroRated && <option value={zeroRated.id}>None</option>}
+                      {taxable.map((t) => (
+                        <option key={t.id} value={t.id}>{t.code} · {t.rate}%</option>
+                      ))}
+                    </select>
+                  </dt>
+                  <dd>{fmt(taxOnGoods)}</dd>
+                </>
+              )}
+
+              {taxRate > 0 && (
+                <>
+                  <dt>
+                    <label className="check">
+                      <input type="checkbox" name="price_includes_tax" checked={inclusive}
+                             onChange={(e) => setInclusive(e.target.checked)} />
+                      Prices include tax
+                    </label>
+                  </dt>
+                  <dd />
+                </>
+              )}
+
+              <dt>Transport charge</dt>
+              <dd>{fmt(deliveryFee)}</dd>
+
+              <dt className="grand">Invoice total</dt>
+              <dd className="grand">{fmt(total)}</dd>
+            </dl>
+          </div>
+        </div>
+      </div>
+
+      {/* Its own row. Payment and the summary are the pair answering "what
+          does the customer owe, and how are they paying it"; the voucher's
+          history is a different question and was being squeezed into a
+          third column of a two-column grid. */}
+      <section>
         <div className="card">
           <div className="card-head">
             <h2>Voucher information</h2>
@@ -1457,7 +1565,7 @@ export function SalesVoucher({
             </div>
           </div>
         </div>
-      </div>
+      </section>
 
       {/* The prices on this bill came from an order, and are held to it. Said
           once under the table rather than repeated on every line, and it

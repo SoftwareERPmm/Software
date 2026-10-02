@@ -6100,12 +6100,26 @@ export async function getTrialBalanceAsOf(companyId: string, f: TrialBalanceFilt
  * filter gives the branch's own running balance, which is the figure someone
  * asking for one branch is actually after.
  */
+/**
+ * One account's movements, or several read together.
+ *
+ * Several, because "what happened to this account" is often really "what
+ * happened to cash", and cash is four accounts. Reading them one at a time
+ * and adding up by hand is the work this is supposed to do. The account each
+ * line belongs to comes back with it, since a combined ledger that does not
+ * say which account a row is from is just a list.
+ *
+ * The running balance is over the set as a whole, in date order, which is
+ * the figure somebody picking a set of related accounts is after.
+ */
 export async function getAccountLedgerFiltered(
-  companyId: string, accountId: string,
+  companyId: string, accountId: string | string[],
   f: { from?: string; to?: string; branchId?: string | null; showVoided?: boolean } = {},
 ) {
+  const ids = Array.isArray(accountId) ? accountId : [accountId];
   return sql`
     select je.entry_no, je.entry_date, je.memo, je.source_type,
+           a.code as account_code, a.name as account_name, a.id as account_id,
            d.doc_no, d.doc_type, p.name as partner_name, l.code as location_code,
            case when jl.base_amount > 0 then  jl.base_amount else 0 end as debit,
            case when jl.base_amount < 0 then -jl.base_amount else 0 end as credit,
@@ -6115,10 +6129,11 @@ export async function getAccountLedgerFiltered(
            ) as running_balance
       from journal_line jl
       join journal_entry je on je.id = jl.journal_entry_id
+      join account a on a.id = jl.account_id
       left join document d on d.id = je.source_id
       left join business_partner p on p.id = jl.partner_id
       left join location l on l.id = jl.location_id
-     where jl.company_id = ${companyId} and jl.account_id = ${accountId}
+     where jl.company_id = ${companyId} and jl.account_id = any(${ids})
        ${f.from ? sql`and je.entry_date >= ${f.from}::date` : sql``}
        ${f.to ? sql`and je.entry_date <= ${f.to}::date` : sql``}
        ${branchFilter(f.branchId)}
@@ -6132,9 +6147,10 @@ export async function getAccountLedgerFiltered(
  * own row, so reading it would double-count the first movement of the period.
  */
 export async function getAccountSummary(
-  companyId: string, accountId: string,
+  companyId: string, accountId: string | string[],
   f: { from?: string; to?: string; branchId?: string | null; showVoided?: boolean } = {},
 ) {
+  const ids = Array.isArray(accountId) ? accountId : [accountId];
   const [row] = await sql`
     select
       coalesce(sum(case when ${f.from ? sql`je.entry_date < ${f.from}::date` : sql`false`}
@@ -6151,7 +6167,7 @@ export async function getAccountSummary(
                         then jl.base_amount else 0 end), 0) as closing
       from journal_line jl
       join journal_entry je on je.id = jl.journal_entry_id
-     where jl.company_id = ${companyId} and jl.account_id = ${accountId}
+     where jl.company_id = ${companyId} and jl.account_id = any(${ids})
        ${branchFilter(f.branchId)}
        ${liveEntriesOnly(f.showVoided)}`;
   return {
@@ -6836,4 +6852,485 @@ export async function getSupplierFulfilmentByMonth(
      order by ord.month`;
 
   return rows as unknown as { month: string; ordered: string; received: string }[];
+}
+
+/**
+ * Inventory and cost of sales, reconciled two ways.
+ *
+ * This is perpetual FIFO: a purchase debits Inventory and never reaches the
+ * income statement, and cost of sales is recognised per delivery from the
+ * layers actually consumed. So the familiar
+ *
+ *     COGS = opening inventory + purchases - closing inventory
+ *
+ * is not how anything here is computed. It is an identity that should fall
+ * out, and this report exists to show whether it does — and, where it does
+ * not, to name the reason rather than bury it.
+ *
+ * It does not reconcile by itself whenever stock leaves for a reason that is
+ * not a sale. A promotional giveaway credits Inventory and debits promotion
+ * expense; a write-off debits inventory adjustment. Both are "opening plus
+ * purchases less closing" and neither is cost of goods sold, so every
+ * release is shown against the account it was actually charged to.
+ *
+ * Nothing here is a plug. Where the two sides disagree the difference is
+ * reported as a difference.
+ */
+export async function getInventoryCogsReconciliation(
+  companyId: string, from: string, to: string, branchId?: string | null,
+) {
+  // The accounts by the role they play, never by account_type. 5010 Purchase
+  // Return, 5020 Purchase Discounts and 5300 Inventory Adjustment are all
+  // typed COGS and not one of them is cost of goods sold; summing the type
+  // would overstate it by every write-off in the period.
+  const [roles] = (await sql`
+    select fn_resolve_account(${companyId}, 'INVENTORY', null, null, null) as inventory,
+           fn_resolve_account(${companyId}, 'COGS',      null, null, null) as cogs`) as unknown as
+    Array<{ inventory: string | null; cogs: string | null }>;
+
+  if (!roles?.inventory) return null;
+  const inventoryId = roles.inventory;
+  const cogsId = roles.cogs;
+
+  /* Opening is everything posted before the period opens, closing everything
+     up to and including its last day — the same account, read at two dates,
+     so the two can never be measured on different bases. */
+  const [bal] = (await sql`
+    select
+      coalesce(sum(jl.base_amount) filter (
+        where je.entry_date < ${from}::date), 0) as opening,
+      coalesce(sum(jl.base_amount) filter (
+        where je.entry_date <= ${to}::date), 0) as closing
+      from journal_line jl
+      join journal_entry je on je.id = jl.journal_entry_id
+     where jl.company_id = ${companyId}
+       and jl.account_id = ${inventoryId}
+       ${branchFilter(branchId)}`) as unknown as
+    Array<{ opening: string; closing: string }>;
+
+  /* Every movement through the inventory account inside the period, against
+     whatever sat on the other side of it.
+
+     Three rules, tried in order, because the journal answers the question
+     with different certainty depending on the entry.
+
+     An entry with one counter-account is unambiguous: stock moved and its
+     cost went there.
+
+     An entry with several is not, in general — but often one of them
+     exactly offsets the inventory movement, and that one is the answer. A
+     sales return credits cost of sales, credits the return account and
+     debits a customer advance all at once; the 2,000 of stock coming back
+     pairs with the 2,000 credited to cost of sales and with nothing else.
+     Matching on that is the difference between reporting the return where
+     it belongs and reporting it as "returned by customer" and leaving the
+     reader to work it out.
+
+     Where neither holds, the movement is reported against the kind of
+     document that made it rather than split across candidates. An earlier
+     draft allocated in proportion, which turned that same 2,000 return into
+     333.33 of cost of sales — a precise-looking answer to a question the
+     journal cannot settle. Totals are exact under all three; what varies is
+     how finely they can honestly be attributed.
+
+     An entry with no counter-account at all is a transfer: one warehouse's
+     inventory credited, another's debited, the same account both times. It
+     has nowhere to be attributed and is reported as itself rather than
+     dropped, which is what the first draft did. */
+  const movement = (await sql`
+    with inv as (
+      select je.id as entry_id, je.source_type,
+             sum(jl.base_amount) as net,
+             sum(case when jl.base_amount > 0 then jl.base_amount else 0 end) as into_stock,
+             sum(case when jl.base_amount < 0 then -jl.base_amount else 0 end) as out_of_stock
+        from journal_line jl
+        join journal_entry je on je.id = jl.journal_entry_id
+       where jl.company_id = ${companyId}
+         and jl.account_id = ${inventoryId}
+         and je.entry_date between ${from}::date and ${to}::date
+         ${branchFilter(branchId)}
+       group by je.id, je.source_type
+    ),
+    counter as (
+      select jl.journal_entry_id as entry_id, jl.account_id,
+             sum(jl.base_amount) as amount
+        from journal_line jl
+       where jl.journal_entry_id in (select entry_id from inv)
+         and jl.account_id <> ${inventoryId}
+       group by jl.journal_entry_id, jl.account_id
+    ),
+    only_one as (
+      select entry_id, min(account_id::text)::uuid as account_id
+        from counter group by entry_id having count(*) = 1
+    ),
+    exact as (
+      -- The single counter-account that offsets the inventory movement
+      -- exactly. Only where there is one: two lines of the same size would
+      -- be a coin toss, and a coin toss is not an attribution.
+      select c.entry_id, min(c.account_id::text)::uuid as account_id
+        from counter c
+        join inv i on i.entry_id = c.entry_id
+       where c.amount = -i.net and i.net <> 0
+       group by c.entry_id having count(*) = 1
+    )
+    select a.id as account_id, a.code, a.name, a.account_type, inv.source_type,
+           sum(inv.into_stock) as into_stock,
+           sum(inv.out_of_stock) as out_of_stock,
+           count(*)::int as entries
+      from inv
+      left join only_one o on o.entry_id = inv.entry_id
+      left join exact    e on e.entry_id = inv.entry_id
+      left join account  a on a.id = coalesce(o.account_id, e.account_id)
+     group by a.id, a.code, a.name, a.account_type, inv.source_type
+    having sum(inv.into_stock) + sum(inv.out_of_stock) <> 0
+     order by a.code nulls last, inv.source_type`) as unknown as Array<{
+      account_id: string | null; code: string | null; name: string | null;
+      account_type: string | null; source_type: string;
+      into_stock: string; out_of_stock: string; entries: number;
+    }>;
+
+  /* The FIFO side, which is the stock ledger's own answer and owes nothing to
+     the journal. Consigned goods are deliberately absent: they live in
+     consignment_lot, never in stock_lot, and a consigned delivery posts no
+     inventory movement at all, so they are out of both sides by construction
+     rather than by being filtered here. */
+  const [fifo] = (await sql`
+    select coalesce(sum(o.qty_remaining * o.unit_cost), 0) as value,
+           count(*) filter (where o.qty_remaining > 0)::int as lots
+      from v_stock_lot_open o
+      join location l on l.id = o.location_id
+     where o.company_id = ${companyId}
+       and o.qty_remaining <> 0
+       ${branchId ? sql`and (l.id = ${branchId} or l.parent_id = ${branchId})` : sql``}`
+  ) as unknown as Array<{ value: string; lots: number }>;
+
+  /* Goods issued that no layer covered. They carry a provisional cost until a
+     receipt arrives, so they are a real part of what the shelf is worth and
+     the commonest honest reason the two sides differ on any given day. */
+  const [negative] = (await sql`
+    select coalesce(sum(n.qty * n.provisional_unit_cost), 0) as value,
+           coalesce(sum(n.qty), 0) as qty
+      from v_negative_stock n
+      join location l on l.id = n.location_id
+     where n.company_id = ${companyId}
+       ${branchId ? sql`and (l.id = ${branchId} or l.parent_id = ${branchId})` : sql``}`
+  ) as unknown as Array<{ value: string; qty: string }>;
+
+  /* Cost of sales as the stock ledger recorded it, consumption by consumption.
+     expense_account_id is what makes this exact: every consumption records
+     where its cost was charged, so a giveaway separates from a sale by what
+     was written at the time rather than by inference now. */
+  const consumption = (await sql`
+    select a.id as account_id, a.code, a.name,
+           coalesce(sum(c.qty * c.unit_cost), 0) as value
+      from stock_lot_consumption c
+      join stock_movement sm on sm.id = c.stock_movement_id
+      join location l on l.id = sm.location_id
+      left join account a on a.id = c.expense_account_id
+     where c.company_id = ${companyId}
+       and sm.movement_date between ${from}::date and ${to}::date
+       ${branchId ? sql`and (l.id = ${branchId} or l.parent_id = ${branchId})` : sql``}
+     group by a.id, a.code, a.name
+     having coalesce(sum(c.qty * c.unit_cost), 0) <> 0
+     order by a.code`) as unknown as Array<{
+      account_id: string | null; code: string | null; name: string | null; value: string;
+    }>;
+
+  /* Goods put back by a customer return credit cost of sales, so the ledger's
+     figure is net of them. The stock ledger records the return as a new layer
+     rather than as a negative consumption, so consumption alone is gross —
+     and comparing a gross figure with a net one reports a difference that is
+     not there. The returns are taken off here, from the same journal the
+     posted figure comes from. */
+  const [returnedToCogs] = cogsId ? (await sql`
+    select coalesce(-sum(jl.base_amount), 0) as value
+      from journal_line jl
+      join journal_entry je on je.id = jl.journal_entry_id
+     where jl.company_id = ${companyId}
+       and jl.account_id = ${cogsId}
+       and jl.base_amount < 0
+       and je.entry_date between ${from}::date and ${to}::date
+       ${branchFilter(branchId)}`) as unknown as Array<{ value: string }>
+    : [{ value: "0" }];
+
+  /* What the general ledger says cost of sales was, for the same period. */
+  const [postedCogs] = cogsId ? (await sql`
+    select coalesce(sum(jl.base_amount), 0) as value
+      from journal_line jl
+      join journal_entry je on je.id = jl.journal_entry_id
+     where jl.company_id = ${companyId}
+       and jl.account_id = ${cogsId}
+       and je.entry_date between ${from}::date and ${to}::date
+       ${branchFilter(branchId)}`) as unknown as Array<{ value: string }>
+    : [{ value: "0" }];
+
+  return {
+    inventoryId, cogsId, bal, movement, fifo, negative, consumption,
+    postedCogs, returnedToCogs,
+  };
+}
+
+/** How a sales report is cut. */
+export type SalesBreakdownBy = "item" | "customer" | "category" | "brand";
+
+/**
+ * Sales for a period, cut whichever way the reader needs.
+ *
+ * Revenue comes from posted sales invoices and cost from the deliveries that
+ * moved the goods, because that is where each is recognised — this is
+ * perpetual FIFO, and an invoice never costs anything by itself. The two are
+ * matched on the dimension and the period rather than line by line, which is
+ * the honest join: a delivery in June billed in July belongs to June's cost
+ * and July's revenue, and no report can put both in one month without lying
+ * about one of them. Where that matters the margin column says so by being
+ * visibly odd, which is better than a figure that quietly reconciles.
+ *
+ * Free-of-charge lines carry no revenue and their cost goes to promotion
+ * expense, so they are counted as quantity given away and left out of both
+ * money columns.
+ */
+export async function getSalesBreakdown(
+  companyId: string, from: string, to: string,
+  by: SalesBreakdownBy, branchId?: string | null,
+) {
+  // The grouping, as the key the two halves are joined on. Category means the
+  // top of the tree an item is filed under, not the sub-category, because
+  // "which categories sell" is asked about the top level.
+  const dim = {
+    item:     sql`i.id::text`,
+    customer: sql`d.partner_id::text`,
+    category: sql`coalesce(pg.id, g.id)::text`,
+    brand:    sql`coalesce(b.id::text, 'none')`,
+  }[by];
+  const code = {
+    item:     sql`i.code`,
+    customer: sql`p.code`,
+    category: sql`coalesce(pg.code, g.code)`,
+    brand:    sql`coalesce(b.code, '—')`,
+  }[by];
+  const name = {
+    item:     sql`i.name`,
+    customer: sql`p.name`,
+    category: sql`coalesce(pg.name, g.name)`,
+    brand:    sql`coalesce(b.name, 'No brand')`,
+  }[by];
+
+  const joins = sql`
+      join item i on i.id = dl.item_id
+      left join item_group g on g.id = i.item_group_id
+      left join item_group pg on pg.id = g.parent_id
+      left join brand b on b.id = i.brand_id
+      left join business_partner p on p.id = d.partner_id`;
+
+  const revenue = await sql`
+    select ${dim} as key, ${code} as code, ${name} as name,
+           sum(case when dl.foc_reason_id is null then dl.base_qty else 0 end) as qty,
+           sum(case when dl.foc_reason_id is null then dl.base_qty else 0 end
+               * coalesce(dl.unit_price, 0)) as gross,
+           sum(coalesce(dl.discount_amount, 0)
+             + coalesce(dl.volume_discount_amount, 0)
+             + coalesce(dl.invoice_discount_amount, 0)) as discount,
+           sum(case when dl.foc_reason_id is null then dl.net_amount else 0 end) as revenue,
+           sum(case when dl.foc_reason_id is not null then dl.base_qty else 0 end) as free_qty,
+           count(distinct d.id)::int as invoices
+      from document_line dl
+      join document d on d.id = dl.document_id
+      ${joins}
+     where d.company_id = ${companyId}
+       and d.doc_type = 'SALES_INVOICE'
+       and d.status = 'POSTED'
+       and d.posting_date between ${from}::date and ${to}::date
+       ${branchId ? sql`and (d.location_id = ${branchId} or exists (
+             select 1 from location l where l.id = d.location_id and l.parent_id = ${branchId}))` : sql``}
+     group by 1, 2, 3`;
+
+  /* The cost of what went out, from the layers the deliveries consumed.
+     Only consumption charged to cost of sales: a giveaway's cost went to
+     promotion expense and is not part of what these sales cost. */
+  const cost = await sql`
+    select ${dim} as key,
+           sum(c.qty * c.unit_cost) as cost
+      from stock_lot_consumption c
+      join stock_movement sm on sm.id = c.stock_movement_id
+      join document_line dl on dl.id = sm.document_line_id
+      join document d on d.id = dl.document_id
+      ${joins}
+     where c.company_id = ${companyId}
+       and d.doc_type = 'DELIVERY'
+       and d.status = 'POSTED'
+       and d.posting_date between ${from}::date and ${to}::date
+       and c.expense_account_id = fn_resolve_account(${companyId}, 'COGS', null, null, null)
+       ${branchId ? sql`and (d.location_id = ${branchId} or exists (
+             select 1 from location l where l.id = d.location_id and l.parent_id = ${branchId}))` : sql``}
+     group by 1`;
+
+  /* Credited back to the customer in the same period. Its own query rather
+     than a negative sale: a return is a document of its own, and folding it
+     into revenue would hide both the gross and the fact it came back. */
+  const returned = await sql`
+    select ${dim} as key, sum(dl.net_amount) as returned
+      from document_line dl
+      join document d on d.id = dl.document_id
+      ${joins}
+     where d.company_id = ${companyId}
+       and d.doc_type = 'SALES_RETURN'
+       and d.status = 'POSTED'
+       and d.posting_date between ${from}::date and ${to}::date
+       ${branchId ? sql`and (d.location_id = ${branchId} or exists (
+             select 1 from location l where l.id = d.location_id and l.parent_id = ${branchId}))` : sql``}
+     group by 1`;
+
+  const costBy = new Map((cost as unknown as Array<{ key: string; cost: string }>)
+    .map((c) => [c.key, Number(c.cost)]));
+  const returnBy = new Map((returned as unknown as Array<{ key: string; returned: string }>)
+    .map((c) => [c.key, Number(c.returned)]));
+
+  return (revenue as unknown as Array<{
+    key: string; code: string; name: string; qty: string; gross: string;
+    discount: string; revenue: string; free_qty: string; invoices: number;
+  }>).map((r) => {
+    const rev = Number(r.revenue);
+    const cost = costBy.get(r.key) ?? 0;
+    return {
+      key: r.key, code: r.code, name: r.name,
+      qty: Number(r.qty), freeQty: Number(r.free_qty), invoices: r.invoices,
+      gross: Number(r.gross), discount: Number(r.discount), revenue: rev,
+      returned: returnBy.get(r.key) ?? 0,
+      cost, margin: rev - cost,
+      marginPct: rev === 0 ? null : ((rev - cost) / rev) * 100,
+    };
+  }).sort((a, b) => b.revenue - a.revenue);
+}
+
+/**
+ * Sales for a period against the period before it.
+ *
+ * "Up or down" is the question this answers, so every figure comes with the
+ * same figure for the run of days immediately before — same length, so a
+ * 30-day month is never compared with a 31-day one and called a decline.
+ *
+ * Revenue is posted invoices; cost is what the deliveries consumed, matched
+ * on the period rather than line by line, for the reason the sales report
+ * gives: in perpetual FIFO they are recognised on different documents and
+ * can fall in different months.
+ */
+export async function getSalesOverview(
+  companyId: string, from: string, to: string, branchId?: string | null,
+) {
+  const branch = (alias: ReturnType<typeof sql>) => branchId
+    ? sql`and (${alias}.location_id = ${branchId} or exists (
+            select 1 from location l where l.id = ${alias}.location_id
+             and l.parent_id = ${branchId}))`
+    : sql``;
+
+  /* The run of days immediately before, of equal length, so the comparison
+     is like for like rather than an accident of the calendar. */
+  /* As text, deliberately. A date column comes back as a Date object, and
+     String(d).slice(0, 10) on one of those is "Thu Jul 02" — which is not a
+     date, so the comparison window silently matched nothing and every
+     figure read as new. */
+  const [span] = (await sql`
+    select (${to}::date - ${from}::date) as days,
+           to_char(${from}::date - 1 - (${to}::date - ${from}::date), 'YYYY-MM-DD') as prev_from,
+           to_char(${from}::date - 1, 'YYYY-MM-DD') as prev_to`) as unknown as
+    Array<{ days: number; prev_from: string; prev_to: string }>;
+
+  const totals = async (a: string, b: string) => {
+    const [rev] = (await sql`
+      select coalesce(sum(case when dl.foc_reason_id is null then dl.net_amount else 0 end), 0) as net,
+             coalesce(sum(case when dl.foc_reason_id is null then dl.base_qty else 0 end), 0) as units,
+             coalesce(sum(coalesce(dl.discount_amount, 0)
+                        + coalesce(dl.volume_discount_amount, 0)
+                        + coalesce(dl.invoice_discount_amount, 0)), 0) as discount
+        from document_line dl
+        join document d on d.id = dl.document_id
+       where d.company_id = ${companyId} and d.doc_type = 'SALES_INVOICE'
+         and d.status = 'POSTED'
+         and d.posting_date between ${a}::date and ${b}::date
+         ${branch(sql`d`)}`) as unknown as
+      Array<{ net: string; units: string; discount: string }>;
+
+    const [cost] = (await sql`
+      select coalesce(sum(c.qty * c.unit_cost), 0) as cost
+        from stock_lot_consumption c
+        join stock_movement sm on sm.id = c.stock_movement_id
+        join document d on d.id = sm.document_id
+       where c.company_id = ${companyId} and d.doc_type = 'DELIVERY'
+         and d.status = 'POSTED'
+         and d.posting_date between ${a}::date and ${b}::date
+         and c.expense_account_id = fn_resolve_account(${companyId}, 'COGS', null, null, null)
+         ${branch(sql`d`)}`) as unknown as Array<{ cost: string }>;
+
+    const [ret] = (await sql`
+      select coalesce(sum(dl.net_amount), 0) as returned
+        from document_line dl
+        join document d on d.id = dl.document_id
+       where d.company_id = ${companyId} and d.doc_type = 'SALES_RETURN'
+         and d.status = 'POSTED'
+         and d.posting_date between ${a}::date and ${b}::date
+         ${branch(sql`d`)}`) as unknown as Array<{ returned: string }>;
+
+    const net = Number(rev.net);
+    const units = Number(rev.units);
+    const c = Number(cost.cost);
+    return {
+      net, units, cost: c, profit: net - c,
+      marginPct: net === 0 ? null : ((net - c) / net) * 100,
+      avgPrice: units === 0 ? null : net / units,
+      discount: Number(rev.discount),
+      returned: Number(ret.returned),
+    };
+  };
+
+  const [now, before] = await Promise.all([
+    totals(from, to),
+    totals(span.prev_from, span.prev_to),
+  ]);
+
+  /* Month by month across the period, for the two charts. Months with no
+     trade keep their place at zero: a gap is information, and a chart that
+     drops the month says the opposite of what happened. */
+  const series = (await sql`
+    with months as (
+      select to_char(generate_series(date_trunc('month', ${from}::date),
+                                     date_trunc('month', ${to}::date),
+                                     interval '1 month'), 'YYYY-MM') as month
+    ),
+    rev as (
+      select to_char(d.posting_date, 'YYYY-MM') as month,
+             sum(case when dl.foc_reason_id is null then dl.net_amount else 0 end) as net
+        from document_line dl
+        join document d on d.id = dl.document_id
+       where d.company_id = ${companyId} and d.doc_type = 'SALES_INVOICE'
+         and d.status = 'POSTED'
+         and d.posting_date between ${from}::date and ${to}::date
+         ${branch(sql`d`)}
+       group by 1
+    ),
+    cst as (
+      select to_char(d.posting_date, 'YYYY-MM') as month,
+             sum(c.qty * c.unit_cost) as cost
+        from stock_lot_consumption c
+        join stock_movement sm on sm.id = c.stock_movement_id
+        join document d on d.id = sm.document_id
+       where c.company_id = ${companyId} and d.doc_type = 'DELIVERY'
+         and d.status = 'POSTED'
+         and d.posting_date between ${from}::date and ${to}::date
+         and c.expense_account_id = fn_resolve_account(${companyId}, 'COGS', null, null, null)
+         ${branch(sql`d`)}
+       group by 1
+    )
+    select m.month,
+           coalesce(rev.net, 0) as net,
+           coalesce(rev.net, 0) - coalesce(cst.cost, 0) as profit
+      from months m
+      left join rev on rev.month = m.month
+      left join cst on cst.month = m.month
+     order by m.month`) as unknown as Array<{ month: string; net: string; profit: string }>;
+
+  return {
+    now, before, series,
+    prevFrom: span.prev_from,
+    prevTo: span.prev_to,
+  };
 }

@@ -109,6 +109,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <NavLink href="/sales/credit-notes" exact>Credit notes</NavLink>
               <NavLink href="/sales/discounts" exact>Volume discounts</NavLink>
               <NavLink href="/sales/discounts-given" exact>Discounts given</NavLink>
+              <NavLink href="/sales/reports">Sales report</NavLink>
               <NavLink href="/receivables" exact>Receivables</NavLink>
               <NavLink href="/receivables/advances">Customer advances</NavLink>
               <NavLink href="/receivables/receive">Receive payment</NavLink>
@@ -175,10 +176,12 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               </NavSubGroup>
               <NavSubGroup label="Financial Reports" match={[
                 "/finance/income-statement", "/finance/balance-sheet", "/finance/cash-flow",
+                "/finance/inventory-cogs",
               ]}>
                 <NavLink href="/finance/income-statement" sub>Income Statement</NavLink>
                 <NavLink href="/finance/balance-sheet" sub>Balance Sheet</NavLink>
                 <NavLink href="/finance/cash-flow" sub>Cash Flow</NavLink>
+                <NavLink href="/finance/inventory-cogs" sub>Inventory &amp; COGS</NavLink>
                 <NavLink href="/finance/cash-cycle" sub>Cash Conversion Cycle</NavLink>
               </NavSubGroup>
               {/* Not under Financial Reports. Aging answers "who owes us and

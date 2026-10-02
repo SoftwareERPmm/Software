@@ -13,7 +13,7 @@ export default async function NewSalesInvoice({
 }) {
   const { delivery_id, draft: draftId } = await searchParams;
   const d = await getFormData();
-  const [co] = await sql`select id from company order by created_at limit 1`;
+  const [co] = await sql`select id, base_currency from company order by created_at limit 1`;
   const categories = await allCategories(co.id);
   const deliveries = await getOpenDeliveries(co.id);
   // Same as the purchase side: billed from one delivery, the crumb names it.
@@ -93,6 +93,7 @@ export default async function NewSalesInvoice({
         promotions={d.promotions as never}
         volumeDiscounts={d.volumeDiscounts as never}
         currencyScale={d.currencyScale}
+        currency={co.base_currency as string}
         focReasons={d.focReasons as never}
         taxCodes={d.taxCodes as never}
         customerCredit={d.customerCredit as never}

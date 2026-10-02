@@ -115,7 +115,7 @@ insert into account (company_id, code, name, account_type, is_postable) values
     (co, '3-EQ',   'Owner Equity',                        'EQUITY',    false),
     (co, '4-SA',   'Sales',                               'REVENUE',   false),
     (co, '4-OI',   'Other Income',                        'REVENUE',   false),
-    (co, '5-CG',   'Cost of Good Sold',                   'COGS',      false),
+    (co, '5-CG',   'Cost of Goods Sold',                  'COGS',      false),
     (co, '6-EX',   'Expense',                             'EXPENSE',   false),
     (co, '7-TX',   'Tax Account',                         'LIABILITY',  false);
 
@@ -167,7 +167,7 @@ from (values
     ('4-SA', '4020', 'Sales Discount',                      'REVENUE'::account_type,  false,  false,  false),
     ('4-SA', '4030', 'Delivery Income',                     'REVENUE'::account_type,  false,  false,  false),
     ('4-OI', '4100', 'Other Income',                        'REVENUE'::account_type,  false,  false,  false),
-    ('5-CG', '5000', 'Purchase',                            'COGS'::account_type,    false,  false,  false),
+    ('5-CG', '5000', 'Cost of Goods Sold',                  'COGS'::account_type,    false,  false,  false),
     ('5-CG', '5010', 'Purchase Return',                     'COGS'::account_type,    false,  false,  false),
     ('5-CG', '5020', 'Purchase Discounts',                  'COGS'::account_type,    false,  false,  false),
     ('5-CG', '5030', 'Carriage Inward',                     'COGS'::account_type,    false,  false,  false),
