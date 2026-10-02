@@ -77,8 +77,8 @@ export const CHART = [
   // percentage measured against it.
   ["4-OI",  "Other Income",                      "REVENUE",   false],
   ["4100",  "Other Income",                      "REVENUE",   true],
-  ["5-CG", "Cost of Good Sold",                 "COGS",      false],
-  ["5000",  "Purchase",                          "COGS",      true],
+  ["5-CG", "Cost of Goods Sold",                "COGS",      false],
+  ["5000",  "Cost of Goods Sold",               "COGS",      true],
   ["5010",  "Purchase Return",                   "COGS",      true],
   ["5020",  "Purchase Discounts",                "COGS",      true],
   ["5030",  "Carriage Inward",                   "COGS",      true],

@@ -4288,3 +4288,18 @@ tbody tr.row-selected > td:first-child { box-shadow: inset 2px 0 0 var(--brand);
   flex: 0 0 auto;
 }
 .pickedopen:hover { color: var(--brand); background: var(--bg); }
+
+/* The cost-of-sales note under the income statement. Closed by default: it
+   answers a question most readers do not have, and the ones who do are
+   checking opening + purchases - closing and need every release, not just
+   the sales. */
+.cogsnote { margin-top: var(--s4); }
+.cogsnote > summary {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: var(--s3); padding: var(--s3); cursor: pointer; font-weight: 600;
+}
+.cogsnote > summary::-webkit-details-marker { display: none; }
+.cogsnote > summary::before {
+  content: "▸"; margin-right: 0.4rem; color: var(--muted); font-weight: 400;
+}
+.cogsnote[open] > summary::before { content: "▾"; }

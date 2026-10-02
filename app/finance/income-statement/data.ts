@@ -1,6 +1,6 @@
 import {
   getCompany, getIncomeStatement, getBranches, getUnassignedBranchActivity,
-  getAccountTree, UNASSIGNED_BRANCH,
+  getAccountTree, getInventoryCogsReconciliation, UNASSIGNED_BRANCH,
 } from "@/lib/queries";
 import { buildStatement, type ChartRow } from "@/lib/report-tree";
 import type { Section, Summary } from "@/components/statement-table";
@@ -55,6 +55,30 @@ export async function getIncomeStatementData({ from, to, branch }: Params) {
    * under which, and every subtotal is the sum of the rows beneath it rather
    * than a second calculation that could disagree with them.
    */
+  /* What made up cost of sales, for the panel under it. Read from the same
+     ledger and the same period, but presented the way a reader checking
+     opening + purchases - closing needs: every release of stock, including
+     the ones that are not sales and therefore not in this figure. */
+  const recon = await getInventoryCogsReconciliation(
+    company.id, range.from, range.to, branchId);
+  const cogsBreakdown = recon ? (() => {
+    const num = (v: unknown) => Number(v ?? 0);
+    const releases = recon.movement
+      .filter((m) => num(m.out_of_stock) > 0)
+      .map((m) => ({
+        label: m.code ? `${m.code} · ${m.name}` : m.source_type.toLowerCase().replace(/_/g, " "),
+        value: Math.round(num(m.out_of_stock) * 10000) / 10000,
+        isCogs: m.account_id != null && m.account_id === recon.cogsId,
+      }))
+      .sort((a, b) => b.value - a.value);
+    const sold = releases.filter((x) => x.isCogs).reduce((t, x) => t + x.value, 0);
+    const total = releases.reduce((t, x) => t + x.value, 0);
+    return {
+      opening: num(recon.bal.opening), closing: num(recon.bal.closing),
+      releases, sold, notSold: Math.round((total - sold) * 10000) / 10000, total,
+    };
+  })() : null;
+
   const chart = (await getAccountTree(company.id)) as unknown as ChartRow[];
   const amounts = new Map(rows.map((r) => [r.id, Number(r.amount)]));
   const cogsTree = buildStatement(chart, amounts, ["COGS"]);
@@ -157,7 +181,7 @@ export async function getIncomeStatementData({ from, to, branch }: Params) {
 
   return {
     company, branches, unassignedLines, branchId, branchName, range,
-    summaries, sections, subtotals,
+    summaries, sections, subtotals, cogsBreakdown,
     scope: `${branchName} · ${range.from} to ${range.to}`,
   };
 }

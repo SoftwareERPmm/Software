@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { money } from "@/lib/db";
 import { AutoApply } from "@/components/auto-apply";
 import { UNASSIGNED_BRANCH } from "@/lib/queries";
@@ -14,7 +15,7 @@ export default async function IncomeStatement({
   if (!data) return <div className="empty">No company found.</div>;
   const {
     company, branches, unassignedLines, branchId, range,
-    summaries, sections, subtotals, scope,
+    summaries, sections, subtotals, scope, cogsBreakdown,
   } = data;
 
   return (
@@ -75,6 +76,68 @@ export default async function IncomeStatement({
         sections={sections}
         subtotals={subtotals}
       />
+
+      {/* Cost of sales is recognised per delivery from the layers consumed,
+          so this statement never computes opening + purchases - closing.
+          A reader checking it that way needs to see the releases that are
+          not sales, or the two will never agree and neither is wrong. */}
+      {cogsBreakdown && cogsBreakdown.total > 0 && (
+        <details className="card cogsnote">
+          <summary>
+            What made up cost of goods sold
+            <span className="page-sub">
+              {money(String(cogsBreakdown.sold))} of {money(String(cogsBreakdown.total))} released
+            </span>
+          </summary>
+          <div className="tablewrap">
+            <table>
+              <tbody>
+                <tr>
+                  <td>Opening inventory</td>
+                  <td className="r">{money(String(cogsBreakdown.opening))}</td>
+                </tr>
+                <tr>
+                  <td>Closing inventory</td>
+                  <td className="r">{money(String(cogsBreakdown.closing))}</td>
+                </tr>
+                {cogsBreakdown.releases.map((rl) => (
+                  <tr key={rl.label}>
+                    <td className="wrap">
+                      {rl.label}
+                      {rl.isCogs
+                        ? <> <span className="pill ok">cost of sales</span></>
+                        : <> <span className="pill">not cost of sales</span></>}
+                    </td>
+                    <td className="r">{money(String(rl.value))}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td><strong>Cost of goods sold</strong></td>
+                  <td className="r"><strong>{money(String(cogsBreakdown.sold))}</strong></td>
+                </tr>
+                <tr>
+                  <td>Stock released for other reasons</td>
+                  <td className="r">{money(String(cogsBreakdown.notSold))}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          <div className="card-body">
+            <span className="hint">
+              Opening plus additions less closing comes to everything that
+              left the shelf, not to cost of sales &mdash; a giveaway or a
+              write-off satisfies that calculation and belongs to neither
+              revenue nor cost of goods sold.
+            </span>{" "}
+            <Link className="subline" href={{
+              pathname: "/finance/inventory-cogs",
+              query: { from: range.from, to: range.to, ...(branchId ? { branch: branchId } : {}) },
+            }}>full reconciliation</Link>
+          </div>
+        </details>
+      )}
     </>
   );
 }

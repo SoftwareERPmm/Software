@@ -293,10 +293,39 @@ async function AccountView({
 }) {
   if (list.length === 0) return <div className="empty">No accounts are set up.</div>;
 
-  const selected = list.find((a) => a.id === p.account) ?? list[0];
+  /* One account, or several, or a heading standing for everything under it.
+     "What happened to cash" is four accounts, and reading them one at a time
+     and adding up by hand is the work this page is supposed to do. The
+     parameter is a comma-separated list so a chosen set survives a link, a
+     reload and the browser's back button. */
+  const asked = (p.account ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+
+  /** A heading is not postable and has no lines of its own; it stands for
+   *  every postable account beneath it, however deep. */
+  const descendants = (rootId: string): string[] => {
+    const out: string[] = [];
+    const walk = (id: string) => {
+      for (const node of tree) {
+        if (node.parent_id !== id) continue;
+        if (node.is_postable === false) walk(node.id);
+        else { out.push(node.id); walk(node.id); }
+      }
+    };
+    walk(rootId);
+    return out;
+  };
+
+  const expanded = asked.flatMap((id) =>
+    list.some((a) => a.id === id) ? [id] : descendants(id));
+  const chosenIds = [...new Set(expanded)].filter((id) => list.some((a) => a.id === id));
+  const ids = chosenIds.length > 0 ? chosenIds : [list[0].id];
+  const chosen = ids.map((id) => list.find((a) => a.id === id)!).filter(Boolean);
+  const selected = chosen[0];
+  const many = chosen.length > 1;
+
   const f = { from: p.from, to: p.to, branchId: p.location, showVoided: p.voided === "1" };
-  const rows = (await getAccountLedgerFiltered(companyId, selected.id, f)) as any[];
-  const sum = await getAccountSummary(companyId, selected.id, f);
+  const rows = (await getAccountLedgerFiltered(companyId, ids, f)) as any[];
+  const sum = await getAccountSummary(companyId, ids, f);
   const branchName = p.location === UNASSIGNED_BRANCH
     ? "no branch"
     : locations.find((l) => l.id === p.location)?.name;
@@ -304,14 +333,34 @@ async function AccountView({
   return (
     <>
       <AccountPicker accounts={list} selectedId={selected.id} tree={tree}
-                     basePath="/finance/general-ledger" />
+                     basePath="/finance/general-ledger"
+                     label={many ? "Add another account" : "Account"}
+                     addTo={many ? ids : undefined}
+                     headings
+                     keep={{ view: "account", from: p.from, to: p.to,
+                             location: p.location, voided: p.voided }} />
+
+      {many && (
+        <div className="actions" style={{ marginBottom: "0.75rem", flexWrap: "wrap" }}>
+          {chosen.map((a) => (
+            <Link key={a.id} className="chip"
+                  href={carry({ view: "account",
+                                account: ids.filter((x) => x !== a.id).join(",") })}>
+              {a.code} · {a.name} ×
+            </Link>
+          ))}
+          <Link className="subline" href={carry({ view: "account", account: selected.id })}>
+            just one account
+          </Link>
+        </div>
+      )}
 
       {/* The period and branch, on the tab that uses them. They lived only in
           the querystring here, which meant arriving from the other tab you
           could see a filtered account with no control saying so. */}
       <form method="get" className="card doc-meta" style={{ marginBottom: "1rem" }}>
         <input type="hidden" name="view" value="account" />
-        <input type="hidden" name="account" value={selected.id} />
+        <input type="hidden" name="account" value={ids.join(",")} />
         <div className="card-body">
           <div className="row">
             <div className="field">
@@ -405,7 +454,13 @@ async function AccountView({
       <section>
         <div className="card">
           <div className="card-head">
-            <h2>{selected.code} &middot; {selected.name}</h2>
+            {/* Naming the first of six accounts as though it were the
+                whole ledger is how somebody reads the wrong figure. */}
+            <h2>
+              {many
+                ? `${chosen.length} accounts together`
+                : `${selected.code} · ${selected.name}`}
+            </h2>
             <span className="actions">
               <span className="page-sub">
                 {rows.length} movement{rows.length === 1 ? "" : "s"}
@@ -422,7 +477,11 @@ async function AccountView({
               <table>
                 <thead>
                   <tr>
-                    <th>Date</th><th>Entry</th><th>Document</th><th>Narration</th>
+                    <th>Date</th><th>Entry</th><th>Document</th>
+                    {/* Only where it is a question. Reading one account, every
+                        row is that account and the column is a wasted inch. */}
+                    {many && <th>Account</th>}
+                    <th>Narration</th>
                     <th className="r">Debit</th><th className="r">Credit</th><th className="r">Balance</th>
                   </tr>
                 </thead>
@@ -435,6 +494,9 @@ async function AccountView({
                       </td>
                       <td className="code">{r.entry_no}</td>
                       <td className="code">{r.doc_no ?? "—"}</td>
+                      {many && (
+                        <td className="code" title={r.account_name}>{r.account_code}</td>
+                      )}
                       <td className="wrap">
                         {cleanMemo(r.memo, r.doc_no,
                           LABEL[r.doc_type] ?? r.doc_type ?? "") ?? "—"}
@@ -448,7 +510,7 @@ async function AccountView({
                 </tbody>
                 <tfoot>
                   <tr>
-                    <td colSpan={4}>Total</td>
+                    <td colSpan={many ? 5 : 4}>Total</td>
                     <td className="r dr">{money(sum.debits)}</td>
                     <td className="r cr">{money(sum.credits)}</td>
                     <td className="r">{money(sum.closing)}</td>
