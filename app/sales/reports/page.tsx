@@ -3,7 +3,7 @@ import { money } from "@/lib/db";
 import { AutoApply } from "@/components/auto-apply";
 import { HelpHint } from "@/components/help-hint";
 import { DataTable, type DataRow } from "@/components/data-table";
-import { ShareDonut } from "@/components/charts";
+import { RankedBarChart, ShareDonut } from "@/components/charts";
 import { BreakdownPerformance } from "@/components/breakdown-performance";
 import {
   getCompany, getBranches, getSalesBreakdown, getSalesOverview, UNASSIGNED_BRANCH,
@@ -211,11 +211,17 @@ export default async function SalesReports({
                 : "none"} />
       </div>
 
-      {/* Two views of the same five things, agreeing on colour: the donut
-          says how lopsided it is, the columns say how big each one is, and
-          the measure picker turns the second into net sales, cost, profit,
-          margin, units, discounts or returns without moving the page. */}
-      {rows.length > 0 && (
+      {/* Item reads as three: revenue ranked, units ranked separately
+          because what sells most is rarely what earns most, and the share
+          beside them. A long catalogue is read as rankings.
+
+          Every other cut reads as two that agree on colour: the donut says
+          how lopsided it is, the columns say how big each one is, and the
+          measure picker turns the second into net sales, cost, profit,
+          margin, units, discounts or returns without moving the page. A
+          handful of categories, brands or customers suits one chart that
+          can be re-asked rather than two fixed rankings. */}
+      {rows.length > 0 && (by !== "item" ? (
         <section className="grid2 chartrow">
           <div className="card">
             <div className="card-head">
@@ -235,7 +241,54 @@ export default async function SalesReports({
 
           <BreakdownPerformance rows={rows} label={label} />
         </section>
-      )}
+      ) : (
+        <section className="grid3">
+          <div className="card">
+            <div className="card-head">
+              <h2>Top 10 by net sales</h2>
+              <span className="page-sub">{company.base_currency}</span>
+            </div>
+            <div className="card-body">
+              <div className="chartbox">
+                <RankedBarChart height={280} compact
+                  data={rows.slice(0, 10).map((r) => ({
+                    label: `${r.code} ${r.name}`, value: r.revenue,
+                  }))} />
+              </div>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-head">
+              <h2>Units sold (top 10)</h2>
+              <span className="page-sub">quantity, not money</span>
+            </div>
+            <div className="card-body">
+              <div className="chartbox">
+                <RankedBarChart height={280} compact
+                  data={[...rows].sort((a, b) => b.qty - a.qty).slice(0, 10)
+                    .map((r) => ({ label: `${r.code} ${r.name}`, value: r.qty }))} />
+              </div>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-head">
+              <h2>Share of revenue</h2>
+              <span className="page-sub">top 5</span>
+            </div>
+            <div className="card-body">
+              <div className="chartbox">
+                <ShareDonut
+                  currency={company.base_currency}
+                  emptyLabel="Nothing was invoiced in this period."
+                  data={donut}
+                />
+              </div>
+            </div>
+          </div>
+        </section>
+      ))}
 
       <section>
         <div className="card">
