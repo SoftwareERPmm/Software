@@ -47,11 +47,13 @@ export default async function Items({
     >,
     // Every pack size in one query rather than one per item: the list is
     // short, and a hundred round trips to draw a hundred rows is not.
-    sql`select iu.item_id, iu.uom_id, iu.factor
+    sql`select iu.item_id, iu.uom_id, iu.factor, u.code as uom_code
           from item_uom iu
           join item i on i.id = iu.item_id
-         where i.company_id = ${company.id}` as unknown as Promise<
-      Array<{ item_id: string; uom_id: string; factor: string }>>,
+          join uom u on u.id = iu.uom_id
+         where i.company_id = ${company.id}
+         order by u.code` as unknown as Promise<
+      Array<{ item_id: string; uom_id: string; factor: string; uom_code: string }>>,
   ]);
 
   /**
@@ -112,6 +114,8 @@ export default async function Items({
     // that opens to show it.
     searchText: [i.code, i.name, i.name_my, i.group_name, i.parent_group_name, i.brand_name, i.uom_code,
                  i.barcode,
+                 // Searching "CTN" should find what comes by the carton.
+                 ...packs.filter((p) => p.item_id === i.id).map((p) => p.uom_code),
                  ...(variantsByParent.get(i.id) ?? []).flatMap((v) => [v.code, v.name, v.barcode])]
       .filter(Boolean).join(" "),
     sort: {
@@ -148,7 +152,7 @@ export default async function Items({
           ...i,
           packs: packs
             .filter((p) => p.item_id === i.id)
-            .map((p) => ({ uomId: p.uom_id, factor: Number(p.factor) })),
+            .map((p) => ({ uomId: p.uom_id, code: p.uom_code, factor: Number(p.factor) })),
         }}
         brands={brands}
         uoms={uoms}

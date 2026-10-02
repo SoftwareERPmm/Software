@@ -1,6 +1,7 @@
 "use client";
 
 import { VariantPicker, type PickerAttribute } from "./variant-picker";
+import { PackSizes } from "./pack-sizes";
 import { useActionState, useState, useTransition } from "react";
 import type { ActionResult } from "@/lib/actions";
 import { createBrandInline, type PickerBrand } from "@/lib/actions";
@@ -49,6 +50,9 @@ export function ItemForm({
   const [tracksExpiry, setTracksExpiry] = useState(false);
   const [brandList, setBrandList] = useState<Brand[]>(brands);
   const [brandId, setBrandId] = useState("");
+  // Controlled, because the pack sizes below have to exclude whichever
+  // unit is currently the base — a box cannot contain boxes.
+  const [baseUomId, setBaseUomId] = useState(uoms[0]?.id ?? "");
   const [addingBrand, setAddingBrand] = useState(false);
   const [newBrandName, setNewBrandName] = useState("");
   const [brandError, setBrandError] = useState<string | null>(null);
@@ -244,13 +248,22 @@ export function ItemForm({
 
             <div className="field">
               <label htmlFor="base_uom_id">Base unit</label>
-              <select id="base_uom_id" name="base_uom_id" required defaultValue={uoms[0]?.id ?? ""}>
+              <select id="base_uom_id" name="base_uom_id" required value={baseUomId}
+                      onChange={(e) => setBaseUomId(e.target.value)}>
                 {uoms.map((u) => (
                   <option key={u.id} value={u.id}>{u.code} · {u.name}</option>
                 ))}
               </select>
-              <span className="hint">Stock is always stored in this unit</span>
+              <span className="hint">
+                Stock is always stored in this unit, and it cannot be changed later
+              </span>
             </div>
+
+            {/* The pack sizes were only on the edit panel, so a new item was
+                complete except for the one thing its creator had just been
+                told by the supplier — and finding it again meant the list,
+                the row menu, and Edit. It belongs where the unit is set. */}
+            <PackSizes key={baseUomId} uoms={uoms} baseUomId={baseUomId} initial={[]} />
 
             <div className="field">
               <label htmlFor="sale_price">Sale price</label>

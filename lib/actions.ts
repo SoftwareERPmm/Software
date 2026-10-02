@@ -582,6 +582,29 @@ export async function createItem(_prev: unknown, fd: FormData): Promise<ActionRe
     const groupId = str(fd, "item_group_id");
     const uomId = str(fd, "base_uom_id");
     const brandId = str(fd, "brand_id") || null;
+
+    /* The packs this item is bought and sold in, named at creation rather
+       than discovered later on the edit panel. Same shape the edit path
+       reads, so one component serves both. */
+    let newPacks: { uomId: string; factor: number }[] = [];
+    const rawNewPacks = str(fd, "packs");
+    if (rawNewPacks) {
+      try {
+        newPacks = (JSON.parse(rawNewPacks) as any[])
+          .map((p) => ({ uomId: String(p.uomId ?? ""), factor: Number(p.factor) }))
+          .filter((p) => p.uomId && p.factor > 0);
+      } catch {
+        return { error: "Could not read the pack sizes" };
+      }
+      if (newPacks.some((p) => p.uomId === uomId)) {
+        return { error: "A pack has to be a different unit from the base unit" };
+      }
+      const seen = new Set<string>();
+      for (const p of newPacks) {
+        if (seen.has(p.uomId)) return { error: "The same unit is listed twice" };
+        seen.add(p.uomId);
+      }
+    }
     const salePrice = num(fd, "sale_price");
     const nameMy = str(fd, "name_my") || null;
     /**
@@ -654,6 +677,12 @@ export async function createItem(_prev: unknown, fd: FormData): Promise<ActionRe
            ${fd.get("tracks_batch") !== null},
            ${fd.get("tracks_batch") !== null && fd.get("tracks_expiry") !== null})
         returning id`;
+
+      for (const p of newPacks) {
+        await tx`
+          insert into item_uom (company_id, item_id, uom_id, factor)
+          values (${co}, ${item.id}, ${p.uomId}, ${p.factor})`;
+      }
 
       if (photo && "set" in photo) {
         await tx`
@@ -733,6 +762,15 @@ export async function createItem(_prev: unknown, fd: FormData): Promise<ActionRe
           for (const id of combo) {
             await tx`insert into item_variant_option (item_id, option_id)
                      values (${child.id}, ${id})`;
+          }
+          /* The variants are what is actually bought and sold, so they
+             inherit the packs as they already inherit the base unit and
+             the price. A carton of shirts is a carton of each size; a
+             pack left only on the parent would apply to nothing. */
+          for (const pk of newPacks) {
+            await tx`
+              insert into item_uom (company_id, item_id, uom_id, factor)
+              values (${co}, ${child.id}, ${pk.uomId}, ${pk.factor})`;
           }
           if (salePrice > 0) {
             const [level] = await tx`
