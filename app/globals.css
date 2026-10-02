@@ -4303,3 +4303,35 @@ tbody tr.row-selected > td:first-child { box-shadow: inset 2px 0 0 var(--brand);
   content: "▸"; margin-right: 0.4rem; color: var(--muted); font-weight: 400;
 }
 .cogsnote[open] > summary::before { content: "▾"; }
+
+/* A discount typed as a rate or as money — see components/sales-voucher.
+   The toggle is tight against the field so the two read as one control. */
+.linetable td.disccell { width: 190px; }
+/* One line, so the field sits on the same baseline as every other field in
+   the row. Stacked above it, the toggle pushed the number half a row down. */
+.discrow { display: flex; align-items: center; gap: 0.3rem; }
+.discrow .unittoggle { flex: 0 0 auto; }
+.discrow .unittoggle button { padding-inline: 0.4rem; }
+.discrow input { flex: 1 1 auto; min-width: 0; }
+
+
+/* The invoice summary: label column, figure column, nothing else. It was a
+   flex row of inline spans, which meant each label sat wherever the figure
+   before it ended — type a digit more and "Commercial tax" slid along. A
+   grid keeps every label in one place whatever the numbers do. */
+.summary { display: grid; grid-template-columns: 1fr auto; gap: 0.45rem var(--s3); margin: 0; }
+.summary dt { color: var(--muted); display: flex; align-items: center; gap: 0.5rem; }
+.summary dd {
+  margin: 0; text-align: right; font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+}
+.summary dd.less { color: var(--brand); }
+.summary dt.rule, .summary dd.rule {
+  border-top: 1px solid var(--line-soft); padding-top: 0.45rem;
+}
+.summary dt.rule { color: var(--fg); }
+.summary dt.grand, .summary dd.grand {
+  border-top: 1px solid var(--line); padding-top: 0.5rem;
+  font-size: var(--t-lg); font-weight: 700; color: var(--fg);
+}
+.summary select { max-width: 11rem; }

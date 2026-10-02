@@ -36,6 +36,13 @@ export type InvoiceLine = {
   /** The discount typed on this line, in percent. */
   discountPct?: number;
   /**
+   * The same discount typed as money rather than as a rate. Where it is
+   * given it decides the line's discount and the percentage is derived
+   * from it; the ledger treats the two identically, because what reaches
+   * Sales Discount is gross less net either way.
+   */
+  discountAmount?: number | null;
+  /**
    * Which commercial tax applies to this line. Left unset, the line is
    * taxed at the company's NONE code — which is what every document posted
    * before tax existed carried, so nothing already in the ledger changes
@@ -3112,6 +3119,7 @@ async function _postSalesInvoice(
       baseQty: round4(l.qty * (packs.get(l)?.factor ?? 1)),
       unitPrice: l.unitPrice,
       discountPct: l.discountPct ?? 0,
+      discountAmount: l.discountAmount ?? null,
     })),
     bands as unknown as VolumeBand[],
     scale
