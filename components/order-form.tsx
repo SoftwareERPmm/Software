@@ -3,6 +3,8 @@
 import { useActionState, useEffect, useMemo, useState } from "react";
 import type { ActionResult, PickerItem } from "@/lib/actions";
 import type { AwaitingLine } from "@/lib/queries";
+import { UnitToggle, AddPackInline } from "@/components/unit-toggle";
+import { addItemPack } from "@/lib/actions";
 import { ItemPicker } from "./item-picker";
 import { PartnerPicker } from "./partner-picker";
 import { AwaitingOrders, AlreadyAwaited } from "./awaiting-orders";
@@ -11,7 +13,11 @@ type Item = PickerItem;
 type Node = { id: string; code: string; segment: string; name: string; parent_id: string | null };
 type Partner = { id: string; code: string; name: string; payment_terms_days: number };
 type Location = { id: string; code: string; name: string };
-type Line = { key: number; itemId: string; qty: string; unitPrice: string };
+type Line = {
+  key: number; itemId: string; qty: string; unitPrice: string;
+  /** "" is the item's own unit. A pack's uom id otherwise. */
+  uomId?: string;
+};
 
 const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 0 });
 
@@ -78,6 +84,12 @@ export function OrderForm({
       ? restored!.lines as Line[]
       : [{ key: 1, itemId: "", qty: "", unitPrice: "" }],
   );
+  // The line whose pack builder is open, and the packs added in this
+  // session — the item list came from the server and will not know about
+  // them until the page reloads, which must not be mid-order.
+  const [addingPack, setAddingPack] = useState<number | null>(null);
+  const [packPending, setPackPending] = useState(false);
+  const [extraPacks, setExtraPacks] = useState<Record<string, { uomId: string; code: string; factor: number }[]>>({});
   const [partnerId, setPartnerId] = useState(restored?.partnerId ?? "");
   const [docDate, setDocDate] = useState(restored?.docDate ?? today);
   const [dueDate, setDueDate] = useState(restored?.dueDate ?? "");
@@ -111,6 +123,16 @@ export function OrderForm({
     [awaiting, partnerId]
   );
 
+  /** An item's packs, including any defined on this page since it loaded. */
+  function packsFor(item: Item) {
+    const fromServer = (item.packs ?? []).map((p) => ({
+      uomId: p.uomId, code: p.code, factor: Number(p.factor),
+    }));
+    const added = (extraPacks[item.id] ?? []).filter(
+      (a) => !fromServer.some((f) => f.uomId === a.uomId));
+    return [...fromServer, ...added];
+  }
+
   function setLine(key: number, patch: Partial<Line>) {
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
   }
@@ -118,7 +140,11 @@ export function OrderForm({
   function pickItem(key: number, itemId: string) {
     const item = byId(itemId);
     const price = !item ? "" : isSales ? item.sale_price : item.next_cost;
-    setLine(key, { itemId, unitPrice: Number(price) > 0 ? String(Number(price)) : "" });
+    setLine(key, {
+      itemId, unitPrice: Number(price) > 0 ? String(Number(price)) : "",
+      // A carton of the old item is not a carton of the new one.
+      uomId: "",
+    });
   }
 
   function pickPartner(id: string) {
@@ -139,7 +165,10 @@ export function OrderForm({
   const payload = JSON.stringify(
     lines
       .filter((l) => l.itemId && Number(l.qty) > 0)
-      .map((l) => ({ itemId: l.itemId, qty: Number(l.qty), unitPrice: Number(l.unitPrice) || 0 }))
+      .map((l) => ({
+        itemId: l.itemId, qty: Number(l.qty), unitPrice: Number(l.unitPrice) || 0,
+        uomId: l.uomId || null,
+      }))
   );
 
   return (
@@ -222,7 +251,8 @@ export function OrderForm({
           <table className="linetable">
             <thead>
               <tr>
-                <th>Item</th><th className="r">Qty</th><th className="r">Expected price</th>
+                <th>Item</th><th className="r">Qty</th><th>Unit</th>
+                <th className="r">Expected price</th>
                 <th className="r">Amount</th><th />
               </tr>
             </thead>
@@ -251,6 +281,52 @@ export function OrderForm({
                       <input type="number" min="0" step="any" value={l.qty}
                         onChange={(e) => setLine(l.key, { qty: e.target.value })}
                         aria-label="Quantity" />
+                    </td>
+                    {/* "10" is not an order until the unit beside it says
+                        whether it means pieces or cartons. Shown even for an
+                        item with no packs, because the buyer still needs to
+                        know what they are promising. */}
+                    <td className="narrow">
+                      {!item ? (
+                        <span className="code" style={{ color: "var(--muted)" }}>&mdash;</span>
+                      ) : addingPack === l.key ? (
+                        <AddPackInline
+                          base={{ uomId: item.base_uom_id ?? "", code: item.uom_code }}
+                          uoms={uoms}
+                          taken={[
+                            item.base_uom_id ?? "",
+                            ...packsFor(item).map((x) => x.uomId),
+                          ]}
+                          pending={packPending}
+                          onCancel={() => setAddingPack(null)}
+                          onSave={async (uomId, factor) => {
+                            setPackPending(true);
+                            const r = await addItemPack(l.itemId, uomId, factor);
+                            setPackPending(false);
+                            if ("pack" in r) {
+                              setExtraPacks((m) => ({
+                                ...m,
+                                [l.itemId]: [...(m[l.itemId] ?? []),
+                                             { uomId: r.uomId, code: r.code, factor: r.factor }],
+                              }));
+                              setLine(l.key, { uomId: r.uomId });
+                              setAddingPack(null);
+                            } else if ("error" in r) {
+                              alert(r.error);
+                            }
+                          }}
+                        />
+                      ) : (
+                        <UnitToggle
+                          base={{ uomId: item.base_uom_id ?? "", code: item.uom_code }}
+                          packs={packsFor(item)}
+                          value={l.uomId ?? ""}
+                          onChange={(id) => setLine(l.key, { uomId: id ?? "" })}
+                          onAddPack={() => setAddingPack(l.key)}
+                          label={`Unit for ${item.code}`}
+                          qty={Number(l.qty) || 0}
+                        />
+                      )}
                     </td>
                     <td className="narrow">
                       <input type="number" min="0" step="any" value={l.unitPrice}

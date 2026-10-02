@@ -525,7 +525,7 @@ export async function getVariantStock(companyId: string) {
 export async function getVariantGrid(companyId: string, parentId: string) {
   const [level] = await sql`
     select id, name from price_level where company_id = ${companyId}
-     order by sort_order limit 1`;
+     order by sort_order, code limit 1`;
 
   const rows = await sql`
     select i.id, i.code, i.name, i.barcode, i.is_active, i.base_uom_id,
@@ -2054,7 +2054,7 @@ export async function getItems(companyId: string) {
              where ip.company_id = i.company_id
                and ip.item_id = i.id
                and ip.valid_from <= current_date
-             order by pl.sort_order, ip.valid_from desc
+             order by pl.sort_order, pl.code, ip.valid_from desc
              limit 1
       ) sp on true
 
@@ -2169,6 +2169,10 @@ export async function getOpenSalesOrders(companyId: string) {
            l.code as location_code, l.name as location_name,
            ol.id as line_id, ol.item_id, i.code as item_code, i.name as item_name,
            u.code as uom_code,
+           -- As on the purchase side: remaining stays in base units, the
+           -- unit the order was written in is shown beside it.
+           ol.entered_qty as entered_qty, ol.conversion_factor as conversion_factor,
+           eu.code as entered_uom_code,
            ol.base_qty as ordered_qty,
            coalesce(d.delivered_qty, 0) as delivered_qty,
            ol.base_qty - coalesce(d.delivered_qty, 0) - coalesce(fl.linked_qty, 0) as remaining_qty
@@ -2176,6 +2180,7 @@ export async function getOpenSalesOrders(companyId: string) {
       join document_line ol on ol.document_id = o.id
       join item i on i.id = ol.item_id
       join uom u on u.id = i.base_uom_id
+      left join uom eu on eu.id = ol.entered_uom_id
       join business_partner p on p.id = o.partner_id
       left join location l on l.id = o.location_id
       left join (
@@ -2222,6 +2227,12 @@ export async function getOpenPurchaseOrders(companyId: string) {
            -- The uom table was already joined and never read from. "40" means
            -- nothing next to a bill awaiting goods; "40 CTN" means something.
            u.code as uom_code,
+           -- Remaining is counted in base units, and must stay that way: a
+           -- part-received carton is not a whole number of cartons. But the
+           -- buyer ordered in cartons, so the screen says both rather than
+           -- silently reframing what they asked for.
+           ol.entered_qty as entered_qty, ol.conversion_factor as conversion_factor,
+           eu.code as entered_uom_code,
            ol.unit_price as expected_price,
            ol.base_qty as ordered_qty,
            coalesce(r.received_qty, 0) as received_qty,
@@ -2230,6 +2241,7 @@ export async function getOpenPurchaseOrders(companyId: string) {
       join document_line ol on ol.document_id = o.id
       join item i on i.id = ol.item_id
       join uom u on u.id = i.base_uom_id
+      left join uom eu on eu.id = ol.entered_uom_id
       join business_partner p on p.id = o.partner_id
       left join location l on l.id = o.location_id
       left join (

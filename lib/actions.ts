@@ -582,6 +582,29 @@ export async function createItem(_prev: unknown, fd: FormData): Promise<ActionRe
     const groupId = str(fd, "item_group_id");
     const uomId = str(fd, "base_uom_id");
     const brandId = str(fd, "brand_id") || null;
+
+    /* The packs this item is bought and sold in, named at creation rather
+       than discovered later on the edit panel. Same shape the edit path
+       reads, so one component serves both. */
+    let newPacks: { uomId: string; factor: number }[] = [];
+    const rawNewPacks = str(fd, "packs");
+    if (rawNewPacks) {
+      try {
+        newPacks = (JSON.parse(rawNewPacks) as any[])
+          .map((p) => ({ uomId: String(p.uomId ?? ""), factor: Number(p.factor) }))
+          .filter((p) => p.uomId && p.factor > 0);
+      } catch {
+        return { error: "Could not read the pack sizes" };
+      }
+      if (newPacks.some((p) => p.uomId === uomId)) {
+        return { error: "A pack has to be a different unit from the base unit" };
+      }
+      const seen = new Set<string>();
+      for (const p of newPacks) {
+        if (seen.has(p.uomId)) return { error: "The same unit is listed twice" };
+        seen.add(p.uomId);
+      }
+    }
     const salePrice = num(fd, "sale_price");
     const nameMy = str(fd, "name_my") || null;
     /**
@@ -655,6 +678,12 @@ export async function createItem(_prev: unknown, fd: FormData): Promise<ActionRe
            ${fd.get("tracks_batch") !== null && fd.get("tracks_expiry") !== null})
         returning id`;
 
+      for (const p of newPacks) {
+        await tx`
+          insert into item_uom (company_id, item_id, uom_id, factor)
+          values (${co}, ${item.id}, ${p.uomId}, ${p.factor})`;
+      }
+
       if (photo && "set" in photo) {
         await tx`
           update item
@@ -665,7 +694,7 @@ export async function createItem(_prev: unknown, fd: FormData): Promise<ActionRe
 
       if (salePrice > 0) {
         const [level] = await tx`
-          select id from price_level where company_id = ${co} order by sort_order limit 1`;
+          select id from price_level where company_id = ${co} order by sort_order, code limit 1`;
         if (level) {
           await tx`
             insert into item_price
@@ -734,9 +763,18 @@ export async function createItem(_prev: unknown, fd: FormData): Promise<ActionRe
             await tx`insert into item_variant_option (item_id, option_id)
                      values (${child.id}, ${id})`;
           }
+          /* The variants are what is actually bought and sold, so they
+             inherit the packs as they already inherit the base unit and
+             the price. A carton of shirts is a carton of each size; a
+             pack left only on the parent would apply to nothing. */
+          for (const pk of newPacks) {
+            await tx`
+              insert into item_uom (company_id, item_id, uom_id, factor)
+              values (${co}, ${child.id}, ${pk.uomId}, ${pk.factor})`;
+          }
           if (salePrice > 0) {
             const [level] = await tx`
-              select id from price_level where company_id = ${co} order by sort_order limit 1`;
+              select id from price_level where company_id = ${co} order by sort_order, code limit 1`;
             if (level) {
               await tx`
                 insert into item_price
@@ -1528,7 +1566,7 @@ export async function createItemInline(
 
       if (input.price && input.price > 0) {
         const [level] = await tx`
-          select id from price_level where company_id = ${co} order by sort_order limit 1`;
+          select id from price_level where company_id = ${co} order by sort_order, code limit 1`;
         if (level) {
           await tx`
             insert into item_price
@@ -1890,6 +1928,9 @@ function parseOrderLines(fd: FormData): OrderLine[] {
       itemId: String(l.itemId ?? ""),
       qty: Number(l.qty),
       unitPrice: l.unitPrice ? Number(l.unitPrice) : undefined,
+      // Empty means the item's own unit; the engine resolves the factor and
+      // refuses a unit the item has no pack for.
+      uomId: l.uomId ? String(l.uomId) : null,
     }))
     .filter((l) => l.itemId && l.qty > 0);
 
@@ -3757,7 +3798,7 @@ export async function saveVariantGrid(_prev: unknown, fd: FormData): Promise<Act
     }
 
     const [level] = await sql`
-      select id from price_level where company_id = ${co} order by sort_order limit 1`;
+      select id from price_level where company_id = ${co} order by sort_order, code limit 1`;
 
     await sql.begin(async (tx) => {
       for (const r of rows) {
@@ -6830,4 +6871,156 @@ export async function deleteRadarPreset(
   }
   revalidatePath("/purchases/supplier-performance");
   return { ok: true };
+}
+
+// --------------------------------------------------------- price levels --
+
+/**
+ * A price level is a column on the price list: Wholesale, Retail, and
+ * whatever else a business sells at. Setup creates the first two and, until
+ * now, that was the end of it — a shop with a third kind of customer had no
+ * way to say so.
+ *
+ * Levels are ordered rather than ranked. sort_order decides which column
+ * comes first on the price list and, more consequentially, which price a
+ * customer on no level at all is quoted: the first one. So the order is a
+ * real decision, not decoration.
+ */
+export async function createPriceLevel(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  const code = str(fd, "code").toUpperCase();
+
+  try {
+    const co = await companyId();
+    const name = str(fd, "name");
+
+    if (!code) return { error: "Code is required" };
+    if (!name) return { error: "Name is required" };
+
+    const dup = await sql`
+      select 1 from price_level where company_id = ${co} and code = ${code}`;
+    if (dup.length) return { error: `Code ${code} is already used` };
+
+    // Last by default. A new level should not quietly become the one that
+    // customers on no level get quoted.
+    const [last] = await sql`
+      select coalesce(max(sort_order), 0) + 1 as next
+        from price_level where company_id = ${co}`;
+
+    await sql`
+      insert into price_level (company_id, code, name, sort_order)
+      values (${co}, ${code}, ${name}, ${Number(last.next)})`;
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/items/prices");
+  revalidatePath("/partners/new");
+  redirectWithToast("/items/prices", "Price level added");
+}
+
+export async function updatePriceLevel(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  const code = str(fd, "code").toUpperCase();
+
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    const name = str(fd, "name");
+
+    if (!id) return { error: "Choose a price level" };
+    if (!code) return { error: "Code is required" };
+    if (!name) return { error: "Name is required" };
+
+    const order = Number(str(fd, "sort_order"));
+    if (!Number.isFinite(order) || order < 1) return { error: "Order must be 1 or more" };
+
+    await sql`
+      update price_level
+         set code = ${code}, name = ${name}, sort_order = ${order}
+       where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `Code ${code} is already used` };
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/items/prices");
+  revalidatePath("/partners");
+  redirectWithToast("/items/prices", "Price level saved");
+}
+
+export async function deletePriceLevel(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Choose a price level" };
+
+    const [last] = await sql`
+      select count(*)::int as n from price_level where company_id = ${co}`;
+    if (Number(last.n) <= 1) {
+      return { error: "This is the only price level — every item needs somewhere to be priced" };
+    }
+
+    await sql`delete from price_level where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    if (isForeignKeyViolation(e)) {
+      // There is no is_active on price_level to fall back on, so say what
+      // actually has to happen rather than offering a retire that does not
+      // exist.
+      return {
+        error: "This level is in use by a price, a customer or a posted document. " +
+               "Clear those first — a document keeps the level it was priced at.",
+      };
+    }
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  revalidatePath("/items/prices");
+  redirectWithToast("/items/prices", "Price level deleted");
+}
+
+/**
+ * Define a pack for one item, from the voucher being typed.
+ *
+ * The posting engine refuses a line in a unit the item has no pack for,
+ * which is correct — guessing 1:1 is how stock quietly stops matching the
+ * shelf. But refusing mid-document meant leaving the document to go and
+ * edit the item, and an abandoned entry is its own kind of data loss.
+ *
+ * Returns the pack rather than redirecting: the caller is a voucher that
+ * must stay exactly where it is, with everything already typed into it.
+ */
+export async function addItemPack(
+  itemId: string, uomId: string, factor: number,
+): Promise<ActionResult | { pack: true; uomId: string; code: string; factor: number }> {
+  try {
+    const co = await companyId();
+    if (!itemId || !uomId) return { error: "Choose an item and a unit" };
+    if (!(factor > 0)) return { error: "A pack has to hold more than nothing" };
+
+    const [item] = await sql`
+      select base_uom_id from item where id = ${itemId} and company_id = ${co}`;
+    if (!item) return { error: "Item not found" };
+    if (item.base_uom_id === uomId) {
+      return { error: "That is the item's own unit — a pack has to be a different one" };
+    }
+
+    const [uom] = await sql`select code from uom where id = ${uomId} and company_id = ${co}`;
+    if (!uom) return { error: "Unit not found" };
+
+    await sql`
+      insert into item_uom (company_id, item_id, uom_id, factor)
+      values (${co}, ${itemId}, ${uomId}, ${factor})
+      on conflict (item_id, uom_id) do update set factor = ${factor}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+
+  // No redirect: the voucher stays open. These are the screens that read
+  // packs, so they pick it up on their next load.
+  revalidatePath("/items");
+  revalidatePath("/items/prices");
+  // Tagged `pack` rather than `ok`: ActionResult already has an ok-shape,
+  // so a caller could not tell the two apart by narrowing.
+  const [u] = await sql`select code from uom where id = ${uomId}`;
+  return { pack: true as const, uomId, code: u.code as string, factor };
 }

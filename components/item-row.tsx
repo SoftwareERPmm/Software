@@ -24,7 +24,7 @@ type Item = {
   photo_version?: string | null;
   /** The packs this item is bought and sold in, each holding so many base
    *  units. Empty for an item handled only in its own unit. */
-  packs?: { uomId: string; factor: number }[];
+  packs?: { uomId: string; code?: string; factor: number }[];
   last_purchase_price?: string | null;
   last_purchase_doc_no?: string | null;
   last_purchase_date?: string | null;
@@ -203,7 +203,20 @@ export function ItemRow({
         {item.parent_group_name ? item.group_name : "—"}
       </td>
       <td style={{ color: "var(--muted)" }}>{item.brand_name ?? "—"}</td>
-      <td className="code">{item.uom_code}</td>
+      {/* The base unit, and what else this item is bought and sold in.
+          Pack sizes lived only inside Edit, so the catalogue could not
+          answer "which of these come by the carton" without opening every
+          row one at a time. */}
+      <td className="code">
+        {item.uom_code}
+        {(item.packs ?? []).length > 0 && (
+          <div className="subline">
+            {(item.packs ?? [])
+              .map((p) => `1 ${p.code ?? "?"} = ${Number(p.factor)} ${item.uom_code}`)
+              .join(" · ")}
+          </div>
+        )}
+      </td>
       <td className="r">{item.sale_price ? money(item.sale_price) : "—"}</td>
       {/* Derived, never stored: the price on the newest posted purchase
           invoice. The document it came from is shown underneath, because a

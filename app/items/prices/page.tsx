@@ -1,6 +1,7 @@
 import { getCompany, getPriceList } from "@/lib/queries";
 import { sql } from "@/lib/db";
-import { setItemPrice } from "@/lib/actions";
+import { setItemPrice, createPriceLevel, updatePriceLevel, deletePriceLevel } from "@/lib/actions";
+import { AddPriceLevelForm, PriceLevelRow } from "@/components/price-level-form";
 import { PriceRow } from "@/components/price-row";
 import { HelpHint } from "@/components/help-hint";
 
@@ -50,6 +51,19 @@ export default async function Prices() {
     }),
   }));
 
+  // What each level is carrying, so a row can warn before it is renamed and
+  // explain itself when a delete is refused.
+  const levelUse = (await sql`
+    select pl.id, pl.code, pl.name, pl.sort_order,
+           (select count(*)::int from item_price ip where ip.price_level_id = pl.id) as prices,
+           (select count(*)::int from business_partner bp where bp.price_level_id = pl.id) as partners
+      from price_level pl
+     where pl.company_id = ${company.id}
+     order by pl.sort_order, pl.code`) as unknown as Array<{
+      id: string; code: string; name: string; sort_order: number;
+      prices: number; partners: number;
+    }>;
+
   const today = new Date().toISOString().slice(0, 10);
   const priced = items.filter((i) => i.levels.some((l) => l.price !== null)).length;
 
@@ -57,7 +71,7 @@ export default async function Prices() {
     <>
       <div className="page-head">
         <span className="eyebrow">Master data</span>
-        <h1>Price list</h1>
+        <h1>Price levels</h1>
         <HelpHint>
           What each item sells for, at each level. A customer on a level gets
           that column filled in on their sales lines; a customer on none gets
@@ -72,6 +86,50 @@ export default async function Prices() {
           cartons can carry a carton price beside its piece price.
         </HelpHint>
       </div>
+
+      <AddPriceLevelForm action={createPriceLevel} />
+
+      <section>
+        <div className="card">
+          <div className="card-head">
+            <h2>Levels</h2>
+            <span className="page-sub">
+              {levelUse.length} level{levelUse.length === 1 ? "" : "s"} · the columns below
+            </span>
+          </div>
+          {levelUse.length === 0 ? (
+            <div className="empty">
+              No price levels. Add one &mdash; Wholesale, Retail &mdash; before pricing
+              anything, since a price belongs to a level.
+            </div>
+          ) : (
+            <div className="tablewrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Code</th>
+                    <th>Name</th>
+                    <th className="r">Order</th>
+                    <th className="r">Prices</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {levelUse.map((l, i) => (
+                    <PriceLevelRow
+                      key={l.id}
+                      level={l}
+                      first={i === 0}
+                      updateAction={updatePriceLevel}
+                      deleteAction={deletePriceLevel}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </section>
 
       <section>
         <div className="card">
