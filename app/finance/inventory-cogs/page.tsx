@@ -79,7 +79,7 @@ export default async function InventoryCogs({
         </div>
       ) : (
         <>
-          <div className="kpis kpis-tiled">
+          <div className="kpis">
             <Tile label="Opening inventory" value={fmt(data.opening)}
                   sub={`as at ${range.from}`} />
             <Tile label="Closing inventory" value={fmt(data.closing)}
@@ -242,7 +242,7 @@ function Tile({ label, value, sub }: { label: string; value: string; sub: string
     <div className="kpi">
       <div className="kpi-label">{label}</div>
       <div className="kpi-value">{value}</div>
-      <div className="kpi-sub">{sub}</div>
+      <div className="kpi-note">{sub}</div>
     </div>
   );
 }

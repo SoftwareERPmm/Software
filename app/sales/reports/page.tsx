@@ -5,11 +5,15 @@ import { HelpHint } from "@/components/help-hint";
 import { DataTable, type DataRow } from "@/components/data-table";
 import { RankedBarChart, ShareDonut } from "@/components/charts";
 import {
-  getCompany, getBranches, getSalesBreakdown, UNASSIGNED_BRANCH,
+  getCompany, getBranches, getSalesBreakdown, getSalesOverview, UNASSIGNED_BRANCH,
   type SalesBreakdownBy,
 } from "@/lib/queries";
+import { SalesOverview } from "@/components/sales-overview";
 
-const TABS: [SalesBreakdownBy, string, string][] = [
+type Tab = SalesBreakdownBy | "overview";
+
+const TABS: [Tab, string, string][] = [
+  ["overview", "Overview", "How the period compares with the one before"],
   ["item", "By item", "Which products earned it"],
   ["customer", "By customer", "Who it came from"],
   ["category", "By category", "Which part of the catalogue"],
@@ -33,7 +37,8 @@ export default async function SalesReports({
   const company = await getCompany();
   if (!company) return <div className="empty">No company found.</div>;
 
-  const by = (TABS.find(([k]) => k === p.by)?.[0] ?? "item") as SalesBreakdownBy;
+  const tab = (TABS.find(([k]) => k === p.by)?.[0] ?? "overview") as Tab;
+  const by = (tab === "overview" ? "item" : tab) as SalesBreakdownBy;
   const range = { from: p.from || defaultFrom(), to: p.to || today() };
 
   const branches = (await getBranches(company.id)) as unknown as Array<{
@@ -44,7 +49,15 @@ export default async function SalesReports({
     : p.branch && branches.some((b) => b.id === p.branch) ? p.branch
     : null;
 
-  const rows = await getSalesBreakdown(company.id, range.from, range.to, by, branchId);
+  /* Only what the open tab needs. The overview compares two periods and
+     the breakdowns scan one, and running both on every load would double
+     the work to show half of it. */
+  const overview = tab === "overview"
+    ? await getSalesOverview(company.id, range.from, range.to, branchId)
+    : null;
+  const rows = tab === "overview"
+    ? []
+    : await getSalesBreakdown(company.id, range.from, range.to, by, branchId);
 
   const tot = rows.reduce((t, r) => ({
     qty: t.qty + r.qty, freeQty: t.freeQty + r.freeQty,
@@ -52,20 +65,20 @@ export default async function SalesReports({
     revenue: t.revenue + r.revenue, cost: t.cost + r.cost, margin: t.margin + r.margin,
   }), { qty: 0, freeQty: 0, gross: 0, discount: 0, revenue: 0, cost: 0, margin: 0 });
 
-  const TOP = 6;
+  const TOP = 5;
   const head = rows.slice(0, TOP);
   const tail = rows.slice(TOP);
   const donut = [
     ...head.map((r) => ({ id: r.key, name: `${r.code} · ${r.name}`, revenue: r.revenue })),
     ...(tail.length > 0
-      ? [{ id: "rest", name: `${tail.length} others`,
+      ? [{ id: "rest", name: `${tail.length} others`, rest: true,
            revenue: tail.reduce((t, r) => t + r.revenue, 0) }]
       : []),
   ].filter((d) => d.revenue > 0);
 
   const link = (over: Record<string, string | undefined>) => {
     const q = new URLSearchParams();
-    const all = { by, from: range.from, to: range.to,
+    const all = { by: tab, from: range.from, to: range.to,
                   branch: branchId ?? undefined, ...over };
     for (const [k, v] of Object.entries(all)) if (v) q.set(k, String(v));
     return `/sales/reports?${q.toString()}`;
@@ -144,12 +157,12 @@ export default async function SalesReports({
       <div className="erp-tabs">
         {TABS.map(([k, t, hint]) => (
           <Link key={k} href={link({ by: k })} title={hint}
-                className={`erp-tab ${by === k ? "here" : ""}`}>{t}</Link>
+                className={`erp-tab ${tab === k ? "here" : ""}`}>{t}</Link>
         ))}
       </div>
 
       <form className="row" style={{ margin: "1rem 0", alignItems: "flex-end" }}>
-        <input type="hidden" name="by" value={by} />
+        <input type="hidden" name="by" value={tab} />
         <div className="field">
           <label htmlFor="from">From</label>
           <input id="from" name="from" type="date" defaultValue={range.from} />
@@ -173,7 +186,15 @@ export default async function SalesReports({
         </div>
       </form>
 
-      <div className="kpis kpis-tiled">
+      {overview ? (
+        <SalesOverview
+          now={overview.now} before={overview.before}
+          series={overview.series} prevFrom={overview.prevFrom} prevTo={overview.prevTo}
+          currency={company.base_currency}
+        />
+      ) : (
+      <>
+      <div className="kpis">
         <Tile label="Revenue" value={money(String(tot.revenue))}
               sub={`${rows.length} ${label.toLowerCase()}${rows.length === 1 ? "" : "s"} sold`} />
         <Tile label="Cost of those goods" value={money(String(tot.cost))}
@@ -203,10 +224,12 @@ export default async function SalesReports({
                 <span className="page-sub">{company.base_currency}</span>
               </div>
               <div className="card-body">
-                <RankedBarChart height={260}
-                  data={rows.slice(0, 10).map((r) => ({
-                    label: `${r.code} ${r.name}`, value: r.revenue,
-                  }))} />
+                <div className="chartbox">
+                  <RankedBarChart height={280} compact
+                    data={rows.slice(0, 10).map((r) => ({
+                      label: `${r.code} ${r.name}`, value: r.revenue,
+                    }))} />
+                </div>
               </div>
             </div>
 
@@ -219,23 +242,27 @@ export default async function SalesReports({
                 {/* Ranked by units, which is a different order from revenue
                     and is the point of showing both: the thing that sells
                     most is rarely the thing that earns most. */}
-                <RankedBarChart height={260}
-                  data={[...rows].sort((a, b) => b.qty - a.qty).slice(0, 10)
-                    .map((r) => ({ label: `${r.code} ${r.name}`, value: r.qty }))} />
+                <div className="chartbox">
+                  <RankedBarChart height={280} compact
+                    data={[...rows].sort((a, b) => b.qty - a.qty).slice(0, 10)
+                      .map((r) => ({ label: `${r.code} ${r.name}`, value: r.qty }))} />
+                </div>
               </div>
             </div>
 
             <div className="card">
               <div className="card-head">
                 <h2>Share of revenue</h2>
-                <span className="page-sub">top 6</span>
+                <span className="page-sub">top 5</span>
               </div>
               <div className="card-body">
-                <ShareDonut
-                  currency={company.base_currency}
-                  emptyLabel="Nothing was invoiced in this period."
-                  data={donut}
-                />
+                <div className="chartbox">
+                  <ShareDonut
+                    currency={company.base_currency}
+                    emptyLabel="Nothing was invoiced in this period."
+                    data={donut}
+                  />
+                </div>
               </div>
             </div>
           </section>
@@ -261,18 +288,20 @@ export default async function SalesReports({
               { key: "code", label: "Code", sortable: true },
               { key: "name", label, sortable: true },
               { key: "qty", label: "Qty sold", sortable: true, align: "r" },
-              { key: "gross", label: "Gross", sortable: true, align: "r" },
+              { key: "gross", label: "Gross revenue", sortable: true, align: "r" },
               { key: "discount", label: "Discount", sortable: true, align: "r" },
               { key: "revenue", label: "Revenue", sortable: true, align: "r" },
               { key: "cost", label: "Cost", sortable: true, align: "r" },
-              { key: "margin", label: "Margin", sortable: true, align: "r" },
-              { key: "margin_pct", label: "Margin %", sortable: true, align: "r" },
+              { key: "margin", label: "Gross margin", sortable: true, align: "r" },
+              { key: "margin_pct", label: "Gross margin %", sortable: true, align: "r" },
               { key: "share", label: "Share", sortable: true, align: "r" },
               { key: "invoices", label: "Invoices", align: "r" },
             ]}
           />
         </div>
       </section>
+      </>
+      )}
     </>
   );
 }
@@ -282,7 +311,7 @@ function Tile({ label, value, sub }: { label: string; value: string; sub: string
     <div className="kpi">
       <div className="kpi-label">{label}</div>
       <div className="kpi-value">{value}</div>
-      <div className="kpi-sub">{sub}</div>
+      <div className="kpi-note">{sub}</div>
     </div>
   );
 }

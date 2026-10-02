@@ -718,13 +718,33 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-num
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--s3); align-items: start; }
 /* Three across where there is room, folding to two and then one. A chart
    narrower than this stops being readable, so it wraps rather than being
-   squeezed to fit a count. */
-.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: var(--s3); align-items: start; }
+   squeezed to fit a count.
+
+   stretch, not start: three charts of three different heights read as
+   three unrelated things rather than one row of comparisons. The card
+   stretches to the tallest and the chart inside it is given a fixed
+   boundary, so the row keeps its shape whatever the data does. */
+.grid3 {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--s3); align-items: stretch;
+}
+.grid3 > .card { display: flex; flex-direction: column; }
+.grid3 > .card > .card-body { flex: 1 1 auto; display: flex; flex-direction: column; }
+
+/* The boundary. A chart that grows with its data makes the row jump every
+   time the period changes; inside this it scrolls instead. */
+.chartbox { height: 300px; overflow: auto; }
+
 /* In a third of a row the donut puts its legend under the ring rather than
    beside it: side by side, neither has the width to be read. */
-.grid3 .donut-wrap { flex-direction: column; align-items: stretch; gap: var(--s3); }
+.grid3 .donut-wrap { flex-direction: column; align-items: stretch; gap: var(--s2); }
 .grid3 .donut-chart { align-self: center; }
-.grid3 .donut-legend { grid-template-columns: 1fr; }
+.grid3 .donut-legend { grid-template-columns: 1fr; gap: 0; font-size: var(--t-sm); }
+/* Tighter rows and a smaller figure: the legend is a key to the ring, not
+   a second table, and at full size it needed more height than the charts
+   beside it. */
+.grid3 .donut-legend li { padding: 0.25rem 0; gap: 0.4rem; }
+.grid3 .donut-legend li > :last-child { font-size: var(--t-sm); }
 
 .kv { display: grid; grid-template-columns: auto 1fr; gap: var(--s1) var(--s3); font-size: var(--t-md); }
 .kv dt { font-family: var(--mono); font-size: var(--t-2xs); letter-spacing: var(--track-caps); text-transform: uppercase; color: var(--muted); align-self: center; }

@@ -2,7 +2,7 @@
 
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid,
-  BarChart, Bar, LabelList, Cell, PieChart, Pie,
+  BarChart, Bar, LabelList, Cell, PieChart, Pie, Legend,
 } from "recharts";
 import { useRouter } from "next/navigation";
 import { money } from "@/lib/format";
@@ -54,27 +54,40 @@ export function RevenueTrendChart({ data }: { data: { month: string; revenue: nu
 export function RankedBarChart({
   data,
   height = 200,
+  compact = false,
 }: {
   data: { label: string; value: number | string }[];
   height?: number;
+  /**
+   * Thinner bars and smaller labels, for a chart showing ten rows in the
+   * space this one usually gives six. Six fat bars read better than six
+   * thin ones, so the dashboard keeps what it has; ten at that weight are
+   * a solid block with gaps in it.
+   */
+  compact?: boolean;
 }) {
   const rows = data.map((d) => ({ label: d.label, value: Number(d.value) }));
+  const bar = compact ? 8 : 16;
+  const tick = compact ? 10 : 12;
+  const axis = compact ? 96 : 110;
+  const cut = compact ? 14 : 16;
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <BarChart data={rows} layout="vertical" margin={{ top: 4, right: 40, left: 4, bottom: 4 }}>
+      <BarChart data={rows} layout="vertical"
+                margin={{ top: 4, right: compact ? 54 : 40, left: 4, bottom: 4 }}>
         <XAxis type="number" hide />
         <YAxis
-          type="category" dataKey="label" axisLine={false} tickLine={false} width={110}
-          tick={{ fill: "var(--ink-soft)", fontSize: 12 }}
-          tickFormatter={(v: string) => (v.length > 16 ? `${v.slice(0, 15)}…` : v)}
+          type="category" dataKey="label" axisLine={false} tickLine={false} width={axis}
+          tick={{ fill: "var(--ink-soft)", fontSize: tick }}
+          tickFormatter={(v: string) => (v.length > cut ? `${v.slice(0, cut - 1)}…` : v)}
         />
         <Tooltip content={<ChartTooltip />} cursor={{ fill: "var(--line-soft)" }} />
-        <Bar dataKey="value" fill="var(--brand)" radius={[0, 4, 4, 0]} barSize={16}>
+        <Bar dataKey="value" fill="var(--brand)" radius={[0, 4, 4, 0]} barSize={bar}>
           <LabelList
             dataKey="value"
             position="right"
             formatter={(v: unknown) => money(v as number)}
-            style={{ fill: "var(--muted)", fontSize: 11, fontFamily: "var(--mono)" }}
+            style={{ fill: "var(--muted)", fontSize: compact ? 10 : 11, fontFamily: "var(--mono)" }}
           />
         </Bar>
       </BarChart>
@@ -193,13 +206,29 @@ function SliceTooltip({ active, payload, total }: any) {
 export function ShareDonut({
   data, currency, emptyLabel = "Nothing to show for the last six months.",
 }: {
-  data: { id: string; name: string; revenue: number | string; qty?: number | string }[];
+  data: {
+    id: string; name: string; revenue: number | string; qty?: number | string;
+    /** The gathered remainder. Grey, and outside the palette: it is not a
+     *  thing that sold, it is everything the chart stopped naming, and
+     *  giving it a colour of its own invites reading it as one more item. */
+    rest?: boolean;
+  }[];
   currency: string;
   /** Said by whoever is showing the chart: the dashboard means its own six
    *  months, a report means the period its filters are set to. */
   emptyLabel?: string;
 }) {
-  const rows = data.map((d) => ({ id: d.id, name: d.name, value: Number(d.revenue) }));
+  const rows = data.map((d) => ({
+    id: d.id, name: d.name, value: Number(d.revenue), rest: !!d.rest,
+  }));
+  /* The remainder takes grey wherever it sits, and the named slices keep
+     the palette in order regardless — so a colour means the same thing
+     whether or not a remainder happens to be present. */
+  const REST = "var(--line)";
+  let n = 0;
+  const colourOf = (r: { rest: boolean }) =>
+    r.rest ? REST : SLICE_COLOURS[n++ % SLICE_COLOURS.length];
+  const colours = rows.map(colourOf);
   const total = rows.reduce((t, r) => t + r.value, 0);
   if (rows.length === 0 || total <= 0) {
     return <div className="empty">{emptyLabel}</div>;
@@ -216,7 +245,7 @@ export function ShareDonut({
               paddingAngle={rows.length > 1 ? 2 : 0} stroke="var(--surface)" strokeWidth={2}
             >
               {rows.map((r, i) => (
-                <Cell key={r.id} fill={SLICE_COLOURS[i % SLICE_COLOURS.length]} />
+                <Cell key={r.id} fill={colours[i]} />
               ))}
             </Pie>
             <Tooltip content={<SliceTooltip total={total} />} />
@@ -232,7 +261,7 @@ export function ShareDonut({
       <ul className="donut-legend">
         {rows.map((r, i) => (
           <li key={r.id}>
-            <span className="donut-dot" style={{ background: SLICE_COLOURS[i % SLICE_COLOURS.length] }} />
+            <span className="donut-dot" style={{ background: colours[i] }} />
             <span className="donut-name">{r.name}</span>
             <span className="donut-share">{Math.round((r.value / total) * 100)}%</span>
             <span className="donut-value">{money(r.value)}</span>
@@ -240,5 +269,48 @@ export function ShareDonut({
         ))}
       </ul>
     </div>
+  );
+}
+
+/**
+ * Two series side by side, month by month — net sales against the gross
+ * profit inside it.
+ *
+ * Grouped rather than stacked: stacking would read as sales *plus* profit,
+ * which is nonsense, since the profit is already part of the sales beside
+ * it. Side by side the gap between the pair is the cost, which is the thing
+ * worth seeing.
+ */
+export function TwoSeriesBars({
+  data, height = 240, aLabel, bLabel,
+}: {
+  data: { month: string; a: number | string; b: number | string }[];
+  height?: number;
+  aLabel: string;
+  bLabel: string;
+}) {
+  const rows = data.map((d) => ({
+    month: monthLabel(d.month), [aLabel]: Number(d.a), [bLabel]: Number(d.b),
+  }));
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <BarChart data={rows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" vertical={false} />
+        <XAxis dataKey="month" axisLine={false} tickLine={false}
+               tick={{ fill: "var(--muted)", fontSize: 11, fontFamily: "var(--mono)" }} />
+        <YAxis axisLine={false} tickLine={false} width={46}
+               tick={{ fill: "var(--muted)", fontSize: 10, fontFamily: "var(--mono)" }}
+               tickFormatter={(v: number) =>
+                 Math.abs(v) >= 1e6 ? `${Math.round(v / 1e5) / 10}M`
+                 : Math.abs(v) >= 1e3 ? `${Math.round(v / 1e3)}K` : String(v)} />
+        <Tooltip content={<ChartTooltip />} cursor={{ fill: "var(--line-soft)" }} />
+        <Legend iconType="circle" iconSize={8}
+                wrapperStyle={{ fontSize: 12, color: "var(--muted)" }} />
+        {/* The darker of the two is the bigger figure, so the pair reads
+            in the same direction as the numbers. */}
+        <Bar dataKey={aLabel} fill="var(--brand)" radius={[3, 3, 0, 0]} maxBarSize={22} />
+        <Bar dataKey={bLabel} fill="#6FBF95" radius={[3, 3, 0, 0]} maxBarSize={22} />
+      </BarChart>
+    </ResponsiveContainer>
   );
 }

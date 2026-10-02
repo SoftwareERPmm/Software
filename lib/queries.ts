@@ -7182,3 +7182,136 @@ export async function getSalesBreakdown(
     };
   }).sort((a, b) => b.revenue - a.revenue);
 }
+
+/**
+ * Sales for a period against the period before it.
+ *
+ * "Up or down" is the question this answers, so every figure comes with the
+ * same figure for the run of days immediately before — same length, so a
+ * 30-day month is never compared with a 31-day one and called a decline.
+ *
+ * Revenue is posted invoices; cost is what the deliveries consumed, matched
+ * on the period rather than line by line, for the reason the sales report
+ * gives: in perpetual FIFO they are recognised on different documents and
+ * can fall in different months.
+ */
+export async function getSalesOverview(
+  companyId: string, from: string, to: string, branchId?: string | null,
+) {
+  const branch = (alias: ReturnType<typeof sql>) => branchId
+    ? sql`and (${alias}.location_id = ${branchId} or exists (
+            select 1 from location l where l.id = ${alias}.location_id
+             and l.parent_id = ${branchId}))`
+    : sql``;
+
+  /* The run of days immediately before, of equal length, so the comparison
+     is like for like rather than an accident of the calendar. */
+  /* As text, deliberately. A date column comes back as a Date object, and
+     String(d).slice(0, 10) on one of those is "Thu Jul 02" — which is not a
+     date, so the comparison window silently matched nothing and every
+     figure read as new. */
+  const [span] = (await sql`
+    select (${to}::date - ${from}::date) as days,
+           to_char(${from}::date - 1 - (${to}::date - ${from}::date), 'YYYY-MM-DD') as prev_from,
+           to_char(${from}::date - 1, 'YYYY-MM-DD') as prev_to`) as unknown as
+    Array<{ days: number; prev_from: string; prev_to: string }>;
+
+  const totals = async (a: string, b: string) => {
+    const [rev] = (await sql`
+      select coalesce(sum(case when dl.foc_reason_id is null then dl.net_amount else 0 end), 0) as net,
+             coalesce(sum(case when dl.foc_reason_id is null then dl.base_qty else 0 end), 0) as units,
+             coalesce(sum(coalesce(dl.discount_amount, 0)
+                        + coalesce(dl.volume_discount_amount, 0)
+                        + coalesce(dl.invoice_discount_amount, 0)), 0) as discount
+        from document_line dl
+        join document d on d.id = dl.document_id
+       where d.company_id = ${companyId} and d.doc_type = 'SALES_INVOICE'
+         and d.status = 'POSTED'
+         and d.posting_date between ${a}::date and ${b}::date
+         ${branch(sql`d`)}`) as unknown as
+      Array<{ net: string; units: string; discount: string }>;
+
+    const [cost] = (await sql`
+      select coalesce(sum(c.qty * c.unit_cost), 0) as cost
+        from stock_lot_consumption c
+        join stock_movement sm on sm.id = c.stock_movement_id
+        join document d on d.id = sm.document_id
+       where c.company_id = ${companyId} and d.doc_type = 'DELIVERY'
+         and d.status = 'POSTED'
+         and d.posting_date between ${a}::date and ${b}::date
+         and c.expense_account_id = fn_resolve_account(${companyId}, 'COGS', null, null, null)
+         ${branch(sql`d`)}`) as unknown as Array<{ cost: string }>;
+
+    const [ret] = (await sql`
+      select coalesce(sum(dl.net_amount), 0) as returned
+        from document_line dl
+        join document d on d.id = dl.document_id
+       where d.company_id = ${companyId} and d.doc_type = 'SALES_RETURN'
+         and d.status = 'POSTED'
+         and d.posting_date between ${a}::date and ${b}::date
+         ${branch(sql`d`)}`) as unknown as Array<{ returned: string }>;
+
+    const net = Number(rev.net);
+    const units = Number(rev.units);
+    const c = Number(cost.cost);
+    return {
+      net, units, cost: c, profit: net - c,
+      marginPct: net === 0 ? null : ((net - c) / net) * 100,
+      avgPrice: units === 0 ? null : net / units,
+      discount: Number(rev.discount),
+      returned: Number(ret.returned),
+    };
+  };
+
+  const [now, before] = await Promise.all([
+    totals(from, to),
+    totals(span.prev_from, span.prev_to),
+  ]);
+
+  /* Month by month across the period, for the two charts. Months with no
+     trade keep their place at zero: a gap is information, and a chart that
+     drops the month says the opposite of what happened. */
+  const series = (await sql`
+    with months as (
+      select to_char(generate_series(date_trunc('month', ${from}::date),
+                                     date_trunc('month', ${to}::date),
+                                     interval '1 month'), 'YYYY-MM') as month
+    ),
+    rev as (
+      select to_char(d.posting_date, 'YYYY-MM') as month,
+             sum(case when dl.foc_reason_id is null then dl.net_amount else 0 end) as net
+        from document_line dl
+        join document d on d.id = dl.document_id
+       where d.company_id = ${companyId} and d.doc_type = 'SALES_INVOICE'
+         and d.status = 'POSTED'
+         and d.posting_date between ${from}::date and ${to}::date
+         ${branch(sql`d`)}
+       group by 1
+    ),
+    cst as (
+      select to_char(d.posting_date, 'YYYY-MM') as month,
+             sum(c.qty * c.unit_cost) as cost
+        from stock_lot_consumption c
+        join stock_movement sm on sm.id = c.stock_movement_id
+        join document d on d.id = sm.document_id
+       where c.company_id = ${companyId} and d.doc_type = 'DELIVERY'
+         and d.status = 'POSTED'
+         and d.posting_date between ${from}::date and ${to}::date
+         and c.expense_account_id = fn_resolve_account(${companyId}, 'COGS', null, null, null)
+         ${branch(sql`d`)}
+       group by 1
+    )
+    select m.month,
+           coalesce(rev.net, 0) as net,
+           coalesce(rev.net, 0) - coalesce(cst.cost, 0) as profit
+      from months m
+      left join rev on rev.month = m.month
+      left join cst on cst.month = m.month
+     order by m.month`) as unknown as Array<{ month: string; net: string; profit: string }>;
+
+  return {
+    now, before, series,
+    prevFrom: span.prev_from,
+    prevTo: span.prev_to,
+  };
+}
