@@ -2748,7 +2748,17 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
   // correct rather than a sign something was skipped. journal_entry_id
   // stays null; fn_document_posting_required (0029) knows to permit that
   // specifically when every line on the document is consignment-sourced.
-  const entryId = journal.length > 0
+  /* Lines are pushed even when the cost is nil, so "are there lines" is
+     not the same question as "is there anything to post". Goods that have
+     never been received have no cost anywhere to draw a provisional one
+     from, and journal_line forbids a zero amount — so writing an entry
+     here produced one with nothing in it, which the database refused at
+     commit: "Journal entry JE… has no lines". 0112 lets a delivery worth
+     nothing go without an entry, the way an all-consigned one already
+     does; the cost reaches the ledger when a receipt arrives and the
+     negative-stock reconciliation carries it back here. */
+  const hasValue = journal.some((j) => round4(j.amount) !== 0);
+  const entryId = hasValue
     ? await writeJournal(tx, companyId, docDate, "DELIVERY", doc.id, `${docNo} delivery`, journal, locationId)
     : null;
 

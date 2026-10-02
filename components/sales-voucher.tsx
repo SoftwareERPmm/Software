@@ -451,6 +451,13 @@ export function SalesVoucher({
     return gross - gross * ((Number(l.discountPct) || 0) / 100);
   };
 
+  /* What the discount actually took off. A percentage is a rate, not a
+     figure: ten per cent of fifty million is five million, and only the
+     net was ever shown, so nobody could see what had been given away
+     without working it out. */
+  const beforeDiscount = (l: Line) => (Number(l.qty) || 0) * (Number(l.unitPrice) || 0);
+  const discountOn = (l: Line) => beforeDiscount(l) - amount(l);
+
   const promoReason = focReasons.find((r) => r.code === "PROMOTION");
 
   /** The buy-N-get-M promotion covering this item, if any. */
@@ -588,6 +595,8 @@ export function SalesVoucher({
   const wouldOwe = exposure + onAccount;
   const overLimit = creditLimit !== null && onAccount > 0 && wouldOwe > creditLimit;
   const totalFree = lines.reduce((s, l) => s + freeQty(l), 0);
+  const totalBeforeDiscount = r(lines.reduce((s, l) => s + beforeDiscount(l), 0));
+  const totalDiscount = r(lines.reduce((s, l) => s + discountOn(l), 0));
 
   // Cash means paid in full now — keep Cash in synced to the total so it
   // isn't a redundant retype of a number already on screen. Still a plain
@@ -1249,7 +1258,14 @@ export function SalesVoucher({
                         </select>
                       )}
                     </td>
-                    <td className="r">{fmt(amount(l))}</td>
+                    <td className="r">
+                      {fmt(amount(l))}
+                      {/* What this line's percentage came to, under the
+                          figure it was taken off. */}
+                      {discountOn(l) > 0 && (
+                        <div className="subline">&minus;{fmt(discountOn(l))}</div>
+                      )}
+                    </td>
                     <td className="tight">
                       <button type="button" className="ghost tiny" aria-label="Remove line"
                         onClick={() => removeLine(l.key)} disabled={lines.length === 1}>×</button>
@@ -1296,6 +1312,13 @@ export function SalesVoucher({
               />
               <span style={{ color: "var(--muted)" }}>Prices include tax</span>
             </label>
+          )}
+
+          {totalDiscount > 0 && (
+            <span style={{ color: "var(--muted)" }}>
+              before discount {fmt(totalBeforeDiscount)} &minus; discount{" "}
+              <strong>{fmt(totalDiscount)}</strong>
+            </span>
           )}
 
           {(deliveryFee > 0 || taxOnGoods > 0) && (
