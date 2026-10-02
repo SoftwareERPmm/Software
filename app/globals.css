@@ -4257,3 +4257,14 @@ tbody tr.row-selected > td:first-child { box-shadow: inset 2px 0 0 var(--brand);
 }
 .addpack input { width: 4.5rem; }
 .addpack select { width: auto; }
+
+/* A picked item on a voucher line: the name changes it, the arrow opens
+   it. Two actions, so two controls — the arrow is quiet because looking
+   an item up is the rarer of the two. */
+.pickeditem { display: flex; align-items: center; gap: 0.15rem; }
+.pickedopen {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0.3rem; border-radius: var(--r1); color: var(--muted);
+  flex: 0 0 auto;
+}
+.pickedopen:hover { color: var(--brand); background: var(--bg); }

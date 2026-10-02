@@ -67,6 +67,8 @@ export default async function NewSalesOrder({
         saveDraft={saveInvoiceDraft}
         draft={draft}
         partners={d.customers as never}
+        itemPrices={d.itemPrices as never}
+        priceLevels={d.priceLevels as never}
         items={d.items as never}
         locations={d.locations as never}
         categories={categories}

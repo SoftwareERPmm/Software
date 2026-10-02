@@ -11,7 +11,14 @@ import { AwaitingOrders, AlreadyAwaited } from "./awaiting-orders";
 
 type Item = PickerItem;
 type Node = { id: string; code: string; segment: string; name: string; parent_id: string | null };
-type Partner = { id: string; code: string; name: string; payment_terms_days: number };
+type Partner = {
+  id: string; code: string; name: string; payment_terms_days: number;
+  /** Which column of the price list this customer is quoted from.
+   *  Absent on a supplier, who is not quoted at all. */
+  price_level_id?: string | null;
+};
+type ItemPrice = { item_id: string; price_level_id: string; price: string };
+type PriceLevel = { id: string; name: string };
 type Location = { id: string; code: string; name: string };
 type Line = {
   key: number; itemId: string; qty: string; unitPrice: string;
@@ -36,6 +43,8 @@ export function OrderForm({
   kind,
   action, saveDraft, draft,
   partners,
+  itemPrices = [],
+  priceLevels = [],
   items: initialItems,
   locations,
   today,
@@ -50,6 +59,10 @@ export function OrderForm({
   /** A draft being resumed: its row id, and the editor state it held. */
   draft?: { id: string; state: string } | null;
   partners: Partner[];
+  /** The price list, and the levels it is organised by. Sales only — a
+   *  purchase order suggests the last cost paid, not a list price. */
+  itemPrices?: ItemPrice[];
+  priceLevels?: PriceLevel[];
   items: Item[];
   locations: Location[];
   today: string;
@@ -137,11 +150,29 @@ export function OrderForm({
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
   }
 
+  /* Master data supplies the suggestion; the line stores what was agreed.
+     Lifted from the sales voucher deliberately — an order and the invoice
+     that follows it quoting different prices for the same customer is the
+     kind of difference nobody can explain to a buyer. */
+  const defaultLevelId = priceLevels[0]?.id ?? null;
+  const activeLevelId =
+    partners.find((x) => x.id === partnerId)?.price_level_id ?? defaultLevelId;
+
+  function priceFor(itemId: string): number {
+    const atLevel = itemPrices.find(
+      (p) => p.item_id === itemId && p.price_level_id === activeLevelId);
+    if (atLevel) return Number(atLevel.price);
+    const anyLevel = itemPrices.find((p) => p.item_id === itemId);
+    return anyLevel ? Number(anyLevel.price) : 0;
+  }
+
   function pickItem(key: number, itemId: string) {
     const item = byId(itemId);
-    const price = !item ? "" : isSales ? item.sale_price : item.next_cost;
+    // A sale is quoted from the price list at the customer's level; a
+    // purchase suggests what the goods last cost.
+    const price = !item ? 0 : isSales ? priceFor(itemId) : Number(item.next_cost);
     setLine(key, {
-      itemId, unitPrice: Number(price) > 0 ? String(Number(price)) : "",
+      itemId, unitPrice: price > 0 ? String(price) : "",
       // A carton of the old item is not a carton of the new one.
       uomId: "",
     });
@@ -151,6 +182,22 @@ export function OrderForm({
     setPartnerId(id);
     const p = partners.find((x) => x.id === id);
     if (p && p.payment_terms_days > 0) setDueDate(addDays(docDate, p.payment_terms_days));
+
+    // Re-quote lines already entered, since this customer's level may
+    // differ from the one they were quoted at. A price somebody typed
+    // over is theirs and is left alone.
+    if (!isSales || !p) return;
+    const level = p.price_level_id ?? defaultLevelId;
+    setLines((ls) =>
+      ls.map((l) => {
+        if (!l.itemId) return l;
+        const wasSuggested = Number(l.unitPrice) === priceFor(l.itemId) || !l.unitPrice;
+        if (!wasSuggested) return l;
+        const at = itemPrices.find(
+          (x) => x.item_id === l.itemId && x.price_level_id === level);
+        return { ...l, unitPrice: at ? String(Number(at.price)) : l.unitPrice };
+      }),
+    );
   }
 
   const addLine = () =>

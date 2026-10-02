@@ -2,6 +2,8 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useTransition } from "react";
 import { createPortal } from "react-dom";
+import Link from "next/link";
+import { ExternalLink } from "lucide-react";
 import { createItemInline, type PickerItem } from "@/lib/actions";
 import { VariantTags, asVariant } from "@/components/variant-tags";
 
@@ -166,16 +168,36 @@ export function ItemPicker({
 
   if (selected && !open) {
     return (
-      <button
-        type="button"
-        className="ghost"
-        style={{ width: "100%", textAlign: "left", fontWeight: 400, padding: "0.3rem 0.45rem" }}
-        onClick={() => { setOpen(true); setQuery(""); }}
-        title="Change item"
-      >
-        <span className="m">{selected.code}</span> · {selected.name}
-        <VariantTags variant={asVariant(selected.variant)} />
-      </button>
+      /* The name stays a button, because the common thing to do with a
+         picked item is pick a different one. Reading what it actually is
+         — its units, its packs, what it costs — is a second action, so it
+         gets its own control rather than stealing the first one.
+
+         A new tab deliberately: this sits inside a voucher that is being
+         typed, and navigating away from half an order to go and look
+         something up is how the order gets lost. */
+      <span className="pickeditem">
+        <button
+          type="button"
+          className="ghost"
+          style={{ flex: 1, textAlign: "left", fontWeight: 400, padding: "0.3rem 0.45rem" }}
+          onClick={() => { setOpen(true); setQuery(""); }}
+          title="Change item"
+        >
+          <span className="m">{selected.code}</span> · {selected.name}
+          <VariantTags variant={asVariant(selected.variant)} />
+        </button>
+        <Link
+          href={`/items/${selected.id}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="pickedopen"
+          title={`Open ${selected.code} in master data — new tab`}
+          aria-label={`Open ${selected.code} in master data in a new tab`}
+        >
+          <ExternalLink size={13} aria-hidden="true" />
+        </Link>
+      </span>
     );
   }
 
