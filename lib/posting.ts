@@ -3297,11 +3297,37 @@ async function _postSalesInvoice(
          -- adds up quantities starts counting this.
          ${line.sourceLineId ?? null})`;
 
-    // Revenue only — stock and COGS belong to the delivery, not the invoice.
-    if (net !== 0) {
+    /* Revenue only — stock and COGS belong to the delivery, not the
+       invoice.
+
+       Gross to Sales and the discount to its own account, rather than one
+       netted credit. The customer owes the same either way and profit is
+       identical: 4020 is contra-revenue, not an expense, so it reduces
+       revenue on the way to the same net. What changes is that the
+       income statement can show what was given away. Before this, ten per
+       cent off fifty million left a credit of forty-five and no record
+       anywhere that five million had been discounted.
+
+       The discount is taken in the same ex-tax terms as the revenue
+       beside it. Where prices are tax-inclusive, `net` is the amount
+       after the tax has been split out, so the discount is scaled by the
+       same proportion rather than posted at its gross figure. */
+    const priced = pricedFor.get(line);
+    const discountGross = priced ? round4(priced.gross - priced.net) : 0;
+    const chargedBeforeTaxSplit = priced ? round4(priced.net) : round4(line.qty * line.unitPrice);
+    const discount = discountGross === 0 || chargedBeforeTaxSplit === 0
+      ? 0
+      : roundMoney(discountGross * (net / chargedBeforeTaxSplit), scale);
+
+    if (net !== 0 || discount !== 0) {
       const revenue = await tx`
         select fn_resolve_account_for_item(${companyId}, 'REVENUE', ${line.itemId}) as a`;
-      journal.push({ accountId: revenue[0].a, amount: -net });
+      journal.push({ accountId: revenue[0].a, amount: -round4(net + discount) });
+      if (discount !== 0) {
+        const allowed = await tx`
+          select fn_system_account(${companyId}, 'SALES_DISCOUNT_ALLOWED') as a`;
+        journal.push({ accountId: allowed[0].a, amount: discount });
+      }
     }
   }
 
