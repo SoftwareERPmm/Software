@@ -1,6 +1,6 @@
 // Returns: what comes back, how much of it, and at what cost.
 //
-//   node scripts/test-returns.mjs
+//   npx tsx scripts/test-returns.mjs
 //
 // Posts real documents. Run against a scratch database.
 //
@@ -65,7 +65,11 @@ try {
   if (!cust) [cust] = await sql`insert into business_partner (company_id, code, name, is_customer)
     values (${co.id}, 'RT-C', 'Return Test Customer', true) returning id`;
   let [item] = await sql`
-    select id from item where company_id = ${co.id} and is_stocked order by code limit 1`;
+    select id from item where company_id = ${co.id} and is_stocked
+       -- A product with variants is a name for a group and cannot be
+       -- sold or received; fn_document_line_not_parent refuses it.
+       and not exists (select 1 from item c where c.parent_item_id = item.id)
+       order by code limit 1`;
   if (!item) {
     let [grp] = await sql`select id from item_group where company_id = ${co.id} order by code limit 1`;
     if (!grp) [grp] = await sql`insert into item_group (company_id, segment, code, name)

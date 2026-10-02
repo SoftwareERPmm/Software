@@ -2646,7 +2646,7 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
     // cost is not lost. It stays in net_amount, which is what the document
     // total and the journal are both built from, and the stock movement
     // carries its own unit_cost for FIFO regardless.
-    await tx`
+    const [docLine] = await tx`
       insert into document_line
         (company_id, document_id, line_no, item_id, location_id,
          entered_qty, entered_uom_id, conversion_factor, base_qty, unit_price,
@@ -2655,15 +2655,29 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
         (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
          ${line.qty}, ${pack.uomId}, ${pack.factor}, ${baseQty},
          ${line.focReasonId ? 0 : unitCost}, ${totalCost},
-         ${totalCost}, ${line.focReasonId ?? null}, ${line.sourceLineId ?? null})`;
+         ${totalCost}, ${line.focReasonId ?? null}, ${line.sourceLineId ?? null})
+      returning id`;
 
+    /*
+     * The movement names the line it came from.
+     *
+     * stock_movement.document_line_id has existed unused since the
+     * beginning: every movement knew which document it belonged to and
+     * none knew which line. For one line per item that is the same thing,
+     * but it stops being so the moment a document lists an item twice —
+     * and it makes the exact FIFO cost of a particular sale unrecoverable,
+     * because the lot consumptions hang off the movement.
+     *
+     * Recorded here so profit can be matched to the units that earned it
+     * rather than apportioned across a document.
+     */
     const [movement] = await tx`
       insert into stock_movement
         (company_id, item_id, location_id, movement_date, qty,
-         unit_cost, total_cost, document_id)
+         unit_cost, total_cost, document_id, document_line_id)
       values
         (${companyId}, ${line.itemId}, ${locationId}, ${docDate}::date,
-         ${-baseQty}, ${unitCost}, ${-totalCost}, ${doc.id})
+         ${-baseQty}, ${unitCost}, ${-totalCost}, ${doc.id}, ${docLine.id})
       returning id`;
     // Resolved before the consumption is written, so the consumption can carry
     // it: the cost of these goods went here, and a correction to that cost has
@@ -3563,7 +3577,7 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
     const net = round4(enteredQty * unitCost);
     const baseUnitCost = pack.factor === 1 ? unitCost : round4(net / baseQty);
 
-    await tx`
+    const [docLine] = await tx`
       insert into document_line
         (company_id, document_id, line_no, item_id, location_id,
          entered_qty, entered_uom_id, conversion_factor, base_qty, unit_price,
@@ -3571,17 +3585,18 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
       values
         (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
          ${enteredQty}, ${pack.uomId}, ${pack.factor}, ${baseQty}, ${unitCost},
-         ${net}, 0, ${net}, ${line.sourceLineId ?? null})`;
+         ${net}, 0, ${net}, ${line.sourceLineId ?? null})
+      returning id`;
 
     assertBatchGiven(item as never, tracking.get(line.itemId), line);
 
     const [movement] = await tx`
       insert into stock_movement
         (company_id, item_id, location_id, movement_date, qty,
-         unit_cost, total_cost, document_id, batch_no, expiry_date)
+         unit_cost, total_cost, document_id, document_line_id, batch_no, expiry_date)
       values
         (${companyId}, ${line.itemId}, ${locationId}, ${docDate}::date,
-         ${baseQty}, ${baseUnitCost}, ${net}, ${doc.id},
+         ${baseQty}, ${baseUnitCost}, ${net}, ${doc.id}, ${docLine.id},
          ${line.batchNo?.trim() || null}, ${line.expiryDate || null})
       returning id`;
 
@@ -3818,13 +3833,16 @@ async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
         journal.push({ accountId: account, amount: part.amount, locationId });
         journal.push({ accountId: inventory[0].a, amount: -part.amount, locationId });
 
+        /* Value only, no goods: this settles stock that was sold before
+           anyone recorded it arriving, at what the receipt says it really
+           cost. It still belongs to the receipt line that paid for it. */
         await tx`
           insert into stock_movement
             (company_id, item_id, location_id, movement_date, qty,
-             unit_cost, total_cost, document_id)
+             unit_cost, total_cost, document_id, document_line_id)
           values
             (${companyId}, ${line.itemId}, ${locationId}, ${docDate}::date,
-             0, 0, ${-part.amount}, ${doc.id})`;
+             0, 0, ${-part.amount}, ${doc.id}, ${docLine.id})`;
       }
     }
   }
@@ -5136,7 +5154,7 @@ async function _postStockAdjustment(
 
       netValue += totalCost;
 
-      await tx`
+      const [docLine] = await tx`
         insert into document_line
           (company_id, document_id, line_no, item_id, location_id,
            entered_qty, entered_uom_id, base_qty, unit_price, net_amount, gross_amount,
@@ -5145,14 +5163,16 @@ async function _postStockAdjustment(
           (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
            ${line.qty}, ${item.base_uom_id}, ${line.qty}, ${unitCost}, ${totalCost}, ${totalCost},
            ${line.qty > 0 ? (line.batchNo?.trim() || null) : null},
-           ${line.qty > 0 ? (line.expiryDate || null) : null})`;
+           ${line.qty > 0 ? (line.expiryDate || null) : null})
+        returning id`;
 
       const [movement] = await tx`
         insert into stock_movement
-          (company_id, item_id, location_id, movement_date, qty, unit_cost, total_cost, document_id)
+          (company_id, item_id, location_id, movement_date, qty, unit_cost, total_cost,
+           document_id, document_line_id)
         values
           (${companyId}, ${line.itemId}, ${locationId}, ${docDate}::date,
-           ${line.qty}, ${unitCost}, ${totalCost}, ${doc.id})
+           ${line.qty}, ${unitCost}, ${totalCost}, ${doc.id}, ${docLine.id})
         returning id`;
 
       if (plan) {
@@ -5332,20 +5352,25 @@ export async function postStockTransfer(input: TransferInput) {
       const totalCost = plan.totalCost;
       totalValue += totalCost;
 
-      await tx`
+      const [docLine] = await tx`
         insert into document_line
           (company_id, document_id, line_no, item_id, location_id,
            entered_qty, entered_uom_id, base_qty, unit_price, net_amount, gross_amount)
         values
           (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${fromLocationId},
-           ${line.qty}, ${item.base_uom_id}, ${line.qty}, ${unitCost}, ${totalCost}, ${totalCost})`;
+           ${line.qty}, ${item.base_uom_id}, ${line.qty}, ${unitCost}, ${totalCost}, ${totalCost})
+        returning id`;
 
+      // Both halves name the same line: one transfer line is one movement
+      // out and one in, and reading either back should find the line that
+      // asked for it.
       const [outMovement] = await tx`
         insert into stock_movement
-          (company_id, item_id, location_id, movement_date, qty, unit_cost, total_cost, document_id)
+          (company_id, item_id, location_id, movement_date, qty, unit_cost, total_cost,
+           document_id, document_line_id)
         values
           (${companyId}, ${line.itemId}, ${fromLocationId}, ${docDate}::date,
-           ${-line.qty}, ${unitCost}, ${-totalCost}, ${doc.id})
+           ${-line.qty}, ${unitCost}, ${-totalCost}, ${doc.id}, ${docLine.id})
         returning id`;
       await recordFifoConsumption(tx, companyId, outMovement.id, plan);
       // The source warehouse goes negative exactly as it would on a delivery,
@@ -5359,10 +5384,11 @@ export async function postStockTransfer(input: TransferInput) {
 
       const [inMovement] = await tx`
         insert into stock_movement
-          (company_id, item_id, location_id, movement_date, qty, unit_cost, total_cost, document_id)
+          (company_id, item_id, location_id, movement_date, qty, unit_cost, total_cost,
+           document_id, document_line_id)
         values
           (${companyId}, ${line.itemId}, ${toLocationId}, ${docDate}::date,
-           ${line.qty}, ${unitCost}, ${totalCost}, ${doc.id})
+           ${line.qty}, ${unitCost}, ${totalCost}, ${doc.id}, ${docLine.id})
         returning id`;
       await createFifoLot(tx, companyId, line.itemId, toLocationId, receivedAt, unitCost, line.qty, inMovement.id);
 
@@ -5726,7 +5752,7 @@ export async function postSalesReturn(input: ReturnInput, outer?: TransactionSql
       const net = line.focReasonId ? 0 : round4(rt?.net ?? line.qty * line.unitPrice);
       const lineTax = round4(rt?.tax ?? 0);
 
-      await tx`
+      const [docLine] = await tx`
         insert into document_line
           (company_id, document_id, line_no, item_id, location_id,
            entered_qty, entered_uom_id, base_qty, unit_price,
@@ -5736,7 +5762,8 @@ export async function postSalesReturn(input: ReturnInput, outer?: TransactionSql
            ${line.qty}, ${item.base_uom_id}, ${line.qty},
            ${line.focReasonId ? 0 : line.unitPrice},
            ${net}, ${line.focReasonId ? null : (line.taxCodeId ?? rt?.rate?.id ?? null)},
-           ${lineTax}, ${round4(net + lineTax)}, ${line.focReasonId ?? null})`;
+           ${lineTax}, ${round4(net + lineTax)}, ${line.focReasonId ?? null})
+        returning id`;
 
       if (item.is_stocked) {
         // Returned stock comes back as fresh lots at the cost the original
@@ -5768,12 +5795,16 @@ export async function postSalesReturn(input: ReturnInput, outer?: TransactionSql
           const sliceCost = round4(slice.unitCost * slice.qty);
           totalCost = round4(totalCost + sliceCost);
 
+          /* One returned line can come back as several movements, one per
+             layer it originally left on. They all name the same line —
+             which is exactly the case document_id alone cannot express. */
           const [movement] = await tx`
             insert into stock_movement
-              (company_id, item_id, location_id, movement_date, qty, unit_cost, total_cost, document_id)
+              (company_id, item_id, location_id, movement_date, qty, unit_cost, total_cost,
+               document_id, document_line_id)
             values
               (${companyId}, ${line.itemId}, ${locationId}, ${docDate}::date,
-               ${slice.qty}, ${slice.unitCost}, ${sliceCost}, ${doc.id})
+               ${slice.qty}, ${slice.unitCost}, ${sliceCost}, ${doc.id}, ${docLine.id})
             returning id`;
           await createFifoLot(
             tx, companyId, line.itemId, locationId, receivedAt,
@@ -6084,7 +6115,7 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
       const unitCost = plan.unitCost;
       const totalCost = plan.totalCost;
 
-      await tx`
+      const [docLine] = await tx`
         insert into document_line
           (company_id, document_id, line_no, item_id, location_id,
            entered_qty, entered_uom_id, base_qty, unit_price,
@@ -6094,14 +6125,16 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
            ${line.qty}, ${item.base_uom_id}, ${line.qty}, ${line.unitPrice},
            ${net}, ${splitsR[lineNo - 1].rate?.id ?? null},
            ${splitsR[lineNo - 1].tax},
-           ${round4(net + splitsR[lineNo - 1].tax)})`;
+           ${round4(net + splitsR[lineNo - 1].tax)})
+        returning id`;
 
       const [movement] = await tx`
         insert into stock_movement
-          (company_id, item_id, location_id, movement_date, qty, unit_cost, total_cost, document_id)
+          (company_id, item_id, location_id, movement_date, qty, unit_cost, total_cost,
+           document_id, document_line_id)
         values
           (${companyId}, ${line.itemId}, ${locationId}, ${docDate}::date,
-           ${-line.qty}, ${unitCost}, ${-totalCost}, ${doc.id})
+           ${-line.qty}, ${unitCost}, ${-totalCost}, ${doc.id}, ${docLine.id})
         returning id`;
       await recordFifoConsumption(tx, companyId, movement.id, plan);
 
@@ -9330,7 +9363,7 @@ export async function postOpeningBatch(input: OpeningBatchInput) {
           throw new Error("Opening stock names an item that is not stocked");
         }
 
-        await tx`
+        const [docLine] = await tx`
           insert into document_line
             (company_id, document_id, line_no, item_id, location_id,
              entered_qty, entered_uom_id, base_qty, unit_price,
@@ -9338,15 +9371,16 @@ export async function postOpeningBatch(input: OpeningBatchInput) {
           values
             (${companyId}, ${doc.id}, ${lineNo}, ${l.itemId}, ${locationId},
              ${l.qty}, ${item.base_uom_id}, ${l.qty}, ${l.unitCost},
-             ${value}, 0, ${value})`;
+             ${value}, 0, ${value})
+          returning id`;
 
         const [movement] = await tx`
           insert into stock_movement
             (company_id, item_id, location_id, movement_date, qty,
-             unit_cost, total_cost, document_id)
+             unit_cost, total_cost, document_id, document_line_id)
           values
             (${companyId}, ${l.itemId}, ${locationId}, ${docDate}::date,
-             ${l.qty}, ${l.unitCost}, ${value}, ${doc.id})
+             ${l.qty}, ${l.unitCost}, ${value}, ${doc.id}, ${docLine.id})
           returning id`;
 
         // A real layer at a real cost, so the first sale out of opening stock

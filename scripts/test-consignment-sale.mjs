@@ -1,6 +1,6 @@
 // Selling consignment stock, and settling with the consignor.
 //
-//   node scripts/test-consignment-sale.mjs
+//   npx tsx scripts/test-consignment-sale.mjs
 //
 // Posts real documents. Run against a scratch database.
 //

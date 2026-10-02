@@ -9,7 +9,11 @@ import {
   getRevenueTrend, getTopItems, getTopCategories, getRevenueByRegion,
   getRevenueByCustomerCategory, getSpendBySupplierCategory,
   getOnboardingStatus,
+  getItems, getStockByLocation, getReservedQty, getIncomingQty,
+  getReorderPoints, getConsumptionRate, getItemSupply, getSupplierLeadTimes,
 } from "@/lib/queries";
+import { replenishment } from "@/lib/replenish";
+import { VariantTags, asVariant } from "@/components/variant-tags";
 import { RevenueBars, ShareDonut } from "@/components/charts";
 import { resolvePeriod, DEFAULT_PERIOD } from "@/lib/period";
 import { PeriodPicker } from "@/components/period-picker";
@@ -60,7 +64,9 @@ export default async function Dashboard({
 
   const [kpis, health, aging, docs, stock, actionItems, revenueTrend, topItems, topCategories,
          regionRevenue, custCategoryRevenue, suppCategorySpend, onboarding,
-         negativeStock, lowStock, overLimit] = await Promise.all([
+         negativeStock, lowStock, overLimit,
+         repItems, repStock, repReserved, repIncoming, repPoints,
+         repConsumption, repSupply, repObserved] = await Promise.all([
     getKpis(company.id),
     getHealth(company.id),
     getAging(company.id),
@@ -77,7 +83,30 @@ export default async function Dashboard({
     getNegativeStock(company.id),
     getLowStock(company.id),
     getOverCreditLimit(company.id),
+    // Replenishment reads the same ledger the Stock page does; the
+    // arithmetic lives in lib/replenish so this card and that page
+    // cannot drift apart.
+    getItems(company.id),
+    getStockByLocation(company.id),
+    getReservedQty(company.id),
+    getIncomingQty(company.id),
+    getReorderPoints(company.id),
+    getConsumptionRate(company.id, 30),
+    getItemSupply(company.id),
+    getSupplierLeadTimes(company.id),
   ]);
+
+  const { rows: toOrder } = replenishment({
+    items: (repItems as never as any[])
+      .filter((i) => i.is_stocked && i.variant_count === 0) as never,
+    stockByLocation: repStock as never, reserved: repReserved as never,
+    incoming: repIncoming as never, reorderPoints: repPoints as never,
+    consumption: repConsumption as never, supply: repSupply as never,
+    observed: repObserved as never,
+    windowDays: 30, coverDays: 30, here: () => true,
+    fallbackLeadDays: company.default_lead_time_days,
+  });
+  const urgentOrders = toOrder.filter((r) => r.urgency !== "ok").slice(0, 5);
 
   const healthy = health.unbalanced === 0 && health.inventoryBreaks === 0 && health.trialBalance === 0;
 
@@ -410,6 +439,61 @@ export default async function Dashboard({
           </Link>
         </div>
       </div>
+
+      {/* Only when there is something to do about it. A card that says
+          "nothing needs ordering" every day is a card people stop reading,
+          and then miss the day it says otherwise. */}
+      {urgentOrders.length > 0 && (
+        <div className="dash-card dash-card-pad" style={{ marginBottom: "var(--dash-gap)" }}>
+          <div className="dash-section-head">
+            <div>
+              <h2>Needs ordering</h2>
+              <span className="page-sub">
+                at the last 30 days&rsquo; rate, these run out before a new
+                order could arrive
+              </span>
+            </div>
+            <Link href="/inventory/replenishment" className="dash-more">
+              Replenishment →
+            </Link>
+          </div>
+          <div className="tablewrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Item</th><th>Supplier</th>
+                  <th className="r">On hand</th><th className="r">Per day</th>
+                  <th className="r">Runs out in</th><th>Order by</th>
+                  <th className="r">Suggest</th>
+                </tr>
+              </thead>
+              <tbody>
+                {urgentOrders.map((r) => (
+                  <tr key={r.id}>
+                    <td className="wrap">
+                      <span className="m">{r.code}</span>
+                      <div className="subline">
+                        {r.name}
+                        <VariantTags variant={asVariant(r.variant)} className="vartags-inline" />
+                      </div>
+                    </td>
+                    <td className="wrap">{r.supplier ?? "—"}</td>
+                    <td className="r">{r.onHand}</td>
+                    <td className="r">{r.perDay}</td>
+                    <td className="r">{Math.floor(r.daysLeft ?? 0)} d</td>
+                    <td>
+                      <span className={`pill ${r.urgency === "now" ? "overdue" : "warn"}`}>
+                        {r.urgency === "now" ? "today" : r.orderBy}
+                      </span>
+                    </td>
+                    <td className="r"><strong>{r.suggest}</strong> <span className="page-sub">{r.uom}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <div className="dash-cards">
         {kpiCards.map((k) => (

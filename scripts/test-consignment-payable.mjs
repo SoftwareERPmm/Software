@@ -1,6 +1,6 @@
 // Paying the consignor for what sold.
 //
-//   node scripts/test-consignment-payable.mjs
+//   npx tsx scripts/test-consignment-payable.mjs
 //
 // Posts real documents. Run against a scratch database.
 //

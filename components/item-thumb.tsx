@@ -1,4 +1,4 @@
-import { ImageOff } from "lucide-react";
+import { Image as ImageIcon } from "lucide-react";
 
 /**
  * The item's picture at the size a list can afford.
@@ -12,13 +12,17 @@ import { ImageOff } from "lucide-react";
  *
  * Most items have no photo and are not missing anything. The empty box is
  * quiet — a faint outline, a muted mark — rather than a broken-image icon
- * asking to be fixed.
+ * asking to be fixed. It said that and then drew ImageOff, a picture with a
+ * line through it, which is the universal mark for "this failed to load":
+ * people read a catalogue nobody had photographed as a broken screen. A
+ * plain picture outline says "no photo" without claiming anything went
+ * wrong.
  */
 export function ItemThumb({ src, name }: { src: string | null; name: string }) {
   if (!src) {
     return (
       <span className="item-thumb item-thumb-empty" aria-hidden="true">
-        <ImageOff size={12} />
+        <ImageIcon size={12} />
       </span>
     );
   }

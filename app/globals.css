@@ -39,8 +39,32 @@
      Latin face has Myanmar glyphs, so Burmese falls through to the Noto face
      rather than to whatever the OS happens to ship. Order matters: Latin
      resolves in DM Sans first, Burmese in Noto. */
-  --sans: var(--font-dm-sans), var(--font-plex-sans), var(--font-myanmar), system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --mono: var(--font-plex-mono), var(--font-myanmar), ui-monospace, "Cascadia Mono", "SF Mono", "Segoe UI Mono", "Roboto Mono", Menlo, Consolas, monospace;
+  --sans: var(--font-ui), var(--font-myanmar), system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* One face across the product (2026-10-01).
+     --------------------------------------------
+     The dashboard was the only screen already built entirely in DM Sans,
+     and it was chosen as the house face: every other screen now follows it
+     rather than mixing a second typeface in for figures.
+
+     --mono keeps its name and its call sites so this is one line to read
+     and one line to undo, but it no longer resolves to a monospaced face.
+     Nothing is actually monospaced any more.
+
+     Columns still line up. The house face is Inter, whose tabular figures
+     switch on with font-variant-numeric: tabular-nums — measured at 16px,
+     digit width spread 0.000, the same as a monospace. That is the whole
+     reason the face is Inter and not DM Sans, which has no tabular
+     numerals and could not hold a column together.
+
+     Everything that shows a figure therefore needs tabular-nums as well as
+     this token. The two travel together; dropping the first makes "1"
+     narrower than "0" again and the column drifts.
+
+     To go back to a monospaced face for figures, point this token at one —
+     there is no longer a webfont bundled for it, so that means adding the
+     import in app/layout.tsx as well, or falling back to the system mono:
+       --mono: var(--font-myanmar), ui-monospace, "SF Mono", Menlo, monospace; */
+  --mono: var(--font-ui), var(--font-myanmar), system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 
   --s1: 0.35rem; --s2: 0.65rem; --s3: 1rem; --s4: 1.5rem; --s5: 2.25rem; --s6: 3.25rem;
 
@@ -116,6 +140,13 @@ body {
   background: var(--ground);
   color: var(--ink);
   font-family: var(--sans);
+  /* Every figure in the product lines up, by default rather than by each
+     rule remembering to ask. Two rules had already reset font-family and
+     lost the numerals that way, which is a bug that reappears every time
+     somebody adds a third. The cost is that dates and counts in running
+     prose are set in tabular figures too, which is a fair trade in an
+     application whose main job is columns of numbers. */
+  font-variant-numeric: tabular-nums;
   font-size: var(--t-base);
   line-height: var(--lh-base);
   -webkit-font-smoothing: antialiased;
@@ -209,7 +240,7 @@ a { color: inherit; text-decoration: none; }
     height: var(--navbar-h); box-sizing: border-box;
     padding: 0.55rem var(--s3);
     background: var(--rail, #101613); color: #E7EDE9;
-    font-family: var(--font-dm-sans), var(--font-myanmar), system-ui, sans-serif;
+    font-family: var(--font-ui), var(--font-myanmar), system-ui, sans-serif;
   }
   .navbar-toggle {
     display: inline-flex; align-items: center; justify-content: center;
@@ -275,7 +306,9 @@ h2 { font-size: var(--t-lg); font-weight: 600; letter-spacing: var(--track-tight
   font-family: var(--mono); font-size: var(--t-2xs); letter-spacing: var(--track-caps);
   text-transform: uppercase; color: var(--muted);
 }
-.m { font-family: var(--mono); font-size: 0.88em; }
+/* Was 0.88em to offset Plex Mono running large beside the sans. Same
+   face now, so the correction would just make it small. */
+.m { font-family: var(--mono); }
 
 /* A quieter second line under a primary one: the Burmese name under a Latin
    name, or the English gloss under Burmese copy. The same three declarations
@@ -540,6 +573,17 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-num
   font-size: var(--t-sm);
 }
 
+/* The variant's own picture, in the column the chevron occupies on the row
+   above — the only spare width in a table already twelve columns wide. */
+.variantrow-thumb { text-align: right; padding-right: 0; white-space: nowrap; }
+
+/* Changing one variant's picture, opened under its row. */
+.variantphoto {
+  display: flex; flex-wrap: wrap; align-items: flex-end;
+  gap: var(--s3); padding: 0.4rem 0;
+}
+.variantphoto .actions { margin: 0; }
+
 /* ----------------------------------------------------- variant picker --- */
 
 .varpick { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.4rem; }
@@ -569,6 +613,56 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--line); font-variant-num
 }
 .varpreview ul { list-style: none; margin: 0.35rem 0 0; padding: 0;
   display: flex; flex-direction: column; gap: 0.15rem; color: var(--muted); }
+
+.varpreview-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--s3);
+}
+.varpreview-acts { display: inline-flex; gap: 0.6rem; }
+
+/* A control that is a word, for an action too small to spend a button on. */
+.linkbtn {
+  border: 0; background: none; padding: 0; cursor: pointer;
+  font: inherit; font-size: var(--t-sm); color: var(--brand);
+}
+.linkbtn:hover { text-decoration: underline; }
+
+/* One row per combination, each droppable. Nearly all of them stay, so the
+   ticked state is the quiet one and an unticked row is what stands out. */
+.varcombos { gap: 0 !important; }
+.varcombo {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.2rem 0.4rem; border-radius: var(--r1); cursor: pointer;
+  opacity: 0.45;
+}
+.varcombo:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
+.varcombo.on { opacity: 1; }
+.varcombo input { width: 15px; height: 15px; margin: 0; accent-color: var(--brand); flex: none; }
+.varcombo .m { flex: none; }
+.varcombo-label { color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.varcombo.on .varcombo-label { color: var(--ink); }
+
+/* --------------------------------------------------------- variant tags --- */
+
+/* What a row is, not how it is doing — so deliberately not a .pill. A status
+   earns colour because it changes; a size never does. Same definite edge as
+   everything else here, one step quieter in weight and ink. */
+.vartags {
+  display: inline-flex; flex-wrap: wrap; gap: 0.25rem;
+  vertical-align: middle;
+}
+.vartag {
+  display: inline-flex; align-items: baseline; gap: 0.3rem;
+  padding: 0.08rem 0.4rem; border-radius: var(--r-sm);
+  font-size: var(--t-xs); line-height: 1.6; white-space: nowrap;
+  color: color-mix(in srgb, var(--muted) 55%, var(--ink));
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  border: 1px solid var(--line);
+}
+/* The attribute names the value rather than competing with it. */
+.vartag-a { color: var(--muted); font-size: 0.92em; }
+
+/* Following a name in a table cell, rather than standing on its own line. */
+.vartags-inline { margin-left: 0.4rem; }
 
 /* -------------------------------------------------------- attributes ---- */
 
@@ -1106,7 +1200,13 @@ button.tiny { padding: 0.16rem 0.5rem; font-size: var(--t-sm); }
 .picker-row:hover { background: var(--line-soft); opacity: 1; }
 .picker-row:last-child { border-bottom: none; }
 
-.picker-name { flex: 1; }
+/* The name and what the variant is share a line while they fit, and the tags
+   drop under it when they don't — rather than the tag touching the last
+   letter of the name, which read as part of it. */
+.picker-name {
+  flex: 1; min-width: 0;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4rem;
+}
 .picker-meta { font-family: var(--mono); font-size: var(--t-xs); color: var(--muted); white-space: nowrap; }
 
 .picker-empty { padding: 0.6rem var(--s3); color: var(--muted); font-size: var(--t-md); }
@@ -1298,6 +1398,9 @@ thead th.r { font-family: var(--sans); }
 .kpi-value {
   font-family: var(--sans); font-size: var(--t-2xl); font-weight: 700;
   letter-spacing: var(--track-tight);
+  /* This rule resets the family and so has to restate the numerals, or it
+     silently drops the tabular figures the rule above it asked for. */
+  font-variant-numeric: tabular-nums;
 }
 
 /* The page heading becomes a control panel: one thin horizontal bar, the way
@@ -2731,7 +2834,7 @@ dialog.drawer .drawer-panel {
    few, which is what DM Sans is good at and what Plex was chosen against. */
 
 .dash {
-  font-family: var(--font-dm-sans), var(--font-myanmar), system-ui, sans-serif;
+  font-family: var(--font-ui), var(--font-myanmar), system-ui, sans-serif;
   --dash-radius: 12px;
   --dash-gap: 1.25rem;
   --dash-card: var(--surface);
@@ -2822,6 +2925,7 @@ dialog.drawer .drawer-panel {
   /* A step below the 20px ceiling. Five cards of kyat at full size read as
      five headlines; at 18px they are still the loudest thing on the card. */
   font-size: var(--t-xl); font-weight: 700;
+  font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em; line-height: 1.15;
   /* Figures wrap rather than overflow: MMK 1,234,567,890 is a real number in
      kyat and must not push the card wider than its column. */
@@ -2999,7 +3103,7 @@ table:not(.linetable) tbody tr.stmt-group > td {
   background: var(--rail);
   border-right: 0;
   color: var(--rail-ink);
-  font-family: var(--font-dm-sans), var(--font-myanmar), system-ui, sans-serif;
+  font-family: var(--font-ui), var(--font-myanmar), system-ui, sans-serif;
   padding: var(--s4) 0.65rem;
   gap: var(--s4);
 }
@@ -3440,10 +3544,13 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
   white-space: normal;
   overflow-wrap: anywhere;
 }
+/* Variant codes are long — APPAREL002-M-Black is three tokens joined. The
+   old rule broke anywhere, which split it as "APPAREL002-M-" / "Black" and
+   read as two different things. Kept on one line instead; the table already
+   scrolls sideways, and a code that wraps is a code somebody misreads. */
 .stockrow > td.codecell {
-  max-width: 7.5rem;
-  white-space: normal;
-  overflow-wrap: anywhere;
+  max-width: none;
+  white-space: nowrap;
 }
 .rowexpand {
   display: inline-flex; align-items: center; justify-content: center;
@@ -3862,3 +3969,255 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
   display: inline-flex; align-items: center; min-height: 2.1rem;
   padding: 0.2rem 0; font-size: var(--t-md); color: var(--ink);
 }
+
+/* Renaming in place: the row becomes its own small form rather than opening
+   a dialog for two fields. */
+.optrow-edit { display: flex; align-items: center; gap: 0.35rem; flex: 1; flex-wrap: wrap; }
+.optrow-edit input { padding: 0.2rem 0.4rem; font-size: var(--t-sm); min-width: 5rem; flex: 1 1 5rem; }
+.optrow-edit input:disabled { opacity: 0.55; cursor: not-allowed; }
+.optrow-code { color: var(--muted); margin-left: 0.4rem; font-size: var(--t-xs); }
+
+/* ------------------------------------------------------- variant stock --- */
+
+/* One product's variants, folded on whichever attribute the tab chose.
+   A table inside a card rather than cards inside a card: these are still
+   rows of figures and they line up with the stock table above. */
+.vgroup + .vgroup { margin-top: var(--s4); padding-top: var(--s4); border-top: 1px solid var(--line-soft); }
+.vgroup-head { display: flex; align-items: baseline; gap: var(--s2); flex-wrap: wrap; margin-bottom: var(--s2); }
+
+.vgroup-table { width: 100%; }
+.vgroup-table th { white-space: nowrap; }
+.vgroup-thumb { width: 1px; padding-right: 0; }
+
+/* The other attribute's values along the row: S 4 · M 0 · L 2. Reads as
+   one fact per cell rather than a nested table, which at this size would
+   be more rules than numbers. */
+.vbreak { display: inline-flex; flex-wrap: wrap; gap: 0.3rem; }
+.vbreak-cell {
+  display: inline-flex; align-items: baseline; gap: 0.35rem;
+  padding: 0.08rem 0.45rem; border-radius: var(--r-sm);
+  border: 1px solid var(--line); background: color-mix(in srgb, var(--ink) 3%, transparent);
+  font-size: var(--t-xs); white-space: nowrap;
+}
+.vbreak-label { color: var(--muted); }
+.vbreak-qty { font-family: var(--mono); font-weight: 600; }
+/* Nothing on the shelf is worth seeing but not worth reading first. */
+.vbreak-cell.zero { opacity: 0.5; }
+.vbreak-cell.zero .vbreak-qty { font-weight: 400; }
+/* A colour's picture inside a breakdown cell, where the row is a size and
+   the colour is the thing in the cell. */
+.vbreak-cell .item-thumb { width: 16px; height: 16px; border-radius: 3px; }
+
+/* The picture beside the name in a stock line. Baseline-aligned with the
+   text rather than centred on the cell, so rows with a Burmese second line
+   do not push their thumbnail out of step with the rest of the column. */
+.stockname { display: flex; align-items: flex-start; gap: 0.5rem; }
+.stockname > .item-thumb { flex: none; margin-top: 1px; }
+.stockname-text { min-width: 0; }
+
+/* --------------------------------------------------------- stock views --- */
+
+/* Three readings of the same stock. Above the card rather than inside it,
+   because the choice governs which card appears at all. */
+.viewtabs { margin: 0 0 var(--s3); }
+
+/* The variants folded under a product, opened by its chevron. */
+.stockvariants { padding: var(--s3) var(--s3) 0; }
+.stockvariants > h3 {
+  display: flex; align-items: baseline; gap: var(--s2); flex-wrap: wrap;
+  margin: 0 0 var(--s2); font-size: var(--t-md);
+}
+
+/* ------------------------------------------------------------- matrix --- */
+
+.matrixlayout {
+  display: grid; gap: var(--s3); align-items: start;
+  grid-template-columns: minmax(0, 18rem) minmax(0, 1fr);
+}
+/* One column once the grid would be squeezed: a matrix needs its width
+   more than the picker needs to sit beside it. */
+@media (max-width: 62rem) { .matrixlayout { grid-template-columns: minmax(0, 1fr); } }
+
+.matrixpick-list { display: flex; flex-direction: column; }
+.matrixpick-row {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.55rem var(--s3); border-top: 1px solid var(--line-soft);
+  color: inherit; text-decoration: none;
+}
+.matrixpick-row:hover { background: color-mix(in srgb, var(--ink) 3%, transparent); }
+.matrixpick-row[data-active] {
+  background: color-mix(in srgb, var(--brand) 9%, transparent);
+  box-shadow: inset 2px 0 0 var(--brand);
+}
+.matrixpick-row .item-thumb { width: 34px; height: 34px; flex: none; }
+.matrixpick-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.35; }
+.matrixpick-text .m { font-size: var(--t-xs); color: var(--muted); }
+
+.matrixmain { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
+.matrixhead { display: flex; align-items: center; gap: var(--s3); }
+.matrixhead .item-thumb { width: 52px; height: 52px; flex: none; }
+.matrixhead-text { min-width: 0; }
+.matrixhead-title { display: flex; align-items: baseline; gap: var(--s2); flex-wrap: wrap; }
+
+/* The colour down the side of the grid, with the garment beside it. */
+.matrixrow-label { display: inline-flex; align-items: center; gap: 0.5rem; }
+/* A combination nobody created, as against one that exists and is empty. */
+.matrixcell-none { color: var(--line); }
+
+.matrixcharts {
+  display: grid; gap: var(--s3);
+  grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr));
+}
+.matrixdonut { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; }
+
+.matrixlegend { list-style: none; margin: 0; padding: 0; flex: 1 1 9rem; min-width: 0; }
+.matrixlegend li {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.15rem 0; font-size: var(--t-sm);
+}
+.matrixlegend-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.matrixlegend-name { flex: 1 1 auto; min-width: 0; }
+.matrixlegend-qty { font-family: var(--mono); font-weight: 600; }
+.matrixlegend-pct { color: var(--muted); font-size: var(--t-xs); width: 2.6rem; text-align: right; }
+
+/* The item a stock card is about, with its garment beside the heading. */
+.movehead { display: flex; align-items: center; gap: 0.6rem; }
+.movehead .item-thumb { width: 30px; height: 30px; flex: none; }
+
+/* Item and date range on one line, wrapping to two on a narrow screen. */
+.movefilters { align-items: flex-end; flex-wrap: wrap; gap: var(--s3); }
+.daterange { display: flex; align-items: flex-end; gap: var(--s2); flex-wrap: wrap; }
+.daterange .field { min-width: 9rem; }
+
+/* How a matched figure was arrived at, listed before the figures are read. */
+.matchnotes { list-style: none; margin: 0.5rem 0 0; padding: 0;
+  display: flex; flex-direction: column; gap: 0.4rem; }
+.matchnotes li { display: flex; align-items: baseline; gap: 0.5rem;
+  font-size: var(--t-sm); color: var(--muted); }
+.matchnotes .pill { flex: none; }
+
+/* --- supplier performance ------------------------------------------------ */
+
+/* The selected row drives the radar and the detail table below it, so it
+   has to stay obvious after the eye has moved on. A left edge rather than a
+   fill: a filled row in a table of figures reads as a status. */
+tbody tr.row-selected > td { background: color-mix(in srgb, var(--brand) 7%, transparent); }
+tbody tr.row-selected > td:first-child { box-shadow: inset 2px 0 0 var(--brand); }
+
+/* A link that carries no decoration because the whole cell is the target. */
+.plain { color: inherit; text-decoration: none; }
+.plain:hover { color: var(--brand); }
+
+.chip {
+  border: 1px solid var(--line); background: var(--surface);
+  border-radius: 999px; padding: 0.15rem 0.6rem;
+  font-size: var(--t-sm); color: var(--fg); cursor: pointer;
+}
+.chip:hover:not(:disabled) { border-color: var(--brand); color: var(--brand); }
+.chip:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.axis-picker { margin-top: var(--s3); border-top: 1px solid var(--line); padding-top: var(--s2); }
+.axis-picker > summary { cursor: pointer; font-size: var(--t-sm); font-weight: 600; }
+.axis-picker-body { padding-top: var(--s2); display: flex; flex-direction: column; gap: var(--s2); }
+
+.axis-order { list-style: none; margin: 0; padding: 0; counter-reset: axis; }
+.axis-order li {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--s2); padding: 0.25rem 0; font-size: var(--t-sm);
+  border-bottom: 1px solid var(--line);
+}
+.axis-order li::before { counter-increment: axis; content: counter(axis) "."; color: var(--muted); }
+.axis-order li > span:first-of-type { flex: 1; }
+.axis-order-controls { display: flex; gap: 0.25rem; }
+.axis-order-controls button {
+  border: 1px solid var(--line); background: transparent; color: var(--muted);
+  width: 1.5rem; height: 1.5rem; line-height: 1; border-radius: var(--r1); cursor: pointer;
+}
+.axis-order-controls button:hover:not(:disabled) { border-color: var(--brand); color: var(--brand); }
+.axis-order-controls button:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.axis-available { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+
+/* Folded away by default: read once, then in the way for good. */
+.methodology > summary { cursor: pointer; list-style: none; }
+.methodology > summary::-webkit-details-marker { display: none; }
+.methodology > summary::after {
+  content: "show"; margin-left: auto; font-size: var(--t-sm); color: var(--muted);
+}
+.methodology[open] > summary::after { content: "hide"; }
+
+.methodology-list { margin: var(--s3) 0 0; display: grid; gap: var(--s3); }
+.methodology-list dt {
+  font-weight: 600; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;
+}
+.methodology-list dd { margin: 0.25rem 0 0; font-size: var(--t-sm); line-height: 1.55; }
+.methodology-list dd p { margin: 0 0 0.3rem; }
+.methodology-list .is-unavailable dt { color: var(--muted); }
+
+/* --- supplier performance settings and presets --------------------------- */
+
+/* A column of labelled inputs, each with its explanation under it. Not a
+   grid: the help text is the point, and two columns of prose read as a
+   wall. */
+.fields { display: flex; flex-direction: column; gap: var(--s3); }
+.fields .field { display: flex; flex-direction: column; gap: 0.2rem; }
+.fields .field .subline { max-width: 42ch; line-height: 1.5; }
+
+.axis-presets { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
+.axis-save { display: flex; flex-direction: column; gap: var(--s2);
+  border-top: 1px solid var(--line); padding-top: var(--s2); }
+
+.preset-axes { margin: 0; padding-left: 1.1rem; font-size: var(--t-sm); color: var(--muted); }
+.preset-axes li { list-style: decimal; }
+
+/* A heading and the mark that explains it, kept together.
+   .helphint carries order:3 for the page-head layout, which inside a
+   space-between card-head would fling it to the far right away from the
+   title it belongs to. */
+.headwith { display: flex; align-items: baseline; gap: 0.15rem; flex-wrap: wrap; }
+/* The title keeps the order .page-head gives it and the mark follows it.
+   Setting the mark to 0 alone was not enough: .page-head h1 carries order:2
+   of its own, which reaches inside here and put the mark in front of the
+   title it explains. */
+.headwith > * { order: 3; }
+.headwith > h1, .headwith > h2, .headwith > h3, .headwith > strong,
+.headwith > .page-sub:first-child { order: 1; }
+.headwith > .helphint { order: 2; align-self: center; }
+/* Anything after the mark — status tags, a count — is given room so it
+   does not read as part of the heading. */
+.headwith > .vartags { margin-left: 0.35rem; }
+
+/* A card clips its corners, which also clipped the hint bubble opening
+   inside it — on a short card almost all of it. Only cards that actually
+   carry a mark give that up. */
+.card:has(.helphint) { overflow: visible; }
+
+/* A row of filters above a report.
+   .row is a grid of equal columns, which gave a one-word export button the
+   same width as a date range and left the controls stranded in the middle
+   of their cells. These should size to what they hold, sit on one baseline,
+   and push the export to the far end. */
+.filterbar { display: flex; align-items: flex-end; flex-wrap: wrap; gap: var(--s3); }
+.filterbar > * { margin: 0; }
+.filterbar .exportfield { margin-left: auto; }
+/* The warehouse picker brings its own label block, which is taller than a
+   bare field label and lifted its control off the shared baseline. */
+.filterbar .picker, .filterbar .field { align-self: flex-end; }
+
+/* The chart keeps up with the list.
+   A long supplier list scrolls past a chart that is a third its height, so
+   the chart would be off screen exactly while somebody is choosing what to
+   compare with it. Sticky keeps it beside the row being clicked. align-self
+   is what makes it work: a grid item stretches to its row by default, and a
+   stretched item has nothing to stick within. */
+@media (min-width: 900px) {
+  .perf-compare > .stickycol { align-self: stretch; }
+  .perf-compare > .stickycol > .card { position: sticky; top: var(--s3); }
+}
+
+/* The second supplier on the radar, picked beside the radar. */
+.comparepick {
+  display: flex; align-items: center; gap: 0.4rem;
+  margin-bottom: var(--s2);
+}
+.comparepick select { max-width: 16rem; }

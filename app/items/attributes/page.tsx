@@ -1,7 +1,7 @@
 import { sql } from "@/lib/db";
 import {
   createVariantAttribute, updateVariantAttribute, deleteVariantAttribute,
-  createVariantOption, deleteVariantOption, moveVariantOption,
+  createVariantOption, updateVariantOption, deleteVariantOption, moveVariantOption,
 } from "@/lib/actions";
 import { AttributeCard, type Attribute } from "@/components/attribute-card";
 import { AddAttributeForm } from "@/components/attribute-form";
@@ -31,7 +31,7 @@ export default async function VariantAttributes() {
      order by a.sort_order, a.name`) as any[];
 
   const options = (await sql`
-    select o.id, o.attribute_id, o.code, o.name, o.sort_order,
+    select o.id, o.attribute_id, o.code, o.name, o.name_my, o.sort_order,
            (select count(*)::int from item_variant_option ivo
              where ivo.option_id = o.id) as used
       from variant_option o
@@ -71,6 +71,7 @@ export default async function VariantAttributes() {
               key={a.id}
               attribute={a}
               addOption={createVariantOption}
+              updateOption={updateVariantOption}
               removeOption={deleteVariantOption}
               moveOption={moveVariantOption}
               update={updateVariantAttribute}

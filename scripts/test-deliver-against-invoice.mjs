@@ -67,6 +67,9 @@ try {
      where company_id = ${co.id} and is_stock_location and is_active order by code limit 1`;
   const [item] = await sql`select id, code from item
      where company_id = ${co.id} and is_stocked and is_active
+       -- A product with variants is a name for a group and cannot be
+       -- sold or received; fn_document_line_not_parent refuses it.
+       and not exists (select 1 from item c where c.parent_item_id = item.id)
      -- A plain item first. These suites test ordering and fulfilment,
      -- not batch tracking, and a tracked item makes every receipt
      -- demand a lot number the suite has no reason to care about.
@@ -671,7 +674,10 @@ try {
     await wipe();
     await sql`update number_series set next_value = 1`;
     const items2 = await sql`select id, code from item
-       where company_id = ${co.id} and is_stocked and is_active order by code limit 2`;
+       where company_id = ${co.id} and is_stocked and is_active
+       -- A product with variants is a name for a group and cannot be
+       -- sold or received; fn_document_line_not_parent refuses it.
+       and not exists (select 1 from item c where c.parent_item_id = item.id) order by code limit 2`;
     const a = items2[0], b = items2[1] ?? items2[0];
     await P.postGoodsReceipt({ ...base, partnerId: supp.id,
       lines: [{ itemId: a.id, qty: 5, unitCost: 400 }, { itemId: b.id, qty: 100, unitCost: 400 }] });

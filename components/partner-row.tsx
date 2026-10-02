@@ -21,7 +21,9 @@ type Partner = {
   category_id: string | null; category_name: string | null;
   supplier_category_id: string | null; supplier_category_name: string | null;
   township: string | null; address: string | null; phone: string | null;
-  payment_terms_days: number; credit_limit: string | null; outstanding: string;
+  payment_terms_days: number;
+  /** Typed override, used only until receipts can be measured. */
+  lead_time_days: number | null; credit_limit: string | null; outstanding: string;
   /** From v_customer_credit — what the limit is being used for, and what is
    *  left of it. Null for a partner who is not a customer. */
   exposure: string | null; available: string | null;
@@ -121,6 +123,22 @@ export function PartnerRow({
                 <label>Payment terms (days)</label>
                 <input name="payment_terms_days" type="number" min="0" defaultValue={partner.payment_terms_days} />
               </div>
+              {/* An override, not the figure itself. Replenishment measures
+                  how long this supplier has actually taken and uses that
+                  once there are two receipts to go on — a number typed here
+                  is for a supplier nobody has bought from yet. */}
+              {partner.is_supplier && (
+                <div className="field">
+                  <label>Lead time (days)</label>
+                  <input name="lead_time_days" type="number" min="0" max="365"
+                         placeholder="measured from orders"
+                         defaultValue={partner.lead_time_days ?? ""} />
+                  <span className="hint">
+                    Only used until two receipts have been matched to orders
+                    from this supplier — after that the measured time wins.
+                  </span>
+                </div>
+              )}
               {/* Which column of the price list this customer buys from.
                   Only meaningful for a customer, and only worth asking when
                   the company keeps more than one column. */}

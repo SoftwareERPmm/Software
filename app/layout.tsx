@@ -1,8 +1,9 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Sans, IBM_Plex_Mono, Noto_Sans_Myanmar, DM_Sans } from "next/font/google";
+import { Noto_Sans_Myanmar, Inter } from "next/font/google";
 import "./globals.css";
 import Link from "next/link";
 import { getCompany } from "@/lib/queries";
+import { planIncludes } from "@/lib/plans";
 import { NavLink, NavGroup, NavSubGroup } from "./nav";
 import { MobileNav } from "@/components/mobile-nav";
 import { SidebarCollapse } from "@/components/sidebar-collapse";
@@ -11,39 +12,32 @@ import {
   LayoutDashboard, ShoppingCart, Package, Wallet, BookOpen, Boxes, Database, Truck } from "lucide-react";
 import { DatePickerFix } from "@/components/date-picker-fix";
 
-// Plex was drawn for enterprise data rather than for marketing pages: open
-// apertures, unambiguous 1/l/I and 0/O, and a lower x-height than Inter, which
-// is what stops a screen of forty ledger rows turning into grey texture.
-// The dashboard is set in DM Sans: rounder, wider counters, and a taller
-// x-height than Plex, which is what makes a headline figure read as a figure
-// rather than as data. It leads the stack rather than replacing it — Myanmar
-// text still falls through to Noto, because DM Sans has no Burmese glyphs and
-// a name in Burmese must not silently lose its shapes to a fallback.
-const dmSans = DM_Sans({
-  subsets: ["latin"],
-  weight: ["400", "500", "700"],
-  variable: "--font-dm-sans",
-  display: "swap",
-});
-
-const plexSans = IBM_Plex_Sans({
+// One face for the whole product, chosen for the thing an ERP does most:
+// show a column of numbers.
+//
+// The house face was DM Sans, which was right for the dashboard's headline
+// figures and wrong for everything under them — it ships no tabular
+// numerals at all. Measured at 16px its digits run from 5.00px for "1" to
+// 10.95px for "0", and font-variant-numeric: tabular-nums does nothing
+// because the feature is not in the font. A column of amounts set in it
+// cannot line up, whatever CSS asks for.
+//
+// Inter has them, and switches on with tabular-nums (measured: digit width
+// spread 0.000). It was drawn for user interfaces at small sizes, which is
+// what a forty-row ledger is. Plex Sans would have been free — it is
+// already loaded and its figures are uniform by default — but it reads as a
+// different product, and the point here was to keep one look.
+//
+// Myanmar still falls through to Noto: Inter has no Burmese glyphs, and a
+// name in Burmese must not silently lose its shapes to a fallback.
+const inter = Inter({
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
-  variable: "--font-plex-sans",
+  variable: "--font-ui",
   display: "swap",
 });
 
-// Its own companion mono, not a third voice. This app sets every label, pill,
-// table header and figure in mono, so the pairing carries more of the screen
-// than the sans does — the two need to share proportions and weight.
-const plexMono = IBM_Plex_Mono({
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
-  variable: "--font-plex-mono",
-  display: "swap",
-});
-
-// Plex carries no Myanmar glyphs either, so every name_my field would fall through
+// Inter carries no Myanmar glyphs, so every name_my field would fall through
 // to whatever the OS happened to ship — Myanmar Text on Windows, Myanmar
 // Sangam MN on macOS, something else on a phone. Different machine, different
 // rendering, and none of them matched the Latin face's weight or x-height. Loading this
@@ -73,7 +67,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   }
 
   return (
-    <html lang="en" className={`${dmSans.variable} ${plexSans.variable} ${plexMono.variable} ${notoMyanmar.variable}`}>
+    <html lang="en" className={`${inter.variable} ${notoMyanmar.variable}`}>
       <body>
         {/* Before first paint, so a rail somebody collapsed yesterday does not
             flash open and shove the page sideways on the way in. The effect in
@@ -125,6 +119,14 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <NavLink href="/purchases/receive" exact>Goods receipts</NavLink>
               <NavLink href="/purchases/invoices" exact>Purchase invoices</NavLink>
               <NavLink href="/purchases/returns" exact>Supplier returns</NavLink>
+              {/* Business and above. Hiding the link withholds an upsell; it
+                  is not access control, because there is nobody to
+                  authenticate — see lib/plans.ts. */}
+              {company && planIncludes(company.plan, "supplier_performance") && (
+                <NavLink href="/purchases/supplier-performance" exact>
+                  Supplier performance
+                </NavLink>
+              )}
               <NavLink href="/purchases/debit-notes" exact>Debit notes</NavLink>
               <NavLink href="/payables" exact>Payables</NavLink>
               <NavLink href="/payables/advances">Supplier advances</NavLink>
@@ -189,6 +191,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <NavGroup label="Inventory" icon={<Boxes size={14} />} match={["/items/stock", "/inventory"]}>
               <NavLink href="/items/stock">Stock overview</NavLink>
               <NavLink href="/inventory/consignment" exact>Consignment</NavLink>
+              <NavLink href="/inventory/replenishment">Replenishment</NavLink>
+              <NavLink href="/inventory/intelligence">Intelligence</NavLink>
               <NavLink href="/inventory/movements">Stock movements</NavLink>
               <NavLink href="/inventory/adjustments">Adjustments</NavLink>
               <NavLink href="/inventory/negative-stock">Negative stock</NavLink>
@@ -208,6 +212,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <NavLink href="/items/brands">Brands</NavLink>
               <NavLink href="/items/attributes">Variant attributes</NavLink>
               <NavLink href="/items/units">Units</NavLink>
+              <NavLink href="/items/purchasing">Purchasing terms</NavLink>
               <NavLink href="/items/prices">Price list</NavLink>
               <NavLink href="/warehouses">Branches &amp; warehouses</NavLink>
               <NavLink href="/salespersons">Salespersons</NavLink>

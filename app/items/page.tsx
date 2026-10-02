@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { sql } from "@/lib/db";
 import { getCompany, getItems, getBrands } from "@/lib/queries";
-import { updateItem, deactivateItem, activateItem, deleteItem } from "@/lib/actions";
+import { updateItem, deactivateItem, activateItem, deleteItem, setVariantPhoto } from "@/lib/actions";
 import { ItemRow } from "@/components/item-row";
+import { asVariant } from "@/components/variant-tags";
 import { DataTable, type DataRow } from "@/components/data-table";
 import { ItemFilters } from "@/components/item-filters";
 import { HelpHint } from "@/components/help-hint";
@@ -20,6 +21,7 @@ type Row = {
   last_purchase_date: string | null;
   parent_item_id: string | null;
   variant_count: number;
+  variant: unknown;
   barcode: string | null;
   qty_on_hand: string | number | null;
 };
@@ -154,11 +156,14 @@ export default async function Items({
         deactivateAction={deactivateItem}
         activateAction={activateItem}
         deleteAction={deleteItem}
+        setPhotoAction={setVariantPhoto}
         variants={(variantsByParent.get(i.id) ?? []).map((v) => ({
           id: v.id, code: v.code, name: v.name,
           barcode: v.barcode ?? null,
           qty_on_hand: Number(v.qty_on_hand ?? 0),
           is_active: v.is_active,
+          photo_version: v.photo_version ?? null,
+          variant_parts: asVariant(v.variant),
         }))}
       />
     ),

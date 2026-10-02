@@ -3,12 +3,17 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useTransition } from "react";
 import { createPortal } from "react-dom";
 import { createItemInline, type PickerItem } from "@/lib/actions";
+import { VariantTags, asVariant } from "@/components/variant-tags";
 
 type Node = { id: string; code: string; segment: string; name: string; parent_id: string | null };
 type Uom = { id: string; code: string; name: string };
 
 // Category depth is capped at two: Category, then Sub category.
 const LEVELS = ["Category", "Sub category"];
+/** Exactly this item, as against merely containing the text. */
+const isExact = (i: PickerItem, q: string) =>
+  (i.barcode ?? "").toLowerCase() === q || i.code.toLowerCase() === q;
+
 const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 0 });
 
 /**
@@ -93,9 +98,24 @@ export function ItemPicker({
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return items.slice(0, 12);
-    return items
-      .filter((i) => i.code.toLowerCase().includes(q) || i.name.toLowerCase().includes(q))
-      .slice(0, 12);
+    const hit = items.filter((i) =>
+      i.code.toLowerCase().includes(q) ||
+      i.name.toLowerCase().includes(q) ||
+      (i.barcode ?? "").toLowerCase().includes(q) ||
+      (asVariant(i.variant) ?? []).some(
+        (v) => v.a.toLowerCase().includes(q) || v.o.toLowerCase().includes(q)));
+    // A scanned barcode is an exact answer, not a search term. It sorts to
+    // the top so the row the scanner meant is the one under the cursor.
+    hit.sort((a, b) => Number(isExact(b, q)) - Number(isExact(a, q)));
+    return hit.slice(0, 12);
+  }, [items, query]);
+
+  /** The one item this string can only mean: its barcode, or its code. */
+  const exactOne = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return null;
+    const hits = items.filter((i) => isExact(i, q));
+    return hits.length === 1 ? hits[0] : null;
   }, [items, query]);
 
   // Create form state
@@ -154,6 +174,7 @@ export function ItemPicker({
         title="Change item"
       >
         <span className="m">{selected.code}</span> · {selected.name}
+        <VariantTags variant={asVariant(selected.variant)} />
       </button>
     );
   }
@@ -164,9 +185,28 @@ export function ItemPicker({
         type="text"
         value={query}
         autoFocus={open}
-        placeholder="Type a code or name…"
+        placeholder="Scan, or type a code or name…"
         onChange={(e) => { setQuery(e.target.value); setOpen(true); setCreating(false); }}
         onFocus={() => setOpen(true)}
+        /**
+         * A barcode scanner types the code and then sends Enter.
+         *
+         * Enter in a text input submits the form around it, and the form
+         * around this one is the voucher — so scanning an item would have
+         * posted the document. Always stopped here, whether or not the
+         * scan found anything.
+         *
+         * What it does instead: take the item the string can only mean, or
+         * the only one left in the list. Anything more ambiguous stays open
+         * for a person to choose, because guessing at the till is how the
+         * wrong thing gets sold.
+         */
+        onKeyDown={(e) => {
+          if (e.key !== "Enter") return;
+          e.preventDefault();
+          const pick = exactOne ?? (matches.length === 1 ? matches[0] : null);
+          if (pick) { onPick(pick.id); setOpen(false); setQuery(""); }
+        }}
         aria-label="Find an item"
       />
 
@@ -181,7 +221,10 @@ export function ItemPicker({
                 onClick={() => { onPick(i.id); setOpen(false); setQuery(""); }}
               >
                 <span className="m">{i.code}</span>
-                <span className="picker-name">{i.name}</span>
+                <span className="picker-name">
+                  {i.name}
+                  <VariantTags variant={asVariant(i.variant)} labelled />
+                </span>
                 <span className="picker-meta">
                   {i.is_stocked
                     ? `${fmt(Number(i.on_hand))} on hand`

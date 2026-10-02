@@ -48,6 +48,9 @@ try {
      where company_id = ${co.id} and is_stock_location and is_active order by code limit 1`;
   const [item] = await sql`select id, code from item
      where company_id = ${co.id} and is_stocked and is_active
+       -- A product with variants is a name for a group and cannot be
+       -- sold or received; fn_document_line_not_parent refuses it.
+       and not exists (select 1 from item c where c.parent_item_id = item.id)
      -- A plain item first. These suites test ordering and fulfilment,
      -- not batch tracking, and a tracked item makes every receipt
      -- demand a lot number the suite has no reason to care about.
@@ -191,7 +194,10 @@ try {
     let added = null;
     try {
       const [other] = await sql`select id from item where company_id = ${co.id}
-         and is_stocked and is_active and id <> ${item.id} order by code limit 1`;
+         and is_stocked and is_active and id <> ${item.id}
+       -- A product with variants is a name for a group and cannot be
+       -- sold or received; fn_document_line_not_parent refuses it.
+       and not exists (select 1 from item c where c.parent_item_id = item.id) order by code limit 1`;
       await P.amendInvoice({
         companyId: co.id, documentId: bill.id, reason: "adding a line",
         invoice: {

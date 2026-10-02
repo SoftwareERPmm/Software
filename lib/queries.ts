@@ -1,11 +1,20 @@
 import { sql } from "./db";
 import { grirMatcher, type MatchableLine, type DraftDocType } from "./posting";
+import type { Plan } from "./plans";
 
-export type Company = { id: string; code: string; name: string; name_my: string | null; base_currency: string };
+export type Company = { id: string; code: string; name: string; name_my: string | null;
+  base_currency: string;
+  /** Assumed when a supplier has none of its own, and for an item nobody
+   *  has bought yet. Replenishment turns it into a date to order by. */
+  default_lead_time_days: number;
+  /** Which package this company is on. Read by lib/plans.ts to decide what
+   *  is offered — never to decide what may be posted. */
+  plan: Plan };
 
 export async function getCompany(): Promise<Company | null> {
   const rows = await sql<Company[]>`
-    select id, code, name, name_my, base_currency from company order by created_at limit 1`;
+    select id, code, name, name_my, base_currency, default_lead_time_days, plan
+      from company order by created_at limit 1`;
   return rows[0] ?? null;
 }
 
@@ -451,20 +460,128 @@ export async function getVariantAttributes(companyId: string) {
  * The label reads in the order the parent declared its attributes, so a
  * shirt is "M / Red" and never "Red / M".
  */
+/**
+ * Every variant that exists, with what it is and what is on the shelf.
+ *
+ * One row per variant, flat — the grouping is done in the page, because the
+ * same rows are read two ways: colours with their sizes under them, and
+ * sizes with their colours. Asking the database for both would be two
+ * queries returning the same facts in two shapes.
+ *
+ * Not filtered to items holding stock. "No Black left in M" is the answer
+ * somebody is looking for, and a row missing because it is zero cannot say
+ * it.
+ */
+export async function getVariantStock(companyId: string) {
+  return sql`
+    select i.id, i.code, i.name, i.is_active,
+           i.parent_item_id,
+           p.code as parent_code, p.name as parent_name,
+           g.name as category_name,
+           to_char(i.photo_updated_at, 'YYYYMMDDHH24MISSMS') as photo_version,
+           coalesce(s.qty, 0) as qty_on_hand,
+           coalesce(s.val, 0) as value_on_hand,
+           u.code as uom_code,
+           -- Which option of which attribute this variant is, carrying the
+           -- ids so the page can group on them without matching by name.
+           json_agg(json_build_object(
+                      'attributeId', attr.id, 'attribute', attr.name,
+                      'optionId', o.id, 'option', o.name,
+                      -- Hand-kept, because S/M/L/XL is not alphabetical.
+                      'optionSort', o.sort_order,
+                      'attributeSort', coalesce(iva.sort_order, 0))
+                    order by coalesce(iva.sort_order, 0), attr.name) as parts
+      from item i
+      join item p on p.id = i.parent_item_id
+      join item_group g on g.id = i.item_group_id
+      join uom u on u.id = i.base_uom_id
+      join item_variant_option ivo on ivo.item_id = i.id
+      join variant_option o on o.id = ivo.option_id
+      join variant_attribute attr on attr.id = o.attribute_id
+      left join item_variant_attribute iva
+             on iva.item_id = i.parent_item_id and iva.attribute_id = attr.id
+      left join (
+            select item_id, sum(qty_on_hand) as qty, sum(value_on_hand) as val
+              from v_stock_on_hand group by item_id
+      ) s on s.item_id = i.id
+     where i.company_id = ${companyId} and i.is_active
+     group by i.id, i.code, i.name, i.is_active, i.parent_item_id,
+              p.code, p.name, g.name, i.photo_updated_at, s.qty, s.val, u.code
+     order by p.code, i.code`;
+}
+
+/**
+ * A product's variants, as a grid to edit.
+ *
+ * Twelve sizes of a shirt each need their own barcode and may need their
+ * own price, and a form that edits one row at a time is the wrong shape
+ * for that — it is twelve page loads to do one job.
+ *
+ * The price is the one on the first price level, because that is the one
+ * createItem writes and the one nearly every catalogue has. A product sold
+ * at several levels still needs the price list screen; this is the normal
+ * selling price, kept where somebody is already looking.
+ */
+export async function getVariantGrid(companyId: string, parentId: string) {
+  const [level] = await sql`
+    select id, name from price_level where company_id = ${companyId}
+     order by sort_order limit 1`;
+
+  const rows = await sql`
+    select i.id, i.code, i.name, i.barcode, i.is_active, i.base_uom_id,
+           to_char(i.photo_updated_at, 'YYYYMMDDHH24MISSMS') as photo_version,
+           coalesce(s.qty_on_hand, 0) as on_hand,
+           ip.price,
+           json_agg(json_build_object(
+                      'attributeId', attr.id, 'attribute', attr.name,
+                      'optionId', o.id, 'option', o.name,
+                      'optionSort', o.sort_order,
+                      'attributeSort', coalesce(iva.sort_order, 0))
+                    order by coalesce(iva.sort_order, 0), attr.name)
+             filter (where o.id is not null) as parts
+      from item i
+      left join item_variant_option ivo on ivo.item_id = i.id
+      left join variant_option o on o.id = ivo.option_id
+      left join variant_attribute attr on attr.id = o.attribute_id
+      left join item_variant_attribute iva
+             on iva.item_id = i.parent_item_id and iva.attribute_id = attr.id
+      left join (select item_id, sum(qty_on_hand) as qty_on_hand
+                   from v_stock_on_hand group by item_id) s on s.item_id = i.id
+      left join item_price ip
+             on ip.item_id = i.id and ip.price_level_id = ${level?.id ?? null}
+     where i.company_id = ${companyId} and i.parent_item_id = ${parentId}
+     group by i.id, i.code, i.name, i.barcode, i.is_active, i.base_uom_id,
+              i.photo_updated_at, s.qty_on_hand, ip.price
+     order by i.code`;
+
+  return { level: level ?? null, rows };
+}
+
 export async function getItemVariants(companyId: string, parentId: string) {
   return sql`
     select i.id, i.code, i.name, i.barcode, i.is_active,
            coalesce(s.qty_on_hand, 0) as on_hand,
-           string_agg(o.name, ' / ' order by va.sort_order) as variant
+           -- Each variant has its own picture: a red shirt and a black one
+           -- are two things, and one photograph on the parent would show
+           -- the wrong colour beside half the rows.
+           to_char(i.photo_updated_at, 'YYYYMMDDHH24MISSMS') as photo_version,
+           string_agg(o.name, ' / ' order by va.sort_order) as variant,
+           -- The same thing with the attribute kept alongside its value, so
+           -- a tag can say which "Small" it means.
+           json_agg(json_build_object('a', attr.name, 'o', o.name)
+                    order by va.sort_order) filter (where o.id is not null)
+             as variant_parts
       from item i
       left join item_variant_option ivo on ivo.item_id = i.id
       left join variant_option o on o.id = ivo.option_id
+      left join variant_attribute attr on attr.id = o.attribute_id
       left join item_variant_attribute va
              on va.item_id = i.parent_item_id and va.attribute_id = o.attribute_id
       left join (select item_id, sum(qty_on_hand) as qty_on_hand
                    from v_stock_on_hand group by item_id) s on s.item_id = i.id
      where i.company_id = ${companyId} and i.parent_item_id = ${parentId}
-     group by i.id, i.code, i.name, i.barcode, i.is_active, s.qty_on_hand
+     group by i.id, i.code, i.name, i.barcode, i.is_active, s.qty_on_hand,
+              i.photo_updated_at
      order by i.code`;
 }
 
@@ -1853,7 +1970,7 @@ export async function getPartners(companyId: string) {
     select bp.id, bp.code, bp.name, bp.name_my, bp.company_name,
            bp.is_customer, bp.is_supplier, bp.is_active,
            bp.region, bp.township, bp.address, bp.phone,
-           bp.payment_terms_days, bp.credit_limit, bp.price_level_id,
+           bp.payment_terms_days, bp.lead_time_days, bp.credit_limit, bp.price_level_id,
            (select pl.name from price_level pl where pl.id = bp.price_level_id) as price_level_name,
            bp.category_id,
            (select pc.name from partner_category pc where pc.id = bp.category_id) as category_name,
@@ -1885,6 +2002,17 @@ export async function getItems(companyId: string) {
            -- ordinary item, which is nearly all of them; the catalogue folds
            -- the rest away so a shirt is one line and not twelve.
            (select count(*)::int from item c where c.parent_item_id = i.id) as variant_count,
+           -- What this one is, when it is a variant: Colour Red, Size M, in
+           -- the order its parent declared them so a shirt reads "M / Red"
+           -- and never "Red / M". Null for an ordinary item, which is most.
+           (select json_agg(json_build_object('a', attr.name, 'o', o.name)
+                            order by coalesce(iva.sort_order, 0), attr.name)
+              from item_variant_option ivo
+              join variant_option o on o.id = ivo.option_id
+              join variant_attribute attr on attr.id = o.attribute_id
+              left join item_variant_attribute iva
+                     on iva.item_id = i.parent_item_id and iva.attribute_id = attr.id
+             where ivo.item_id = i.id) as variant,
            -- Not the picture — just whether there is one and when it changed.
            -- The bytes are served from their own URL, keyed by this; selecting
            -- them here would put every photo in the catalogue into one query.
@@ -3031,34 +3159,591 @@ export async function getPendingDeliveries(companyId: string) {
  * and supply committed but not yet received (purchase orders).
  */
 /** Every movement of one item, oldest first — a stock card. */
-export async function getStockMovements(companyId: string, itemId: string) {
+/**
+ * The stock ledger, for one item or for everything.
+ *
+ * Null itemId is every item — a log rather than a stock card. The two read
+ * differently on purpose: a running balance belongs to one item, and adding
+ * shirts to tins would produce a column of numbers that mean nothing.
+ *
+ * Dates are inclusive on both ends, because a person asking for September
+ * means the whole of it.
+ */
+/**
+ * How fast an item actually leaves, per warehouse.
+ *
+ * Deliveries only, net of customer returns. Not every outflow is demand: a
+ * transfer moves goods between our own shelves and a stocktake write-off is
+ * stock that was never there. Counting those would let one adjustment of a
+ * hundred and sixty units teach the system to buy a hundred and sixty more.
+ *
+ * Returned as the total issued over the window rather than a rate, because
+ * the window is the caller's choice and a rate hides how much it rests on —
+ * three units over ninety days is not the same claim as three over three.
+ */
+/**
+ * Profit matched to the units that earned it.
+ *
+ * Not revenue for a period set against whatever cost the period happened to
+ * release — that is the reconciliation report, and it answers a different
+ * question. This follows each invoice line to the goods it billed and takes
+ * what those goods actually cost, layer by layer.
+ *
+ *   invoice line
+ *     -> source_line_id, the delivery line it names            (exact)
+ *     -> else the linked delivery, same item                   (by item)
+ *     -> else nothing                                          (unmatched)
+ *
+ * stock_lot_consumption is where the truth is: it records which FIFO layers
+ * a movement drew on and at what cost. So the cost of a line is a sum of
+ * real layers, never an average across a catalogue.
+ *
+ * Where an invoice bills only part of what was delivered, the cost is
+ * apportioned by quantity across that delivery's own consumption. That is
+ * still the cost of those goods — not a blended figure from elsewhere — but
+ * it is apportioned, and the report says so rather than implying exactness
+ * it does not have.
+ *
+ * Nothing that cannot be matched is quietly given a cost. It is returned
+ * unmatched and counted, because a margin invented from nothing is worse
+ * than a gap somebody can see.
+ */
+export async function getMatchedProfitability(
+  companyId: string, from: string, to: string, locationId?: string | null,
+) {
+  return sql`
+    with line_cost as (
+      -- What a delivery line actually cost, from the layers it consumed.
+      select sm.document_line_id as line_id,
+             sum(slc.qty * slc.unit_cost) as cost,
+             sum(slc.qty) as qty
+        from stock_lot_consumption slc
+        join stock_movement sm on sm.id = slc.stock_movement_id
+       where slc.company_id = ${companyId} and sm.document_line_id is not null
+       group by sm.document_line_id
+    ),
+    inv as (
+      select dl.id, dl.item_id, dl.base_qty, dl.net_amount,
+             dl.source_line_id, d.id as invoice_id, d.source_document_id
+        from document_line dl
+        join document d on d.id = dl.document_id
+       where d.company_id = ${companyId}
+         and d.doc_type = 'SALES_INVOICE' and d.status = 'POSTED'
+         and d.posting_date >= ${from}::date and d.posting_date < ${to}::date
+         -- The warehouse the invoice line was raised against.
+         and (${locationId ?? null}::uuid is null
+              or dl.location_id = ${locationId ?? null})
+    ),
+    found as (
+      select inv.*,
+             coalesce(named.cost, byitem.cost)     as src_cost,
+             coalesce(named.qty,  byitem.qty)      as src_qty,
+             case when named.cost is not null then 'exact'
+                  when byitem.cost is not null then 'by item'
+                  else 'unmatched' end             as basis
+        from inv
+        left join lateral (
+              select lc.cost, lc.qty from line_cost lc
+               where lc.line_id = inv.source_line_id
+        ) named on true
+        left join lateral (
+              /*
+               * Both directions.
+               *
+               * An invoice raised against a delivery names it in
+               * source_document_id. An invoice raised first — billed ahead
+               * of shipping — is named BY the delivery instead, and looking
+               * only one way reported those as wholly unmatched even though
+               * the goods had since gone out.
+               */
+              select sum(lc.cost) as cost, sum(lc.qty) as qty
+                from line_cost lc
+                join document_line ddl on ddl.id = lc.line_id
+                join document dd on dd.id = ddl.document_id
+               where ddl.item_id = inv.item_id
+                 and dd.doc_type = 'DELIVERY' and dd.status = 'POSTED'
+                 and (dd.id = inv.source_document_id
+                      or dd.source_document_id = inv.invoice_id)
+        ) byitem on true
+    ),
+    returned as (
+      /*
+       * Goods that came back.
+       *
+       * A sales return is its own document type, and its movement is an
+       * inflow — it creates lots rather than consuming them — so neither
+       * half of the matching above can see it. Left out, a product sold
+       * eight and returned three reported the profit of eight.
+       *
+       * Both sides are reversed together. The cost is the movement's own,
+       * because the engine returns stock at the cost the original sale
+       * drew it out at rather than at today's, so what comes off is what
+       * went on.
+       */
+      select dl.item_id,
+             -dl.base_qty                  as base_qty,
+             -dl.net_amount                as net_amount,
+             'return'                      as basis,
+             -coalesce((select sum(sm.total_cost) from stock_movement sm
+                         where sm.document_line_id = dl.id), 0) as cost,
+             -dl.net_amount                as revenue_matched,
+             false                         as part_shipped
+        from document_line dl
+        join document d on d.id = dl.document_id
+       where d.company_id = ${companyId}
+         and d.doc_type = 'SALES_RETURN' and d.status = 'POSTED'
+         and d.posting_date >= ${from}::date and d.posting_date < ${to}::date
+         and (${locationId ?? null}::uuid is null
+              or dl.location_id = ${locationId ?? null})
+    ),
+    costed as (
+      /*
+       * Only the units that have both a price and a cost are matched.
+       *
+       * Ten invoiced against six delivered is six units of trade and four
+       * units of promise. Scaling the six units' cost up to ten would
+       * invent cost for goods still on the shelf; leaving all ten unmatched
+       * would throw away a margin that is genuinely known. So the matched
+       * quantity is the lesser of the two, revenue is taken in that
+       * proportion, and the rest is reported unmatched.
+       */
+      select f.item_id, f.base_qty, f.net_amount, f.basis,
+             case when f.src_cost is null then null
+                  else f.src_cost
+                       * (least(f.base_qty, f.src_qty) / nullif(f.src_qty, 0))
+             end as cost,
+             case when f.src_cost is null then 0
+                  else f.net_amount
+                       * (least(f.base_qty, f.src_qty) / nullif(f.base_qty, 0))
+             end as revenue_matched,
+             coalesce(f.src_qty, 0) < f.base_qty as part_shipped
+        from found f
+      union all
+      select item_id, base_qty, net_amount, basis, cost, revenue_matched, part_shipped
+        from returned
+    )
+    select i.id, i.code, i.name, u.code as uom_code,
+           to_char(i.photo_updated_at, 'YYYYMMDDHH24MISSMS') as photo_version,
+           sum(c.base_qty)                                   as qty,
+           sum(c.net_amount)                                 as revenue,
+           sum(c.cost)                                       as cost,
+           /*
+            * Margin over the matched part only, and null when nothing
+            * matched.
+            *
+            * Coalescing an absent cost to nought made an unmatched line
+            * read as pure profit — 5,000 of revenue showing a 5,000 margin
+            * because the goods had not shipped yet. A hundred per cent
+            * margin is a more dangerous lie than a negative one: nobody
+            * questions good news.
+            */
+           nullif(sum(c.revenue_matched), 0)                 as revenue_matched,
+           case when sum(c.revenue_matched) = 0 then null
+                else sum(c.revenue_matched) - coalesce(sum(c.cost), 0)
+           end                                               as margin,
+           count(*) filter (where c.basis = 'exact')::int     as n_exact,
+           count(*) filter (where c.basis = 'by item')::int   as n_by_item,
+           count(*) filter (where c.basis = 'unmatched')::int as n_unmatched,
+           count(*) filter (where c.basis = 'return')::int    as n_returned,
+           count(*) filter (where c.part_shipped)::int        as n_part_shipped,
+           sum(c.net_amount - c.revenue_matched)              as revenue_unmatched,
+           (select jsonb_agg(jsonb_build_object('a', attr.name, 'o', o.name)
+                             order by coalesce(iva.sort_order, 0), attr.name)
+              from item_variant_option ivo
+              join variant_option o on o.id = ivo.option_id
+              join variant_attribute attr on attr.id = o.attribute_id
+              left join item_variant_attribute iva
+                     on iva.item_id = i.parent_item_id and iva.attribute_id = attr.id
+             where ivo.item_id = i.id) as variant
+      from costed c
+      join item i on i.id = c.item_id
+      join uom u on u.id = i.base_uom_id
+     group by i.id, i.code, i.name, u.code, i.photo_updated_at
+     order by (coalesce(sum(c.revenue_matched), 0)
+               - coalesce(sum(c.cost), 0)) desc`;
+}
+
+/**
+ * What each item earned and what it cost, over a period.
+ *
+ * Revenue is dl.net_amount on a posted sales invoice — the same expression
+ * getTopItems uses, so the two screens cannot disagree about what a product
+ * sold for. Cost is what the stock ledger actually released: total_cost on
+ * the movements a delivery made, which is the figure the COGS posting is
+ * built from and therefore ties to the profit and loss exactly.
+ *
+ * A FULL JOIN, deliberately. Revenue lives on the invoice and cost on the
+ * delivery, and they are not always the same document or even the same
+ * month — bill in September, ship in October, and the two halves land in
+ * different windows. An inner join would quietly drop those rows and show
+ * a tidy, wrong answer. Here they appear with one side empty, which is the
+ * truth and is worth seeing.
+ */
+export async function getVariantProfitability(
+  companyId: string, from: string, to: string, locationId?: string | null,
+) {
+  return sql`
+    with revenue as (
+      select dl.item_id, sum(dl.base_qty) as qty_sold,
+             sum(dl.net_amount) as revenue
+        from document_line dl
+        join document d on d.id = dl.document_id
+       where d.company_id = ${companyId}
+         and d.doc_type = 'SALES_INVOICE' and d.status = 'POSTED'
+         and d.posting_date >= ${from}::date and d.posting_date < ${to}::date
+         and (${locationId ?? null}::uuid is null
+              or dl.location_id = ${locationId ?? null})
+       group by dl.item_id
+    ),
+    cost as (
+      select sm.item_id, sum(-sm.qty) as qty_shipped,
+             sum(-sm.total_cost) as cogs
+        from stock_movement sm
+        join document d on d.id = sm.document_id
+       where sm.company_id = ${companyId}
+         and d.doc_type = 'DELIVERY' and d.status = 'POSTED' and sm.qty < 0
+         and sm.movement_date >= ${from}::date and sm.movement_date < ${to}::date
+         and (${locationId ?? null}::uuid is null
+              or sm.location_id = ${locationId ?? null})
+       group by sm.item_id
+    )
+    select i.id, i.code, i.name, i.parent_item_id,
+           p.code as parent_code, p.name as parent_name,
+           u.code as uom_code,
+           coalesce(r.qty_sold, 0)  as qty_sold,
+           coalesce(r.revenue, 0)   as revenue,
+           coalesce(c.qty_shipped, 0) as qty_shipped,
+           coalesce(c.cogs, 0)      as cogs,
+           coalesce(r.revenue, 0) - coalesce(c.cogs, 0) as margin,
+           to_char(i.photo_updated_at, 'YYYYMMDDHH24MISSMS') as photo_version,
+           json_agg(json_build_object('a', attr.name, 'o', o.name)
+                    order by coalesce(iva.sort_order, 0), attr.name)
+             filter (where o.id is not null) as variant
+      from revenue r
+      full join cost c on c.item_id = r.item_id
+      join item i on i.id = coalesce(r.item_id, c.item_id)
+      join uom u on u.id = i.base_uom_id
+      left join item p on p.id = i.parent_item_id
+      left join item_variant_option ivo on ivo.item_id = i.id
+      left join variant_option o on o.id = ivo.option_id
+      left join variant_attribute attr on attr.id = o.attribute_id
+      left join item_variant_attribute iva
+             on iva.item_id = i.parent_item_id and iva.attribute_id = attr.id
+     where i.company_id = ${companyId}
+     group by i.id, i.code, i.name, i.parent_item_id, p.code, p.name, u.code,
+              r.qty_sold, r.revenue, c.qty_shipped, c.cogs, i.photo_updated_at
+     order by (coalesce(r.revenue, 0) - coalesce(c.cogs, 0)) desc`;
+}
+
+/**
+ * How long what is on the shelf has been sitting there.
+ *
+ * Read from the open FIFO layers, which is the only place that knows when
+ * a particular unit arrived — an item's on-hand figure is a single number
+ * and cannot say whether it is last week's delivery or last year's.
+ *
+ * Because it reads the same layers the costing does, it reconciles with
+ * stock on hand by construction, in quantity and in value. That is the
+ * point: an aging report that does not add up to the stock figure is two
+ * answers to one question.
+ *
+ * Consigned goods are absent, and should be: they sit in consignment_lot,
+ * they are somebody else's, and no capital of ours is tied up in them.
+ *
+ * The average age is weighted by value rather than by units, because the
+ * question behind this report is how much money has been sitting still.
+ */
+export async function getInventoryAging(
+  companyId: string, locationId?: string | null,
+) {
+  return sql`
+    with layers as (
+      select l.item_id,
+             l.qty_remaining as qty,
+             l.qty_remaining * l.unit_cost as value,
+             -- received_date is a timestamptz; both sides go to a local
+             -- date first, or the subtraction is an interval and the cast
+             -- fails. Yangon, like every other date this app computes.
+             ((now() at time zone 'Asia/Yangon')::date
+                - (l.received_date at time zone 'Asia/Yangon')::date) as age,
+             l.received_date
+        from v_stock_lot_open l
+       where l.company_id = ${companyId} and l.qty_remaining > 0
+         and (${locationId ?? null}::uuid is null
+              or l.location_id = ${locationId ?? null})
+    )
+    select i.id, i.code, i.name, u.code as uom_code,
+           to_char(i.photo_updated_at, 'YYYYMMDDHH24MISSMS') as photo_version,
+           sum(x.qty) as qty, sum(x.value) as value,
+           to_char(min(x.received_date) at time zone 'Asia/Yangon', 'YYYY-MM-DD') as oldest,
+           max(x.age) as oldest_days,
+           round(sum(x.age * x.value) / nullif(sum(x.value), 0)) as avg_age,
+           sum(x.value) filter (where x.age <= 30)                as v0,
+           sum(x.value) filter (where x.age > 30 and x.age <= 60) as v30,
+           sum(x.value) filter (where x.age > 60 and x.age <= 90) as v60,
+           sum(x.value) filter (where x.age > 90 and x.age <= 180) as v90,
+           sum(x.value) filter (where x.age > 180)                as v180,
+           /*
+            * A subquery, not a join.
+            *
+            * Joining the variant tables here multiplied every lot by the
+            * number of attributes the item has — a shirt with a size and a
+            * colour counted its stock twice, and the report stopped adding
+            * up to the stock figure. Reconciling against v_stock_on_hand is
+            * what caught it.
+            */
+           (select jsonb_agg(jsonb_build_object('a', attr.name, 'o', o.name)
+                             order by coalesce(iva.sort_order, 0), attr.name)
+              from item_variant_option ivo
+              join variant_option o on o.id = ivo.option_id
+              join variant_attribute attr on attr.id = o.attribute_id
+              left join item_variant_attribute iva
+                     on iva.item_id = i.parent_item_id
+                    and iva.attribute_id = attr.id
+             where ivo.item_id = i.id) as variant
+      from layers x
+      join item i on i.id = x.item_id
+      join uom u on u.id = i.base_uom_id
+     where i.company_id = ${companyId}
+     group by i.id, i.code, i.name, u.code, i.photo_updated_at
+     order by round(sum(x.age * x.value) / nullif(sum(x.value), 0)) desc nulls last`;
+}
+
+export async function getConsumptionRate(companyId: string, days: number) {
+  return sql`
+    select sm.item_id, sm.location_id, sum(-sm.qty) as issued
+      from stock_movement sm
+      join document d on d.id = sm.document_id
+     where sm.company_id = ${companyId}
+       and d.doc_type in ('DELIVERY', 'SALES_RETURN')
+       and d.status = 'POSTED'
+       and sm.movement_date >= ((now() at time zone 'Asia/Yangon')::date - ${days}::int)
+     group by sm.item_id, sm.location_id
+    having sum(-sm.qty) > 0`;
+}
+
+/**
+ * How long a supplier actually takes, measured rather than typed.
+ *
+ * The gap between the day an order was placed and the day the goods landed,
+ * for the last ten receipts that answered one of their orders. Same reason
+ * the purchase price is not kept on the item master: a figure somebody
+ * typed once is a second source of truth, and it goes stale the first time
+ * the supplier gets slower without telling anyone.
+ *
+ * Quantity-weighted, which is the answer to the partial-receipt question:
+ * a supplier who sends 90% in five days and the last 10% in thirty is not
+ * a five-day supplier (first receipt flatters them) nor a thirty-day one
+ * (final receipt condemns them). Weighting by how much actually arrived on
+ * each date is the only reading that does not bias in one direction.
+ *
+ * Calendar days throughout, here and in every date this app computes. A
+ * working-day convention would need a holiday calendar the app does not
+ * have, and half the arithmetic would silently use the other convention.
+ *
+ * A cancelled remainder contributes nothing: only receipts that happened
+ * are measured, so an order closed short is measured on what arrived.
+ *
+ * ADVISORY ONLY. This never sets the lead time a suggestion uses — that
+ * comes from what somebody configured. It is here so a manager can see
+ * their expectation drifting from reality and decide what to do about it.
+ *
+ * Both ways a receipt can answer an order are counted, the same as
+ * everywhere else, and the named route is skipped where a link already
+ * speaks for it so one receipt is not measured twice. A receipt dated
+ * before its own order is somebody backdating, and is left out rather than
+ * contributing a negative lead time.
+ */
+/**
+ * The recorded exceptions, with what they are an exception to.
+ *
+ * The supplier's own figure travels alongside so a screen can show what
+ * the override is overriding — "21 days where they usually take 14" is a
+ * sentence somebody can check; "21 days" alone is not.
+ */
+export async function getSupplierItems(companyId: string) {
+  return sql`
+    select si.id, si.supplier_id, si.item_id, si.lead_time_days,
+           si.supplier_sku, si.note,
+           bp.code as supplier_code, bp.name as supplier_name,
+           bp.lead_time_days as supplier_default_days,
+           i.code as item_code, i.name as item_name
+      from supplier_item si
+      join business_partner bp on bp.id = si.supplier_id
+      join item i on i.id = si.item_id
+     where si.company_id = ${companyId}
+     order by bp.code, i.code`;
+}
+
+export async function getSupplierLeadTimes(companyId: string) {
+  return sql`
+    with pairs as (
+      select po.partner_id, (gr.doc_date - po.doc_date)::int as days,
+             gl.base_qty as qty, gr.doc_date
+        from document gr
+        join document_line gl on gl.document_id = gr.id
+        join document_line ol on ol.id = gl.source_line_id
+        join document po on po.id = ol.document_id
+       where gr.company_id = ${companyId}
+         and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+         and po.doc_type = 'PURCHASE_ORDER'
+         and not exists (
+               select 1 from fulfilment_link fl2
+                where fl2.fulfilment_line_id = gl.id
+                  and fl2.order_line_id is not distinct from gl.source_line_id)
+      union all
+      select po.partner_id, (gr.doc_date - po.doc_date)::int as days,
+             fl.qty as qty, gr.doc_date
+        from fulfilment_link fl
+        join document_line gl on gl.id = fl.fulfilment_line_id
+        join document gr on gr.id = gl.document_id
+        join document_line ol on ol.id = fl.order_line_id
+        join document po on po.id = ol.document_id
+       where fl.company_id = ${companyId}
+         and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+         and po.doc_type = 'PURCHASE_ORDER'
+    ),
+    recent as (
+      select partner_id, days, qty,
+             row_number() over (partition by partner_id order by doc_date desc) as rn
+        from pairs
+       where days >= 0 and qty > 0
+    )
+    select partner_id,
+           round(sum(days * qty) / nullif(sum(qty), 0))::int as observed_days,
+           count(*)::int as sample
+      from recent
+     where rn <= 20
+     group by partner_id`;
+}
+
+/**
+ * Who last sold us this, and how long they take.
+ *
+ * There is no supplier on the item master, deliberately — the same reason
+ * there is no purchase price there: it would be a second source of truth
+ * that goes stale. Who supplies something is answered by who last did.
+ *
+ * The lead time falls back to the company's, so a suggestion still gets a
+ * date to order by for an item nobody has ever bought.
+ */
+export async function getItemSupply(companyId: string) {
+  return sql`
+    select i.id as item_id,
+           lp.partner_id as supplier_id,
+           bp.code as supplier_code, bp.name as supplier_name,
+           bp.lead_time_days as supplier_days,
+           si.lead_time_days as item_days
+      from item i
+      left join lateral (
+            select d.partner_id
+              from document_line dl
+              join document d on d.id = dl.document_id
+             where dl.item_id = i.id and d.company_id = i.company_id
+               and d.doc_type in ('PURCHASE_INVOICE', 'GOODS_RECEIPT', 'PURCHASE_ORDER')
+               and d.status = 'POSTED' and d.partner_id is not null
+             order by d.doc_date desc, d.created_at desc
+             limit 1
+      ) lp on true
+      left join business_partner bp on bp.id = lp.partner_id
+      -- The exception, where somebody recorded one for this pairing.
+      left join supplier_item si
+             on si.company_id = i.company_id
+            and si.supplier_id = lp.partner_id
+            and si.item_id = i.id
+     where i.company_id = ${companyId}`;
+}
+
+export async function getStockMovements(
+  companyId: string,
+  itemId: string | null,
+  from?: string | null,
+  to?: string | null,
+) {
   return sql`
     select sm.id, sm.movement_date, sm.qty, sm.unit_cost, sm.total_cost,
            sm.batch_no, sm.expiry_date, sm.created_at,
            d.doc_no, d.doc_type, d.id as document_id,
-           l.code as location_code
+           l.code as location_code,
+           i.code as item_code, i.name as item_name
       from stock_movement sm
       left join document d on d.id = sm.document_id
       join location l on l.id = sm.location_id
-     where sm.company_id = ${companyId} and sm.item_id = ${itemId}
+      join item i on i.id = sm.item_id
+     where sm.company_id = ${companyId}
+       and (${itemId ?? null}::uuid is null or sm.item_id = ${itemId ?? null})
+       and (${from ?? null}::date is null or sm.movement_date >= ${from ?? null})
+       and (${to ?? null}::date is null or sm.movement_date <= ${to ?? null})
      order by sm.movement_date, sm.created_at`;
+}
+
+/**
+ * What the balance already was before the window opens.
+ *
+ * A stock card filtered to September that starts its running balance at
+ * nought says the item was empty on the first, which is a different claim
+ * from the one the filter made. The figure carried in is what makes the
+ * column true.
+ */
+export async function getStockOpeningBalance(
+  companyId: string, itemId: string, before: string,
+) {
+  const [row] = await sql`
+    select coalesce(sum(qty), 0) as qty
+      from stock_movement
+     where company_id = ${companyId} and item_id = ${itemId}
+       and movement_date < ${before}`;
+  return Number(row?.qty ?? 0);
 }
 
 export async function getReservedQty(companyId: string) {
   return sql`
     with so_remaining as (
-      select ol.item_id, ol.location_id, sum(ol.base_qty - coalesce(d.delivered_qty, 0)) as qty
+      /*
+       * What an open order still holds back.
+       *
+       * Both ways a delivery can answer an order line are counted, the same
+       * way getOpenSalesOrders counts them: the line that names the order,
+       * and a fulfilment_link written when somebody matched them up
+       * afterwards. Only the first was subtracted here, so goods shipped
+       * against a hand-matched order never released their reservation —
+       * the order list called it fulfilled while the stock page went on
+       * committing the stock, permanently.
+       *
+       * The named route is ignored where a link already speaks for the same
+       * delivery line, or one delivery of twenty would be subtracted twice.
+       *
+       * greatest(..., 0) is per line: over-delivering one line does not free
+       * stock reserved by another line of the same item.
+       */
+      select ol.item_id, ol.location_id,
+             sum(greatest(ol.base_qty - coalesce(d.delivered_qty, 0)
+                                      - coalesce(fl.linked_qty, 0), 0)) as qty
         from document o
         join document_line ol on ol.document_id = o.id
         left join (
           select dl.source_line_id, sum(dl.base_qty) as delivered_qty
             from document_line dl join document dd on dd.id = dl.document_id
            where dd.doc_type = 'DELIVERY' and dd.status = 'POSTED'
+             and not exists (
+                   select 1 from fulfilment_link fl2
+                    where fl2.fulfilment_line_id = dl.id
+                      and fl2.order_line_id is not distinct from dl.source_line_id)
            group by dl.source_line_id
         ) d on d.source_line_id = ol.id
+        left join (
+              select order_line_id, sum(qty) as linked_qty
+                from fulfilment_link group by order_line_id
+        ) fl on fl.order_line_id = ol.id
        where o.company_id = ${companyId} and o.doc_type = 'SALES_ORDER' and o.status = 'POSTED'
+         -- An order closed short is expecting nothing more, so it commits
+         -- nothing more either.
+         and not exists (
+               select 1 from v_order_outstanding v
+                where v.order_id = o.id and v.is_closed)
        group by ol.item_id, ol.location_id
-      having sum(ol.base_qty - coalesce(d.delivered_qty, 0)) > 0
+      having sum(greatest(ol.base_qty - coalesce(d.delivered_qty, 0)
+                                      - coalesce(fl.linked_qty, 0), 0)) > 0
     ),
     -- Committed to a customer and not yet shipped. Per invoice and item,
     -- because "no delivery at all" both over-reserved (the whole invoice
@@ -3096,18 +3781,46 @@ export async function getReservedQty(companyId: string) {
 
 export async function getIncomingQty(companyId: string) {
   return sql`
-    select ol.item_id, ol.location_id, sum(ol.base_qty - coalesce(r.received_qty, 0)) as incoming_qty
+    /*
+     * What is still coming, counting both ways a receipt can answer a
+     * purchase order line — the line that names it, and a fulfilment_link
+     * written when the two were matched up afterwards.
+     *
+     * The same gap reservation had, in the other direction: goods already
+     * on the shelf went on being counted as on their way. Overstated
+     * incoming is the more dangerous half of the pair, because anything
+     * deciding what to buy subtracts it and therefore orders too little.
+     *
+     * The named route is ignored where a link already speaks for the same
+     * receipt line, or one receipt of twenty is subtracted twice.
+     */
+    select ol.item_id, ol.location_id,
+           sum(greatest(ol.base_qty - coalesce(r.received_qty, 0)
+                                    - coalesce(fl.linked_qty, 0), 0)) as incoming_qty
       from document o
       join document_line ol on ol.document_id = o.id
       left join (
         select dl.source_line_id, sum(dl.base_qty) as received_qty
           from document_line dl join document dd on dd.id = dl.document_id
          where dd.doc_type = 'GOODS_RECEIPT' and dd.status = 'POSTED'
+           and not exists (
+                 select 1 from fulfilment_link fl2
+                  where fl2.fulfilment_line_id = dl.id
+                    and fl2.order_line_id is not distinct from dl.source_line_id)
          group by dl.source_line_id
       ) r on r.source_line_id = ol.id
+      left join (
+            select order_line_id, sum(qty) as linked_qty
+              from fulfilment_link group by order_line_id
+      ) fl on fl.order_line_id = ol.id
      where o.company_id = ${companyId} and o.doc_type = 'PURCHASE_ORDER' and o.status = 'POSTED'
+       -- A purchase order closed short is not bringing the rest.
+       and not exists (
+             select 1 from v_order_outstanding v
+              where v.order_id = o.id and v.is_closed)
      group by ol.item_id, ol.location_id
-    having sum(ol.base_qty - coalesce(r.received_qty, 0)) > 0`;
+    having sum(greatest(ol.base_qty - coalesce(r.received_qty, 0)
+                                    - coalesce(fl.linked_qty, 0), 0)) > 0`;
 }
 
 export async function getBrands(companyId: string) {
@@ -3660,7 +4373,7 @@ export async function getLowStock(companyId: string) {
 /** Every configured reorder point, for the management list on the Stock page — not just the ones currently violated. */
 export async function getReorderPoints(companyId: string) {
   return sql`
-    select r.id, r.item_id, r.location_id, r.min_qty,
+    select r.id, r.item_id, r.location_id, r.min_qty, r.max_qty,
            i.code as item_code, i.name as item_name,
            l.code as location_code
       from item_reorder r
@@ -5523,4 +6236,580 @@ export async function getUnsettledConsignment(companyId: string, deliveryId: str
     consumption_id: string; qty: string;
     item_code: string; item_name: string; consignor_name: string;
   }[];
+}
+
+// ---------------------------------------------------------------------------
+// Supplier performance
+//
+// Six queries, each returning observations rather than scores. Nothing here
+// normalizes, weights or decides what counts as enough data — that is
+// lib/supplier-metrics.ts, so the radar, the detail table and the CSV all
+// reach the same conclusion from the same numbers. These only read posted
+// documents and say what happened.
+//
+// Two rules run through all of them. Amended orders resolve through
+// fn_current_document, because a correction retires the version a receipt
+// names and counting the retired one reports an order as wholly outstanding.
+// And a receipt reaches its order by two routes — named on the line, or
+// linked afterwards — so every pairing here is the union of both with the
+// same anti-double-count guard v_order_outstanding uses.
+// ---------------------------------------------------------------------------
+
+/**
+ * Purchase order lines with what the supplier committed to and what arrived.
+ *
+ * Returns rows, not a figure: the commitment rules are arithmetic over a
+ * conversation and live in lib/supplier-commitments.ts where they can be
+ * tested without a database. This only fetches the conversation.
+ *
+ * `to` bounds the receipts as well as the orders, so re-running a past
+ * period gives the answer it gave then rather than one improved by what has
+ * arrived since.
+ */
+export async function getSupplierCommitmentData(
+  companyId: string, from: string, to: string, supplierIds: string[] | null = null,
+) {
+  const rows = await sql`
+    with ord as (
+      select fn_current_document(o.id) as order_id, o.partner_id,
+             ol.id as order_line_id, ol.item_id, ol.base_qty as ordered_qty,
+             o.doc_date as order_date
+        from document o
+        join document_line ol on ol.document_id = o.id
+       where o.company_id = ${companyId}
+         and o.doc_type = 'PURCHASE_ORDER' and o.status = 'POSTED'
+         and o.partner_id is not null
+         and o.doc_date <= ${to}::date
+         ${supplierIds ? sql`and o.partner_id = any(${supplierIds}::uuid[])` : sql``}
+    ),
+    -- Both routes from a receipt back to the order line it answers.
+    recv as (
+      select ol.id as order_line_id, gr.doc_date as receipt_date, gl.base_qty as qty
+        from document gr
+        join document_line gl on gl.document_id = gr.id
+        join document_line ol on ol.id = gl.source_line_id
+       where gr.company_id = ${companyId}
+         and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+         and gr.doc_date <= ${to}::date
+         and not exists (
+               select 1 from fulfilment_link fl2
+                where fl2.fulfilment_line_id = gl.id
+                  and fl2.order_line_id is not distinct from gl.source_line_id)
+      union all
+      select fl.order_line_id, gr.doc_date, fl.qty
+        from fulfilment_link fl
+        join document_line gl on gl.id = fl.fulfilment_line_id
+        join document gr on gr.id = gl.document_id
+       where fl.company_id = ${companyId}
+         and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+         and gr.doc_date <= ${to}::date
+    ),
+    -- An order closed with a reason is a cancellation, and a cancelled line
+    -- is not a supplier failure. Latest closure row wins, as everywhere else.
+    closed as (
+      select distinct on (fn_current_document(oc.document_id))
+             fn_current_document(oc.document_id) as order_id, oc.is_open
+        from order_closure oc
+       where oc.company_id = ${companyId}
+       order by fn_current_document(oc.document_id), oc.closed_at desc
+    )
+    select ord.order_id, ord.partner_id, ord.order_line_id, ord.item_id,
+           ord.ordered_qty::text, ord.order_date,
+           bp.code as partner_code, bp.name as partner_name,
+           coalesce(cl.is_open, true) as order_open,
+           coalesce((
+             select json_agg(json_build_object(
+                      'id', pc.id, 'qty', pc.qty::float8,
+                      'confirmedDate', to_char(pc.confirmed_date, 'YYYY-MM-DD'),
+                      'kind', pc.kind,
+                      'recordedOn', to_char(pc.recorded_at, 'YYYY-MM-DD'))
+                    order by pc.recorded_at, pc.id)
+               from purchase_confirmation pc
+              where pc.order_line_id = ord.order_line_id
+                -- Recorded after the cutoff is a fact this period did not
+                -- know; excluding it keeps a historical run reproducible.
+                and pc.recorded_at < (${to}::date + 1)
+           ), '[]'::json) as confirmations,
+           coalesce((
+             select json_agg(json_build_object(
+                      'date', to_char(rv.receipt_date, 'YYYY-MM-DD'),
+                      'qty', rv.qty::float8) order by rv.receipt_date)
+               from recv rv where rv.order_line_id = ord.order_line_id
+           ), '[]'::json) as receipts
+      from ord
+      join business_partner bp on bp.id = ord.partner_id
+      left join closed cl on cl.order_id = ord.order_id
+     where exists (
+             select 1 from purchase_confirmation pc
+              where pc.order_line_id = ord.order_line_id
+                and pc.confirmed_date >= ${from}::date
+                and pc.confirmed_date <= ${to}::date)`;
+
+  return rows as unknown as {
+    order_id: string; partner_id: string; order_line_id: string; item_id: string;
+    ordered_qty: string; order_date: string; order_open: boolean;
+    partner_code: string; partner_name: string;
+    confirmations: { id: string; qty: number; confirmedDate: string;
+                     kind: string; recordedOn: string }[];
+    receipts: { date: string; qty: number }[];
+  }[];
+}
+
+/**
+ * Quantity ordered and quantity received, per supplier, for order fulfilment.
+ *
+ * The cohort is order lines due by the cutoff — an order still within its
+ * lead time has not failed to arrive. Over-receipts are capped at the
+ * quantity ordered so a supplier cannot score above 100 by sending too much,
+ * and a closed order leaves the denominator because a cancellation the buyer
+ * asked for is not a supplier's miss.
+ */
+export async function getSupplierFulfilment(
+  companyId: string, from: string, to: string,
+) {
+  const rows = await sql`
+    with ord as (
+      select fn_current_document(o.id) as order_id, o.partner_id,
+             ol.id as order_line_id, ol.base_qty as ordered_qty
+        from document o
+        join document_line ol on ol.document_id = o.id
+       where o.company_id = ${companyId}
+         and o.doc_type = 'PURCHASE_ORDER' and o.status = 'POSTED'
+         and o.partner_id is not null
+         and o.doc_date >= ${from}::date and o.doc_date <= ${to}::date
+    ),
+    closed as (
+      select distinct on (fn_current_document(oc.document_id))
+             fn_current_document(oc.document_id) as order_id, oc.is_open
+        from order_closure oc
+       where oc.company_id = ${companyId}
+       order by fn_current_document(oc.document_id), oc.closed_at desc
+    ),
+    recv as (
+      select ol.id as order_line_id, sum(gl.base_qty) as qty
+        from document gr
+        join document_line gl on gl.document_id = gr.id
+        join document_line ol on ol.id = gl.source_line_id
+       where gr.company_id = ${companyId}
+         and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+         and gr.doc_date <= ${to}::date
+         and not exists (
+               select 1 from fulfilment_link fl2
+                where fl2.fulfilment_line_id = gl.id
+                  and fl2.order_line_id is not distinct from gl.source_line_id)
+       group by ol.id
+      union all
+      select fl.order_line_id, sum(fl.qty)
+        from fulfilment_link fl
+        join document_line gl on gl.id = fl.fulfilment_line_id
+        join document gr on gr.id = gl.document_id
+       where fl.company_id = ${companyId}
+         and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+         and gr.doc_date <= ${to}::date
+       group by fl.order_line_id
+    )
+    select ord.partner_id, bp.code as partner_code, bp.name as partner_name,
+           sum(ord.ordered_qty)::text as ordered,
+           -- least(), so 12 delivered against 10 ordered is 10 fulfilled and
+           -- not 120% of a promise.
+           sum(least(coalesce(rv.qty, 0), ord.ordered_qty))::text as received,
+           count(*)::int as lines
+      from ord
+      join business_partner bp on bp.id = ord.partner_id
+      left join closed cl on cl.order_id = ord.order_id
+      left join lateral (
+            select sum(qty) as qty from recv where recv.order_line_id = ord.order_line_id
+      ) rv on true
+     where coalesce(cl.is_open, true)
+     group by ord.partner_id, bp.code, bp.name`;
+
+  return rows as unknown as {
+    partner_id: string; partner_code: string; partner_name: string;
+    ordered: string; received: string; lines: number;
+  }[];
+}
+
+/**
+ * Every order-to-receipt duration, for lead-time consistency.
+ *
+ * One row per pairing rather than an average, because the metric is about
+ * the spread and an average has thrown that away. Weighted by quantity at
+ * the point of use, so a token early box does not count as much as the bulk
+ * of the order arriving late.
+ */
+export async function getSupplierLeadTimeObservations(
+  companyId: string, from: string, to: string,
+) {
+  const rows = await sql`
+    select po.partner_id, (gr.doc_date - po.doc_date)::int as days,
+           gl.base_qty::text as qty,
+           to_char(gr.doc_date, 'YYYY-MM') as month
+      from document gr
+      join document_line gl on gl.document_id = gr.id
+      join document_line ol on ol.id = gl.source_line_id
+      join document po on po.id = ol.document_id
+     where gr.company_id = ${companyId}
+       and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+       and po.doc_type = 'PURCHASE_ORDER'
+       and gr.doc_date >= ${from}::date and gr.doc_date <= ${to}::date
+       and gr.doc_date >= po.doc_date
+       and not exists (
+             select 1 from fulfilment_link fl2
+              where fl2.fulfilment_line_id = gl.id
+                and fl2.order_line_id is not distinct from gl.source_line_id)
+    union all
+    select po.partner_id, (gr.doc_date - po.doc_date)::int, fl.qty::text,
+           to_char(gr.doc_date, 'YYYY-MM')
+      from fulfilment_link fl
+      join document_line gl on gl.id = fl.fulfilment_line_id
+      join document gr on gr.id = gl.document_id
+      join document_line ol on ol.id = fl.order_line_id
+      join document po on po.id = ol.document_id
+     where fl.company_id = ${companyId}
+       and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+       and po.doc_type = 'PURCHASE_ORDER'
+       and gr.doc_date >= ${from}::date and gr.doc_date <= ${to}::date
+       and gr.doc_date >= po.doc_date`;
+
+  return rows as unknown as {
+    partner_id: string; days: number; qty: string; month: string;
+  }[];
+}
+
+/**
+ * What each supplier charged for each item, for the two price metrics.
+ *
+ * Grouped to item and supplier so competitiveness can compare across
+ * suppliers and stability can compare a supplier with itself. Currency is
+ * carried through and grouped on rather than assumed: posting writes MMK at
+ * rate 1 today, but a price comparison that silently mixed currencies if
+ * that ever changed would be wrong in a way nobody would notice.
+ *
+ * Unit prices are per base unit, so an item bought by the box from one
+ * supplier and by the piece from another compares honestly.
+ */
+export async function getSupplierPriceObservations(
+  companyId: string, from: string, to: string,
+) {
+  const rows = await sql`
+    select d.partner_id, dl.item_id, d.currency,
+           dl.base_qty::text as qty,
+           -- net_amount is after trade discount, which is what was paid.
+           (dl.net_amount / nullif(dl.base_qty, 0))::text as unit_price,
+           d.doc_date
+      from document d
+      join document_line dl on dl.document_id = d.id
+     where d.company_id = ${companyId}
+       and d.doc_type = 'PURCHASE_INVOICE' and d.status = 'POSTED'
+       and d.partner_id is not null
+       and d.doc_date >= ${from}::date and d.doc_date <= ${to}::date
+       and dl.item_id is not null
+       and dl.base_qty > 0 and dl.net_amount > 0`;
+
+  return rows as unknown as {
+    partner_id: string; item_id: string; currency: string;
+    qty: string; unit_price: string; doc_date: string;
+  }[];
+}
+
+/**
+ * How many receipts each completed order took, for delivery completeness.
+ *
+ * Only orders fully received within the period are eligible: one still
+ * arriving has not yet failed to arrive at once.
+ */
+export async function getSupplierDeliveryCompleteness(
+  companyId: string, from: string, to: string,
+) {
+  const rows = await sql`
+    with ord as (
+      select fn_current_document(o.id) as order_id, o.partner_id,
+             ol.id as order_line_id, ol.base_qty as ordered_qty
+        from document o
+        join document_line ol on ol.document_id = o.id
+       where o.company_id = ${companyId}
+         and o.doc_type = 'PURCHASE_ORDER' and o.status = 'POSTED'
+         and o.partner_id is not null and o.doc_date <= ${to}::date
+    ),
+    recv as (
+      select ol.id as order_line_id, gr.id as receipt_id, gr.doc_date,
+             gl.base_qty as qty
+        from document gr
+        join document_line gl on gl.document_id = gr.id
+        join document_line ol on ol.id = gl.source_line_id
+       where gr.company_id = ${companyId}
+         and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+         and gr.doc_date <= ${to}::date
+         and not exists (
+               select 1 from fulfilment_link fl2
+                where fl2.fulfilment_line_id = gl.id
+                  and fl2.order_line_id is not distinct from gl.source_line_id)
+      union all
+      select fl.order_line_id, gr.id, gr.doc_date, fl.qty
+        from fulfilment_link fl
+        join document_line gl on gl.id = fl.fulfilment_line_id
+        join document gr on gr.id = gl.document_id
+       where fl.company_id = ${companyId}
+         and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+         and gr.doc_date <= ${to}::date
+    ),
+    -- Collapsed to one row per order line BEFORE joining to the order.
+    -- Joining the two directly multiplies each line by its own receipts, so
+    -- a line for 100 delivered in two runs sums as 200 ordered against 100
+    -- received and never registers as complete. The same fan-out overstated
+    -- inventory aging by 78% once; pre-aggregating is the fix in both cases.
+    per_line as (
+      select order_line_id, sum(qty) as qty,
+             count(distinct receipt_id) as receipts,
+             max(doc_date) as last_receipt
+        from recv
+       group by order_line_id
+    ),
+    per_order as (
+      select ord.order_id, ord.partner_id,
+             sum(ord.ordered_qty) as ordered,
+             coalesce(sum(pl.qty), 0) as received,
+             -- Receipts across the whole order, not per line: an order of
+             -- three lines that arrived together came in one shipment.
+             (select count(distinct rv2.receipt_id)
+                from recv rv2
+                join ord o2 on o2.order_line_id = rv2.order_line_id
+               where o2.order_id = ord.order_id) as receipts,
+             max(pl.last_receipt) as completed_on
+        from ord
+        left join per_line pl on pl.order_line_id = ord.order_line_id
+       group by ord.order_id, ord.partner_id
+    )
+    select partner_id,
+           count(*)::int as completed_orders,
+           count(*) filter (where receipts = 1)::int as single_receipt_orders
+      from per_order
+     where received >= ordered and ordered > 0
+       and completed_on >= ${from}::date and completed_on <= ${to}::date
+     group by partner_id`;
+
+  return rows as unknown as {
+    partner_id: string; completed_orders: number; single_receipt_orders: number;
+  }[];
+}
+
+/**
+ * Invoices that disagree with the order or the receipt behind them.
+ *
+ * An investigative figure, not an accusation: nothing distinguishes a
+ * supplier overcharging from our own buyer keying the order wrong, or from
+ * a price change both sides agreed and nobody recorded. It says where to go
+ * and look.
+ *
+ * Counted per invoice rather than per line, so one invoice with nine wrong
+ * lines is one thing to investigate rather than nine. A receipt invoiced
+ * twice is counted once for the same reason.
+ */
+export async function getSupplierMatchingVariance(
+  companyId: string, from: string, to: string,
+) {
+  const rows = await sql`
+    with inv as (
+      select d.id, d.partner_id, dl.id as line_id, dl.item_id,
+             dl.base_qty, dl.unit_price
+        from document d
+        join document_line dl on dl.document_id = d.id
+       where d.company_id = ${companyId}
+         and d.doc_type = 'PURCHASE_INVOICE' and d.status = 'POSTED'
+         and d.partner_id is not null and dl.item_id is not null
+         and d.doc_date >= ${from}::date and d.doc_date <= ${to}::date
+    ),
+    -- What the order said, reached through whichever line the invoice names.
+    ordered as (
+      select inv.line_id,
+             ol.unit_price as ordered_price, ol.base_qty as ordered_qty
+        from inv
+        join document_line il on il.id = inv.line_id
+        join document_line ol on ol.id = il.source_line_id
+        join document po on po.id = ol.document_id
+       where po.doc_type = 'PURCHASE_ORDER'
+    ),
+    flagged as (
+      select inv.id, inv.partner_id,
+             bool_or(
+               o.ordered_price is not null
+               and abs(inv.unit_price - o.ordered_price)
+                   > greatest(o.ordered_price * 0.005, 0.01)
+             ) as price_variance,
+             bool_or(
+               o.ordered_qty is not null and inv.base_qty > o.ordered_qty
+             ) as qty_variance
+        from inv
+        left join ordered o on o.line_id = inv.line_id
+       group by inv.id, inv.partner_id
+    )
+    select partner_id,
+           count(*)::int as invoices,
+           count(*) filter (where price_variance or qty_variance)::int as with_variance
+      from flagged
+     group by partner_id`;
+
+  return rows as unknown as {
+    partner_id: string; invoices: number; with_variance: number;
+  }[];
+}
+
+/** Purchase spend per supplier in the period, for the KPI row and weighting. */
+export async function getSupplierSpend(
+  companyId: string, from: string, to: string,
+) {
+  const rows = await sql`
+    select d.partner_id, bp.code, bp.name,
+           sum(d.net_total)::text as spend,
+           count(*)::int as invoices
+      from document d
+      join business_partner bp on bp.id = d.partner_id
+     where d.company_id = ${companyId}
+       and d.doc_type = 'PURCHASE_INVOICE' and d.status = 'POSTED'
+       and d.doc_date >= ${from}::date and d.doc_date <= ${to}::date
+     group by d.partner_id, bp.code, bp.name`;
+
+  return rows as unknown as {
+    partner_id: string; code: string; name: string; spend: string; invoices: number;
+  }[];
+}
+
+/**
+ * One order's lines with every delivery date its supplier has given.
+ *
+ * Powers the panel on the order itself: what was promised, what it was
+ * changed to, and who changed it. The resolution into a schedule is done in
+ * lib/supplier-commitments.ts, the same code the metric uses, so the order
+ * screen and the scoreboard can never tell different stories about the same
+ * supplier.
+ */
+export async function getOrderConfirmations(documentId: string) {
+  const rows = await sql`
+    select dl.id as order_line_id, dl.line_no, dl.base_qty::text as ordered_qty,
+           i.code as item_code, i.name as item_name,
+           coalesce((
+             select json_agg(json_build_object(
+                      'id', pc.id, 'qty', pc.qty::float8,
+                      'confirmedDate', to_char(pc.confirmed_date, 'YYYY-MM-DD'),
+                      'kind', pc.kind,
+                      'recordedOn', to_char(pc.recorded_at, 'YYYY-MM-DD'),
+                      'source', pc.source, 'note', pc.note)
+                    order by pc.recorded_at, pc.id)
+               from purchase_confirmation pc
+              where pc.order_line_id = dl.id
+           ), '[]'::json) as confirmations
+      from document_line dl
+      left join item i on i.id = dl.item_id
+     where dl.document_id = ${documentId}
+     order by dl.line_no`;
+
+  return rows as unknown as {
+    order_line_id: string; line_no: number; ordered_qty: string;
+    item_code: string | null; item_name: string | null;
+    confirmations: {
+      id: string; qty: number; confirmedDate: string; kind: string;
+      recordedOn: string; source: string | null; note: string | null;
+    }[];
+  }[];
+}
+
+/**
+ * What this company decided good looks like.
+ *
+ * Returns the stored object as-is and leaves merging with the defaults to
+ * lib/supplier-metrics.ts. Storing a partial object matters: a company that
+ * has set only an on-time target should pick up a later change to the other
+ * defaults, and a row full of copied defaults would freeze them forever.
+ */
+export async function getSupplierPerformanceSetting(companyId: string) {
+  const [row] = await sql`
+    select thresholds, targets, calc_version, updated_at
+      from supplier_performance_setting where company_id = ${companyId}`;
+  return (row ?? null) as {
+    thresholds: Record<string, number>; targets: Record<string, number>;
+    calc_version: number; updated_at: string;
+  } | null;
+}
+
+/** Saved radar layouts, the default first. */
+export async function getRadarPresets(companyId: string) {
+  const rows = await sql`
+    select id, name, axes, is_default, updated_at
+      from supplier_radar_preset
+     where company_id = ${companyId}
+     order by is_default desc, name`;
+  return rows as unknown as {
+    id: string; name: string; axes: string[]; is_default: boolean;
+    updated_at: string;
+  }[];
+}
+
+/**
+ * Month-by-month figures for one supplier, for the trend strip.
+ *
+ * Only the metrics that genuinely have a monthly value. A price premium is
+ * measured against what *other* suppliers charged in the same window, and a
+ * month in which nobody else bought the item has no reference price at all
+ * — a monthly line for it would be mostly gaps joined by straight lines
+ * that look like measurements. Those metrics have no trend rather than a
+ * misleading one.
+ */
+export async function getSupplierFulfilmentByMonth(
+  companyId: string, partnerId: string, from: string, to: string,
+) {
+  const rows = await sql`
+    with ord as (
+      select fn_current_document(o.id) as order_id,
+             to_char(o.doc_date, 'YYYY-MM') as month,
+             ol.id as order_line_id, ol.base_qty as ordered_qty
+        from document o
+        join document_line ol on ol.document_id = o.id
+       where o.company_id = ${companyId}
+         and o.doc_type = 'PURCHASE_ORDER' and o.status = 'POSTED'
+         and o.partner_id = ${partnerId}
+         and o.doc_date >= ${from}::date and o.doc_date <= ${to}::date
+    ),
+    closed as (
+      select distinct on (fn_current_document(oc.document_id))
+             fn_current_document(oc.document_id) as order_id, oc.is_open
+        from order_closure oc
+       where oc.company_id = ${companyId}
+       order by fn_current_document(oc.document_id), oc.closed_at desc
+    ),
+    -- Pre-aggregated per line before it meets the order, or one line with
+    -- two receipts would count its ordered quantity twice.
+    recv as (
+      select order_line_id, sum(qty) as qty from (
+        select ol.id as order_line_id, gl.base_qty as qty
+          from document gr
+          join document_line gl on gl.document_id = gr.id
+          join document_line ol on ol.id = gl.source_line_id
+         where gr.company_id = ${companyId}
+           and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+           and gr.doc_date <= ${to}::date
+           and not exists (
+                 select 1 from fulfilment_link fl2
+                  where fl2.fulfilment_line_id = gl.id
+                    and fl2.order_line_id is not distinct from gl.source_line_id)
+        union all
+        select fl.order_line_id, fl.qty
+          from fulfilment_link fl
+          join document_line gl on gl.id = fl.fulfilment_line_id
+          join document gr on gr.id = gl.document_id
+         where fl.company_id = ${companyId}
+           and gr.doc_type = 'GOODS_RECEIPT' and gr.status = 'POSTED'
+           and gr.doc_date <= ${to}::date
+      ) x group by order_line_id
+    )
+    select ord.month,
+           sum(ord.ordered_qty)::text as ordered,
+           sum(least(coalesce(rv.qty, 0), ord.ordered_qty))::text as received
+      from ord
+      left join closed cl on cl.order_id = ord.order_id
+      left join recv rv on rv.order_line_id = ord.order_line_id
+     where coalesce(cl.is_open, true)
+     group by ord.month
+     order by ord.month`;
+
+  return rows as unknown as { month: string; ordered: string; received: string }[];
 }

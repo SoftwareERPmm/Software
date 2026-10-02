@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { sanitizeAxes } from "./supplier-metrics";
 import { redirect } from "next/navigation";
 import { money, sql } from "./db";
 import { parseCsv, planImport, type MasterData } from "./import-items";
@@ -232,6 +233,9 @@ export async function updatePartner(_prev: unknown, fd: FormData): Promise<Actio
         region = ${asRegion(str(fd, "region"))},
         township = ${str(fd, "township") || null}, address = ${str(fd, "address") || null},
         phone = ${str(fd, "phone") || null}, payment_terms_days = ${num(fd, "payment_terms_days")},
+        -- Blank means "measure it", not zero: an empty override falls back
+        -- to what the receipts say, and nought would claim same-day supply.
+        lead_time_days = ${fd.get("lead_time_days") ? num(fd, "lead_time_days") : null},
         credit_limit = ${fd.get("credit_limit") ? num(fd, "credit_limit") : null},
         price_level_id = ${str(fd, "price_level_id") || null},
         category_id = ${str(fd, "category_id") || null},
@@ -585,21 +589,34 @@ export async function createItem(_prev: unknown, fd: FormData): Promise<ActionRe
      * uses. Absent for the overwhelming majority of items, which are one
      * thing and not twelve.
      */
-    const variantPlan: { attributeId: string; optionIds: string[] }[] = (() => {
+    /**
+     * What this product varies by, and which combinations of it exist.
+     *
+     * The two travel separately because they are different facts. The
+     * attributes are recorded against the parent and stay true even for a
+     * combination nobody stocks — a shirt varies by size whether or not it
+     * is sold in XL. The combinations are the items to create, and the form
+     * decides them: a shop selling Black in S/M/L and White only in M asks
+     * for four, not the six the grid would produce.
+     */
+    const variantPlan: { attributes: string[]; combos: string[][] } = (() => {
+      const empty = { attributes: [] as string[], combos: [] as string[][] };
       const raw = str(fd, "variant_plan");
-      if (!raw) return [];
+      if (!raw) return empty;
       try {
         const parsed = JSON.parse(raw);
-        if (!Array.isArray(parsed)) return [];
-        return parsed
-          .map((v: any) => ({
-            attributeId: String(v.attributeId ?? ""),
-            optionIds: Array.isArray(v.optionIds) ? v.optionIds.map(String) : [],
-          }))
-          // An attribute with nothing ticked would multiply the combinations
-          // by zero and produce no variants at all.
-          .filter((v) => v.attributeId && v.optionIds.length > 0);
-      } catch { return []; }
+        const attributes: string[] = Array.isArray(parsed?.attributes)
+          ? parsed.attributes.map(String).filter(Boolean) : [];
+        const combos: string[][] = Array.isArray(parsed?.combos)
+          ? parsed.combos
+              .map((c: any) => (Array.isArray(c) ? c.map(String).filter(Boolean) : []))
+              .filter((c: string[]) => c.length > 0)
+          : [];
+        // Neither half means anything alone: attributes with no combinations
+        // build nothing, and combinations with no attributes leave the parent
+        // unable to say what it varies by. Either way it is an ordinary item.
+        return attributes.length > 0 && combos.length > 0 ? { attributes, combos } : empty;
+      } catch { return empty; }
     })();
 
     if (!serial) return { error: "Serial is required" };
@@ -667,30 +684,37 @@ export async function createItem(_prev: unknown, fd: FormData): Promise<ActionRe
        *
        * Generated here rather than typed, because four sizes and three
        * colours is twelve rows and nobody should enter twelve rows by hand
-       * to sell one shirt.
+       * to sell one shirt — and the form has already dropped the ones this
+       * shop does not sell, so what arrives is the list, not a grid to
+       * expand.
        */
-      if (variantPlan.length > 0) {
-        for (const [attributeId, , order] of variantPlan.map(
-          (v, i) => [v.attributeId, v.optionIds, i] as const)) {
+      if (variantPlan.combos.length > 0) {
+        for (const [order, attributeId] of variantPlan.attributes.entries()) {
           await tx`
             insert into item_variant_attribute (item_id, attribute_id, sort_order)
             values (${item.id}, ${attributeId}, ${order})`;
         }
 
-        // Every option of the first attribute against every option of the
-        // next, and so on — the cartesian product, built one attribute at a
-        // time so the number of attributes is not fixed at two.
         const optionRows = await tx`
           select id, code, name, attribute_id from variant_option
-           where id = any(${variantPlan.flatMap((v) => v.optionIds)})`;
+           where id = any(${[...new Set(variantPlan.combos.flat())]})`;
         const byId = new Map(optionRows.map((o: any) => [o.id, o]));
 
-        let combos: string[][] = [[]];
-        for (const v of variantPlan) {
-          combos = combos.flatMap((c) => v.optionIds.map((o) => [...c, o]));
-        }
+        // The declared order of the attributes, so a shirt is "M / Red" and
+        // never "Red / M" however the form happened to send it.
+        const rank = new Map(variantPlan.attributes.map((a, i) => [a, i]));
+        const ordered = (combo: string[]) => [...combo].sort((x, y) =>
+          (rank.get(byId.get(x)?.attribute_id) ?? 0) -
+          (rank.get(byId.get(y)?.attribute_id) ?? 0));
 
-        for (const combo of combos) {
+        for (const raw of variantPlan.combos) {
+          // An option id the form invented, or one deleted between loading
+          // the page and saving it, would otherwise become "undefined" in
+          // the middle of a code.
+          if (raw.some((id) => !byId.has(id))) {
+            throw new Error("One of the chosen variant values no longer exists");
+          }
+          const combo = ordered(raw);
           const parts = combo.map((id) => byId.get(id));
           const suffix = parts.map((p: any) => p.code).join("-");
           const label = parts.map((p: any) => p.name).join(" / ");
@@ -1439,6 +1463,12 @@ export type PickerItem = {
   /** Whether goods of this item arrive in identifiable lots, and whether
    *  those lots have a shelf life. A receipt form asks for what these say. */
   tracks_batch?: boolean; tracks_expiry?: boolean;
+  /** Which size, which colour — `[{a: "Colour", o: "Red"}]`. Null for an
+   *  ordinary item, which is most of a catalogue. Typed loosely because it
+   *  arrives as json; asVariant() in variant-tags is what checks it. */
+  variant?: unknown;
+  /** What a scanner reads off the packet. */
+  barcode?: string | null;
 };
 
 /**
@@ -3198,6 +3228,21 @@ export async function getFormData() {
          where company_id = ${co} and is_supplier and is_active order by code`,
     sql`select i.id, i.code, i.name, i.is_stocked, i.item_group_id,
                 i.tracks_batch, i.tracks_expiry,
+                -- What a scanner types. Without it the one moment
+                -- scanning exists for — putting a line on a document —
+                -- could not find the item it had just read.
+                i.barcode,
+                -- What a variant is, so the line says "Colour Red, Size M"
+                -- rather than leaving it buried in a name the picker has
+                -- already truncated. Null for an ordinary item.
+                (select json_agg(json_build_object('a', attr.name, 'o', o.name)
+                                 order by coalesce(iva.sort_order, 0), attr.name)
+                   from item_variant_option ivo
+                   join variant_option o on o.id = ivo.option_id
+                   join variant_attribute attr on attr.id = o.attribute_id
+                   left join item_variant_attribute iva
+                          on iva.item_id = i.parent_item_id and iva.attribute_id = attr.id
+                  where ivo.item_id = i.id) as variant,
                 -- The unit every quantity of this item is counted in, so a
                 -- figure quoted back to the user can carry it rather than
                 -- being a bare number.
@@ -3224,6 +3269,11 @@ export async function getFormData() {
            left join (select item_id, sum(qty_on_hand) as qty
                         from v_stock_on_hand group by item_id) s on s.item_id = i.id
           where i.company_id = ${co} and i.is_active
+            -- A product with variants is a name for a group, not a thing on
+            -- a shelf, and fn_document_line_not_parent refuses it at posting.
+            -- Leaving it in the list only lets somebody fill in a whole
+            -- voucher before being told the first line was never possible.
+            and not exists (select 1 from item c where c.parent_item_id = i.id)
           order by i.code`,
     sql`select id, code, name from location
          where company_id = ${co} and is_stock_location and is_active order by code`,
@@ -3566,13 +3616,18 @@ export async function deleteVariantAttribute(_prev: unknown, fd: FormData): Prom
   try {
     const co = await companyId();
     const id = str(fd, "id");
-    const [used] = await sql`
-      select count(*)::int as n from item_variant_attribute where attribute_id = ${id}`;
-    if (Number(used.n) > 0) {
+    const users = await sql`
+      select i.code, i.name from item_variant_attribute iva
+        join item i on i.id = iva.item_id
+       where iva.attribute_id = ${id}
+       order by i.code`;
+    if (users.length > 0) {
+      const named = users.slice(0, 3).map((u: any) => `${u.code} ${u.name}`).join(", ");
+      const rest = users.length > 3 ? ` and ${users.length - 3} more` : "";
       return {
-        error: `${used.n} product${Number(used.n) === 1 ? " uses" : "s use"} this. `
-             + `Switch it off instead — that hides it from new products and leaves `
-             + `the existing ones as they are.`,
+        error: `${users.length} product${users.length === 1 ? " uses" : "s use"} this — `
+             + `${named}${rest}. Switch it off instead — that hides it from new products `
+             + `and leaves the existing ones as they are.`,
       };
     }
     await sql`delete from variant_attribute where id = ${id} and company_id = ${co}`;
@@ -3607,15 +3662,418 @@ export async function createVariantOption(_prev: unknown, fd: FormData): Promise
   return { ok: true };
 }
 
+/**
+ * A picture of one variant.
+ *
+ * A red shirt and a black shirt are two things on a shelf and two pictures.
+ * Hanging one photograph on the parent would put the black one beside the
+ * red row in every list that shows it, which is worse than showing none —
+ * a picker exists so somebody can recognise what they are choosing.
+ *
+ * Its own action rather than updateItem because a variant row has no form
+ * behind it: there is nothing else on it to save, and asking the caller to
+ * send a name, a unit and a category to change a photograph is how one of
+ * them eventually gets sent blank.
+ */
+/**
+ * Carrying a replenishment list into a purchase order.
+ *
+ * The order form already knows how to open a saved draft — that is what
+ * "Save as draft" writes and `?draft=` reads — so the suggestions travel as
+ * one, rather than needing the form to learn a second way of being filled
+ * in from a query string.
+ *
+ * One draft per supplier, reused. Pressing the button four times used to
+ * mean four half-written orders on the purchases page, none of which anyone
+ * asked for; the marker in the payload is what tells this page's drafts
+ * apart from one somebody wrote by hand, which must never be overwritten.
+ */
+/**
+ * An item that does not come at its supplier's usual speed.
+ *
+ * Upsert rather than separate create and update: there is one row per
+ * supplier-and-item by definition, and asking the caller to know whether
+ * it exists yet is asking it to race itself.
+ */
+/**
+ * A product's variants, saved together.
+ *
+ * Barcode and selling price for every size and colour in one submission,
+ * because entering them one row at a time is twelve page loads to do one
+ * job — and it is the only practical way to get barcodes onto a product
+ * that comes in twelve.
+ *
+ * Duplicates are caught before anything is written. item_barcode_unique
+ * (0033) already refuses them at the boundary, but a constraint violation
+ * arrives as a message about an index, and the person holding the scanner
+ * needs to know which two rows clash.
+ */
+export async function saveVariantGrid(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const parentId = str(fd, "parent_id");
+    if (!parentId) return { error: "Which product?" };
+
+    const rows = JSON.parse(str(fd, "rows") || "[]") as {
+      id: string; barcode: string; price: string; isActive: boolean;
+    }[];
+    if (rows.length === 0) return { error: "Nothing to save" };
+
+    // Only this product's variants, so a crafted form cannot reach elsewhere.
+    const mine = await sql`
+      select id, code from item
+       where company_id = ${co} and parent_item_id = ${parentId}`;
+    const byId = new Map((mine as any[]).map((r) => [r.id as string, r.code as string]));
+    for (const r of rows) {
+      if (!byId.has(r.id)) return { error: "That variant does not belong to this product" };
+    }
+
+    // Within the batch first: two rows here can clash with each other
+    // before either reaches the table.
+    const seen = new Map<string, string>();
+    for (const r of rows) {
+      const bc = r.barcode.trim();
+      if (!bc) continue;
+      const already = seen.get(bc);
+      if (already) {
+        return { error: `${byId.get(r.id)} and ${already} both have barcode ${bc}. `
+                      + `A barcode names one thing on a shelf.` };
+      }
+      seen.set(bc, byId.get(r.id)!);
+    }
+
+    // Then against everything else in the company.
+    const codes = [...seen.keys()];
+    if (codes.length > 0) {
+      const clash = await sql`
+        select code, barcode from item
+         where company_id = ${co} and barcode = any(${codes})
+           and id <> all(${rows.map((r) => r.id)})`;
+      if ((clash as any[]).length > 0) {
+        const c = (clash as any[])[0];
+        return { error: `Barcode ${c.barcode} is already on ${c.code}. `
+                      + `Scanning it would find two different things.` };
+      }
+    }
+
+    const [level] = await sql`
+      select id from price_level where company_id = ${co} order by sort_order limit 1`;
+
+    await sql.begin(async (tx) => {
+      for (const r of rows) {
+        const bc = r.barcode.trim();
+        await tx`
+          update item set barcode = ${bc || null}, is_active = ${r.isActive}
+           where id = ${r.id} and company_id = ${co}`;
+
+        if (!level) continue;
+        const price = r.price.trim() === "" ? null : Number(r.price);
+        if (price === null) {
+          await tx`delete from item_price
+                    where item_id = ${r.id} and price_level_id = ${level.id}`;
+          continue;
+        }
+        if (!Number.isFinite(price) || price < 0) continue;
+        const [uom] = await tx`select base_uom_id from item where id = ${r.id}`;
+        await tx`
+          insert into item_price
+            (company_id, item_id, price_level_id, uom_id, currency, price)
+          values (${co}, ${r.id}, ${level.id}, ${uom.base_uom_id}, 'MMK', ${price})
+          on conflict (company_id, item_id, price_level_id, uom_id, currency, valid_from)
+            do update set price = excluded.price`;
+      }
+    });
+  } catch (e) {
+    if (isUniqueViolation(e)) {
+      return { error: "Two of those share a barcode, or one is already used elsewhere." };
+    }
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/items");
+  revalidatePath("/items/stock");
+  return { ok: true };
+}
+
+export async function saveSupplierItem(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const supplierId = str(fd, "supplier_id");
+    const itemId = str(fd, "item_id");
+    if (!supplierId) return { error: "Choose a supplier" };
+    if (!itemId) return { error: "Choose an item" };
+
+    // Blank means "no exception" and falls back to the supplier's own
+    // figure. Nought would be a claim that this arrives the day it is
+    // ordered, which is a different thing entirely.
+    const raw = str(fd, "lead_time_days");
+    const lead = raw === "" ? null : Number(raw);
+    if (lead !== null && (!Number.isFinite(lead) || lead < 0 || lead > 365)) {
+      return { error: "Lead time must be between 0 and 365 days, or blank" };
+    }
+
+    await sql`
+      insert into supplier_item
+        (company_id, supplier_id, item_id, lead_time_days, supplier_sku, note)
+      values (${co}, ${supplierId}, ${itemId}, ${lead},
+              ${str(fd, "supplier_sku") || null}, ${str(fd, "note") || null})
+      on conflict (company_id, supplier_id, item_id) do update
+         set lead_time_days = excluded.lead_time_days,
+             supplier_sku = excluded.supplier_sku,
+             note = excluded.note,
+             updated_at = now()`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/items/purchasing");
+  revalidatePath("/inventory/replenishment");
+  return { ok: true };
+}
+
+export async function deleteSupplierItem(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    await sql`delete from supplier_item
+               where id = ${str(fd, "id")} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/items/purchasing");
+  revalidatePath("/inventory/replenishment");
+  return { ok: true };
+}
+
+export async function draftOrderFromReplenishment(
+  _prev: unknown, fd: FormData,
+): Promise<ActionResult> {
+  let target = "";
+  try {
+    const co = await companyId();
+    const supplierId = str(fd, "supplier_id") || null;
+
+    const raw = JSON.parse(str(fd, "suggestions") || "[]") as {
+      itemId: string; qty: number; unitPrice?: number;
+      leadDays?: number; leadSource?: string;
+    }[];
+    const lines = raw.filter((l) => l.itemId && Number(l.qty) > 0);
+    if (lines.length === 0) return { error: "Nothing on this list to order" };
+
+    const today = new Date().toISOString().slice(0, 10);
+    const plus = (days: number) =>
+      new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+
+    /*
+     * The assumptions, frozen onto the lines.
+     *
+     * A lead time is a setting, and settings change. Without a snapshot,
+     * editing a supplier's lead time next month would silently restate
+     * what this order was expecting when it was drafted — and nobody could
+     * say why it had been placed for that quantity on that date.
+     *
+     * Per line, not per header, because three items on one order can each
+     * have come from a different level of the hierarchy: this one from an
+     * item exception, that one from the supplier, the third from the
+     * company default. A single header field would lose which was which.
+     *
+     * These ride in the draft's editor state. The order form keeps keys it
+     * does not recognise, and what it posts is built explicitly from item,
+     * quantity and price — so the snapshot survives editing and never
+     * reaches the posting engine.
+     */
+    const snapped = lines.map((l, i) => ({
+      key: i + 1,
+      itemId: l.itemId,
+      qty: String(l.qty),
+      unitPrice: l.unitPrice ? String(l.unitPrice) : "",
+      leadDays: l.leadDays ?? null,
+      leadSource: l.leadSource ?? null,
+      expectedArrival: l.leadDays === undefined ? null : plus(Number(l.leadDays)),
+    }));
+
+    // The header date is the last of them: the order is not fully answered
+    // until its slowest line has landed.
+    const arrivals = snapped.map((l) => l.expectedArrival).filter(Boolean) as string[];
+    const dueDate = arrivals.length > 0 ? arrivals.sort().at(-1)! : "";
+
+    const draftState = JSON.stringify({
+      lines: snapped,
+      partnerId: supplierId ?? "",
+      docDate: today,
+      dueDate,
+    });
+
+    const [existing] = await sql`
+      select id from document_draft
+       where company_id = ${co} and doc_type = 'PURCHASE_ORDER'
+         and partner_id is not distinct from ${supplierId}
+         and payload->>'from_replenishment' = '1'
+       order by updated_at desc limit 1`;
+
+    const total = lines.reduce((t, l) => t + Number(l.qty) * Number(l.unitPrice ?? 0), 0);
+    const { id } = await saveDocumentDraft({
+      companyId: co,
+      draftId: (existing?.id as string) ?? null,
+      docType: "PURCHASE_ORDER",
+      partnerId: supplierId,
+      docDate: today,
+      payload: {
+        draft_state: draftState,
+        draft_doc_type: "PURCHASE_ORDER",
+        from_replenishment: "1",
+        // What the page believed when it handed this over, so the order can
+        // still explain itself after the settings move on.
+        replenishment_generated_at: new Date().toISOString(),
+        replenishment_expected_arrival: dueDate,
+      },
+      total,
+      lineCount: lines.length,
+    });
+    target = `/purchases/orders/new?draft=${id}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/purchases/orders");
+  // Outside the try: redirect works by throwing, and catching it here would
+  // turn a successful handoff into an error message.
+  redirect(target);
+}
+
+export async function setVariantPhoto(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Which variant?" };
+
+    const [target] = await sql`
+      select parent_item_id from item where id = ${id} and company_id = ${co}`;
+    if (!target) return { error: "That item no longer exists" };
+
+    const photo = await photoFrom(fd);
+    if (!photo) return { error: "No picture was sent" };
+
+    let replaced: string | null = null;
+    await sql.begin(async (tx) => {
+      // Read before overwriting, removed after the commit — a bucket is not
+      // part of this transaction. Same trade updateItem makes.
+      const [old] = await tx`
+        select photo_key from item where id = ${id} and company_id = ${co}`;
+      if (old?.photo_key) replaced = old.photo_key as string;
+
+      if ("set" in photo) {
+        await tx`
+          update item set photo_key = ${photo.set.key}, photo_mime = 'image/webp',
+                          photo_updated_at = now()
+           where id = ${id} and company_id = ${co}`;
+      } else {
+        await tx`
+          update item set photo_key = null, photo = null, photo_mime = null,
+                          photo_updated_at = null
+           where id = ${id} and company_id = ${co}`;
+      }
+    });
+    if (replaced) await deleteObject("public", replaced);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/items");
+  revalidatePath("/items/stock");
+  return { ok: true };
+}
+
+/**
+ * Renaming a value.
+ *
+ * The name is free to change: "Blk" becoming "Black" is a correction, and
+ * every screen reads the name live.
+ *
+ * The code is not, once anything is using it. It was pasted into the
+ * variant's own code when the item was made — APPAREL001-BLK is a stored
+ * string, not a view — so editing it here would not rename those and the
+ * next variant created would be APPAREL001-BLACK beside them. Two spellings
+ * of one colour is the exact thing this table exists to prevent, so the
+ * code is fixed from the moment the first variant carries it.
+ */
+export async function updateVariantOption(_prev: unknown, fd: FormData): Promise<ActionResult> {
+  const code = str(fd, "code");
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    const name = str(fd, "name");
+    if (!id) return { error: "Which value?" };
+    if (!name) return { error: "A name is required" };
+
+    const [current] = await sql`
+      select code from variant_option where id = ${id} and company_id = ${co}`;
+    if (!current) return { error: "That value no longer exists" };
+
+    if (code && code !== current.code) {
+      const [used] = await sql`
+        select count(*)::int as n from item_variant_option where option_id = ${id}`;
+      if (Number(used.n) > 0) {
+        return {
+          error: `The code cannot change once variants carry it — ${used.n} `
+               + `already ${Number(used.n) === 1 ? "does" : "do"}, and their own codes `
+               + `were built from ${current.code}. The name can be changed freely.`,
+        };
+      }
+    }
+
+    await sql`
+      update variant_option
+         set name = ${name}, name_my = ${str(fd, "name_my") || null},
+             code = ${code || current.code}
+       where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    if (isUniqueViolation(e)) return { error: `${code} is already on this list` };
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/items/attributes");
+  return { ok: true };
+}
+
 export async function deleteVariantOption(_prev: unknown, fd: FormData): Promise<ActionResult> {
   try {
     const co = await companyId();
     const id = str(fd, "id");
-    const [used] = await sql`
-      select count(*)::int as n from item_variant_option where option_id = ${id}`;
-    if (Number(used.n) > 0) {
-      return { error: `${used.n} variant${Number(used.n) === 1 ? "" : "s"} already `
-                    + `${Number(used.n) === 1 ? "is" : "are"} this value, so it cannot be removed.` };
+    /**
+     * What is standing in the way, by name.
+     *
+     * "3 variants are this value" tells somebody there is a problem and
+     * nothing about what to do next. The codes are what they need: which
+     * three, and whether any of them is real stock rather than a row made
+     * by mistake ten minutes ago and safe to delete.
+     */
+    const blockers = await sql`
+      select i.code, i.name,
+             coalesce(s.qty, 0) as on_hand,
+             (select count(*)::int from document_line dl where dl.item_id = i.id) as lines
+        from item_variant_option ivo
+        join item i on i.id = ivo.item_id
+        left join (select item_id, sum(qty_on_hand) as qty
+                     from v_stock_on_hand group by item_id) s on s.item_id = i.id
+       where ivo.option_id = ${id}
+       order by coalesce(s.qty, 0) desc, i.code`;
+
+    if (blockers.length > 0) {
+      const named = blockers.slice(0, 3).map((b: any) => b.code).join(", ");
+      const rest = blockers.length > 3 ? ` and ${blockers.length - 3} more` : "";
+      const held = blockers.filter((b: any) => Number(b.on_hand) !== 0);
+      const onDocs = blockers.filter((b: any) => Number(b.lines) > 0);
+
+      const why = held.length > 0
+        ? ` ${held.length === 1 ? "One of them holds" : `${held.length} of them hold`} stock`
+          + ` (${held.slice(0, 2).map((b: any) =>
+                `${b.code}: ${Number(b.on_hand).toLocaleString("en-US",
+                   { maximumFractionDigits: 2 })}`).join(", ")}).`
+        : onDocs.length > 0
+          ? ` ${onDocs.length === 1 ? "One of them appears" : `${onDocs.length} of them appear`}`
+            + ` on posted documents.`
+          : " None of them holds stock or appears on a document, so deleting those"
+            + " variants first would free this value.";
+
+      return {
+        error: `${blockers.length} variant${blockers.length === 1 ? " is" : "s are"} this `
+             + `value — ${named}${rest}.${why}`,
+      };
     }
     await sql`delete from variant_option where id = ${id}
                and company_id = ${co}`;
@@ -6190,4 +6648,186 @@ export async function replaceConsignmentSettlement(
   financeRevalidate();
   revalidatePath(`/documents/${invoiceId}`);
   redirectWithToast(`/documents/${invoiceId}`, "Replacement settlement posted");
+}
+
+/**
+ * Record what a supplier said about when an order line will arrive.
+ *
+ * Append-only: there is no edit and no delete, because the history is the
+ * point. A supplier who confirms the 10th, rings to say the 17th, and
+ * delivers on the 17th has missed a commitment, and that is only visible
+ * while the first row still exists.
+ *
+ * `kind` is required from the caller rather than inferred. The obvious
+ * inference — first row is INITIAL, the rest are revisions — would quietly
+ * file every buyer-agreed change as a supplier failure, which is the one
+ * mistake this whole design exists to avoid.
+ */
+export async function recordSupplierConfirmation(
+  _prev: unknown, fd: FormData,
+): Promise<ActionResult> {
+  let orderId = "";
+  try {
+    const co = await companyId();
+    const lineId = str(fd, "order_line_id");
+    const date = str(fd, "confirmed_date");
+    const kind = str(fd, "kind");
+    orderId = str(fd, "document_id");
+
+    if (!lineId) return { error: "Which line is being confirmed?" };
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: "Give a date" };
+    if (!["INITIAL", "SUPPLIER_REVISION", "BUYER_AGREED"].includes(kind)) {
+      return { error: "Say who moved the date" };
+    }
+
+    const qty = Number(str(fd, "qty"));
+    if (!Number.isFinite(qty) || qty <= 0) {
+      return { error: "Confirmed quantity must be more than nought" };
+    }
+
+    // The line has to belong to this company as well as to a purchase
+    // order — the trigger checks the second, nothing else checks the first.
+    const [line] = await sql`
+      select dl.id, dl.base_qty
+        from document_line dl
+        join document d on d.id = dl.document_id
+       where dl.id = ${lineId} and d.company_id = ${co}
+         and d.doc_type = 'PURCHASE_ORDER' and d.status = 'POSTED'`;
+    if (!line) return { error: "That purchase order line is not available" };
+
+    if (qty > Number(line.base_qty)) {
+      return {
+        error: `The line is for ${Number(line.base_qty)}; a supplier cannot `
+          + `confirm ${qty}`,
+      };
+    }
+
+    await sql`
+      insert into purchase_confirmation
+        (company_id, order_line_id, qty, confirmed_date, kind, source, note)
+      values (${co}, ${lineId}, ${qty}, ${date}::date, ${kind},
+              ${str(fd, "source") || null}, ${str(fd, "note") || null})`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  if (orderId) revalidatePath(`/documents/${orderId}`);
+  revalidatePath("/purchases/supplier-performance");
+  return { ok: true };
+}
+
+/**
+ * Save this company's normalization boundaries and business targets.
+ *
+ * Both go in one form because they belong to one conversation, and both
+ * are stored as partial objects: a blank field means "no opinion, use the
+ * default", which is not the same as a zero. Only fields actually filled
+ * in are written, so a later change to a default still reaches a company
+ * that never had a view on it.
+ */
+export async function saveSupplierPerformanceSettings(
+  _prev: unknown, fd: FormData,
+): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+
+    const thresholds: Record<string, number> = {};
+    for (const key of ["cvLimit", "premiumCeiling", "deviationCeiling",
+                       "varianceCeiling"]) {
+      const raw = str(fd, `t_${key}`);
+      if (raw === "") continue;
+      const v = Number(raw);
+      // Zero would score every supplier zero on that axis, which is a
+      // mistake worth refusing rather than quietly rounding up.
+      if (!Number.isFinite(v) || v <= 0) {
+        return { error: `${key} must be more than nought, or left blank` };
+      }
+      thresholds[key] = v;
+    }
+
+    const targets: Record<string, number | null> = {};
+    for (const [k] of fd.entries()) {
+      if (!k.startsWith("g_")) continue;
+      const id = k.slice(2);
+      const raw = str(fd, k);
+      if (raw === "") { targets[id] = null; continue; }
+      const v = Number(raw);
+      if (!Number.isFinite(v) || v < 0) {
+        return { error: `The target for ${id} must be nought or more` };
+      }
+      targets[id] = v;
+    }
+
+    await sql`
+      insert into supplier_performance_setting (company_id, thresholds, targets)
+      values (${co}, ${sql.json(thresholds)}, ${sql.json(targets)})
+      on conflict (company_id) do update
+         set thresholds = excluded.thresholds,
+             targets = excluded.targets,
+             updated_at = now()`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/purchases/supplier-performance");
+  revalidatePath("/purchases/supplier-performance/settings");
+  return { ok: true };
+}
+
+/**
+ * Save the axes currently on screen under a name.
+ *
+ * Order is stored with the selection, because a radar's shape changes
+ * entirely with the order of its spokes and two people comparing charts
+ * need the same sequence.
+ */
+export async function saveRadarPreset(
+  _prev: unknown, fd: FormData,
+): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const name = str(fd, "name").trim();
+    if (!name) return { error: "Give the preset a name" };
+
+    const axes = sanitizeAxes(str(fd, "axes").split(",").filter(Boolean));
+    if (!axes) {
+      return { error: "A preset needs between three and six measurable metrics" };
+    }
+
+    const makeDefault = str(fd, "is_default") === "on";
+    await sql.begin(async (tx) => {
+      // One default per company, enforced by a partial unique index — so
+      // the old one has to stand down in the same transaction rather than
+      // the insert failing on a constraint the user never sees.
+      if (makeDefault) {
+        await tx`update supplier_radar_preset set is_default = false
+                  where company_id = ${co} and is_default`;
+      }
+      await tx`
+        insert into supplier_radar_preset (company_id, name, axes, is_default)
+        values (${co}, ${name}, ${sql.json(axes)}, ${makeDefault})
+        on conflict (company_id, name) do update
+           set axes = excluded.axes,
+               is_default = excluded.is_default,
+               updated_at = now()`;
+    });
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/purchases/supplier-performance");
+  return { ok: true };
+}
+
+export async function deleteRadarPreset(
+  _prev: unknown, fd: FormData,
+): Promise<ActionResult> {
+  try {
+    const co = await companyId();
+    const id = str(fd, "id");
+    if (!id) return { error: "Which preset?" };
+    await sql`delete from supplier_radar_preset
+               where id = ${id} and company_id = ${co}`;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/purchases/supplier-performance");
+  return { ok: true };
 }
