@@ -142,6 +142,16 @@ export type SalesInvoiceInput = InvoiceInput & {
 export type OrderLine = {
   itemId: string; qty: number; unitPrice?: number;
   /**
+   * The unit the quantity is in. Left unset it is the item's own unit,
+   * which is every order written before packs reached this document.
+   *
+   * An order is a promise about goods, and "ten" means nothing without it:
+   * ten cartons and ten pieces are different promises. The receipt that
+   * answers this order reads the unit from here, so a line ordered in
+   * cartons is received in cartons.
+   */
+  uomId?: string | null;
+  /**
    * The line of the previous version this one replaces, where this posting is
    * a correction. Set only by the correction path, which is the only place
    * that knows it — everything downstream reads the recorded answer rather
@@ -2360,15 +2370,24 @@ async function postOrderIn(
       const [item] = await tx`select base_uom_id from item where id = ${line.itemId}`;
       if (!item) throw new Error("Item not found");
 
+      /* Same rule as a receipt: the price is per entered unit, the ledger
+         counts base units, and the line records both along with the factor
+         that joined them. An order posts nothing, but what is ordered is
+         what will be received, so the conversion has to be settled here or
+         the receipt has nothing to honour. */
+      const pack = await packFactor(tx, line.itemId, line.uomId, item.base_uom_id as string);
+      const baseQty = round4(line.qty * pack.factor);
       const net = round4(line.qty * (line.unitPrice ?? 0));
       await tx`
         insert into document_line
           (company_id, document_id, line_no, item_id, location_id,
-           entered_qty, entered_uom_id, base_qty, unit_price, net_amount, tax_amount, gross_amount,
+           entered_qty, entered_uom_id, conversion_factor, base_qty,
+           unit_price, net_amount, tax_amount, gross_amount,
            supersedes_line_id)
         values
           (${companyId}, ${doc.id}, ${lineNo}, ${line.itemId}, ${locationId},
-           ${line.qty}, ${item.base_uom_id}, ${line.qty}, ${line.unitPrice ?? 0}, ${net}, 0, ${net},
+           ${line.qty}, ${pack.uomId}, ${pack.factor}, ${baseQty},
+           ${line.unitPrice ?? 0}, ${net}, 0, ${net},
            ${line.supersedesLineId ?? null})`;
     }
 
@@ -7122,7 +7141,7 @@ export async function importItems(input: {
       // way to be given one.
       if (r.salePrice && r.salePrice > 0) {
         const [level] = await tx`
-          select id from price_level where company_id = ${companyId} order by sort_order limit 1`;
+          select id from price_level where company_id = ${companyId} order by sort_order, code limit 1`;
         if (level) {
           await tx`
             insert into item_price

@@ -4221,3 +4221,39 @@ tbody tr.row-selected > td:first-child { box-shadow: inset 2px 0 0 var(--brand);
   margin-bottom: var(--s2);
 }
 .comparepick select { max-width: 16rem; }
+
+/* Which unit a line is counted in — see components/unit-toggle.tsx.
+   Segmented, because the options have to be visible to be chosen: a
+   dropdown hid that cartons existed at all. */
+.unittoggle { display: inline-flex; align-items: stretch; }
+.unittoggle button {
+  font-family: var(--mono); font-size: var(--t-2xs); line-height: 1;
+  padding: 0.35rem 0.45rem; background: var(--card); color: var(--muted);
+  border: 1px solid var(--line); border-right-width: 0; border-radius: 0;
+  display: inline-flex; align-items: center; gap: 0.2rem; cursor: pointer;
+}
+.unittoggle button:first-child { border-radius: var(--r1) 0 0 var(--r1); }
+.unittoggle button:last-child  { border-radius: 0 var(--r1) var(--r1) 0; border-right-width: 1px; }
+.unittoggle button:hover { color: var(--fg); background: var(--bg); }
+.unittoggle button.on {
+  background: var(--brand); border-color: var(--brand); color: #fff; font-weight: 600;
+}
+.unittoggle button.add { padding-inline: 0.4rem; font-weight: 600; }
+
+/* What the choice actually means, written out. A factor on the button read
+   as a quantity — "CTN 10" looks like ten cartons — so the relationship is
+   a sentence instead, and becomes this line's own sum once a quantity is
+   typed: 10 CTN = 100 PCS. */
+.unitpick { display: inline-flex; flex-direction: column; gap: 0.2rem; align-items: flex-start; }
+.unitecho {
+  font-family: var(--mono); font-size: var(--t-2xs);
+  color: var(--muted); white-space: nowrap;
+}
+
+/* 1 [CTN] = [10] PCS, inline on the line being typed. */
+.addpack {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  font-size: var(--t-2xs); color: var(--muted);
+}
+.addpack input { width: 4.5rem; }
+.addpack select { width: auto; }

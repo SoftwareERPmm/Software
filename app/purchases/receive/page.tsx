@@ -69,7 +69,8 @@ export default async function Receive({
     locationId: string; locationCode: string | null; locationName: string | null;
     dueDate: string | null;
     lines: { lineId: string; itemId: string; itemCode: string; itemName: string;
-             uomCode: string; remainingQty: number; expectedPrice: number }[];
+             uomCode: string; remainingQty: number; expectedPrice: number;
+             enteredUom: string | null; conversionFactor: number }[];
   }>();
   for (const r of openLines as any[]) {
     if (!orders.has(r.order_id)) {
@@ -84,6 +85,7 @@ export default async function Receive({
     orders.get(r.order_id)!.lines.push({
       lineId: r.line_id, itemId: r.item_id, itemCode: r.item_code, itemName: r.item_name,
       uomCode: r.uom_code, remainingQty: Number(r.remaining_qty), expectedPrice: Number(r.expected_price ?? 0),
+      enteredUom: r.entered_uom_code ?? null, conversionFactor: Number(r.conversion_factor ?? 1),
     });
   }
 

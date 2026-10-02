@@ -13,6 +13,11 @@ type Line = {
   itemCode: string;
   itemName: string;
   uomCode?: string;
+  /** The unit the order was written in, where that is a pack rather than
+   *  the item's own unit — "100 PCS" is correct but "ordered as 10 CTN" is
+   *  what the person who placed the order remembers. */
+  enteredUom?: string | null;
+  conversionFactor?: number;
   remainingQty: number;
   expectedPrice?: number;
 };
@@ -111,6 +116,8 @@ export function FulfillOrderForm({
     itemCode: l.itemCode,
     itemName: l.itemName,
     uomCode: l.uomCode ?? "",
+    enteredUom: l.enteredUom ?? null,
+    conversionFactor: l.conversionFactor ?? 1,
     required: issuing(l.lineId),
     recorded: onHandHere(l.itemId),
   }));
@@ -219,7 +226,19 @@ export function FulfillOrderForm({
                     return (
                       <tr key={l.lineId}>
                         <td className="wrap"><span className="code">{l.itemCode}</span> {l.itemName}</td>
-                        <td className="r">{l.remainingQty}</td>
+                        <td className="r">
+                          {l.remainingQty}
+                          {/* A part-received carton is not a whole number of
+                              cartons, so this is rounded for reading and the
+                              base figure above it stays the one that counts. */}
+                          {(l.conversionFactor ?? 1) > 1 && l.enteredUom && (
+                            <div className="subline">
+                              {Number(
+                                (Number(l.remainingQty) / Number(l.conversionFactor)).toFixed(2),
+                              )} {l.enteredUom}
+                            </div>
+                          )}
+                        </td>
                         {stockByLocation && kind === "sales" && (
                           <td className="r" style={{ color: short ? "var(--bad)" : undefined }}>
                             {onHandHere(l.itemId)}

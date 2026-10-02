@@ -6,6 +6,7 @@ import { NegativeStockConfirm, type Shortfall } from "./negative-stock-confirm";
 import { StockSourceDialog, poolsFor, type OwnershipSplit } from "./stock-source";
 import { priceLines, type VolumeBand } from "@/lib/discount";
 import { ItemPicker } from "./item-picker";
+import { UnitToggle } from "./unit-toggle";
 import { PartnerPicker } from "./partner-picker";
 import Link from "next/link";
 import { AwaitingOrders, AlreadyAwaited } from "./awaiting-orders";
@@ -1161,23 +1162,20 @@ export function SalesVoucher({
                         cannot change it — the goods left in whatever they
                         left in. */}
                     <td className="narrow">
-                      {(item?.packs ?? []).length > 0 && !l.sourceLineId ? (
-                        <select
-                          value={l.uomId ?? ""}
-                          onChange={(e) => setLine(l.key, { uomId: e.target.value })}
-                          aria-label={`Unit for ${item?.code ?? "line"}`}
-                        >
-                          <option value="">{item?.uom_code}</option>
-                          {(item?.packs ?? []).map((p) => (
-                            <option key={p.uomId} value={p.uomId}>
-                              {p.code} ({Number(p.factor)})
-                            </option>
-                          ))}
-                        </select>
+                      {!item ? (
+                        <span className="code" style={{ color: "var(--muted)" }}>&mdash;</span>
                       ) : (
-                        <span className="code" style={{ color: "var(--muted)" }}>
-                          {item?.uom_code ?? "—"}
-                        </span>
+                        <UnitToggle
+                          base={{ uomId: item.base_uom_id ?? "", code: item.uom_code }}
+                          packs={(item.packs ?? []).map((p) => ({
+                            uomId: p.uomId, code: p.code, factor: Number(p.factor),
+                          }))}
+                          value={l.uomId ?? ""}
+                          onChange={(id: string | null) => setLine(l.key, { uomId: id ?? undefined })}
+                          disabled={!!l.sourceLineId}
+                          label={`Unit for ${item.code}`}
+                          qty={Number(l.qty) || 0}
+                        />
                       )}
                     </td>
                     <td className="narrow">
