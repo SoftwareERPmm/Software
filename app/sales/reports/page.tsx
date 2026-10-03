@@ -86,6 +86,10 @@ export default async function SalesReports({
   };
 
   const label = { item: "Item", customer: "Customer", category: "Category", brand: "Brand" }[by];
+  /* Written out, because adding an s gives "categorys". English plurals are
+     not a rule the code can apply and these are four known words. */
+  const plural = { item: "items", customer: "customers",
+                   category: "categories", brand: "brands" }[by];
 
   const table: DataRow[] = rows.map((r) => ({
     key: r.key,
@@ -134,7 +138,12 @@ export default async function SalesReports({
   }));
 
   return (
-    <>
+    <div className="reportpage">
+      {/* The cuts sit beside the title rather than under the filters.
+          They are not a filter — they choose which report this is — and
+          below the date row they read as one more thing to set before the
+          page means anything. */}
+      <div className="reporthead">
       <div className="page-head">
         <span className="eyebrow">Sales</span>
         <h1>Sales report</h1>
@@ -162,8 +171,9 @@ export default async function SalesReports({
                 className={`erp-tab ${tab === k ? "here" : ""}`}>{t}</Link>
         ))}
       </div>
+      </div>
 
-      <form className="row" style={{ margin: "1rem 0", alignItems: "flex-end" }}>
+      <form className="row" style={{ margin: 0, alignItems: "flex-end" }}>
         <input type="hidden" name="by" value={tab} />
         <div className="field">
           <label htmlFor="from">From</label>
@@ -198,7 +208,7 @@ export default async function SalesReports({
       <>
       <div className="kpis">
         <Tile label="Revenue" value={money(String(tot.revenue))}
-              sub={`${rows.length} ${label.toLowerCase()}${rows.length === 1 ? "" : "s"} sold`} />
+              sub={`${rows.length} ${rows.length === 1 ? label.toLowerCase() : plural} sold`} />
         <Tile label="Cost of those goods" value={money(String(tot.cost))}
               sub="FIFO, from the deliveries" />
         <Tile label="Gross margin" value={money(String(tot.margin))}
@@ -302,7 +312,7 @@ export default async function SalesReports({
           <DataTable
             rows={table}
             emptyLabel="Nothing was invoiced in this period."
-            searchPlaceholder={`Search ${label.toLowerCase()}s…`}
+            searchPlaceholder={`Search ${plural}…`}
             defaultSort={{ key: "revenue", dir: "desc" }}
             defaultPageSize={20}
             columns={[
@@ -324,7 +334,7 @@ export default async function SalesReports({
       </section>
       </>
       )}
-    </>
+    </div>
   );
 }
 
