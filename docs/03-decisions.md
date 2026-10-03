@@ -230,3 +230,111 @@ and it is a concrete wedge against every incumbent.
 
 **Needs.** A sample data export from a real client to confirm which encoding
 is actually in the database, rather than only in the printed manual.
+
+---
+
+## D8 — When cost of sales is recognised
+
+**Question.** Today revenue is recognised on the sales invoice and cost on
+the delivery. Should cost move to the invoice, so that the two halves of a
+sale are recognised on the same document?
+
+**What the engine does now.** `_postDelivery` posts `Dr COGS / Cr Inventory`
+at FIFO cost (`lib/posting.ts`, in the per-line loop that writes the stock
+movement), and `_postSalesInvoice` posts revenue only — its own comment says
+so: *"Revenue only — stock and COGS belong to the delivery, not the
+invoice."* Four other paths touch COGS and all follow the delivery's lead:
+consignment settlement, sales return, retro cost adjustment, and the
+purchase-invoice price variance.
+
+**Why it is worth changing.** In perpetual FIFO the two are recognised on
+different documents, so goods delivered in September and billed in October
+put the cost in one month and the revenue in the other. Over a year it
+washes out; over a month a category can show a 100% margin because its
+goods left before its invoice did. Shipping goods also expenses them before
+any revenue exists, which is a matching violation however the report is cut.
+
+**The target model.** Deferred COGS, the standard arrangement:
+
+- A new asset account and system role — *Goods shipped not invoiced*. The
+  chart has `GRIR_CLEARING` (1060) for the purchase side and no sales
+  mirror; this is that mirror.
+- Delivery becomes `Dr Deferred COGS / Cr Inventory`. Inventory is relieved
+  exactly as it is today — the stock side does not change at all.
+- Sales invoice gains `Dr COGS / Cr Deferred COGS` for the FIFO cost of the
+  quantity it bills.
+
+**What it does not fix.** An invoice raised before the goods ship still
+recognises revenue with no cost against it — there is no deferred balance to
+relieve yet. The mismatch is not removed, only reversed in direction.
+Closing that needs revenue deferred to shipment as well, which is a larger
+change again and is not proposed here.
+
+**The real cost is void and edit, not the journal lines.** Voiding a sales
+invoice is revenue-only today, and deliberately so — `lib/void.ts` states
+the principle: *"A document this one was raised from is fine to leave alone
+— voiding a purchase invoice does not disturb the receipt it billed."* Under
+deferred COGS, voiding an invoice must push cost back out of COGS, and to
+reverse it the engine has to know exactly which lots and quantities that
+invoice claimed.
+
+That is the structural part. `getSalesBreakdown` already matches invoices to
+deliveries for the Profitability basis, but it recomputes the allocation on
+every page load, which is safe only because nothing is posted from it. Once
+COGS is posted on the invoice **the allocation becomes a ledger fact**: it
+has to be stored, immutable and reversible, because other invoices may have
+claimed the same delivery since and the allocation depends on posting order.
+It cannot be recomputed at void time.
+
+Two things are already in our favour. Ordering is mostly enforced — voiding
+a delivery an invoice was raised from is refused (*"was raised from this
+document. Void that first"*), as is voiding a deliver-later invoice while
+its delivery stands; only "void an invoice raised from a delivery" changes
+behaviour. And amend is void-and-repost inside one transaction, so releasing
+and re-taking an allocation is atomic and cannot be handed different lots
+part-way through.
+
+**Also inherited:** partial billing leaves a residual deferred balance that
+needs aging, or it accumulates unnoticed — the sales mirror of the problem
+`GRIR_AGE_DAYS` and the GR/IR collision report exist to catch.
+
+**Direction chosen 2026-10-03; not built.** Cost moves to the sales invoice.
+Before building it, measure: the reporting-basis toggle on Sales → Sales
+report sizes this exactly, because the gap between *Accounting period* and
+*Profitability* for a month **is** the error this change removes. On seeded
+dev data for October the gap was 12,000 on 561,000 — about 2%. A few real
+months on pilot decide whether the work earns its risk.
+
+**Order to build it in**, when that decision is made:
+
+1. Migration: the account, the `SYSTEM` role, and the chart in all three
+   places that build it (`db/chart.mjs`, `lib/setup.ts`, `db/seed.sql` via
+   `gen-seed-chart.mjs`).
+2. The allocation table — invoice line, the consumption it claims, quantity
+   and cost — with the constraints that stop it being over-drawn. This is
+   the piece everything else depends on, and it is worth writing its tests
+   before anything posts against it.
+3. `_postDelivery`: route non-FOC cost to Deferred COGS. FOC keeps going to
+   the reason's account at delivery, because no invoice ever follows.
+4. `_postSalesInvoice`: claim the allocation and post the cost entry.
+5. Void and amend: release the allocation, and reverse the cost entry.
+6. The paths that follow `stock_lot_consumption.expense_account_id` to send
+   a correction back where the cost landed — retro cost adjustment and
+   negative-stock reconciliation — now have to ask which side of the invoice
+   the cost is on.
+7. Sales return: reverse COGS where the goods were invoiced, Deferred COGS
+   where they were not.
+8. Reports: the Inventory & COGS reconciliation assumes consumption equals
+   cost of sales; the sales report's *Accounting period* basis converges on
+   *Profitability* once this lands, which is the point, but both need
+   re-checking rather than assuming.
+9. A deferred-balance aging report, as above.
+10. Around 35 test suites mention COGS or account 5000. Each needs reading
+    rather than blanket updating: some are asserting the very thing being
+    changed, and some are asserting something else and merely touch it in
+    passing. `test-inventory-cogs.mjs` and `test-sales-profitability.mjs`
+    are the two that are wholly about this behaviour.
+
+**Needs.** A month or two of real pilot trading to size the gap, and an
+auditor's view on whether Myanmar practice expects cost at shipment or at
+invoice.
