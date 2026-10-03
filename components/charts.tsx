@@ -28,13 +28,34 @@ function ChartTooltip({ active, payload, label, valueLabel }: any) {
 /** Monthly revenue trend, including months with no postings — a flat/empty stretch is real information. */
 export function RevenueTrendChart({ data }: { data: { month: string; revenue: number | string }[] }) {
   const rows = data.map((d) => ({ month: monthLabel(d.month), revenue: Number(d.revenue) }));
+
+  /* Where zero sits between the highest and lowest point, as a fraction of
+     the plot's height. A line cannot take one colour per point, so the
+     gradient changes colour exactly at the axis: everything above is the
+     brand, everything below is red. With nothing negative the crossing is
+     at the bottom and the chart looks as it always did. */
+  const top = Math.max(0, ...rows.map((r) => r.revenue));
+  const bottom = Math.min(0, ...rows.map((r) => r.revenue));
+  const zero = top === bottom ? 1 : top / (top - bottom);
+  const anyNegative = bottom < 0;
+
   return (
     <ResponsiveContainer width="100%" height={180}>
       <AreaChart data={rows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
         <defs>
           <linearGradient id="revenueFill" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="var(--brand)" stopOpacity={0.35} />
-            <stop offset="100%" stopColor="var(--brand)" stopOpacity={0.02} />
+            <stop offset={`${zero * 100}%`} stopColor="var(--brand)" stopOpacity={0.02} />
+            {anyNegative && (
+              <>
+                <stop offset={`${zero * 100}%`} stopColor={NEGATIVE} stopOpacity={0.05} />
+                <stop offset="100%" stopColor={NEGATIVE} stopOpacity={0.3} />
+              </>
+            )}
+          </linearGradient>
+          <linearGradient id="revenueLine" x1="0" y1="0" x2="0" y2="1">
+            <stop offset={`${zero * 100}%`} stopColor="var(--brand)" />
+            <stop offset={`${zero * 100}%`} stopColor={anyNegative ? NEGATIVE : "var(--brand)"} />
           </linearGradient>
         </defs>
         <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" vertical={false} />
@@ -44,7 +65,8 @@ export function RevenueTrendChart({ data }: { data: { month: string; revenue: nu
         />
         <YAxis hide />
         <Tooltip content={<ChartTooltip />} cursor={{ stroke: "var(--line)" }} />
-        <Area type="monotone" dataKey="revenue" stroke="var(--brand)" strokeWidth={2} fill="url(#revenueFill)" />
+        <Area type="monotone" dataKey="revenue" stroke="url(#revenueLine)"
+              strokeWidth={2} fill="url(#revenueFill)" />
       </AreaChart>
     </ResponsiveContainer>
   );
@@ -83,6 +105,9 @@ export function RankedBarChart({
         />
         <Tooltip content={<ChartTooltip />} cursor={{ fill: "var(--line-soft)" }} />
         <Bar dataKey="value" fill="var(--brand)" radius={[0, 4, 4, 0]} barSize={bar}>
+          {rows.map((r, i) => (
+            <Cell key={i} fill={signed(r.value, "var(--brand)")} />
+          ))}
           <LabelList
             dataKey="value"
             position="right"
@@ -155,9 +180,11 @@ export function RevenueBars({
           {rows.map((_, i) => (
             <Cell
               key={i}
-              fill={i === lit
-                ? "var(--brand)"
-                : "color-mix(in srgb, var(--brand) 22%, transparent)"}
+              fill={rows[i].revenue < 0
+                ? (i === lit ? NEGATIVE : "color-mix(in srgb, var(--bad) 26%, transparent)")
+                : i === lit
+                  ? "var(--brand)"
+                  : "color-mix(in srgb, var(--brand) 22%, transparent)"}
             />
           ))}
         </Bar>
@@ -179,6 +206,18 @@ export function RevenueBars({
  * interface green the rest of the dashboard uses and moves away from it,
  * rather than being six unrelated hues.
  */
+/**
+ * A bar below zero is red, wherever it is drawn.
+ *
+ * A loss the same colour as a profit is a chart that has to be read twice,
+ * and the second reading is the one that catches it. Red is the only
+ * exception to the palette: a category keeps its colour at every size
+ * except when the figure changes sign, because at that point the sign is
+ * the more important fact about it.
+ */
+export const NEGATIVE = "var(--bad)";
+const signed = (value: number, colour: string) => (value < 0 ? NEGATIVE : colour);
+
 const SLICE_COLOURS = [
   "var(--brand)",   // the app's green, for the biggest share
   "#E8A33D",        // amber
@@ -306,10 +345,25 @@ export function TwoSeriesBars({
         <Tooltip content={<ChartTooltip />} cursor={{ fill: "var(--line-soft)" }} />
         <Legend iconType="circle" iconSize={8}
                 wrapperStyle={{ fontSize: 12, color: "var(--muted)" }} />
-        {/* The darker of the two is the bigger figure, so the pair reads
-            in the same direction as the numbers. */}
-        <Bar dataKey={aLabel} fill="var(--brand)" radius={[3, 3, 0, 0]} maxBarSize={22} />
-        <Bar dataKey={bLabel} fill="#6FBF95" radius={[3, 3, 0, 0]} maxBarSize={22} />
+        {/* Two greens were too close to tell apart at bar width, which is
+            the one thing a paired chart has to do. The second series takes
+            the palette's second colour instead, so "first and second
+            series" and "first and second colour" are the same rule used
+            everywhere else. Either turns red on its own below zero: a
+            month can earn revenue and still lose money on it. */}
+        {/* fill on the Bar as well as the Cells: the Cells colour each
+            column, but the legend reads the series' own fill and shows a
+            black dot without it. */}
+        <Bar dataKey={aLabel} fill={SLICE_COLOURS[0]} radius={[3, 3, 0, 0]} maxBarSize={22}>
+          {rows.map((r, i) => (
+            <Cell key={i} fill={signed(Number(r[aLabel]), SLICE_COLOURS[0])} />
+          ))}
+        </Bar>
+        <Bar dataKey={bLabel} fill={SLICE_COLOURS[1]} radius={[3, 3, 0, 0]} maxBarSize={22}>
+          {rows.map((r, i) => (
+            <Cell key={i} fill={signed(Number(r[bLabel]), SLICE_COLOURS[1])} />
+          ))}
+        </Bar>
       </BarChart>
     </ResponsiveContainer>
   );
@@ -352,7 +406,8 @@ export function MeasureBars({
         <Tooltip content={<ChartTooltip />} cursor={{ fill: "var(--line-soft)" }} />
         <Bar dataKey="value" radius={[3, 3, 0, 0]} maxBarSize={56}>
           {rows.map((r, i) => (
-            <Cell key={r.label} fill={SLICE_COLOURS[i % SLICE_COLOURS.length]} />
+            <Cell key={r.label}
+                  fill={signed(r.value, SLICE_COLOURS[i % SLICE_COLOURS.length])} />
           ))}
           <LabelList dataKey="value" position="top" formatter={(v: unknown) => show(v as number)}
                      style={{ fill: "var(--muted)", fontSize: 10, fontFamily: "var(--mono)" }} />

@@ -7148,7 +7148,7 @@ export async function getSalesBreakdown(
      Only consumption charged to cost of sales: a giveaway's cost went to
      promotion expense and is not part of what these sales cost. */
   const cost = await sql`
-    select ${dim} as key,
+    select ${dim} as key, ${code} as code, ${name} as name,
            sum(c.qty * c.unit_cost) as cost
       from stock_lot_consumption c
       join stock_movement sm on sm.id = c.stock_movement_id
@@ -7162,7 +7162,7 @@ export async function getSalesBreakdown(
        and c.expense_account_id = fn_resolve_account(${companyId}, 'COGS', null, null, null)
        ${branchId ? sql`and (d.location_id = ${branchId} or exists (
              select 1 from location l where l.id = d.location_id and l.parent_id = ${branchId}))` : sql``}
-     group by 1`;
+     group by 1, 2, 3`;
 
   /* Credited back to the customer in the same period. Its own query rather
      than a negative sale: a return is a document of its own, and folding it
@@ -7185,21 +7185,47 @@ export async function getSalesBreakdown(
   const returnBy = new Map((returned as unknown as Array<{ key: string; returned: string }>)
     .map((c) => [c.key, Number(c.returned)]));
 
-  return (revenue as unknown as Array<{
+  /* Every key either side knows, not just the ones with revenue.
+     Building the rows from the revenue query alone dropped the cost of
+     anything delivered in the period and not yet billed — on pilot, an
+     item delivered but uninvoiced took 75,000,000 of cost of sales out of
+     the total, and only on the cuts where it had no company: by customer
+     and by brand it landed on a row that existed for another reason, so
+     the same report showed two different costs depending on how it was
+     sliced, and neither matched the ledger.
+     Goods out and not yet billed is an ordinary state of affairs. It
+     belongs on the report as a row with cost and no revenue — which is
+     also what it looks like in the books until the invoice follows. */
+  const rows = new Map<string, { key: string; code: string; name: string }>();
+  const revRows = revenue as unknown as Array<{
     key: string; code: string; name: string; qty: string; gross: string;
     discount: string; revenue: string; free_qty: string; invoices: number;
-  }>).map((r) => {
-    const rev = Number(r.revenue);
-    const cost = costBy.get(r.key) ?? 0;
+  }>;
+  const costRows = cost as unknown as Array<{
+    key: string; code: string; name: string; cost: string;
+  }>;
+  for (const r of revRows) rows.set(r.key, { key: r.key, code: r.code, name: r.name });
+  for (const c of costRows) {
+    if (!rows.has(c.key)) rows.set(c.key, { key: c.key, code: c.code, name: c.name });
+  }
+  const revBy = new Map(revRows.map((r) => [r.key, r]));
+
+  return [...rows.values()].map((k) => {
+    const r = revBy.get(k.key);
+    const rev = Number(r?.revenue ?? 0);
+    const cost = costBy.get(k.key) ?? 0;
     return {
-      key: r.key, code: r.code, name: r.name,
-      qty: Number(r.qty), freeQty: Number(r.free_qty), invoices: r.invoices,
-      gross: Number(r.gross), discount: Number(r.discount), revenue: rev,
-      returned: returnBy.get(r.key) ?? 0,
+      key: k.key, code: k.code, name: k.name,
+      qty: Number(r?.qty ?? 0), freeQty: Number(r?.free_qty ?? 0),
+      invoices: r?.invoices ?? 0,
+      gross: Number(r?.gross ?? 0), discount: Number(r?.discount ?? 0), revenue: rev,
+      returned: returnBy.get(k.key) ?? 0,
       cost, margin: rev - cost,
+      // No revenue means no margin to express as a share of it. A row that
+      // has only cost is not a 0% margin, it is a question.
       marginPct: rev === 0 ? null : ((rev - cost) / rev) * 100,
     };
-  }).sort((a, b) => b.revenue - a.revenue);
+  }).sort((a, b) => b.revenue - a.revenue || b.cost - a.cost);
 }
 
 /**

@@ -4425,3 +4425,25 @@ tbody tr.row-selected > td:first-child { box-shadow: inset 2px 0 0 var(--brand);
   display: flex; align-items: center; gap: var(--s2);
   border-top: 1px solid var(--line-soft); padding: var(--s2);
 }
+
+/* The sales report's header: title on the left, the cuts on the right.
+   They choose which report this is rather than filtering one, so they
+   belong with its name — under the date row they read as one more filter
+   to set. Wraps to its own line before the tabs start shrinking. */
+.reporthead {
+  /* Beside the title, not pushed to the far edge. space-between threw them
+     across the page, which reads as two unrelated things in one row rather
+     than a name and the cuts of it. */
+  display: flex; align-items: flex-end; justify-content: flex-start;
+  gap: var(--s4); flex-wrap: wrap; margin-bottom: var(--s3);
+}
+.reporthead > .page-head { margin-bottom: 0; }
+.reporthead > .erp-tabs { margin-bottom: 0; }
+
+/* The report sets its own vertical rhythm. Every block on a page is a flex
+   child of .inner with 2.25rem between them, which suits a page of separate
+   cards and is too much for a header, its filters and the figures they
+   control — those are one thing read top to bottom, and the eye should not
+   have to travel between them. */
+.reportpage { display: flex; flex-direction: column; gap: var(--s3); }
+.reportpage > .reporthead { margin-bottom: 0; }
