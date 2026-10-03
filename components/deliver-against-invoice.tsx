@@ -78,7 +78,13 @@ export function DeliverAgainstInvoice({
   );
   const [attemptKey] = useState(() => crypto.randomUUID());
   const [docDate, setDocDate] = useState(today);
-  const [reference, setReference] = useState("");
+  /* The invoice this delivery answers, written in for you.
+     The field was blank and the delivery note went out naming nothing, so
+     the paperwork at the customer's gate could not be tied back to the
+     bill without looking it up. Filled, not fixed: a delivery note often
+     carries the driver's own number, and that is the one the customer
+     signs for. */
+  const [reference, setReference] = useState(invoice.docNo);
   const [memo, setMemo] = useState("");
   // Going out with less on the books than is leaving. Allowed deliberately —
   // the goods are physically there and the receipt for them has not been
@@ -245,6 +251,10 @@ export function DeliverAgainstInvoice({
             <label htmlFor="dlv_ref">Delivery reference</label>
             <input id="dlv_ref" type="text" placeholder="Delivery note number"
                    value={reference} onChange={(e) => setReference(e.target.value)} />
+            <span className="hint">
+              Filled from {invoice.docNo}. Change it to the delivery note
+              number if the driver carries one.
+            </span>
           </div>
         </div>
       </section>
