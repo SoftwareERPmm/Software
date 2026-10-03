@@ -4,10 +4,20 @@ import { RevenueTrendChart, TwoSeriesBars } from "@/components/charts";
 type Side = {
   net: number; units: number; cost: number; profit: number;
   marginPct: number | null; avgPrice: number | null;
-  discount: number; returned: number;
+  discount: number; unmatched: number; returned: number;
 };
 
 const num = (v: number) => v.toLocaleString("en-US", { maximumFractionDigits: 0 });
+
+/** Label, this period, the one before, whether it moves in points, whether
+ *  down is the good direction, and what it means. */
+type MetricRow = [string, number | null, number | null, boolean, boolean, string];
+
+/** Revenue with no goods behind it: shown, and shown as a thing to reduce. */
+const unmatchedRow = (now: Side, before: Side): MetricRow => [
+  "Unmatched revenue", now.unmatched, before.unmatched, false, true,
+  "Invoiced with nothing delivered against it yet — held outside the margin",
+];
 
 /**
  * Up or down, against the run of days immediately before.
@@ -60,41 +70,62 @@ function Kpi({ label, value, now, before, points, invert }: {
 }
 
 export function SalesOverview({
-  now, before, series, prevFrom, prevTo, currency,
+  now, before, series, prevFrom, prevTo, currency, basis = "period",
 }: {
   now: Side; before: Side;
   series: { month: string; net: number | string; profit: number | string }[];
   prevFrom: string; prevTo: string; currency: string;
+  basis?: "profitability" | "period";
 }) {
-  const rows: [string, number | null, number | null, boolean, boolean, string][] = [
-    ["Net sales", now.net, before.net, false, false, "What was invoiced, after discounts"],
-    ["Units sold", now.units, before.units, false, false, "Free units excluded — they earn nothing"],
-    ["Gross profit", now.profit, before.profit, false, false, "Net sales less the cost of the goods"],
-    ["Gross margin", now.marginPct, before.marginPct, true, false, "Profit as a share of net sales"],
-    ["Average selling price", now.avgPrice, before.avgPrice, false, false, "Net sales divided by units"],
+  /* Both windows are read on the same basis, so the comparison is still a
+     comparison. What changes is what the words mean, and they say so. */
+  const prof = basis === "profitability";
+  const revenueLabel = prof ? "Matched revenue" : "Net sales";
+
+  const rows: MetricRow[] = [
+    [revenueLabel, now.net, before.net, false, false,
+     prof ? "Invoiced in the period with the goods behind it"
+          : "What was invoiced, after discounts"],
+    [prof ? "Units delivered" : "Units sold", now.units, before.units, false, false,
+     prof ? "Billed in the period and sent — free units excluded"
+          : "Free units excluded — they earn nothing"],
+    ["Gross profit", now.profit, before.profit, false, false,
+     prof ? "Matched revenue less what those goods cost"
+          : "Net sales less the cost of the goods"],
+    ["Gross margin", now.marginPct, before.marginPct, true, false,
+     `Profit as a share of ${prof ? "matched revenue" : "net sales"}`],
+    ["Average selling price", now.avgPrice, before.avgPrice, false, false,
+     `${revenueLabel} divided by units`],
+    ...(prof ? [unmatchedRow(now, before)] : []),
     ["Discounts given", now.discount, before.discount, false, true, "Off the list price, all three kinds"],
     ["Returns", now.returned, before.returned, false, true, "Credited back to customers"],
   ];
 
   return (
     <>
-      <div className="kpis">
-        <Kpi label="Net sales" value={`${currency} ${num(now.net)}`}
+      <div className={`kpis${prof ? " kpis-five" : ""}`}>
+        <Kpi label={revenueLabel} value={`${currency} ${num(now.net)}`}
              now={now.net} before={before.net} />
-        <Kpi label="Units sold" value={num(now.units)}
+        <Kpi label={prof ? "Units delivered" : "Units sold"} value={num(now.units)}
              now={now.units} before={before.units} />
         <Kpi label="Gross profit" value={`${currency} ${num(now.profit)}`}
              now={now.profit} before={before.profit} />
         <Kpi label="Gross margin"
              value={now.marginPct === null ? "—" : `${now.marginPct.toFixed(1)}%`}
              now={now.marginPct} before={before.marginPct} points />
+        {prof && (
+          <Kpi label="Unmatched revenue" value={`${currency} ${num(now.unmatched)}`}
+               now={now.unmatched} before={before.unmatched} invert />
+        )}
       </div>
 
       <section className="grid2">
         <div className="card">
           <div className="card-head">
             <h2>Sales trend</h2>
-            <span className="page-sub">net sales by month</span>
+            <span className="page-sub">
+              {prof ? "matched revenue by month" : "net sales by month"}
+            </span>
           </div>
           <div className="card-body">
             <RevenueTrendChart
@@ -108,7 +139,7 @@ export function SalesOverview({
             <span className="page-sub">the gap is the cost</span>
           </div>
           <div className="card-body">
-            <TwoSeriesBars height={200} aLabel="Net sales" bLabel="Gross profit"
+            <TwoSeriesBars height={200} aLabel={revenueLabel} bLabel="Gross profit"
               data={series.map((s) => ({ month: s.month, a: s.net, b: s.profit }))} />
           </div>
         </div>
@@ -119,7 +150,7 @@ export function SalesOverview({
           <div className="card-head">
             <h2>Sales summary</h2>
             <span className="page-sub">
-              against {prevFrom} to {prevTo}
+              against {prevFrom} to {prevTo} · {prof ? "profitability" : "accounting period"}
             </span>
           </div>
           <div className="tablewrap">
