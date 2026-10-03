@@ -1965,6 +1965,10 @@ function parseFulfillmentLines(fd: FormData): FulfillmentLine[] {
       // free and their cost went to cost of sales instead of the expense the
       // reason names.
       focReasonId: l.focReasonId || null,
+      /* Carried only so the check below can see it. A line given away
+         without a reason has nowhere to put its cost: the engine would
+         charge it to cost of sales, which says the goods were sold. */
+      free: !!l.free,
       sourceLineId: l.sourceLineId || null,
       // Same again, and it matters most here: the delivery is the document
       // that actually takes the goods off the shelf.
@@ -1977,6 +1981,16 @@ function parseFulfillmentLines(fd: FormData): FulfillmentLine[] {
   // blank, so it is named rather than passed down to the posting engine.
   const bad = lines.findIndex((l) => l.unitCost !== undefined && Number(l.unitCost) < 0);
   if (bad >= 0) throw new Error(`Line ${bad + 1}: cost cannot be negative`);
+
+  /* A giveaway must say why it was given. The reason decides which expense
+     carries the cost, and without one the engine charges cost of sales —
+     which records the goods as sold. The screen asks for it; this is here
+     so no other caller can skip the question. */
+  if (lines.some((l) => l.free && !l.focReasonId)) {
+    throw new Error(
+      "A free line needs a reason — it decides which expense carries its cost."
+    );
+  }
   return lines;
 }
 

@@ -198,17 +198,15 @@ export function DeliveryForm({
   const shortfallKey = shortfalls.map((s) => `${s.itemCode}:${s.required}:${s.recorded}`).join("|");
   useEffect(() => { setNegativeConfirmed(false); }, [shortfallKey]);
 
-  // A free quantity with no reason has nowhere to put its cost.
-  useEffect(() => {
-    const fallback = focReasons[0]?.id;
-    if (!fallback) return;
-    setLines((ls) =>
-      ls.some((l) => Number(l.focQty) > 0 && !l.focReasonId)
-        ? ls.map((l) => (Number(l.focQty) > 0 && !l.focReasonId
-            ? { ...l, focReasonId: fallback } : l))
-        : ls
-    );
-  }, [lines, focReasons]);
+  /* No default reason, deliberately.
+     This used to fill in focReasons[0] the moment a free quantity was
+     typed. The list is ordered by code, so the first one is "Damaged or
+     expired" — and its cost goes to Inventory Adjustment. Anyone giving
+     stock away without opening the dropdown booked it as damage: on
+     pilot, three promotional units at 15,000 each went to 5300 as 45,000
+     of write-off, and nothing on screen said so.
+     The reason decides which expense carries the cost, so it is the
+     person's to give, not the form's to guess. */
 
   // Charged and free go as separate lines, the free one carrying its reason,
   // so its cost lands in that expense instead of cost of sales.
@@ -225,7 +223,10 @@ export function DeliveryForm({
       if (l.itemId && Number(l.focQty) > 0) {
         out.push({
           itemId: l.itemId, qty: Number(l.focQty),
-          focReasonId: l.focReasonId || focReasons[0]?.id,
+          // Flagged as well as reasoned, so the server can tell a free line
+          // that lost its reason from an ordinary one.
+          free: true,
+          focReasonId: l.focReasonId || null,
           sourceLineId: null,
           source: l.source === "OWNED" ? "OWNED" : "CONSIGNMENT",
           consignorId: l.source === "OWNED" ? null : l.source,
@@ -236,6 +237,12 @@ export function DeliveryForm({
   );
 
   const nothingToPost = lines.every((l) => !l.itemId || issuing(l) <= 0);
+
+  /* A free line with no reason cannot be costed anywhere, and guessing is
+     what put a giveaway into the write-off account. Named here rather than
+     refused by the engine after the fact. */
+  const unexplainedFree = lines.filter(
+    (l) => l.itemId && Number(l.focQty) > 0 && !l.focReasonId);
 
   return (
     /* wide, like every other voucher. This one was the only line-entry
@@ -384,8 +391,14 @@ export function DeliveryForm({
                                onChange={(e) => setLine(l.key, { focQty: e.target.value })} />
                         {Number(l.focQty) > 0 && (
                           <select value={l.focReasonId} aria-label="Reason free"
-                                  style={{ marginTop: "0.2rem" }}
+                                  required
+                                  style={{ marginTop: "0.2rem",
+                                           borderColor: l.focReasonId ? undefined : "var(--bad)" }}
                                   onChange={(e) => setLine(l.key, { focReasonId: e.target.value })}>
+                            {/* Empty and first, so the reason is chosen
+                                rather than inherited from whichever one
+                                happens to sort first. */}
+                            <option value="">Why is it free?</option>
                             {focReasons.map((r) => (
                               <option key={r.id} value={r.id}>{r.name}</option>
                             ))}
@@ -493,6 +506,16 @@ export function DeliveryForm({
         <textarea id="memo" name="memo" rows={2} placeholder="Optional — English or Myanmar" />
       </div>
 
+      {unexplainedFree.length > 0 && (
+        <div className="alert">
+          <strong>Say why the free units are free</strong> for{" "}
+          {unexplainedFree.map((l) => byId(l.itemId)?.code).join(", ")}. The
+          reason decides which expense carries their cost &mdash; a giveaway
+          goes to promotion, damage goes to the write-off account &mdash; and
+          they are not the same thing on the income statement.
+        </div>
+      )}
+
       {overConsigned.length > 0 && (
         <div className="alert">
           More consigned stock is being issued than the consignor has here.
@@ -506,6 +529,7 @@ export function DeliveryForm({
           onClick={shortages.length > 0 && !negativeConfirmed
             ? () => setAskNegative(true) : undefined}
           disabled={pending || !partnerId || nothingToPost || overConsigned.length > 0
+            || unexplainedFree.length > 0
             || (shortages.length > 0 && negativeConfirmed && !negativeReason.trim())}>
           {pending ? "Posting…" : "Post delivery"}
         </button>
