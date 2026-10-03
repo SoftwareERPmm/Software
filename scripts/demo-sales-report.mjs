@@ -12,6 +12,11 @@
 // one row, discounts on some lines and not others, a giveaway, a return, and
 // two months of trade so the overview has a previous period to compare with
 // rather than reporting everything as new.
+//
+// It also has to make the two reporting bases disagree, or the switch between
+// them looks broken. A counter sale matches on both, so the seed ends with
+// the two cases that do not: goods out in the earlier month and billed in the
+// later one, and a bill with nothing shipped against it at all.
 
 import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -26,8 +31,8 @@ if (!process.env.DATABASE_URL && existsSync(join(root, ".env"))) {
 }
 
 const { sql } = await import("../lib/db.ts");
-const { postGoodsReceipt, postSaleWithDelivery, postDelivery, postSalesReturn } =
-  await import("../lib/posting.ts");
+const { postGoodsReceipt, postSaleWithDelivery, postDelivery, postSalesReturn,
+        postSalesInvoice } = await import("../lib/posting.ts");
 
 const [co] = await sql`select id, name from company order by created_at limit 1`;
 const [loc] = await sql`
@@ -182,6 +187,48 @@ for (const [di, day] of days.entries()) {
     });
   } catch (e) {
     console.log(`    return on ${day} skipped — ${String(e.message).slice(0, 60)}`);
+  }
+}
+
+/* The two shapes that make the reporting bases differ. Without them every
+   sale is a counter sale, the two bases agree to the kyat, and a reader
+   flipping the switch concludes it does nothing. */
+const straddler = items[0];
+const lateCust = customers[customers.length - 1];
+const already = await sql`
+  select d.id from document d
+   where d.company_id = ${co.id} and d.doc_type = 'DELIVERY'
+     and d.partner_id = ${lateCust.id} and d.posting_date = ${days[0]}::date
+     and d.reference = 'billed next month'`;
+if (already.length === 0 && days.length > 1) {
+  const sent = await postDelivery({
+    companyId: co.id, partnerId: lateCust.id, locationId: loc.id, docDate: days[0],
+    reference: "billed next month",
+    lines: [{ itemId: straddler.id, qty: 30, unitPrice: 2400 }],
+  });
+  await postSalesInvoice({
+    companyId: co.id, partnerId: lateCust.id, locationId: loc.id,
+    docDate: days[1], dueDate: days[1], paymentType: "CREDIT", deliveryId: sent.id,
+    lines: [{ itemId: straddler.id, qty: 30, unitPrice: 2400 }],
+  });
+  console.log(`  goods out ${days[0]}, billed ${days[1]}`);
+}
+
+const waiting = await sql`
+  select d.id from document d
+   where d.company_id = ${co.id} and d.doc_type = 'SALES_INVOICE'
+     and d.reference = 'goods to follow'`;
+if (waiting.length === 0) {
+  try {
+    await postSalesInvoice({
+      companyId: co.id, partnerId: customers[1].id, locationId: loc.id,
+      docDate: days[days.length - 1], dueDate: days[days.length - 1],
+      paymentType: "CREDIT", toDeliver: true, reference: "goods to follow",
+      lines: [{ itemId: items[1 % items.length].id, qty: 18, unitPrice: 2900 }],
+    });
+    console.log("  one bill still waiting on its goods");
+  } catch (e) {
+    console.log(`    deliver-later bill skipped — ${String(e.message).slice(0, 60)}`);
   }
 }
 

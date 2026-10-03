@@ -5,7 +5,8 @@ import { MeasureBars } from "@/components/charts";
 
 export type Row = {
   key: string; code: string; name: string;
-  qty: number; revenue: number; cost: number; margin: number;
+  qty: number; matchedQty: number; revenue: number; unmatched: number;
+  cost: number; margin: number;
   marginPct: number | null; discount: number; returned: number;
 };
 
@@ -18,7 +19,12 @@ export type Row = {
  * which also makes the comparison honest, because the bars stay in the same
  * order whichever measure is showing.
  */
-const MEASURES = [
+/*
+ * The measures change with the basis, because the figures do. Offering
+ * "Net sales" on a report that is showing matched revenue would put the
+ * right bars under the wrong word.
+ */
+const PERIOD = [
   ["revenue", "Net sales", "money"],
   ["cost", "COGS", "money"],
   ["margin", "Gross profit", "money"],
@@ -28,21 +34,42 @@ const MEASURES = [
   ["returned", "Returns", "money"],
 ] as const;
 
-export function BreakdownPerformance({ rows, label }: { rows: Row[]; label: string }) {
-  const [measure, setMeasure] = useState<(typeof MEASURES)[number][0]>("revenue");
-  const chosen = MEASURES.find((m) => m[0] === measure)!;
+const PROFITABILITY = [
+  ["revenue", "Matched revenue", "money"],
+  ["cost", "Matched COGS", "money"],
+  ["margin", "Gross profit", "money"],
+  ["marginPct", "Margin %", "percent"],
+  ["unmatched", "Unmatched revenue", "money"],
+  ["matchedQty", "Units delivered", "plain"],
+  ["qty", "Units invoiced", "plain"],
+  ["returned", "Returns", "money"],
+] as const;
+
+type Measure = (typeof PERIOD)[number][0] | (typeof PROFITABILITY)[number][0];
+
+export function BreakdownPerformance({ rows, label, basis = "period" }: {
+  rows: Row[]; label: string; basis?: "profitability" | "period";
+}) {
+  const MEASURES: readonly (readonly [Measure, string, "money" | "percent" | "plain"])[] =
+    basis === "profitability" ? PROFITABILITY : PERIOD;
+  const [measure, setMeasure] = useState<Measure>("revenue");
+  /* Switching basis drops whichever measure the other one had and this one
+     does not, so the fallback is what keeps the chart on screen instead of
+     reading a label off nothing. */
+  const chosen = MEASURES.find((m) => m[0] === measure) ?? MEASURES[0];
+  const active = chosen[0];
 
   const data = rows.slice(0, 6).map((r) => ({
     label: r.code || r.name,
-    value: measure === "marginPct" ? (r.marginPct ?? 0) : (r[measure] as number),
+    value: active === "marginPct" ? (r.marginPct ?? 0) : (r[active] as number),
   }));
 
   return (
     <div className="card">
       <div className="card-head">
         <h2>{label} performance</h2>
-        <select value={measure} aria-label="Measure"
-                onChange={(e) => setMeasure(e.target.value as typeof measure)}>
+        <select value={active} aria-label="Measure"
+                onChange={(e) => setMeasure(e.target.value as Measure)}>
           {MEASURES.map(([k, t]) => <option key={k} value={k}>{t}</option>)}
         </select>
       </div>

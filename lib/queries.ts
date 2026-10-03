@@ -7074,53 +7074,417 @@ export async function getInventoryCogsReconciliation(
 export type SalesBreakdownBy = "item" | "customer" | "category" | "brand";
 
 /**
- * Sales for a period, cut whichever way the reader needs.
+ * Which question the sales report is answering.
  *
- * Revenue comes from posted sales invoices and cost from the deliveries that
- * moved the goods, because that is where each is recognised — this is
- * perpetual FIFO, and an invoice never costs anything by itself. The two are
- * matched on the dimension and the period rather than line by line, which is
- * the honest join: a delivery in June billed in July belongs to June's cost
- * and July's revenue, and no report can put both in one month without lying
- * about one of them. Where that matters the margin column says so by being
- * visibly odd, which is better than a figure that quietly reconciles.
+ * `period` is the books' own view: revenue is what was invoiced inside the
+ * window, cost is what the deliveries consumed inside the same window, and
+ * the two are never matched to each other. It ties to the income statement
+ * and the general ledger to the kyat, which is exactly why it is here — but
+ * in perpetual FIFO revenue and cost are recognised on different documents,
+ * so goods delivered in June and billed in July put the cost in one month
+ * and the revenue in the other, and a single month's margin can be nonsense
+ * for a reason that is not a mistake.
  *
- * Free-of-charge lines carry no revenue and their cost goes to promotion
- * expense, so they are counted as quantity given away and left out of both
- * money columns.
+ * `profitability` is the trading view: it starts from the invoices in the
+ * window, finds the goods that actually went out against them whenever they
+ * went out, and costs that quantity at what those layers cost. Revenue and
+ * cost then describe the same goods, so the margin means something at any
+ * length of window. The price is that it no longer ties to the ledger, and
+ * revenue with nothing delivered behind it has to sit outside the margin
+ * rather than inside it — which the report shows rather than hides.
  */
-export async function getSalesBreakdown(
-  companyId: string, from: string, to: string,
-  by: SalesBreakdownBy, branchId?: string | null,
-) {
-  // The grouping, as the key the two halves are joined on. Category means the
-  // top of the tree an item is filed under, not the sub-category, because
-  // "which categories sell" is asked about the top level.
-  const dim = {
-    item:     sql`i.id::text`,
-    customer: sql`d.partner_id::text`,
-    category: sql`coalesce(pg.id, g.id)::text`,
-    brand:    sql`coalesce(b.id::text, 'none')`,
-  }[by];
-  const code = {
-    item:     sql`i.code`,
-    customer: sql`p.code`,
-    category: sql`coalesce(pg.code, g.code)`,
-    brand:    sql`coalesce(b.code, '—')`,
-  }[by];
-  const name = {
-    item:     sql`i.name`,
-    customer: sql`p.name`,
-    category: sql`coalesce(pg.name, g.name)`,
-    brand:    sql`coalesce(b.name, 'No brand')`,
-  }[by];
+export type SalesBasis = "profitability" | "period";
 
-  const joins = sql`
+/** One row of a sales breakdown, on whichever basis was asked for. */
+export type SalesBreakdownRow = {
+  key: string; code: string; name: string;
+  /** Units invoiced in the period, free goods excluded. */
+  qty: number;
+  /** Of those, the units with goods behind them. Equal to `qty` on the period basis. */
+  matchedQty: number;
+  freeQty: number;
+  invoices: number;
+  gross: number;
+  discount: number;
+  /** Revenue on the chosen basis: matched revenue, or the period's net sales. */
+  revenue: number;
+  /** Invoiced in the period with no delivery behind it. Always 0 on the period basis. */
+  unmatched: number;
+  returned: number;
+  cost: number;
+  margin: number;
+  marginPct: number | null;
+};
+
+/**
+ * The grouping, as the key the halves of a sales report are joined on.
+ * Category means the top of the tree an item is filed under, not the
+ * sub-category, because "which categories sell" is asked about the top level.
+ */
+function salesDimension(by: SalesBreakdownBy) {
+  return {
+    dim: {
+      item:     sql`i.id::text`,
+      customer: sql`d.partner_id::text`,
+      category: sql`coalesce(pg.id, g.id)::text`,
+      brand:    sql`coalesce(b.id::text, 'none')`,
+    }[by],
+    code: {
+      item:     sql`i.code`,
+      customer: sql`p.code`,
+      category: sql`coalesce(pg.code, g.code)`,
+      brand:    sql`coalesce(b.code, '—')`,
+    }[by],
+    name: {
+      item:     sql`i.name`,
+      customer: sql`p.name`,
+      category: sql`coalesce(pg.name, g.name)`,
+      brand:    sql`coalesce(b.name, 'No brand')`,
+    }[by],
+    joins: sql`
       join item i on i.id = dl.item_id
       left join item_group g on g.id = i.item_group_id
       left join item_group pg on pg.id = g.parent_id
       left join brand b on b.id = i.brand_id
-      left join business_partner p on p.id = d.partner_id`;
+      left join business_partner p on p.id = d.partner_id`,
+  };
+}
+
+/** A document is in a branch if it is that branch or a warehouse under it. */
+function salesBranch(col: ReturnType<typeof sql>, branchId?: string | null) {
+  if (!branchId) return sql``;
+  return sql`and (${col} = ${branchId} or exists (
+    select 1 from location l where l.id = ${col} and l.parent_id = ${branchId}))`;
+}
+
+/** One invoice line's worth of sale, with however much of it has shipped. */
+type MatchedSale = {
+  invoiceId: string;
+  month: string;
+  key: string; code: string; name: string;
+  qty: number; gross: number; discount: number; revenue: number;
+  matchedQty: number; matchedRevenue: number; matchedCost: number;
+};
+
+/**
+ * Sales invoiced in the period, each line set against the goods that went
+ * out for it — whenever they went out.
+ *
+ * Nothing here is a new rule about the ledger; it is a reading of links the
+ * documents already carry. An invoice and a delivery find each other four
+ * ways, because four paths write the link and each writes it differently:
+ * the invoice names the delivery (a counter sale composed atomically), the
+ * delivery names the invoice (goods sent against a "deliver later" bill),
+ * both name the same sales order, or the delivery was matched to the order
+ * afterwards through a fulfilment_link. Checking one direction only would
+ * leave real sales reading as unmatched.
+ *
+ * Quantity is matched per item rather than line by line, because the paths
+ * that compose a delivery with its invoice leave `source_line_id` null on
+ * both sides — the documents are linked, their lines are not. Deliveries are
+ * drawn down oldest first, and every invoice that touches a delivery takes
+ * its turn in posting order, so one delivery billed across two invoices is
+ * not counted twice.
+ *
+ * Goods that are not stocked — services, fees, anything with no layers to
+ * consume — are matched in full at no cost. They are earned when invoiced
+ * and there is no delivery owing on them, so parking their revenue outside
+ * the margin for ever would be the wrong answer, not a cautious one.
+ */
+async function matchInvoicedSales(
+  companyId: string, from: string, to: string,
+  by: SalesBreakdownBy, branchId?: string | null,
+): Promise<MatchedSale[]> {
+  const { dim, code, name, joins } = salesDimension(by);
+
+  /* Every way a posted sales invoice and a posted delivery are tied
+     together. Kept as plain equality on the columns the paths actually
+     write: an order amended into a new version after one side named it is
+     the one case this misses, and that line then reads as unmatched, which
+     is a visible state rather than a wrong figure. */
+  const pairs = sql`
+    pairs as (
+      select si.id as invoice_id, dv.id as delivery_id
+        from document si
+        join document dv on dv.id = si.source_document_id
+                        and dv.doc_type = 'DELIVERY' and dv.status = 'POSTED'
+       where si.company_id = ${companyId}
+         and si.doc_type = 'SALES_INVOICE' and si.status = 'POSTED'
+      union
+      select si.id, dv.id
+        from document dv
+        join document si on si.id = dv.source_document_id
+                        and si.doc_type = 'SALES_INVOICE' and si.status = 'POSTED'
+       where dv.company_id = ${companyId}
+         and dv.doc_type = 'DELIVERY' and dv.status = 'POSTED'
+      union
+      select si.id, dv.id
+        from document si
+        join document o on o.id = si.source_document_id and o.doc_type = 'SALES_ORDER'
+        join document dv on dv.source_document_id = o.id
+                        and dv.doc_type = 'DELIVERY' and dv.status = 'POSTED'
+       where si.company_id = ${companyId}
+         and si.doc_type = 'SALES_INVOICE' and si.status = 'POSTED'
+      union
+      select si.id, dv.id
+        from document si
+        join document o on o.id = si.source_document_id and o.doc_type = 'SALES_ORDER'
+        join document_line ol on ol.document_id = o.id
+        join fulfilment_link fl on fl.order_line_id = ol.id
+        join document_line fdl on fdl.id = fl.fulfilment_line_id
+        join document dv on dv.id = fdl.document_id
+                        and dv.doc_type = 'DELIVERY' and dv.status = 'POSTED'
+       where si.company_id = ${companyId}
+         and si.doc_type = 'SALES_INVOICE' and si.status = 'POSTED'
+    )`;
+
+  /* Everything tangled up with this period's invoices, followed until it
+     stops growing.
+     One hop is not enough. A delivery half-billed in June and half in July
+     must not hand the same goods to both, so the June invoice has to be in
+     the reckoning even though it is outside the window — and that invoice
+     may itself be drawing on a second delivery, which a third invoice also
+     draws on. Stopping early leaves a delivery in the pool with a claimant
+     missing from it, and the goods get counted twice.
+     Invoice and delivery form a graph, and what is wanted is the component
+     this window sits in. In practice it closes in two hops — a counter sale
+     is one invoice and one delivery — so the loop almost always runs twice
+     and the cap is there for the pathological chain, where stopping with
+     part of the component is no worse than the one hop it replaces. */
+  const periodInvoices = (await sql`
+    select d.id from document d
+     where d.company_id = ${companyId}
+       and d.doc_type = 'SALES_INVOICE' and d.status = 'POSTED'
+       and d.posting_date between ${from}::date and ${to}::date
+       ${salesBranch(sql`d.location_id`, branchId)}`) as unknown as Array<{ id: string }>;
+  const inPeriod = new Set(periodInvoices.map((r) => r.id));
+  if (inPeriod.size === 0) return [];
+
+  let invoiceIds = [...inPeriod];
+  let deliveryIds: string[] = [];
+  let links: Array<{ invoice_id: string; delivery_id: string }> = [];
+
+  for (let hop = 0; hop < 6; hop++) {
+    const found = (await sql`
+      with ${pairs}
+      select p.invoice_id, p.delivery_id
+        from pairs p
+        join document si on si.id = p.invoice_id
+        join document dv on dv.id = p.delivery_id
+       where p.invoice_id = any(${invoiceIds})
+          ${deliveryIds.length > 0 ? sql`or p.delivery_id = any(${deliveryIds})` : sql``}
+       order by si.posting_date, si.doc_no, dv.posting_date, dv.doc_no`) as unknown as
+      Array<{ invoice_id: string; delivery_id: string }>;
+
+    const inv = new Set([...inPeriod, ...found.map((f) => f.invoice_id)]);
+    const dlv = new Set(found.map((f) => f.delivery_id));
+    const settled = inv.size === invoiceIds.length && dlv.size === deliveryIds.length;
+    invoiceIds = [...inv];
+    deliveryIds = [...dlv];
+    links = found;
+    if (settled) break;
+  }
+
+  const invLines = (await sql`
+    select d.id as invoice_id, d.posting_date, d.doc_no,
+           to_char(d.posting_date, 'YYYY-MM') as month,
+           dl.item_id, i.is_stocked,
+           ${dim} as key, ${code} as code, ${name} as name,
+           sum(dl.base_qty) as qty,
+           sum(dl.base_qty * coalesce(dl.unit_price, 0)) as gross,
+           sum(coalesce(dl.discount_amount, 0)
+             + coalesce(dl.volume_discount_amount, 0)
+             + coalesce(dl.invoice_discount_amount, 0)) as discount,
+           sum(dl.net_amount) as net
+      from document_line dl
+      join document d on d.id = dl.document_id
+      ${joins}
+     where dl.document_id = any(${invoiceIds})
+       and dl.foc_reason_id is null
+     group by 1, 2, 3, 4, 5, 6, 7, 8, 9
+     order by d.posting_date, d.doc_no`) as unknown as Array<{
+       invoice_id: string; month: string; item_id: string; is_stocked: boolean;
+       key: string; code: string; name: string;
+       qty: string; gross: string; discount: string; net: string;
+     }>;
+
+  /* What each delivery put out, and what those layers cost. Quantity comes
+     from the delivery line and cost from the layers it consumed, so goods
+     that went out on negative stock still count as delivered — they are
+     simply costed at whatever was recorded, which is how the rest of the
+     report treats them too. Only consumption charged to cost of sales: a
+     giveaway's cost went to promotion expense and is not part of what these
+     sales cost. */
+  const dlvQty = deliveryIds.length === 0 ? [] : (await sql`
+    select dl.document_id as delivery_id, dl.item_id, sum(dl.base_qty) as qty
+      from document_line dl
+     where dl.document_id = any(${deliveryIds})
+       and dl.foc_reason_id is null
+     group by 1, 2`) as unknown as Array<{ delivery_id: string; item_id: string; qty: string }>;
+
+  const dlvCost = deliveryIds.length === 0 ? [] : (await sql`
+    select dl.document_id as delivery_id, dl.item_id, sum(c.qty * c.unit_cost) as cost
+      from stock_lot_consumption c
+      join stock_movement sm on sm.id = c.stock_movement_id
+      join document_line dl on dl.id = sm.document_line_id
+     where c.company_id = ${companyId}
+       and dl.document_id = any(${deliveryIds})
+       and c.expense_account_id = fn_resolve_account(${companyId}, 'COGS', null, null, null)
+     group by 1, 2`) as unknown as Array<{ delivery_id: string; item_id: string; cost: string }>;
+
+  const costOf = new Map(dlvCost.map((c) => [`${c.delivery_id}|${c.item_id}`, Number(c.cost)]));
+  /** Goods still unspoken for, per delivery and item. */
+  const pool = new Map<string, { left: number; unit: number }>();
+  for (const d of dlvQty) {
+    const k = `${d.delivery_id}|${d.item_id}`;
+    const q = Number(d.qty);
+    if (q <= 0) continue;
+    pool.set(k, { left: q, unit: (costOf.get(k) ?? 0) / q });
+  }
+
+  const byInvoice = new Map<string, string[]>();
+  for (const l of links) {
+    const list = byInvoice.get(l.invoice_id) ?? [];
+    list.push(l.delivery_id);
+    byInvoice.set(l.invoice_id, list);
+  }
+
+  /* Invoices take their turn oldest first — invLines is ordered by posting
+     date — so the order goods are claimed in is the order they were billed
+     in rather than the order a query happened to return. */
+  const out: MatchedSale[] = [];
+  for (const line of invLines) {
+    const invQty = Number(line.qty);
+    const revenue = Number(line.net);
+    let need = invQty;
+    let cost = 0;
+
+    if (line.is_stocked) {
+      for (const dvId of byInvoice.get(line.invoice_id) ?? []) {
+        if (need <= 1e-9) break;
+        const p = pool.get(`${dvId}|${line.item_id}`);
+        if (!p || p.left <= 1e-9) continue;
+        const take = Math.min(need, p.left);
+        p.left -= take;
+        need -= take;
+        cost += take * p.unit;
+      }
+    } else {
+      need = 0;
+    }
+
+    const matchedQty = invQty - need;
+    if (!inPeriod.has(line.invoice_id)) continue;
+    out.push({
+      invoiceId: line.invoice_id, month: line.month,
+      key: line.key, code: line.code, name: line.name,
+      qty: invQty, gross: Number(line.gross), discount: Number(line.discount), revenue,
+      matchedQty,
+      // Revenue follows the goods: bill ten, ship six, and six tenths of
+      // what was charged has been earned against cost that is known.
+      matchedRevenue: invQty > 0 ? revenue * (matchedQty / invQty) : 0,
+      matchedCost: cost,
+    });
+  }
+  return out;
+}
+
+/**
+ * Sales for a period, cut whichever way the reader needs, on whichever
+ * basis the question calls for.
+ *
+ * On the `period` basis revenue comes from posted sales invoices and cost
+ * from the deliveries that moved goods in the same window, each counted
+ * where the books recognise it and neither matched to the other. On the
+ * `profitability` basis the invoices in the window are set against the goods
+ * that actually went out for them, whenever that was, and revenue with
+ * nothing behind it is reported separately instead of flattering the margin.
+ *
+ * Free-of-charge lines carry no revenue and their cost goes to promotion
+ * expense, so on both bases they are counted as quantity given away and left
+ * out of both money columns.
+ */
+export async function getSalesBreakdown(
+  companyId: string, from: string, to: string,
+  by: SalesBreakdownBy, branchId?: string | null,
+  basis: SalesBasis = "period",
+): Promise<SalesBreakdownRow[]> {
+  const { dim, code, name, joins } = salesDimension(by);
+  const branch = salesBranch(sql`d.location_id`, branchId);
+
+  /* Credited back to the customer in the same period. Its own query rather
+     than a negative sale: a return is a document of its own, and folding it
+     into revenue would hide both the gross and the fact it came back. On
+     both bases this is the period's returns — a credit note is settled when
+     it is raised, and there is nothing to match it to. */
+  const returned = (await sql`
+    select ${dim} as key, sum(dl.net_amount) as returned
+      from document_line dl
+      join document d on d.id = dl.document_id
+      ${joins}
+     where d.company_id = ${companyId}
+       and d.doc_type = 'SALES_RETURN'
+       and d.status = 'POSTED'
+       and d.posting_date between ${from}::date and ${to}::date
+       ${branch}
+     group by 1`) as unknown as Array<{ key: string; returned: string }>;
+  const returnBy = new Map(returned.map((c) => [c.key, Number(c.returned)]));
+
+  if (basis === "profitability") {
+    const free = (await sql`
+      select ${dim} as key, ${code} as code, ${name} as name,
+             sum(dl.base_qty) as free_qty
+        from document_line dl
+        join document d on d.id = dl.document_id
+        ${joins}
+       where d.company_id = ${companyId}
+         and d.doc_type = 'SALES_INVOICE'
+         and d.status = 'POSTED'
+         and d.posting_date between ${from}::date and ${to}::date
+         and dl.foc_reason_id is not null
+         ${branch}
+       group by 1, 2, 3`) as unknown as Array<{
+         key: string; code: string; name: string; free_qty: string }>;
+
+    const lines = await matchInvoicedSales(companyId, from, to, by, branchId);
+
+    const acc = new Map<string, SalesBreakdownRow & { seen: Set<string> }>();
+    const blank = (key: string, c: string, n: string) => ({
+      key, code: c, name: n, qty: 0, matchedQty: 0, freeQty: 0, invoices: 0,
+      gross: 0, discount: 0, revenue: 0, unmatched: 0, returned: 0,
+      cost: 0, margin: 0, marginPct: null as number | null, seen: new Set<string>(),
+    });
+
+    for (const l of lines) {
+      const r = acc.get(l.key) ?? blank(l.key, l.code, l.name);
+      r.qty += l.qty;
+      r.matchedQty += l.matchedQty;
+      r.gross += l.gross;
+      r.discount += l.discount;
+      r.revenue += l.matchedRevenue;
+      r.unmatched += l.revenue - l.matchedRevenue;
+      r.cost += l.matchedCost;
+      r.seen.add(l.invoiceId);
+      acc.set(l.key, r);
+    }
+    /* A row that only gave goods away still belongs on the report: nothing
+       was earned, but something left the building. */
+    for (const f of free) {
+      const r = acc.get(f.key) ?? blank(f.key, f.code, f.name);
+      r.freeQty += Number(f.free_qty);
+      acc.set(f.key, r);
+    }
+
+    return [...acc.values()].map(({ seen, ...r }) => ({
+      ...r,
+      invoices: seen.size,
+      returned: returnBy.get(r.key) ?? 0,
+      margin: r.revenue - r.cost,
+      // No matched revenue means no margin to express as a share of it. A
+      // row that has only cost is not a 0% margin, it is a question.
+      marginPct: r.revenue === 0 ? null : ((r.revenue - r.cost) / r.revenue) * 100,
+    })).sort((a, b) => b.revenue - a.revenue || b.cost - a.cost);
+  }
 
   const revenue = await sql`
     select ${dim} as key, ${code} as code, ${name} as name,
@@ -7140,8 +7504,7 @@ export async function getSalesBreakdown(
        and d.doc_type = 'SALES_INVOICE'
        and d.status = 'POSTED'
        and d.posting_date between ${from}::date and ${to}::date
-       ${branchId ? sql`and (d.location_id = ${branchId} or exists (
-             select 1 from location l where l.id = d.location_id and l.parent_id = ${branchId}))` : sql``}
+       ${branch}
      group by 1, 2, 3`;
 
   /* The cost of what went out, from the layers the deliveries consumed.
@@ -7160,30 +7523,11 @@ export async function getSalesBreakdown(
        and d.status = 'POSTED'
        and d.posting_date between ${from}::date and ${to}::date
        and c.expense_account_id = fn_resolve_account(${companyId}, 'COGS', null, null, null)
-       ${branchId ? sql`and (d.location_id = ${branchId} or exists (
-             select 1 from location l where l.id = d.location_id and l.parent_id = ${branchId}))` : sql``}
+       ${branch}
      group by 1, 2, 3`;
-
-  /* Credited back to the customer in the same period. Its own query rather
-     than a negative sale: a return is a document of its own, and folding it
-     into revenue would hide both the gross and the fact it came back. */
-  const returned = await sql`
-    select ${dim} as key, sum(dl.net_amount) as returned
-      from document_line dl
-      join document d on d.id = dl.document_id
-      ${joins}
-     where d.company_id = ${companyId}
-       and d.doc_type = 'SALES_RETURN'
-       and d.status = 'POSTED'
-       and d.posting_date between ${from}::date and ${to}::date
-       ${branchId ? sql`and (d.location_id = ${branchId} or exists (
-             select 1 from location l where l.id = d.location_id and l.parent_id = ${branchId}))` : sql``}
-     group by 1`;
 
   const costBy = new Map((cost as unknown as Array<{ key: string; cost: string }>)
     .map((c) => [c.key, Number(c.cost)]));
-  const returnBy = new Map((returned as unknown as Array<{ key: string; returned: string }>)
-    .map((c) => [c.key, Number(c.returned)]));
 
   /* Every key either side knows, not just the ones with revenue.
      Building the rows from the revenue query alone dropped the cost of
@@ -7214,11 +7558,13 @@ export async function getSalesBreakdown(
     const r = revBy.get(k.key);
     const rev = Number(r?.revenue ?? 0);
     const cost = costBy.get(k.key) ?? 0;
+    const q = Number(r?.qty ?? 0);
     return {
       key: k.key, code: k.code, name: k.name,
-      qty: Number(r?.qty ?? 0), freeQty: Number(r?.free_qty ?? 0),
+      qty: q, matchedQty: q, freeQty: Number(r?.free_qty ?? 0),
       invoices: r?.invoices ?? 0,
-      gross: Number(r?.gross ?? 0), discount: Number(r?.discount ?? 0), revenue: rev,
+      gross: Number(r?.gross ?? 0), discount: Number(r?.discount ?? 0),
+      revenue: rev, unmatched: 0,
       returned: returnBy.get(k.key) ?? 0,
       cost, margin: rev - cost,
       // No revenue means no margin to express as a share of it. A row that
@@ -7235,19 +7581,15 @@ export async function getSalesBreakdown(
  * same figure for the run of days immediately before — same length, so a
  * 30-day month is never compared with a 31-day one and called a decline.
  *
- * Revenue is posted invoices; cost is what the deliveries consumed, matched
- * on the period rather than line by line, for the reason the sales report
- * gives: in perpetual FIFO they are recognised on different documents and
- * can fall in different months.
+ * Both bases are answered here, and both windows are read on the same one:
+ * comparing a matched month with an unmatched one would turn a change of
+ * question into a change of fortune.
  */
 export async function getSalesOverview(
   companyId: string, from: string, to: string, branchId?: string | null,
+  basis: SalesBasis = "period",
 ) {
-  const branch = (alias: ReturnType<typeof sql>) => branchId
-    ? sql`and (${alias}.location_id = ${branchId} or exists (
-            select 1 from location l where l.id = ${alias}.location_id
-             and l.parent_id = ${branchId}))`
-    : sql``;
+  const branch = (alias: ReturnType<typeof sql>) => salesBranch(alias, branchId);
 
   /* The run of days immediately before, of equal length, so the comparison
      is like for like rather than an accident of the calendar. */
@@ -7261,32 +7603,17 @@ export async function getSalesOverview(
            to_char(${from}::date - 1, 'YYYY-MM-DD') as prev_to`) as unknown as
     Array<{ days: number; prev_from: string; prev_to: string }>;
 
-  const totals = async (a: string, b: string) => {
-    const [rev] = (await sql`
-      select coalesce(sum(case when dl.foc_reason_id is null then dl.net_amount else 0 end), 0) as net,
-             coalesce(sum(case when dl.foc_reason_id is null then dl.base_qty else 0 end), 0) as units,
-             coalesce(sum(coalesce(dl.discount_amount, 0)
-                        + coalesce(dl.volume_discount_amount, 0)
-                        + coalesce(dl.invoice_discount_amount, 0)), 0) as discount
-        from document_line dl
-        join document d on d.id = dl.document_id
-       where d.company_id = ${companyId} and d.doc_type = 'SALES_INVOICE'
-         and d.status = 'POSTED'
-         and d.posting_date between ${a}::date and ${b}::date
-         ${branch(sql`d`)}`) as unknown as
-      Array<{ net: string; units: string; discount: string }>;
+  /* On the profitability basis every figure but returns comes out of the
+     match, so it is run once per window and read several ways rather than
+     asked for again per number. */
+  const matched = basis === "profitability"
+    ? await Promise.all([
+        matchInvoicedSales(companyId, from, to, "item", branchId),
+        matchInvoicedSales(companyId, span.prev_from, span.prev_to, "item", branchId),
+      ])
+    : [null, null];
 
-    const [cost] = (await sql`
-      select coalesce(sum(c.qty * c.unit_cost), 0) as cost
-        from stock_lot_consumption c
-        join stock_movement sm on sm.id = c.stock_movement_id
-        join document d on d.id = sm.document_id
-       where c.company_id = ${companyId} and d.doc_type = 'DELIVERY'
-         and d.status = 'POSTED'
-         and d.posting_date between ${a}::date and ${b}::date
-         and c.expense_account_id = fn_resolve_account(${companyId}, 'COGS', null, null, null)
-         ${branch(sql`d`)}`) as unknown as Array<{ cost: string }>;
-
+  const totals = async (a: string, b: string, lines: MatchedSale[] | null) => {
     const [ret] = (await sql`
       select coalesce(sum(dl.net_amount), 0) as returned
         from document_line dl
@@ -7294,65 +7621,125 @@ export async function getSalesOverview(
        where d.company_id = ${companyId} and d.doc_type = 'SALES_RETURN'
          and d.status = 'POSTED'
          and d.posting_date between ${a}::date and ${b}::date
-         ${branch(sql`d`)}`) as unknown as Array<{ returned: string }>;
+         ${branch(sql`d.location_id`)}`) as unknown as Array<{ returned: string }>;
 
-    const net = Number(rev.net);
-    const units = Number(rev.units);
-    const c = Number(cost.cost);
+    let net: number, units: number, c: number, discount: number, unmatched: number;
+
+    if (lines) {
+      net = lines.reduce((t, l) => t + l.matchedRevenue, 0);
+      units = lines.reduce((t, l) => t + l.matchedQty, 0);
+      c = lines.reduce((t, l) => t + l.matchedCost, 0);
+      discount = lines.reduce((t, l) => t + l.discount, 0);
+      unmatched = lines.reduce((t, l) => t + (l.revenue - l.matchedRevenue), 0);
+    } else {
+      const [rev] = (await sql`
+        select coalesce(sum(case when dl.foc_reason_id is null then dl.net_amount else 0 end), 0) as net,
+               coalesce(sum(case when dl.foc_reason_id is null then dl.base_qty else 0 end), 0) as units,
+               coalesce(sum(coalesce(dl.discount_amount, 0)
+                          + coalesce(dl.volume_discount_amount, 0)
+                          + coalesce(dl.invoice_discount_amount, 0)), 0) as discount
+          from document_line dl
+          join document d on d.id = dl.document_id
+         where d.company_id = ${companyId} and d.doc_type = 'SALES_INVOICE'
+           and d.status = 'POSTED'
+           and d.posting_date between ${a}::date and ${b}::date
+           ${branch(sql`d.location_id`)}`) as unknown as
+        Array<{ net: string; units: string; discount: string }>;
+
+      const [cost] = (await sql`
+        select coalesce(sum(c.qty * c.unit_cost), 0) as cost
+          from stock_lot_consumption c
+          join stock_movement sm on sm.id = c.stock_movement_id
+          join document d on d.id = sm.document_id
+         where c.company_id = ${companyId} and d.doc_type = 'DELIVERY'
+           and d.status = 'POSTED'
+           and d.posting_date between ${a}::date and ${b}::date
+           and c.expense_account_id = fn_resolve_account(${companyId}, 'COGS', null, null, null)
+           ${branch(sql`d.location_id`)}`) as unknown as Array<{ cost: string }>;
+
+      net = Number(rev.net);
+      units = Number(rev.units);
+      c = Number(cost.cost);
+      discount = Number(rev.discount);
+      unmatched = 0;
+    }
+
     return {
       net, units, cost: c, profit: net - c,
       marginPct: net === 0 ? null : ((net - c) / net) * 100,
       avgPrice: units === 0 ? null : net / units,
-      discount: Number(rev.discount),
+      discount, unmatched,
       returned: Number(ret.returned),
     };
   };
 
   const [now, before] = await Promise.all([
-    totals(from, to),
-    totals(span.prev_from, span.prev_to),
+    totals(from, to, matched[0]),
+    totals(span.prev_from, span.prev_to, matched[1]),
   ]);
 
   /* Month by month across the period, for the two charts. Months with no
      trade keep their place at zero: a gap is information, and a chart that
      drops the month says the opposite of what happened. */
-  const series = (await sql`
-    with months as (
-      select to_char(generate_series(date_trunc('month', ${from}::date),
-                                     date_trunc('month', ${to}::date),
-                                     interval '1 month'), 'YYYY-MM') as month
-    ),
-    rev as (
-      select to_char(d.posting_date, 'YYYY-MM') as month,
-             sum(case when dl.foc_reason_id is null then dl.net_amount else 0 end) as net
-        from document_line dl
-        join document d on d.id = dl.document_id
-       where d.company_id = ${companyId} and d.doc_type = 'SALES_INVOICE'
-         and d.status = 'POSTED'
-         and d.posting_date between ${from}::date and ${to}::date
-         ${branch(sql`d`)}
-       group by 1
-    ),
-    cst as (
-      select to_char(d.posting_date, 'YYYY-MM') as month,
-             sum(c.qty * c.unit_cost) as cost
-        from stock_lot_consumption c
-        join stock_movement sm on sm.id = c.stock_movement_id
-        join document d on d.id = sm.document_id
-       where c.company_id = ${companyId} and d.doc_type = 'DELIVERY'
-         and d.status = 'POSTED'
-         and d.posting_date between ${from}::date and ${to}::date
-         and c.expense_account_id = fn_resolve_account(${companyId}, 'COGS', null, null, null)
-         ${branch(sql`d`)}
-       group by 1
-    )
-    select m.month,
-           coalesce(rev.net, 0) as net,
-           coalesce(rev.net, 0) - coalesce(cst.cost, 0) as profit
-      from months m
-      left join rev on rev.month = m.month
-      left join cst on cst.month = m.month
-     order by m.month`) as unknown as Array<{ month: string; net: string; profit: string }>;
+  const months = (await sql`
+    select to_char(generate_series(date_trunc('month', ${from}::date),
+                                   date_trunc('month', ${to}::date),
+                                   interval '1 month'), 'YYYY-MM') as month`) as unknown as
+    Array<{ month: string }>;
+
+  let series: Array<{ month: string; net: string; profit: string }>;
+
+  if (matched[0]) {
+    const acc = new Map<string, { net: number; cost: number }>();
+    for (const l of matched[0]) {
+      const m = acc.get(l.month) ?? { net: 0, cost: 0 };
+      m.net += l.matchedRevenue;
+      m.cost += l.matchedCost;
+      acc.set(l.month, m);
+    }
+    series = months.map(({ month }) => {
+      const m = acc.get(month) ?? { net: 0, cost: 0 };
+      return { month, net: String(m.net), profit: String(m.net - m.cost) };
+    });
+  } else {
+    series = (await sql`
+      with months as (
+        select to_char(generate_series(date_trunc('month', ${from}::date),
+                                       date_trunc('month', ${to}::date),
+                                       interval '1 month'), 'YYYY-MM') as month
+      ),
+      rev as (
+        select to_char(d.posting_date, 'YYYY-MM') as month,
+               sum(case when dl.foc_reason_id is null then dl.net_amount else 0 end) as net
+          from document_line dl
+          join document d on d.id = dl.document_id
+         where d.company_id = ${companyId} and d.doc_type = 'SALES_INVOICE'
+           and d.status = 'POSTED'
+           and d.posting_date between ${from}::date and ${to}::date
+           ${branch(sql`d.location_id`)}
+         group by 1
+      ),
+      cst as (
+        select to_char(d.posting_date, 'YYYY-MM') as month,
+               sum(c.qty * c.unit_cost) as cost
+          from stock_lot_consumption c
+          join stock_movement sm on sm.id = c.stock_movement_id
+          join document d on d.id = sm.document_id
+         where c.company_id = ${companyId} and d.doc_type = 'DELIVERY'
+           and d.status = 'POSTED'
+           and d.posting_date between ${from}::date and ${to}::date
+           and c.expense_account_id = fn_resolve_account(${companyId}, 'COGS', null, null, null)
+           ${branch(sql`d.location_id`)}
+         group by 1
+      )
+      select m.month,
+             coalesce(rev.net, 0) as net,
+             coalesce(rev.net, 0) - coalesce(cst.cost, 0) as profit
+        from months m
+        left join rev on rev.month = m.month
+        left join cst on cst.month = m.month
+       order by m.month`) as unknown as Array<{ month: string; net: string; profit: string }>;
+  }
 
   return {
     now, before, series,
