@@ -27,6 +27,28 @@ export const BUCKETS = [
     band: "#B9C2CC", ink: "#5B6672" },
 ] as const;
 
+/**
+ * The same ramp for goods that shipped and were never billed, which pass
+ * through five bands of their own. No "not yet due" and no "no due date": a
+ * delivery has a date and nothing about it is agreed, so the only question
+ * is how long ago it left. The first week is its own band because inside it
+ * nothing is wrong — the invoice is simply still being written.
+ */
+export const SHIPPED_BANDS = [
+  { key: "d0_7",   bucket: "0-7",   label: "0–7 days",
+    band: "#7FBF9B", ink: "#2F6B4F" },
+  { key: "d8_30",  bucket: "8-30",  label: "8–30 days",
+    band: "#F2D06B", ink: "#8A6A00" },
+  { key: "d31_60", bucket: "31-60", label: "31–60 days",
+    band: "#F0A868", ink: "#9A5316" },
+  { key: "d61_90", bucket: "61-90", label: "61–90 days",
+    band: "#E8879B", ink: "#A33049" },
+  { key: "d90",    bucket: "90+",   label: "90+ days",
+    band: "#D9566B", ink: "#B4283C" },
+] as const;
+
+type Band = { key: string; bucket: string; label: string; band: string; ink: string };
+
 type Bucket = { aging_bucket: string; invoices: number; total: string };
 
 /**
@@ -38,9 +60,15 @@ type Bucket = { aging_bucket: string; invoices: number; total: string };
  * A band with nothing in it is left out of the bar rather than drawn at zero
  * width, so the segments that are there keep their proportions honestly.
  */
-export function AgingBands({ title, buckets }: { title: string; buckets: Bucket[] }) {
+export function AgingBands({ title, buckets, bands = BUCKETS, subtitle }: {
+  title: string; buckets: Bucket[];
+  /** Which ramp to read the buckets against. Defaults to the invoice bands. */
+  bands?: readonly Band[];
+  /** Replaces the total in the card head, where the total is not the point. */
+  subtitle?: React.ReactNode;
+}) {
   const by = new Map(buckets.map((b) => [b.aging_bucket, Number(b.total ?? 0)]));
-  const rows = BUCKETS.map((b) => ({ ...b, amount: by.get(b.bucket) ?? 0 }));
+  const rows = bands.map((b) => ({ ...b, amount: by.get(b.bucket) ?? 0 }));
   const total = rows.reduce((t, r) => t + r.amount, 0);
 
   return (
@@ -48,7 +76,9 @@ export function AgingBands({ title, buckets }: { title: string; buckets: Bucket[
       <div className="card-head">
         <h2>{title}</h2>
         <span className="page-sub">
-          Total <strong style={{ color: "var(--ink)" }}>{money(total)}</strong>
+          {subtitle ?? (
+            <>Total <strong style={{ color: "var(--ink)" }}>{money(total)}</strong></>
+          )}
         </span>
       </div>
 

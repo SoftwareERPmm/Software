@@ -7167,6 +7167,60 @@ type MatchedSale = {
 };
 
 /**
+ * Every way a posted sales invoice and a posted delivery are tied together,
+ * as a CTE the callers that need the link can select from.
+ *
+ * Four paths write it and each writes it differently: the invoice names the
+ * delivery (a counter sale composed atomically), the delivery names the
+ * invoice (goods sent against a "deliver later" bill), both name the same
+ * sales order, or the delivery was matched to the order afterwards through a
+ * fulfilment_link. Checking one direction only leaves real sales reading as
+ * unbilled.
+ *
+ * Kept as plain equality on the columns the paths actually write. An order
+ * amended into a new version after one side named it is the case this
+ * misses; that line then reads as unbilled, which is a visible state rather
+ * than a wrong figure.
+ */
+function salesInvoiceDeliveryPairs(companyId: string) {
+  return sql`
+    pairs as (
+      select si.id as invoice_id, dv.id as delivery_id
+        from document si
+        join document dv on dv.id = si.source_document_id
+                        and dv.doc_type = 'DELIVERY' and dv.status = 'POSTED'
+       where si.company_id = ${companyId}
+         and si.doc_type = 'SALES_INVOICE' and si.status = 'POSTED'
+      union
+      select si.id, dv.id
+        from document dv
+        join document si on si.id = dv.source_document_id
+                        and si.doc_type = 'SALES_INVOICE' and si.status = 'POSTED'
+       where dv.company_id = ${companyId}
+         and dv.doc_type = 'DELIVERY' and dv.status = 'POSTED'
+      union
+      select si.id, dv.id
+        from document si
+        join document o on o.id = si.source_document_id and o.doc_type = 'SALES_ORDER'
+        join document dv on dv.source_document_id = o.id
+                        and dv.doc_type = 'DELIVERY' and dv.status = 'POSTED'
+       where si.company_id = ${companyId}
+         and si.doc_type = 'SALES_INVOICE' and si.status = 'POSTED'
+      union
+      select si.id, dv.id
+        from document si
+        join document o on o.id = si.source_document_id and o.doc_type = 'SALES_ORDER'
+        join document_line ol on ol.document_id = o.id
+        join fulfilment_link fl on fl.order_line_id = ol.id
+        join document_line fdl on fdl.id = fl.fulfilment_line_id
+        join document dv on dv.id = fdl.document_id
+                        and dv.doc_type = 'DELIVERY' and dv.status = 'POSTED'
+       where si.company_id = ${companyId}
+         and si.doc_type = 'SALES_INVOICE' and si.status = 'POSTED'
+    )`;
+}
+
+/**
  * Sales invoiced in the period, each line set against the goods that went
  * out for it — whenever they went out.
  *
@@ -7202,41 +7256,7 @@ async function matchInvoicedSales(
      write: an order amended into a new version after one side named it is
      the one case this misses, and that line then reads as unmatched, which
      is a visible state rather than a wrong figure. */
-  const pairs = sql`
-    pairs as (
-      select si.id as invoice_id, dv.id as delivery_id
-        from document si
-        join document dv on dv.id = si.source_document_id
-                        and dv.doc_type = 'DELIVERY' and dv.status = 'POSTED'
-       where si.company_id = ${companyId}
-         and si.doc_type = 'SALES_INVOICE' and si.status = 'POSTED'
-      union
-      select si.id, dv.id
-        from document dv
-        join document si on si.id = dv.source_document_id
-                        and si.doc_type = 'SALES_INVOICE' and si.status = 'POSTED'
-       where dv.company_id = ${companyId}
-         and dv.doc_type = 'DELIVERY' and dv.status = 'POSTED'
-      union
-      select si.id, dv.id
-        from document si
-        join document o on o.id = si.source_document_id and o.doc_type = 'SALES_ORDER'
-        join document dv on dv.source_document_id = o.id
-                        and dv.doc_type = 'DELIVERY' and dv.status = 'POSTED'
-       where si.company_id = ${companyId}
-         and si.doc_type = 'SALES_INVOICE' and si.status = 'POSTED'
-      union
-      select si.id, dv.id
-        from document si
-        join document o on o.id = si.source_document_id and o.doc_type = 'SALES_ORDER'
-        join document_line ol on ol.document_id = o.id
-        join fulfilment_link fl on fl.order_line_id = ol.id
-        join document_line fdl on fdl.id = fl.fulfilment_line_id
-        join document dv on dv.id = fdl.document_id
-                        and dv.doc_type = 'DELIVERY' and dv.status = 'POSTED'
-       where si.company_id = ${companyId}
-         and si.doc_type = 'SALES_INVOICE' and si.status = 'POSTED'
-    )`;
+  const pairs = salesInvoiceDeliveryPairs(companyId);
 
   /* Everything tangled up with this period's invoices, followed until it
      stops growing.
@@ -7746,4 +7766,208 @@ export async function getSalesOverview(
     prevFrom: span.prev_from,
     prevTo: span.prev_to,
   };
+}
+
+/** The five bands a shipped-not-invoiced delivery passes through. */
+export type ShippedBucket = "0-7" | "8-30" | "31-60" | "61-90" | "90+";
+
+export const SHIPPED_BUCKETS: ShippedBucket[] = ["0-7", "8-30", "31-60", "61-90", "90+"];
+
+const shippedBucketOf = (days: number): ShippedBucket =>
+  days <= 7 ? "0-7"
+  : days <= 30 ? "8-30"
+  : days <= 60 ? "31-60"
+  : days <= 90 ? "61-90"
+  : "90+";
+
+export type ShippedNotInvoicedRow = {
+  deliveryId: string;
+  docNo: string;
+  postingDate: string;
+  days: number;
+  bucket: ShippedBucket;
+  partnerCode: string | null;
+  partnerName: string | null;
+  items: number;
+  qty: number;
+  value: number;
+};
+
+/**
+ * Goods that left and were never billed, aged by how long ago they left.
+ *
+ * The operational question is "what did we ship and forget to invoice", and
+ * the longer the answer sits the less likely anyone remembers the sale. The
+ * deliveries screen already lists unbilled deliveries, but flat and at
+ * selling value; this ages them and values them at what the goods cost,
+ * because that is the figure the books carry.
+ *
+ * Useful before anything about posting changes, and more so afterwards: once
+ * cost of sales moves to the invoice (docs/03-decisions.md, D8) this total is
+ * the balance of 1090 Goods Shipped Not Invoiced, and a balance nobody ages
+ * is a balance nobody clears. It is the sales mirror of the GR/IR worklist.
+ *
+ * Unbilled quantity is worked out the same way the profitability basis works
+ * it out, and for the same reason: an invoice and a delivery find each other
+ * four ways, deliveries are drawn down oldest first, and every invoice takes
+ * its turn in posting order so one delivery billed across two invoices is not
+ * counted as unbilled twice.
+ *
+ * Two kinds of line are left out, because neither is waiting for an invoice.
+ * A free-of-charge line was never going to be billed and its cost went to
+ * promotion expense when it left. A consignment line moves goods somebody
+ * else still owns, so there is no cost of ours sitting anywhere.
+ */
+export async function getShippedNotInvoiced(
+  companyId: string, branchId?: string | null,
+) {
+  const pairs = salesInvoiceDeliveryPairs(companyId);
+
+  /* What left, per delivery and item, with what those goods cost. Only
+     consumption charged to cost of sales: a giveaway's cost went elsewhere
+     and is not waiting on anybody's invoice. */
+  const delivered = (await sql`
+    select dl.document_id as delivery_id, dl.item_id,
+           d.doc_no,
+           to_char(d.posting_date, 'YYYY-MM-DD') as posting_date,
+           (current_date - d.posting_date)::int as days,
+           p.code as partner_code, p.name as partner_name,
+           sum(dl.base_qty) as qty,
+           coalesce(sum(cc.cost), 0) as cost
+      from document_line dl
+      join document d on d.id = dl.document_id
+      left join business_partner p on p.id = d.partner_id
+      left join lateral (
+        select sum(c.qty * c.unit_cost) as cost
+          from stock_lot_consumption c
+          join stock_movement sm on sm.id = c.stock_movement_id
+         where sm.document_line_id = dl.id
+           and c.expense_account_id = fn_resolve_account(${companyId}, 'COGS', null, null, null)
+      ) cc on true
+     where d.company_id = ${companyId}
+       and d.doc_type = 'DELIVERY' and d.status = 'POSTED'
+       and dl.foc_reason_id is null
+       and coalesce(dl.is_consignment, false) = false
+       ${salesBranch(sql`d.location_id`, branchId)}
+     group by 1, 2, 3, 4, 5, 6, 7`) as unknown as Array<{
+       delivery_id: string; item_id: string; doc_no: string; posting_date: string;
+       days: number; partner_code: string | null; partner_name: string | null;
+       qty: string; cost: string;
+     }>;
+
+  if (delivered.length === 0) {
+    return {
+      rows: [] as ShippedNotInvoicedRow[],
+      buckets: SHIPPED_BUCKETS.map((bucket) => ({ bucket, deliveries: 0, qty: 0, value: 0 })),
+      total: 0, qty: 0, deliveries: 0, oldestDays: 0,
+    };
+  }
+
+  /** Goods still unspoken for, per delivery and item. */
+  const pool = new Map<string, { left: number; unit: number }>();
+  for (const d of delivered) {
+    const q = Number(d.qty);
+    if (q <= 0) continue;
+    pool.set(`${d.delivery_id}|${d.item_id}`, { left: q, unit: Number(d.cost) / q });
+  }
+
+  const links = (await sql`
+    with ${pairs}
+    select p.invoice_id, p.delivery_id
+      from pairs p
+      join document si on si.id = p.invoice_id
+      join document dv on dv.id = p.delivery_id
+     order by si.posting_date, si.doc_no, dv.posting_date, dv.doc_no`) as unknown as
+    Array<{ invoice_id: string; delivery_id: string }>;
+
+  const byInvoice = new Map<string, string[]>();
+  for (const l of links) {
+    const list = byInvoice.get(l.invoice_id) ?? [];
+    list.push(l.delivery_id);
+    byInvoice.set(l.invoice_id, list);
+  }
+
+  /* Every posted invoice, oldest first, so the order goods are claimed in is
+     the order they were billed in. */
+  const invoiced = (await sql`
+    select d.id as invoice_id, dl.item_id, sum(dl.base_qty) as qty
+      from document_line dl
+      join document d on d.id = dl.document_id
+     where d.company_id = ${companyId}
+       and d.doc_type = 'SALES_INVOICE' and d.status = 'POSTED'
+       and dl.foc_reason_id is null
+     group by 1, 2, d.posting_date, d.doc_no
+     order by d.posting_date, d.doc_no`) as unknown as
+    Array<{ invoice_id: string; item_id: string; qty: string }>;
+
+  for (const line of invoiced) {
+    let need = Number(line.qty);
+    for (const dvId of byInvoice.get(line.invoice_id) ?? []) {
+      if (need <= 1e-9) break;
+      const p = pool.get(`${dvId}|${line.item_id}`);
+      if (!p || p.left <= 1e-9) continue;
+      const take = Math.min(need, p.left);
+      p.left -= take;
+      need -= take;
+    }
+  }
+
+  /* What is left, gathered back up per delivery. */
+  const byDelivery = new Map<string, ShippedNotInvoicedRow>();
+  for (const d of delivered) {
+    const p = pool.get(`${d.delivery_id}|${d.item_id}`);
+    const left = p ? Math.round(p.left * 10000) / 10000 : 0;
+    if (left <= 0) continue;
+    const row = byDelivery.get(d.delivery_id) ?? {
+      deliveryId: d.delivery_id, docNo: d.doc_no, postingDate: d.posting_date,
+      days: Number(d.days), bucket: shippedBucketOf(Number(d.days)),
+      partnerCode: d.partner_code, partnerName: d.partner_name,
+      items: 0, qty: 0, value: 0,
+    };
+    row.items += 1;
+    row.qty += left;
+    row.value += left * (p?.unit ?? 0);
+    byDelivery.set(d.delivery_id, row);
+  }
+
+  const rows = [...byDelivery.values()].sort((a, b) => b.days - a.days || b.value - a.value);
+
+  const buckets = SHIPPED_BUCKETS.map((bucket) => {
+    const inBand = rows.filter((r) => r.bucket === bucket);
+    return {
+      bucket,
+      deliveries: inBand.length,
+      qty: inBand.reduce((t, r) => t + r.qty, 0),
+      value: inBand.reduce((t, r) => t + r.value, 0),
+    };
+  });
+
+  return {
+    rows,
+    buckets,
+    total: rows.reduce((t, r) => t + r.value, 0),
+    qty: rows.reduce((t, r) => t + r.qty, 0),
+    deliveries: rows.length,
+    oldestDays: rows.reduce((t, r) => Math.max(t, r.days), 0),
+  };
+}
+
+/**
+ * What 1090 Goods Shipped Not Invoiced actually holds.
+ *
+ * Read rather than assumed, so the page that reports unbilled deliveries
+ * cannot go on claiming the account is empty after the day it stops being
+ * empty. Once cost of sales moves to the invoice the two should agree, and
+ * the difference is then worth showing rather than hiding.
+ */
+export async function getShippedNotInvoicedBalance(companyId: string) {
+  const [row] = (await sql`
+    select a.id, a.code, a.name,
+           coalesce((select sum(jl.base_amount) from journal_line jl
+                      where jl.account_id = a.id), 0) as balance
+      from account a
+     where a.company_id = ${companyId} and a.code = '1090'`) as unknown as
+    Array<{ id: string; code: string; name: string; balance: string }>;
+  if (!row) return null;
+  return { ...row, balance: Number(row.balance) };
 }

@@ -189,6 +189,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   money — not a statement drawn up at a period end beside the
                   income statement and the balance sheet. */}
               <NavLink href="/finance/aging">AR / AP Aging</NavLink>
+              {/* Same kind of question, asked of goods rather than money:
+                  what did we ship and never bill, and how long ago. */}
+              <NavLink href="/finance/shipped-not-invoiced">Shipped Not Invoiced</NavLink>
             </NavGroup>
 
             <NavGroup label="Inventory" icon={<Boxes size={14} />} match={["/items/stock", "/inventory"]}>
