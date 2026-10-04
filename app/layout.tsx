@@ -103,6 +103,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <NavGroup label="Sales" icon={<ShoppingCart size={14} />} match={["/sales", "/receivables"]}>
               <NavLink href="/sales/orders" exact>Sales orders</NavLink>
               <NavLink href="/sales/deliver">Deliveries</NavLink>
+              <NavLink href="/sales/shipped-not-invoiced">Shipped not invoiced</NavLink>
               <NavLink href="/sales/invoices" exact>Sales invoices</NavLink>
               <NavLink href="/sales/consignment">Consignment sale</NavLink>
               <NavLink href="/sales/returns" exact>Customer returns</NavLink>
@@ -189,9 +190,6 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   money — not a statement drawn up at a period end beside the
                   income statement and the balance sheet. */}
               <NavLink href="/finance/aging">AR / AP Aging</NavLink>
-              {/* Same kind of question, asked of goods rather than money:
-                  what did we ship and never bill, and how long ago. */}
-              <NavLink href="/finance/shipped-not-invoiced">Shipped Not Invoiced</NavLink>
             </NavGroup>
 
             <NavGroup label="Inventory" icon={<Boxes size={14} />} match={["/items/stock", "/inventory"]}>

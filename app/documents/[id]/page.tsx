@@ -56,7 +56,7 @@ import {
   getAdvancesFor,
   getUnsettledConsignment,
   getLinkableOrders,
-  getOpenDeliveries,
+  getOpenDeliveries, getGiveawayDeliveryIds,
   getOrderOutstanding,
   getOrderClosure,
   getDocumentPeople,
@@ -436,7 +436,12 @@ export default async function DocumentPage({
           label: "Records a supplier return, filled in from this receipt" };
   })();
 
-    const needsSalesInvoice = doc.doc_type === "DELIVERY" && doc.status === "POSTED" && !stageDoc["SALES_INVOICE"];
+    /* A giveaway is settled when the goods leave and an invoice for nothing
+       is refused when posted, so offering one is a button to a dead end. */
+    const giftedAway = doc.doc_type === "DELIVERY" && doc.status === "POSTED"
+      && (await getGiveawayDeliveryIds(doc.company_id)).has(doc.id);
+    const needsSalesInvoice = doc.doc_type === "DELIVERY" && doc.status === "POSTED"
+      && !stageDoc["SALES_INVOICE"] && !giftedAway;
 
   /**
    * What the invoice this button opens would actually come to.
@@ -1266,6 +1271,16 @@ export default async function DocumentPage({
             {doc.doc_type === "SALES_INVOICE"
               ? "Take something off what this customer owes, without goods coming back."
               : "Take something off what you owe here, without goods going back."}
+          </span>
+        </div>
+      )}
+
+      {giftedAway && (
+        <div className="docactions">
+          <span className="pill">Given away</span>
+          <span className="page-sub">
+            Every line left free of charge, so there is nothing to invoice. The
+            cost went to the reason&rsquo;s expense account when the goods left.
           </span>
         </div>
       )}

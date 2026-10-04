@@ -21,7 +21,7 @@ import {
   postCashVoucher, postBankVoucher, postJournalVoucher,
   linkFulfilmentToOrder, closeOrderRemaining, reopenOrder,
   amendOrder, planOrderAmendment, amendInvoice, planInvoiceAmendment,
-  amendmentFingerprint, StalePlan, applyAdvance,
+  amendmentFingerprint, StalePlan, applyAdvance, refundAdvance,
   type AmendmentPlan,
   postCashTransfer, postAccountOpening, postOpeningBatch, resettleConsignmentSale,
   amendVoucher, amendSettlement,
@@ -3032,6 +3032,52 @@ export async function applyAdvanceAction(
   revalidatePath("/payables");
   revalidatePath("/");
   redirectWithToast(`/documents/${invoiceId}`, "Advance applied");
+}
+
+/**
+ * Hand money taken in advance back, from the advances list.
+ *
+ * The amount defaults to what is left on account and can be lowered — give
+ * back 400 of a 1,000 deposit and the other 600 stays available to apply.
+ * The engine refuses anything already applied, so this need not check.
+ */
+export async function refundAdvanceAction(
+  _prev: unknown, fd: FormData,
+): Promise<ActionResult> {
+  let back: string;
+  try {
+    const co = await companyId();
+    const paymentId = str(fd, "payment_id");
+    if (!paymentId) return { error: "Which advance is being refunded?" };
+    const amount = num(fd, "amount");
+    if (!(amount > 0)) return { error: "Enter how much to refund" };
+    const cashAccountId = str(fd, "cash_account_id");
+    if (!cashAccountId) return { error: "Choose which cash or bank account it goes through" };
+
+    const [adv] = await sql`
+      select doc_type from document where id = ${paymentId} and company_id = ${co}`;
+    if (!adv) return { error: "That advance no longer exists" };
+    back = adv.doc_type === "SUPPLIER_PAYMENT" ? "/payables/advances" : "/receivables/advances";
+
+    /* Once per attempt. A refund of part of a deposit is still within what
+       is available the second time it is sent, so the balance check alone
+       would not stop a double click paying the customer twice. */
+    await postOnce(co, attemptKey(fd), (tx) => refundAdvance({
+      companyId: co,
+      paymentId,
+      amount,
+      cashAccountId,
+      docDate: str(fd, "doc_date") || new Date().toISOString().slice(0, 10),
+      memo: str(fd, "memo") || null,
+    }, tx));
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  revalidatePath("/receivables");
+  revalidatePath("/payables");
+  revalidatePath("/documents", "layout");
+  revalidatePath("/");
+  redirectWithToast(back, "Advance refunded");
 }
 
 function financeRevalidate() {

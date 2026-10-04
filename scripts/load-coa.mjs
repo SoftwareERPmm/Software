@@ -175,6 +175,15 @@ try {
       update account a set subledger = 'PURCHASE_MATCHING'
         from system_account s
        where s.account_id = a.id and s.company_id = ${co.id} and s.role = 'GRIR_CLEARING'`;
+    // The advance accounts and what consignors are owed belong to their
+    // partners' subledgers too. Missing here, a re-chart left them open to
+    // journal vouchers that no subledger would ever see.
+    await tx`
+      update account a set subledger = case s.role when 'CUSTOMER_ADVANCE' then 'CUSTOMER'
+                                                   else 'SUPPLIER' end
+        from system_account s
+       where s.account_id = a.id and s.company_id = ${co.id}
+         and s.role in ('CUSTOMER_ADVANCE', 'SUPPLIER_ADVANCE', 'CONSIGNOR_PAYABLE')`;
 
     for (const f of focBefore) {
       const target = id.get(FOC_REMAP[f.acct] ?? f.acct);

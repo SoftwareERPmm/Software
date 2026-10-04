@@ -4466,3 +4466,24 @@ tbody tr.row-selected > td:first-child { box-shadow: inset 2px 0 0 var(--brand);
 }
 .drilltable td { padding: 0.2rem 0.5rem 0.2rem 0; white-space: nowrap; }
 .drilltable td.wrap { white-space: normal; max-width: 18ch; }
+
+/* ------ refunding an advance, in its row ------
+   Opened under the figure it draws on rather than on a page of its own:
+   what is left on account is the number somebody refunding is deciding
+   against, so it stays in view. */
+.refundwrap { position: relative; display: inline-block; }
+.refundform {
+  position: absolute; right: 0; top: calc(100% + 0.35rem); z-index: 30;
+  width: 30rem; max-width: calc(100vw - 2rem);
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s2); text-align: left;
+  padding: var(--s3);
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+.refundform label { display: flex; flex-direction: column; gap: 0.2rem; font-size: var(--t-xs); }
+.refundform label span { color: var(--muted); }
+.refundform .wide { grid-column: 1 / -1; }
+.refundform .alert, .refundform .actions { grid-column: 1 / -1; margin: 0; }
+.refundform .actions { justify-content: flex-end; }

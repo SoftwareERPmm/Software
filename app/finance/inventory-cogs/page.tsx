@@ -284,7 +284,7 @@ export default async function InventoryCogs({
                 + "A gap means cost reached the account by a route nothing "
                 + "claimed, or a claim exists for cost that never arrived."
               }
-              href={{ pathname: "/finance/shipped-not-invoiced", query: {} }}
+              href={{ pathname: "/sales/shipped-not-invoiced", query: {} }}
               hrefLabel="shipped not invoiced"
             />
           </section>

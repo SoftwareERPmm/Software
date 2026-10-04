@@ -2836,12 +2836,15 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
    */
   if (input.sourceDocumentId) {
     const [billedBy] = await tx`
-      select id, to_deliver from document
+      select id, doc_no, to_deliver from document
        where id = ${input.sourceDocumentId} and company_id = ${companyId}
          and doc_type = 'SALES_INVOICE' and status = 'POSTED'`;
     if (billedBy) {
       const owing = await tx`
         select dl.id, dl.item_id, dl.base_qty, dl.net_amount,
+               dl.entered_qty * dl.unit_price as list,
+               coalesce(dl.discount_amount, 0) + coalesce(dl.volume_discount_amount, 0)
+                 + coalesce(dl.invoice_discount_amount, 0) as disc,
                coalesce((select sum(a.qty) from sales_cost_allocation a
                           where a.invoice_line_id = dl.id), 0) as claimed
           from document_line dl
@@ -2864,7 +2867,7 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
 
       for (const l of owing as unknown as Array<{
         id: string; item_id: string; base_qty: string; net_amount: string;
-        claimed: string;
+        list: string; disc: string; claimed: string;
       }>) {
         const need = round4(Number(l.base_qty) - Number(l.claimed));
         if (need <= 0) continue;
@@ -2878,7 +2881,14 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
         if (deferred) {
           const lineQty = Number(l.base_qty);
           const share = lineQty > 0 ? Math.min(taken / lineQty, 1) : 0;
-          const earn = roundMoney(Number(l.net_amount) * share, 2);
+          /* What the invoice parked, which is the price before the
+             discount: the discount went to its own account when the bill
+             was raised and is not waiting here. Releasing only the net
+             left the discount in 2070 for ever. */
+          const list = Number(l.list), charged = list - Number(l.disc);
+          const parked = charged > 0
+            ? Number(l.net_amount) * (list / charged) : Number(l.net_amount);
+          const earn = roundMoney(parked * share, 2);
           if (earn !== 0) {
             const rev = await tx`
               select fn_resolve_account_for_item(
@@ -2913,6 +2923,14 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
           select fn_system_account(${companyId}, 'SHIPPED_NOT_INVOICED') as a`;
         journal.push({ accountId: heldAcct[0].a as string, amount: -claimed, locationId });
       }
+
+      /* Consigned goods among what just went out complete their sale here,
+         not at the invoice — the invoice was raised before anybody knew
+         which units would go. What it credited for them becomes a
+         commission and a payable to the consignor. */
+      await settleConsignmentSales(
+        tx, companyId, docDate, billedBy.id as string, billedBy.doc_no as string,
+        [doc.id as string], locationId);
     }
   }
 
@@ -3028,33 +3046,35 @@ export async function postDelivery(input: FulfillmentInput, tx?: TransactionSql)
 }
 
 /**
- * The consignment settlement: recognizes the purchase and the payable for
- * whatever consigned stock this sale's delivery drew on, at the moment the
- * customer is actually billed for it — the user's explicit choice, and the
- * reason this runs from the invoice rather than the delivery.
+ * The consignment settlement: a consigned sale earns a commission, not a
+ * sale. See migration 0120.
  *
- *   Dr Cost of Goods Sold / Cr Accounts Payable (the consignor)
+ * The invoice credited Sales (or Deferred Revenue, for goods billed ahead)
+ * with the full price, because at that moment nobody had asked whose goods
+ * they were. The goods were never the company's, so this takes the consigned
+ * units' share of that credit back out and splits it:
  *
- * No Inventory line: these goods were never the company's asset, so there
- * is nothing to relieve. Posted as a real PURCHASE_INVOICE document rather
- * than a bare journal entry — reusing that doc_type, not inventing a third
- * one, so the amount owed shows up in AP aging and payables through
- * infrastructure that already exists. Deliberately its own small function
- * rather than a call into _postPurchaseInvoice: that function carries this
- * session's GR/IR matching and source validation, built for a completely
- * different GL shape, and bolting a second shape onto it risks exactly what
- * that hardening protects.
+ *   Dr Sales / Deferred Revenue   what the consigned units were billed at
+ *   Cr Commission Revenue         what the company keeps
+ *   Cr Payable to Consignors      what the consignor is owed
  *
- * Idempotent by construction: it only ever looks at consumption rows with
- * settlement_document_id still null, so calling it twice for the same
- * delivery (which cannot happen through the normal posting paths, but this
- * is cheap insurance) settles nothing a second time.
+ * No cost of sales and no inventory: there was never an asset to relieve.
+ * Posted as a PURCHASE_INVOICE document against the consignor, so what is
+ * owed shows in AP aging and is paid like any bill — but to 2080 rather
+ * than 2000, so a consignor's settlements are never mixed with their
+ * ordinary bills.
  *
- * Percentage settles against the price THIS customer is actually being
- * charged, read from the invoice's own lines rather than any reference
- * price — the same qty of the same item can sell for different amounts to
- * different customers, and the consignor's share follows whatever the sale
- * actually realized.
+ * Runs wherever a sale of consigned goods becomes complete: at the invoice
+ * when the goods already went, and at the delivery when they were billed
+ * first. Each call settles at most what the invoice bills and nothing it
+ * has already covered — the billed quantity, less what was claimed from the
+ * company's own stock, less what standing settlements already took — so it
+ * is idempotent, and two invoices billing one delivery split it rather than
+ * both settling all of it.
+ *
+ * A percentage share is taken from what this customer actually paid per
+ * unit, after discount and before tax — the consignor shares in the sale
+ * as realised, not in a list price nobody was charged.
  */
 async function settleConsignmentSales(
   tx: TransactionSql,
@@ -3062,40 +3082,109 @@ async function settleConsignmentSales(
   docDate: string,
   salesInvoiceId: string,
   salesInvoiceNo: string,
-  deliveryId: string,
-  saleLines: ReadonlyArray<{ itemId: string; unitPrice: number }>,
+  deliveryIds: readonly string[],
   locationId: string
 ): Promise<void> {
-  // Consumed, with no settlement standing against them — never settled, or
-  // settled by a document since voided. The view carries that rule so the
-  // screens and this agree on what is still owed.
+  if (deliveryIds.length === 0) return;
+
+  // Consumed, with no settlement standing against them — never settled,
+  // settled in part, or settled by a document since voided.
   const consumed = await tx`
-    select u.consumption_id, u.lot_id, u.qty, u.item_id, u.consignor_id,
+    select u.consumption_id, u.lot_id, u.qty::float as qty, u.item_id, u.consignor_id,
            l.pricing_method, l.pricing_value
       from v_consignment_unsettled u
       join consignment_lot l on l.id = u.lot_id
-     where u.delivery_document_id = ${deliveryId}`;
-
+      join consignment_lot_consumption c on c.id = u.consumption_id
+     where u.company_id = ${companyId}
+       and u.delivery_document_id = any(${deliveryIds as string[]}::uuid[])
+     order by c.created_at, c.id`;
   if (consumed.length === 0) return;
 
-  const byConsignor = new Map<string, any[]>();
-  for (const row of consumed) {
+  const [inv] = await tx`select to_deliver from document where id = ${salesInvoiceId}`;
+  const scale = await currencyScale(tx, companyId);
+
+  /* What the invoice billed for each item, and how much of that is still
+     unaccounted for. Free lines are left out: a giveaway is not a sale, and
+     nothing it carried is the consignor's money. */
+  const billed = await tx`
+    select dl.item_id,
+           sum(dl.base_qty)::float as qty,
+           sum(dl.net_amount)::float as net,
+           sum(dl.entered_qty * dl.unit_price)::float as list,
+           sum(coalesce(dl.discount_amount, 0) + coalesce(dl.volume_discount_amount, 0)
+               + coalesce(dl.invoice_discount_amount, 0))::float as disc,
+           coalesce((
+             select sum(a.qty) from sales_cost_allocation a
+               join document_line x on x.id = a.invoice_line_id
+              where x.document_id = ${salesInvoiceId} and x.item_id = dl.item_id), 0)::float as owned,
+           coalesce((
+             select sum(sl.qty) from consignment_settlement_line sl
+               join document sd on sd.id = sl.settlement_document_id and sd.status = 'POSTED'
+               join consignment_lot_consumption c on c.id = sl.consumption_id
+               join consignment_lot cl on cl.id = c.lot_id
+              where sd.source_document_id = ${salesInvoiceId}
+                and cl.item_id = dl.item_id), 0)::float as settled
+      from document_line dl
+     where dl.document_id = ${salesInvoiceId}
+       and dl.item_id is not null and dl.foc_reason_id is null
+     group by dl.item_id`;
+
+  const perItem = new Map<string, { left: number; revenue: number; realised: number }>();
+  for (const b of billed as unknown as Array<{
+    item_id: string; qty: number; net: number; list: number; disc: number;
+    owned: number; settled: number;
+  }>) {
+    if (b.qty <= 0) continue;
+    /* Sales was credited before the discount, which went to its own
+       account; ex-tax all the same. So the consigned units come back out of
+       Sales at that figure, and the discount stays where it was, reducing
+       what the company kept. */
+    const charged = b.list - b.disc;
+    const revenue = charged > 0 ? b.net * (b.list / charged) : b.net;
+    perItem.set(b.item_id, {
+      left: round4(b.qty - b.owned - b.settled),
+      revenue: revenue / b.qty,
+      realised: b.net / b.qty,
+    });
+  }
+
+  type Take = { consumption_id: string; item_id: string; qty: number;
+                gross: number; share: number };
+  const byConsignor = new Map<string, Take[]>();
+  for (const row of consumed as unknown as Array<{
+    consumption_id: string; item_id: string; qty: number; consignor_id: string;
+    pricing_method: string; pricing_value: string;
+  }>) {
+    const it = perItem.get(row.item_id);
+    if (!it || it.left <= 0.0001) continue;
+    const qty = round4(Math.min(row.qty, it.left));
+    it.left = round4(it.left - qty);
+    const gross = roundMoney(it.revenue * qty, scale);
+    const share = row.pricing_method === "PERCENTAGE"
+      ? roundMoney(it.realised * qty * (Number(row.pricing_value) / 100), scale)
+      : roundMoney(Number(row.pricing_value) * qty, scale);
     const list = byConsignor.get(row.consignor_id) ?? [];
-    list.push(row);
+    list.push({ consumption_id: row.consumption_id, item_id: row.item_id, qty, gross, share });
     byConsignor.set(row.consignor_id, list);
   }
 
-  for (const [consignorId, rows] of byConsignor) {
-    const priced = rows.map((row: any) => {
-      const salePrice = saleLines.find((l) => l.itemId === row.item_id)?.unitPrice ?? 0;
-      const amount = row.pricing_method === "PERCENTAGE"
-        ? round4(salePrice * Number(row.qty) * (Number(row.pricing_value) / 100))
-        : round4(Number(row.pricing_value) * Number(row.qty));
-      return { ...row, amount };
-    });
+  const [commission] = await tx`
+    select fn_system_account(${companyId}, 'COMMISSION_REVENUE') as a`;
+  const [payable] = await tx`
+    select fn_system_account(${companyId}, 'CONSIGNOR_PAYABLE') as a`;
+  if (!commission?.a || !payable?.a) {
+    throw new Error(
+      "No accounts are set for a consignment sale. Migration 0120 adds 4040 "
+      + "Commission Revenue and 2080 Payable to Consignors.");
+  }
+  const [deferred] = inv?.to_deliver
+    ? await tx`select fn_system_account(${companyId}, 'DEFERRED_REVENUE') as a`
+    : [null];
 
-    const total = round4(priced.reduce((s: number, r: any) => s + r.amount, 0));
-    if (total <= 0) continue;
+  for (const [consignorId, takes] of byConsignor) {
+    const owed = roundMoney(takes.reduce((s, t) => s + t.share, 0), scale);
+    const gross = roundMoney(takes.reduce((s, t) => s + t.gross, 0), scale);
+    if (owed === 0 && gross === 0) continue;
 
     const [consignor] = await tx`
       select code, payment_terms_days from business_partner where id = ${consignorId}`;
@@ -3127,7 +3216,7 @@ async function settleConsignmentSales(
       values
         (${companyId}, 'PURCHASE_INVOICE', ${docNo}, ${fiscalYear}, ${docDate}::date,
          ${docDate}::date, ${dueDate}, ${consignorId}, ${locationId}, 'MMK', 1, 'POSTED',
-         ${total}, 0, ${total},
+         ${owed}, 0, ${owed},
          ${"Consignment settlement for " + salesInvoiceNo}, now(), ${salesInvoiceId})
       returning id`;
 
@@ -3135,14 +3224,15 @@ async function settleConsignmentSales(
     let lineNo = 0;
 
     // One line per item, its own amount aggregated across however many lots
-    // of it were drawn — the account a given item's COGS resolves to can
-    // differ by item group, so these are not collapsed into one figure.
-    const byItem = new Map<string, { qty: number; amount: number }>();
-    for (const r of priced) {
-      const cur = byItem.get(r.item_id) ?? { qty: 0, amount: 0 };
-      cur.qty = round4(cur.qty + Number(r.qty));
-      cur.amount = round4(cur.amount + r.amount);
-      byItem.set(r.item_id, cur);
+    // of it were drawn — the revenue account can differ by item group, so
+    // these are not collapsed into one figure.
+    const byItem = new Map<string, { qty: number; gross: number; share: number }>();
+    for (const t of takes) {
+      const cur = byItem.get(t.item_id) ?? { qty: 0, gross: 0, share: 0 };
+      cur.qty = round4(cur.qty + t.qty);
+      cur.gross = roundMoney(cur.gross + t.gross, scale);
+      cur.share = roundMoney(cur.share + t.share, scale);
+      byItem.set(t.item_id, cur);
     }
 
     for (const [itemId, agg] of byItem) {
@@ -3153,16 +3243,20 @@ async function settleConsignmentSales(
            entered_qty, base_qty, unit_price, net_amount, tax_amount, gross_amount)
         values
           (${companyId}, ${settleDoc.id}, ${lineNo}, ${itemId},
-           ${agg.qty}, ${agg.qty}, ${round4(agg.amount / agg.qty)}, ${agg.amount}, 0, ${agg.amount})`;
+           ${agg.qty}, ${agg.qty}, ${round4(agg.share / agg.qty)}, ${agg.share}, 0, ${agg.share})`;
 
-      const cogs = await tx`
-        select fn_resolve_account_for_item(${companyId}, 'COGS', ${itemId}) as a`;
-      journal.push({ accountId: cogs[0].a, amount: agg.amount });
+      const earned = deferred
+        ? deferred
+        : (await tx`select fn_resolve_account_for_item(${companyId}, 'REVENUE', ${itemId}) as a`)[0];
+      if (agg.gross !== 0) journal.push({ accountId: earned.a, amount: agg.gross });
     }
 
-    const ap = await tx`
-      select fn_resolve_control_account(${companyId}, 'AP_CONTROL', ${consignorId}) as a`;
-    journal.push({ accountId: ap[0].a, amount: -total, partnerId: consignorId });
+    // What is left after the consignor is paid. Negative when the share was
+    // agreed at a fixed price above what the goods sold for — a loss on the
+    // sale, and the commission line says so rather than hiding it.
+    const kept = roundMoney(gross - owed, scale);
+    if (kept !== 0) journal.push({ accountId: commission.a, amount: -kept });
+    if (owed !== 0) journal.push({ accountId: payable.a, amount: -owed, partnerId: consignorId });
 
     const entryId = await writeJournal(
       tx, companyId, docDate, "PURCHASE_INVOICE", settleDoc.id,
@@ -3170,11 +3264,11 @@ async function settleConsignmentSales(
     );
     await tx`update document set journal_entry_id = ${entryId} where id = ${settleDoc.id}`;
 
-    for (const r of priced) {
+    for (const t of takes) {
       await tx`
         insert into consignment_settlement_line
           (company_id, consumption_id, settlement_document_id, qty, amount)
-        values (${companyId}, ${r.consumption_id}, ${settleDoc.id}, ${r.qty}, ${r.amount})`;
+        values (${companyId}, ${t.consumption_id}, ${settleDoc.id}, ${t.qty}, ${t.share})`;
 
       // The original column, only while it is still empty. 0030 lets it go
       // from nothing to a first settlement and never change again, which is
@@ -3183,7 +3277,7 @@ async function settleConsignmentSales(
       await tx`
         update consignment_lot_consumption
            set settlement_document_id = ${settleDoc.id}
-         where id = ${r.consumption_id} and settlement_document_id is null`;
+         where id = ${t.consumption_id} and settlement_document_id is null`;
     }
   }
 }
@@ -3724,17 +3818,12 @@ async function _postSalesInvoice(
 
   await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
 
-  // If the delivery behind this invoice drew any consigned stock, this is
-  // the moment — recognized at the invoice, not the delivery, at the price
-  // this customer is actually being charged. A sale with no consigned lines
-  // finds nothing to settle and returns immediately.
-  if (input.deliveryId) {
-    await settleConsignmentSales(
-      tx, companyId, docDate, doc.id, docNo, input.deliveryId,
-      input.lines.map((l) => ({ itemId: l.itemId, unitPrice: l.unitPrice })),
-      locationId
-    );
-  }
+  // Consigned goods among what the deliveries behind this invoice drew: the
+  // sale is complete now, so what was credited to Sales for them becomes a
+  // commission and a payable to the consignor. A sale with no consigned
+  // lines finds nothing to settle and returns immediately.
+  await settleConsignmentSales(
+    tx, companyId, docDate, doc.id, docNo, deliveriesBehind, locationId);
 
   // Money taken at the counter becomes a real receipt document allocated to
   // this invoice, rather than a number on the invoice header. That is what
@@ -6643,6 +6732,37 @@ export type SettlementInput = {
   amendOf?: AmendIdentity | null;
 };
 
+/**
+ * The control account an invoice was actually posted to.
+ *
+ * Usually the partner's default, but not always: a consignment settlement
+ * owes the consignor through 2080, not 2000, and the same partner can have
+ * both kinds of bill open. Relieving whichever account the partner resolves
+ * to today would debit 2000 for money that sat in 2080 — balanced, and
+ * wrong in both. So the invoice's own entry decides, and the default is
+ * only for an invoice with no control line to read.
+ */
+async function invoiceControlAccount(
+  tx: TransactionSql,
+  companyId: string,
+  invoiceId: string,
+  role: "AP_CONTROL" | "AR_CONTROL",
+  partnerId: string,
+): Promise<string> {
+  const [posted] = await tx`
+    select jl.account_id
+      from document d
+      join journal_line jl on jl.journal_entry_id = d.journal_entry_id
+      join account a on a.id = jl.account_id
+     where d.id = ${invoiceId} and a.is_control and jl.partner_id = d.partner_id
+     order by abs(jl.amount) desc
+     limit 1`;
+  if (posted) return posted.account_id as string;
+  const [fallback] = await tx`
+    select fn_resolve_control_account(${companyId}, ${role}, ${partnerId}) as a`;
+  return fallback.a as string;
+}
+
 async function postSettlement(
   input: SettlementInput,
   kind: "SUPPLIER_PAYMENT" | "CUSTOMER_RECEIPT",
@@ -6700,10 +6820,13 @@ async function postSettlement(
     // us. Everything balanced. Every figure was wrong.
     const settles = isPayment ? "PURCHASE_INVOICE" : "SALES_INVOICE";
 
-    // Amount being settled per invoice branch. "" stands for an invoice that
-    // carries no branch — entries posted before the dimension existed — and
-    // is deliberately kept null rather than defaulted, so relieving old AP
-    // does not invent a branch balance that was never raised in one.
+    // Amount being settled per control account and invoice branch. "" stands
+    // for an invoice that carries no branch — entries posted before the
+    // dimension existed — and is deliberately kept null rather than
+    // defaulted, so relieving old AP does not invent a branch balance that
+    // was never raised in one. The account is the one each invoice was
+    // posted to, so one payment can clear a bill in 2000 and a consignment
+    // settlement in 2080 together.
     const controlByLocation = new Map<string, number>();
 
     // Check each invoice still owes what is being applied. Two people paying
@@ -6750,7 +6873,9 @@ async function postSettlement(
       // for ever — the invoice credited AP there and nothing ever debits it
       // back. Grouped so one payment covering several bills from the same
       // branch still posts a single control line.
-      const key = (inv.location_id as string | null) ?? "";
+      const control = await invoiceControlAccount(
+        tx, companyId, a.invoiceId, controlRole, partnerId);
+      const key = `${control}|${(inv.location_id as string | null) ?? ""}`;
       controlByLocation.set(key, round4((controlByLocation.get(key) ?? 0) + a.amount));
     }
 
@@ -6759,7 +6884,8 @@ async function postSettlement(
     // bills and is the overwhelmingly common case. Genuinely mixed payments
     // with no choice made stay unattributed on the cash side rather than
     // being assigned to whichever branch happened to sort first.
-    const settledLocations = [...controlByLocation.keys()].filter((k) => k !== "");
+    const settledLocations = [...new Set(
+      [...controlByLocation.keys()].map((k) => k.split("|")[1]))].filter((k) => k !== "");
     const cashLocationId =
       input.locationId ?? (settledLocations.length === 1 ? settledLocations[0] : null);
 
@@ -6802,12 +6928,11 @@ async function postSettlement(
         locationId: cashLocationId,
       });
     } else {
-      const control = await tx`
-        select fn_resolve_control_account(${companyId}, ${controlRole}, ${partnerId}) as a`;
       for (const [key, amount] of controlByLocation) {
+        const [accountId, location] = key.split("|");
         journal.push({
-          accountId: control[0].a, amount: round4(sign * amount), partnerId,
-          locationId: key === "" ? null : key,
+          accountId, amount: round4(sign * amount), partnerId,
+          locationId: location === "" ? null : location,
         });
       }
     }
@@ -6964,9 +7089,9 @@ export async function applyAdvance(input: {
     const holding = await tx`
       select fn_system_account(${companyId},
         ${isPayment ? "SUPPLIER_ADVANCE" : "CUSTOMER_ADVANCE"}) as a`;
-    const control = await tx`
-      select fn_resolve_control_account(${companyId},
-        ${isPayment ? "AP_CONTROL" : "AR_CONTROL"}, ${inv.partner_id}) as a`;
+    const control = [{ a: await invoiceControlAccount(
+      tx, companyId, inv.id as string, isPayment ? "AP_CONTROL" : "AR_CONTROL",
+      inv.partner_id as string) }];
 
     // Customer: the advance stops being owed back (debit) and the receivable
     // is relieved (credit). Supplier: the reverse.
@@ -7000,6 +7125,126 @@ export async function applyAdvance(input: {
     await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
 
     return { id: doc.id as string, docNo: docNo as string, total };
+  });
+}
+
+/**
+ * Give money taken in advance back.
+ *
+ * Until this existed an advance could only leave Customer Advances by
+ * settling an invoice. A customer who paid up front and then cancelled had
+ * their money parked there for ever, owed back and with no way to pay it
+ * back through the books; a supplier returning a deposit had nowhere to put
+ * it either.
+ *
+ *   customer   Dr Customer Advances   Cr Cash or Bank      money goes back out
+ *   supplier   Dr Cash or Bank        Cr Supplier Advances money comes back in
+ *
+ * The refund is its own document, pointing at the advance it gives back, and
+ * `v_partner_advance` subtracts posted refunds from what is available. So a
+ * refund and an application draw on the same balance: refund 400 of a 1,000
+ * advance and only 600 can then be applied, and the other way round. Voiding
+ * the refund restores the balance with no special case, because only posted
+ * refunds count.
+ *
+ * Only what is still unapplied can go back. Money already pointed at an
+ * invoice has settled that invoice; giving it back too would pay it twice.
+ * To refund applied money, take the application back first.
+ */
+export async function refundAdvance(input: {
+  companyId: string;
+  /** The receipt or payment taken on account. */
+  paymentId: string;
+  amount: number;
+  /** The cash or bank account the money leaves or arrives through. */
+  cashAccountId: string;
+  docDate: string;
+  memo?: string | null;
+}, outer?: TransactionSql) {
+  assertFinite(input.amount, "Refund amount");
+  if (!(input.amount > 0)) throw new Error("A refund needs an amount above nothing");
+  if (!input.cashAccountId) throw new Error("Choose which cash or bank account to use");
+
+  return inTransaction(outer, async (tx) => {
+    const { companyId, docDate } = input;
+
+    const fyRows = await tx`select fn_fiscal_year_for(${companyId}, ${docDate}::date) as fy`;
+    const fiscalYear = fyRows[0]?.fy ?? null;
+    if (!fiscalYear) throw new Error(`No fiscal year covers ${docDate}`);
+
+    // Locked, because what follows reads what is left on the advance and then
+    // spends it: two people refunding the same deposit at once must not both
+    // see the full amount.
+    const [adv] = await tx`
+      select d.id, d.doc_no, d.doc_type, d.partner_id, d.location_id, d.status
+        from document d
+       where d.id = ${input.paymentId} and d.company_id = ${companyId}
+         for update`;
+    if (!adv) throw new Error("That advance no longer exists");
+    if (adv.doc_type !== "CUSTOMER_RECEIPT" && adv.doc_type !== "SUPPLIER_PAYMENT") {
+      throw new Error(`${adv.doc_no} is not money taken or paid on account`);
+    }
+    if (adv.status !== "POSTED") {
+      throw new Error(`${adv.doc_no} is ${String(adv.status).toLowerCase()} and has nothing to refund`);
+    }
+
+    const [left] = await tx`
+      select available from v_partner_advance where payment_id = ${adv.id}`;
+    const available = Number(left?.available ?? 0);
+    const amount = round4(input.amount);
+    if (amount > available + 0.0001) {
+      throw new Error(
+        available > 0
+          ? `${adv.doc_no} has ${available} left on account, so ${amount} cannot be refunded. `
+            + `Anything already applied to an invoice has settled it.`
+          : `${adv.doc_no} has nothing left on account to refund — it has all been applied.`
+      );
+    }
+
+    const [cash] = await tx`
+      select id from account
+       where id = ${input.cashAccountId} and company_id = ${companyId}
+         and is_cash_account and is_postable and is_active`;
+    if (!cash) throw new Error("That is not a cash or bank account");
+
+    const customer = adv.doc_type === "CUSTOMER_RECEIPT";
+    const noRows = await tx`
+      select fn_next_document_no(${companyId}, 'ADVANCE_REFUND', ${docDate}::date) as no`;
+    const docNo = noRows[0].no as string;
+
+    const [doc] = await tx`
+      insert into document
+        (company_id, doc_type, doc_no, fiscal_year_id, doc_date, posting_date,
+         partner_id, location_id, currency, exchange_rate, status,
+         net_total, tax_total, gross_total, memo, source_document_id, posted_at)
+      values
+        (${companyId}, 'ADVANCE_REFUND', ${docNo}, ${fiscalYear},
+         ${docDate}::date, ${docDate}::date, ${adv.partner_id}, ${adv.location_id},
+         'MMK', 1, 'POSTED', ${amount}, 0, ${amount},
+         ${input.memo ?? `Refunding ${adv.doc_no}`}, ${adv.id}, now())
+      returning id`;
+
+    const holding = await tx`
+      select fn_system_account(${companyId},
+        ${customer ? "CUSTOMER_ADVANCE" : "SUPPLIER_ADVANCE"}) as a`;
+
+    /* Both legs against the branch that took the money, because that is
+       where the advance sits and where the cash goes back out of. */
+    const sign = customer ? 1 : -1;
+    const journal: JournalLine[] = [
+      { accountId: holding[0].a as string, amount: round4(sign * amount),
+        partnerId: adv.partner_id as string,
+        locationId: adv.location_id as string | null },
+      { accountId: cash.id as string, amount: round4(-sign * amount),
+        locationId: adv.location_id as string | null },
+    ];
+
+    const entryId = await writeJournal(
+      tx, companyId, docDate, "ADVANCE_REFUND", doc.id,
+      `${docNo} refunding ${amount} of ${adv.doc_no}`, journal);
+    await tx`update document set journal_entry_id = ${entryId} where id = ${doc.id}`;
+
+    return { id: doc.id as string, docNo, amount };
   });
 }
 
@@ -9959,13 +10204,20 @@ export async function resettleConsignmentSale(input: {
     if (inv.status !== "POSTED") {
       throw new Error("That invoice is not posted, so there is nothing to settle against it");
     }
-    if (!inv.source_document_id) {
-      throw new Error("That invoice has no delivery behind it, so it moved no consigned stock");
-    }
+    /* Every delivery this sale could have drawn consigned stock through:
+       the one it was raised from, the ones its order shipped, and the ones
+       raised against it when the goods followed the bill. */
+    const behind = await deliveriesBilledBy(
+      tx, input.companyId, inv.id, inv.source_document_id ?? null);
+    const after = await tx`
+      select id from document
+       where source_document_id = ${inv.id} and doc_type = 'DELIVERY' and status = 'POSTED'`;
+    const deliveries = [...new Set([
+      ...behind, ...(after as unknown as { id: string }[]).map((r) => r.id)])];
 
-    const outstanding = await tx`
+    const outstanding = deliveries.length === 0 ? [] : await tx`
       select 1 from v_consignment_unsettled
-       where delivery_document_id = ${inv.source_document_id} limit 1`;
+       where delivery_document_id = any(${deliveries}::uuid[]) limit 1`;
     if (outstanding.length === 0) {
       throw new Error(
         "Everything this sale took from consignment is already settled by a "
@@ -9973,20 +10225,13 @@ export async function resettleConsignmentSale(input: {
       );
     }
 
-    const lines = await tx`
-      select item_id, unit_price from document_line
-       where document_id = ${inv.id} and item_id is not null`;
-
     const before = await tx`
       select id from document
        where company_id = ${input.companyId} and doc_type = 'PURCHASE_INVOICE'`;
 
     await settleConsignmentSales(
       tx, input.companyId, input.docDate ?? String(inv.doc_date), inv.id, inv.doc_no,
-      inv.source_document_id,
-      (lines as unknown as { item_id: string; unit_price: string }[])
-        .map((l) => ({ itemId: l.item_id, unitPrice: Number(l.unit_price) })),
-      inv.location_id
+      deliveries, inv.location_id
     );
 
     const seen = new Set((before as unknown as { id: string }[]).map((r) => r.id));
