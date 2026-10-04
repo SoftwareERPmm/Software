@@ -86,12 +86,36 @@ export async function getInventoryCogsData({ from, to, branch }: Params) {
   const fifoValue = r4(n(recon.fifo.value) - n(recon.negative.value));
   const fifoGap = r4(fifoValue - closing);
 
-  const calculatedCogs = r4(
+  /* Stock no longer becomes cost of sales in one move. It leaves inventory
+     for 1090 when the goods go, and reaches 5000 when the invoice bills
+     them, so there are three accounts and two steps to check rather than
+     two accounts and one. */
+  const shippedCost = r4(
     recon.consumption
       .filter((c) => c.account_id != null && c.account_id === recon.cogsId)
-      .reduce((s, c) => s + n(c.value), 0)
-    - n(recon.returnedToCogs.value));
-  const postedCogs = r4(n(recon.postedCogs.value));
+      .reduce((s, c) => s + n(c.value), 0));
+
+  const held = recon.held;
+  const heldIn = r4(n(held?.shipped_in));
+  const heldOut = r4(n(held?.invoiced_out));
+  const heldClosing = r4(n(held?.closing));
+  const heldUnclaimed = r4(n(held?.unclaimed));
+  /* What the account holds against what the claims say is unclaimed. The
+     two are the same fact counted from opposite ends — the ledger and the
+     allocation rows — so a gap means cost reached 1090 by a route nothing
+     claimed, or a claim exists for cost that never arrived. */
+  const heldGap = r4(heldClosing - heldUnclaimed);
+  /* Goods shipped in the period against what the holding account received.
+     Both are the delivery's own doing, so they tie unless a delivery moved
+     stock without posting, or posted without moving it. */
+  const shippedGap = r4(shippedCost - heldIn);
+
+  /* What the claims released, against what cost of sales actually received
+     from selling. A customer return credits 5000 as well and is not a claim
+     being undone, so it is left out of the right-hand side rather than
+     quietly spoiling the comparison. */
+  const postedCogs = r4(n(recon.held?.cogs_from_sales));
+  const calculatedCogs = heldOut;
   const cogsGap = r4(calculatedCogs - postedCogs);
 
   return {
@@ -102,6 +126,7 @@ export async function getInventoryCogsData({ from, to, branch }: Params) {
     fifoValue, fifoGap, lots: recon.fifo.lots,
     negativeValue: r4(n(recon.negative.value)), negativeQty: r4(n(recon.negative.qty)),
     calculatedCogs, postedCogs, cogsGap,
+    shippedCost, heldIn, heldOut, heldClosing, heldUnclaimed, heldGap, shippedGap,
   };
 }
 

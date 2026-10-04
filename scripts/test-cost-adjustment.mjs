@@ -183,12 +183,16 @@ try {
       lines: [{ itemId: item.id, qty: 20, unitPrice: 130, sourceLineId: grLine.id }],
     });
 
-    const cogsBefore = await balance("5000");
+    /* Measured at 1090, not 5000. The goods leave into the holding account
+       and reach cost of sales when an invoice bills them
+       (docs/03-decisions.md, D8) — what is being checked here is the cost
+       they were relieved at, which is the same figure either way. */
+    const cogsBefore = await balance("1090");
     await P.postDelivery({
       companyId: co.id, partnerId: cust.id, locationId: loc.id, docDate: today,
       lines: [{ itemId: item.id, qty: 5, unitPrice: 500 }],
     });
-    const relieved = round(await balance("5000") - cogsBefore);
+    const relieved = round(await balance("1090") - cogsBefore);
     check("goods issued after the correction cost 130, not 100",
       near(relieved, 650), `cost of sale ${relieved}`);
     check("  and the 15 left are worth 1,950",
@@ -301,12 +305,12 @@ try {
 
     // The eight that moved carry the corrected cost too, or selling them from
     // the second warehouse would relieve inventory at the old figure.
-    const cogsBefore2 = await balance("5000");
+    const cogsBefore2 = await balance("1090");
     await P.postDelivery({
       companyId: co.id, partnerId: cust.id, locationId: other.id, docDate: today,
       lines: [{ itemId: item.id, qty: 8, unitPrice: 500 }],
     });
-    const relieved = round(await balance("5000") - cogsBefore2);
+    const relieved = round(await balance("1090") - cogsBefore2);
     check("  selling them from the other warehouse costs 130 each",
       near(relieved, 1040), `cost of sale ${relieved}`);
   }

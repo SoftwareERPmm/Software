@@ -136,6 +136,13 @@ try {
      where id = fn_resolve_account_for_item(${co.id}, ${purpose}, ${item.id})`)[0].code;
   const [revenueCode, inventoryCode, cogsCode] =
     await Promise.all([acct("REVENUE"), acct("INVENTORY"), acct("COGS")]);
+  /* Goods sold now leave inventory for the holding account and reach cost
+     of sales when the invoice bills them — docs/03-decisions.md, D8. For a
+     counter sale both happen at once, but on two documents, so the debit
+     that used to be on the delivery is now split across the pair. */
+  const heldCode = (await sql`
+    select code from account
+     where id = fn_system_account(${co.id}, 'SHIPPED_NOT_INVOICED')`)[0].code;
 
   const invJ = await journalOf(sale.id);
   check("revenue is the ten only",
@@ -153,8 +160,12 @@ try {
 
   check("inventory is relieved of all twelve at cost",
     delJ.some((l) => n(l.credit) === 12000 && l.account_code === inventoryCode), "12 × 1000");
-  check("the ten sold hit COGS",
-    delJ.some((l) => n(l.debit) === 10000 && l.account_code === cogsCode));
+  check("the ten sold wait in goods shipped not invoiced",
+    delJ.some((l) => n(l.debit) === 10000 && l.account_code === heldCode));
+  check("  and the invoice moves them to COGS",
+    invJ.some((l) => n(l.debit) === 10000 && l.account_code === cogsCode));
+  check("  clearing the holding account as it goes",
+    invJ.some((l) => n(l.credit) === 10000 && l.account_code === heldCode));
   check(`the two free hit ${focAcct.code} ${focAcct.name}, not COGS`,
     delJ.some((l) => n(l.debit) === 2000 && l.account_code === focAcct.code));
 

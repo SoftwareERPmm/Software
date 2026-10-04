@@ -6885,12 +6885,14 @@ export async function getInventoryCogsReconciliation(
   // would overstate it by every write-off in the period.
   const [roles] = (await sql`
     select fn_resolve_account(${companyId}, 'INVENTORY', null, null, null) as inventory,
-           fn_resolve_account(${companyId}, 'COGS',      null, null, null) as cogs`) as unknown as
-    Array<{ inventory: string | null; cogs: string | null }>;
+           fn_resolve_account(${companyId}, 'COGS',      null, null, null) as cogs,
+           fn_system_account(${companyId}, 'SHIPPED_NOT_INVOICED') as held`) as unknown as
+    Array<{ inventory: string | null; cogs: string | null; held: string | null }>;
 
   if (!roles?.inventory) return null;
   const inventoryId = roles.inventory;
   const cogsId = roles.cogs;
+  const heldId = roles.held;
 
   /* Opening is everything posted before the period opens, closing everything
      up to and including its last day — the same account, read at two dates,
@@ -7064,51 +7066,127 @@ export async function getInventoryCogsReconciliation(
        ${branchFilter(branchId)}`) as unknown as Array<{ value: string }>
     : [{ value: "0" }];
 
+  /* The step between inventory and cost of sales.
+
+     Stock leaving no longer becomes cost of sales in one move. It goes to
+     1090 when the goods leave and reaches 5000 when the invoice bills them,
+     so the reconciliation has to show three accounts and two steps rather
+     than two accounts and one — otherwise a month that shipped more than it
+     billed looks like inventory that went nowhere.
+
+     `shippedIn` is what deliveries put there in the period, `invoicedOut`
+     what invoices took to cost of sales, and `unclaimed` is what the
+     allocation rows say is still sitting there. Closing and unclaimed must
+     agree; where they do not, cost reached the account by a route nothing
+     claimed, or a claim exists for cost that never arrived. */
+  /* The two movements are not read off the signs of the journal lines.
+     A reversal debits this account, so "every positive line" is not
+     "goods shipped" — it is goods shipped plus every invoice anybody
+     voided. And a delivery sent against a bill already raised credits the
+     account in its own entry, so "every negative line" is not "invoices"
+     either.
+     What is released is exactly what the claims say: every allocation row
+     carries the cost it moved and the document whose entry moved it. What
+     was shipped in then follows from the account itself — where it
+     started, where it ended, and what left it — which needs no attribution
+     at all. */
+  const heldBal = heldId
+    ? ((await sql`
+        select
+          coalesce(sum(jl.base_amount) filter (
+            where je.entry_date < ${from}::date), 0) as opening,
+          coalesce(sum(jl.base_amount) filter (
+            where je.entry_date <= ${to}::date), 0) as closing
+          from journal_line jl
+          join journal_entry je on je.id = jl.journal_entry_id
+         where jl.company_id = ${companyId}
+           and jl.account_id = ${heldId}
+           ${branchFilter(branchId)}`) as unknown as Array<{
+             opening: string; closing: string }>)[0]
+    : null;
+
+  const [releasedRow] = heldId
+    ? ((await sql`
+        select coalesce(sum(al.qty * al.unit_cost), 0) as value
+          from sales_cost_allocation al
+          join document pd on pd.id = al.posted_by_document_id
+         where al.company_id = ${companyId}
+           and pd.posting_date between ${from}::date and ${to}::date
+           ${branchId ? sql`and (pd.location_id = ${branchId} or exists (
+               select 1 from location l where l.id = pd.location_id
+                and l.parent_id = ${branchId}))` : sql``}`) as unknown as
+        Array<{ value: string }>)
+    : [{ value: "0" }];
+
+  /* Cost of sales that arrived by a claim being released, which is what
+     the allocation rows should equal.
+     Named precisely, because 5000 has other legitimate sources and
+     comparing against all of them would make this check fail for reasons
+     that are not faults: a customer return credits it, a repriced receipt
+     corrects it, and goods issued before they were received debit it
+     directly because there is no layer for an invoice to claim. A release
+     always posts cost of sales and the holding account in the same entry,
+     so that pairing is the thing to look for. */
+  const [cogsFromSales] = cogsId && heldId
+    ? ((await sql`
+        select coalesce(sum(jl.base_amount), 0) as value
+          from journal_line jl
+          join journal_entry je on je.id = jl.journal_entry_id
+         where jl.company_id = ${companyId}
+           and jl.account_id = ${cogsId}
+           and je.entry_date between ${from}::date and ${to}::date
+           and exists (
+             select 1 from sales_cost_allocation a
+              where a.posted_by_document_id = (
+                select d.id from document d where d.journal_entry_id = je.id))
+           ${branchFilter(branchId)}`) as unknown as Array<{ value: string }>)
+    : [{ value: "0" }];
+
+  const held = heldBal
+    ? {
+        opening: heldBal.opening,
+        closing: heldBal.closing,
+        invoiced_out: releasedRow.value,
+        cogs_from_sales: cogsFromSales.value,
+        shipped_in: String(
+          Number(heldBal.closing) - Number(heldBal.opening) + Number(releasedRow.value)),
+      }
+    : null;
+
+  const [unclaimed] = heldId
+    ? ((await sql`
+        select coalesce(sum(value_unclaimed), 0) as value
+          from v_delivery_cost_unclaimed
+         where company_id = ${companyId}
+           and posting_date <= ${to}::date
+           ${branchId ? sql`and (location_id = ${branchId} or exists (
+               select 1 from location l where l.id = location_id
+                and l.parent_id = ${branchId}))` : sql``}`) as unknown as
+        Array<{ value: string }>)
+    : [{ value: "0" }];
+
   return {
-    inventoryId, cogsId, bal, movement, fifo, negative, consumption,
+    inventoryId, cogsId, heldId, bal, movement, fifo, negative, consumption,
     postedCogs, returnedToCogs,
+    held: held ? { ...held, unclaimed: unclaimed.value } : null,
   };
 }
 
 /** How a sales report is cut. */
 export type SalesBreakdownBy = "item" | "customer" | "category" | "brand";
 
-/**
- * Which question the sales report is answering.
- *
- * `period` is the books' own view: revenue is what was invoiced inside the
- * window, cost is what the deliveries consumed inside the same window, and
- * the two are never matched to each other. It ties to the income statement
- * and the general ledger to the kyat, which is exactly why it is here — but
- * in perpetual FIFO revenue and cost are recognised on different documents,
- * so goods delivered in June and billed in July put the cost in one month
- * and the revenue in the other, and a single month's margin can be nonsense
- * for a reason that is not a mistake.
- *
- * `profitability` is the trading view: it starts from the invoices in the
- * window, finds the goods that actually went out against them whenever they
- * went out, and costs that quantity at what those layers cost. Revenue and
- * cost then describe the same goods, so the margin means something at any
- * length of window. The price is that it no longer ties to the ledger, and
- * revenue with nothing delivered behind it has to sit outside the margin
- * rather than inside it — which the report shows rather than hides.
- */
-export type SalesBasis = "profitability" | "period";
-
-/** One row of a sales breakdown, on whichever basis was asked for. */
+/** One row of a sales breakdown. */
 export type SalesBreakdownRow = {
   key: string; code: string; name: string;
   /** Units invoiced in the period, free goods excluded. */
   qty: number;
-  /** Of those, the units with goods behind them. Equal to `qty` on the period basis. */
-  matchedQty: number;
   freeQty: number;
   invoices: number;
   gross: number;
   discount: number;
-  /** Revenue on the chosen basis: matched revenue, or the period's net sales. */
+  /** Net sales invoiced in the period. */
   revenue: number;
-  /** Invoiced in the period with no delivery behind it. Always 0 on the period basis. */
+  /** Invoiced in the period with no goods out behind it yet. */
   unmatched: number;
   returned: number;
   cost: number;
@@ -7167,82 +7245,22 @@ type MatchedSale = {
 };
 
 /**
- * Every way a posted sales invoice and a posted delivery are tied together,
- * as a CTE the callers that need the link can select from.
+ * Sales invoiced in the period, each line set against the cost of the goods
+ * behind it.
  *
- * Four paths write it and each writes it differently: the invoice names the
- * delivery (a counter sale composed atomically), the delivery names the
- * invoice (goods sent against a "deliver later" bill), both name the same
- * sales order, or the delivery was matched to the order afterwards through a
- * fulfilment_link. Checking one direction only leaves real sales reading as
- * unbilled.
+ * Read from the allocation rows, which are the ledger's own answer. When an
+ * invoice bills delivered goods it claims the exact FIFO layers they went
+ * out on and posts their cost to 5000; those claims are what this reads. No
+ * matching is reconstructed here and no FIFO is recomputed — the engine
+ * already decided, at posting time, which layers this sale consumed, and a
+ * report that worked it out again could disagree with the ledger.
  *
- * Kept as plain equality on the columns the paths actually write. An order
- * amended into a new version after one side named it is the case this
- * misses; that line then reads as unbilled, which is a visible state rather
- * than a wrong figure.
- */
-function salesInvoiceDeliveryPairs(companyId: string) {
-  return sql`
-    pairs as (
-      select si.id as invoice_id, dv.id as delivery_id
-        from document si
-        join document dv on dv.id = si.source_document_id
-                        and dv.doc_type = 'DELIVERY' and dv.status = 'POSTED'
-       where si.company_id = ${companyId}
-         and si.doc_type = 'SALES_INVOICE' and si.status = 'POSTED'
-      union
-      select si.id, dv.id
-        from document dv
-        join document si on si.id = dv.source_document_id
-                        and si.doc_type = 'SALES_INVOICE' and si.status = 'POSTED'
-       where dv.company_id = ${companyId}
-         and dv.doc_type = 'DELIVERY' and dv.status = 'POSTED'
-      union
-      select si.id, dv.id
-        from document si
-        join document o on o.id = si.source_document_id and o.doc_type = 'SALES_ORDER'
-        join document dv on dv.source_document_id = o.id
-                        and dv.doc_type = 'DELIVERY' and dv.status = 'POSTED'
-       where si.company_id = ${companyId}
-         and si.doc_type = 'SALES_INVOICE' and si.status = 'POSTED'
-      union
-      select si.id, dv.id
-        from document si
-        join document o on o.id = si.source_document_id and o.doc_type = 'SALES_ORDER'
-        join document_line ol on ol.document_id = o.id
-        join fulfilment_link fl on fl.order_line_id = ol.id
-        join document_line fdl on fdl.id = fl.fulfilment_line_id
-        join document dv on dv.id = fdl.document_id
-                        and dv.doc_type = 'DELIVERY' and dv.status = 'POSTED'
-       where si.company_id = ${companyId}
-         and si.doc_type = 'SALES_INVOICE' and si.status = 'POSTED'
-    )`;
-}
-
-/**
- * Sales invoiced in the period, each line set against the goods that went
- * out for it — whenever they went out.
- *
- * Nothing here is a new rule about the ledger; it is a reading of links the
- * documents already carry. An invoice and a delivery find each other four
- * ways, because four paths write the link and each writes it differently:
- * the invoice names the delivery (a counter sale composed atomically), the
- * delivery names the invoice (goods sent against a "deliver later" bill),
- * both name the same sales order, or the delivery was matched to the order
- * afterwards through a fulfilment_link. Checking one direction only would
- * leave real sales reading as unmatched.
- *
- * Quantity is matched per item rather than line by line, because the paths
- * that compose a delivery with its invoice leave `source_line_id` null on
- * both sides — the documents are linked, their lines are not. Deliveries are
- * drawn down oldest first, and every invoice that touches a delivery takes
- * its turn in posting order, so one delivery billed across two invoices is
- * not counted twice.
+ * Revenue with no claim behind it is revenue for goods that have not gone
+ * out. It is reported separately rather than counted as pure margin.
  *
  * Goods that are not stocked — services, fees, anything with no layers to
  * consume — are matched in full at no cost. They are earned when invoiced
- * and there is no delivery owing on them, so parking their revenue outside
+ * and there is no delivery owing on them, so holding their revenue outside
  * the margin for ever would be the wrong answer, not a cautious one.
  */
 async function matchInvoicedSales(
@@ -7251,162 +7269,56 @@ async function matchInvoicedSales(
 ): Promise<MatchedSale[]> {
   const { dim, code, name, joins } = salesDimension(by);
 
-  /* Every way a posted sales invoice and a posted delivery are tied
-     together. Kept as plain equality on the columns the paths actually
-     write: an order amended into a new version after one side named it is
-     the one case this misses, and that line then reads as unmatched, which
-     is a visible state rather than a wrong figure. */
-  const pairs = salesInvoiceDeliveryPairs(companyId);
-
-  /* Everything tangled up with this period's invoices, followed until it
-     stops growing.
-     One hop is not enough. A delivery half-billed in June and half in July
-     must not hand the same goods to both, so the June invoice has to be in
-     the reckoning even though it is outside the window — and that invoice
-     may itself be drawing on a second delivery, which a third invoice also
-     draws on. Stopping early leaves a delivery in the pool with a claimant
-     missing from it, and the goods get counted twice.
-     Invoice and delivery form a graph, and what is wanted is the component
-     this window sits in. In practice it closes in two hops — a counter sale
-     is one invoice and one delivery — so the loop almost always runs twice
-     and the cap is there for the pathological chain, where stopping with
-     part of the component is no worse than the one hop it replaces. */
-  const periodInvoices = (await sql`
-    select d.id from document d
-     where d.company_id = ${companyId}
-       and d.doc_type = 'SALES_INVOICE' and d.status = 'POSTED'
-       and d.posting_date between ${from}::date and ${to}::date
-       ${salesBranch(sql`d.location_id`, branchId)}`) as unknown as Array<{ id: string }>;
-  const inPeriod = new Set(periodInvoices.map((r) => r.id));
-  if (inPeriod.size === 0) return [];
-
-  let invoiceIds = [...inPeriod];
-  let deliveryIds: string[] = [];
-  let links: Array<{ invoice_id: string; delivery_id: string }> = [];
-
-  for (let hop = 0; hop < 6; hop++) {
-    const found = (await sql`
-      with ${pairs}
-      select p.invoice_id, p.delivery_id
-        from pairs p
-        join document si on si.id = p.invoice_id
-        join document dv on dv.id = p.delivery_id
-       where p.invoice_id = any(${invoiceIds})
-          ${deliveryIds.length > 0 ? sql`or p.delivery_id = any(${deliveryIds})` : sql``}
-       order by si.posting_date, si.doc_no, dv.posting_date, dv.doc_no`) as unknown as
-      Array<{ invoice_id: string; delivery_id: string }>;
-
-    const inv = new Set([...inPeriod, ...found.map((f) => f.invoice_id)]);
-    const dlv = new Set(found.map((f) => f.delivery_id));
-    const settled = inv.size === invoiceIds.length && dlv.size === deliveryIds.length;
-    invoiceIds = [...inv];
-    deliveryIds = [...dlv];
-    links = found;
-    if (settled) break;
-  }
-
-  const invLines = (await sql`
-    select d.id as invoice_id, d.posting_date, d.doc_no,
+  const rows = (await sql`
+    select d.id as invoice_id,
            to_char(d.posting_date, 'YYYY-MM') as month,
-           dl.item_id, i.is_stocked,
            ${dim} as key, ${code} as code, ${name} as name,
            sum(dl.base_qty) as qty,
            sum(dl.base_qty * coalesce(dl.unit_price, 0)) as gross,
            sum(coalesce(dl.discount_amount, 0)
              + coalesce(dl.volume_discount_amount, 0)
              + coalesce(dl.invoice_discount_amount, 0)) as discount,
-           sum(dl.net_amount) as net
+           sum(dl.net_amount) as net,
+           -- Stocked goods are matched by what was claimed against them.
+           -- Anything not stocked has nothing to claim and nothing owing.
+           sum(case when i.is_stocked then coalesce(alloc.qty, 0)
+                    else dl.base_qty end) as matched_qty,
+           coalesce(sum(alloc.cost), 0) as matched_cost
       from document_line dl
       join document d on d.id = dl.document_id
       ${joins}
-     where dl.document_id = any(${invoiceIds})
+      left join lateral (
+        select sum(a.qty) as qty, sum(a.qty * a.unit_cost) as cost
+          from sales_cost_allocation a
+         where a.invoice_line_id = dl.id
+      ) alloc on true
+     where d.company_id = ${companyId}
+       and d.doc_type = 'SALES_INVOICE'
+       and d.status = 'POSTED'
+       and d.posting_date between ${from}::date and ${to}::date
        and dl.foc_reason_id is null
-     group by 1, 2, 3, 4, 5, 6, 7, 8, 9
-     order by d.posting_date, d.doc_no`) as unknown as Array<{
-       invoice_id: string; month: string; item_id: string; is_stocked: boolean;
-       key: string; code: string; name: string;
+       ${salesBranch(sql`d.location_id`, branchId)}
+     group by 1, 2, 3, 4, 5`) as unknown as Array<{
+       invoice_id: string; month: string; key: string; code: string; name: string;
        qty: string; gross: string; discount: string; net: string;
+       matched_qty: string; matched_cost: string;
      }>;
 
-  /* What each delivery put out, and what those layers cost. Quantity comes
-     from the delivery line and cost from the layers it consumed, so goods
-     that went out on negative stock still count as delivered — they are
-     simply costed at whatever was recorded, which is how the rest of the
-     report treats them too. Only consumption charged to cost of sales: a
-     giveaway's cost went to promotion expense and is not part of what these
-     sales cost. */
-  const dlvQty = deliveryIds.length === 0 ? [] : (await sql`
-    select dl.document_id as delivery_id, dl.item_id, sum(dl.base_qty) as qty
-      from document_line dl
-     where dl.document_id = any(${deliveryIds})
-       and dl.foc_reason_id is null
-     group by 1, 2`) as unknown as Array<{ delivery_id: string; item_id: string; qty: string }>;
-
-  const dlvCost = deliveryIds.length === 0 ? [] : (await sql`
-    select dl.document_id as delivery_id, dl.item_id, sum(c.qty * c.unit_cost) as cost
-      from stock_lot_consumption c
-      join stock_movement sm on sm.id = c.stock_movement_id
-      join document_line dl on dl.id = sm.document_line_id
-     where c.company_id = ${companyId}
-       and dl.document_id = any(${deliveryIds})
-       and c.expense_account_id = fn_resolve_account(${companyId}, 'COGS', null, null, null)
-     group by 1, 2`) as unknown as Array<{ delivery_id: string; item_id: string; cost: string }>;
-
-  const costOf = new Map(dlvCost.map((c) => [`${c.delivery_id}|${c.item_id}`, Number(c.cost)]));
-  /** Goods still unspoken for, per delivery and item. */
-  const pool = new Map<string, { left: number; unit: number }>();
-  for (const d of dlvQty) {
-    const k = `${d.delivery_id}|${d.item_id}`;
-    const q = Number(d.qty);
-    if (q <= 0) continue;
-    pool.set(k, { left: q, unit: (costOf.get(k) ?? 0) / q });
-  }
-
-  const byInvoice = new Map<string, string[]>();
-  for (const l of links) {
-    const list = byInvoice.get(l.invoice_id) ?? [];
-    list.push(l.delivery_id);
-    byInvoice.set(l.invoice_id, list);
-  }
-
-  /* Invoices take their turn oldest first — invLines is ordered by posting
-     date — so the order goods are claimed in is the order they were billed
-     in rather than the order a query happened to return. */
-  const out: MatchedSale[] = [];
-  for (const line of invLines) {
-    const invQty = Number(line.qty);
-    const revenue = Number(line.net);
-    let need = invQty;
-    let cost = 0;
-
-    if (line.is_stocked) {
-      for (const dvId of byInvoice.get(line.invoice_id) ?? []) {
-        if (need <= 1e-9) break;
-        const p = pool.get(`${dvId}|${line.item_id}`);
-        if (!p || p.left <= 1e-9) continue;
-        const take = Math.min(need, p.left);
-        p.left -= take;
-        need -= take;
-        cost += take * p.unit;
-      }
-    } else {
-      need = 0;
-    }
-
-    const matchedQty = invQty - need;
-    if (!inPeriod.has(line.invoice_id)) continue;
-    out.push({
-      invoiceId: line.invoice_id, month: line.month,
-      key: line.key, code: line.code, name: line.name,
-      qty: invQty, gross: Number(line.gross), discount: Number(line.discount), revenue,
+  return rows.map((r) => {
+    const qty = Number(r.qty);
+    const revenue = Number(r.net);
+    const matchedQty = Number(r.matched_qty);
+    return {
+      invoiceId: r.invoice_id, month: r.month,
+      key: r.key, code: r.code, name: r.name,
+      qty, gross: Number(r.gross), discount: Number(r.discount), revenue,
       matchedQty,
       // Revenue follows the goods: bill ten, ship six, and six tenths of
       // what was charged has been earned against cost that is known.
-      matchedRevenue: invQty > 0 ? revenue * (matchedQty / invQty) : 0,
-      matchedCost: cost,
-    });
-  }
-  return out;
+      matchedRevenue: qty > 0 ? revenue * (matchedQty / qty) : 0,
+      matchedCost: Number(r.matched_cost),
+    };
+  });
 }
 
 /**
@@ -7427,7 +7339,6 @@ async function matchInvoicedSales(
 export async function getSalesBreakdown(
   companyId: string, from: string, to: string,
   by: SalesBreakdownBy, branchId?: string | null,
-  basis: SalesBasis = "period",
 ): Promise<SalesBreakdownRow[]> {
   const { dim, code, name, joins } = salesDimension(by);
   const branch = salesBranch(sql`d.location_id`, branchId);
@@ -7450,62 +7361,6 @@ export async function getSalesBreakdown(
      group by 1`) as unknown as Array<{ key: string; returned: string }>;
   const returnBy = new Map(returned.map((c) => [c.key, Number(c.returned)]));
 
-  if (basis === "profitability") {
-    const free = (await sql`
-      select ${dim} as key, ${code} as code, ${name} as name,
-             sum(dl.base_qty) as free_qty
-        from document_line dl
-        join document d on d.id = dl.document_id
-        ${joins}
-       where d.company_id = ${companyId}
-         and d.doc_type = 'SALES_INVOICE'
-         and d.status = 'POSTED'
-         and d.posting_date between ${from}::date and ${to}::date
-         and dl.foc_reason_id is not null
-         ${branch}
-       group by 1, 2, 3`) as unknown as Array<{
-         key: string; code: string; name: string; free_qty: string }>;
-
-    const lines = await matchInvoicedSales(companyId, from, to, by, branchId);
-
-    const acc = new Map<string, SalesBreakdownRow & { seen: Set<string> }>();
-    const blank = (key: string, c: string, n: string) => ({
-      key, code: c, name: n, qty: 0, matchedQty: 0, freeQty: 0, invoices: 0,
-      gross: 0, discount: 0, revenue: 0, unmatched: 0, returned: 0,
-      cost: 0, margin: 0, marginPct: null as number | null, seen: new Set<string>(),
-    });
-
-    for (const l of lines) {
-      const r = acc.get(l.key) ?? blank(l.key, l.code, l.name);
-      r.qty += l.qty;
-      r.matchedQty += l.matchedQty;
-      r.gross += l.gross;
-      r.discount += l.discount;
-      r.revenue += l.matchedRevenue;
-      r.unmatched += l.revenue - l.matchedRevenue;
-      r.cost += l.matchedCost;
-      r.seen.add(l.invoiceId);
-      acc.set(l.key, r);
-    }
-    /* A row that only gave goods away still belongs on the report: nothing
-       was earned, but something left the building. */
-    for (const f of free) {
-      const r = acc.get(f.key) ?? blank(f.key, f.code, f.name);
-      r.freeQty += Number(f.free_qty);
-      acc.set(f.key, r);
-    }
-
-    return [...acc.values()].map(({ seen, ...r }) => ({
-      ...r,
-      invoices: seen.size,
-      returned: returnBy.get(r.key) ?? 0,
-      margin: r.revenue - r.cost,
-      // No matched revenue means no margin to express as a share of it. A
-      // row that has only cost is not a 0% margin, it is a question.
-      marginPct: r.revenue === 0 ? null : ((r.revenue - r.cost) / r.revenue) * 100,
-    })).sort((a, b) => b.revenue - a.revenue || b.cost - a.cost);
-  }
-
   const revenue = await sql`
     select ${dim} as key, ${code} as code, ${name} as name,
            sum(case when dl.foc_reason_id is null then dl.base_qty else 0 end) as qty,
@@ -7527,24 +7382,66 @@ export async function getSalesBreakdown(
        ${branch}
      group by 1, 2, 3`;
 
-  /* The cost of what went out, from the layers the deliveries consumed.
-     Only consumption charged to cost of sales: a giveaway's cost went to
-     promotion expense and is not part of what these sales cost. */
+  /* What those sales cost, from the claims the invoices made on delivered
+     goods.
+     Read from the allocation rows rather than from consumption, because
+     cost of sales is recognised by the invoice now: a delivery puts cost in
+     1090 and the invoice moves it to 5000, so "what the deliveries consumed
+     in this period" stopped being the same question as "what this period
+     cost". Attributed to the document whose journal entry actually carried
+     it — the invoice normally, the delivery where the bill came first — so
+     this basis ties to the income statement, which is the whole reason it
+     exists. */
   const cost = await sql`
     select ${dim} as key, ${code} as code, ${name} as name,
-           sum(c.qty * c.unit_cost) as cost
-      from stock_lot_consumption c
-      join stock_movement sm on sm.id = c.stock_movement_id
-      join document_line dl on dl.id = sm.document_line_id
+           sum(a.qty * a.unit_cost) as cost
+      from sales_cost_allocation a
+      join document_line dl on dl.id = a.invoice_line_id
+      join document d on d.id = dl.document_id
+      join document pd on pd.id = a.posted_by_document_id
+      ${joins}
+     where a.company_id = ${companyId}
+       /* Not filtered to posted documents. A voided invoice is REVERSED,
+          and dropping it would take its claim out while leaving the
+          release its reversal wrote — subtracting a cost that was never
+          added. The two rows net to nothing together, which is what a void
+          means, and each falls in the period it was posted in. */
+       and pd.posting_date between ${from}::date and ${to}::date
+       ${branchId ? sql`and (pd.location_id = ${branchId} or exists (
+             select 1 from location l where l.id = pd.location_id and l.parent_id = ${branchId}))` : sql``}
+     group by 1, 2, 3`
+
+  /* Revenue invoiced in the period with no goods behind it yet.
+     Not an alternative reading of the report — the figures above are the
+     books' own, and this sits beside them as a warning. An invoice raised
+     before the goods go out earns revenue the ledger cannot yet put a cost
+     against, and that is the one way revenue and cost still part company
+     now that both are recognised on the invoice.
+     Goods that are not stocked are never awaiting shipment, so they are
+     left out rather than reported as permanently unmatched. */
+  const unmatched = await sql`
+    select ${dim} as key,
+           sum(dl.net_amount * (1 - least(
+             case when dl.base_qty > 0
+                  then coalesce(alloc.qty, 0) / dl.base_qty else 1 end, 1))) as unmatched
+      from document_line dl
       join document d on d.id = dl.document_id
       ${joins}
-     where c.company_id = ${companyId}
-       and d.doc_type = 'DELIVERY'
+      left join lateral (
+        select sum(a.qty) as qty from sales_cost_allocation a
+         where a.invoice_line_id = dl.id
+      ) alloc on true
+     where d.company_id = ${companyId}
+       and d.doc_type = 'SALES_INVOICE'
        and d.status = 'POSTED'
        and d.posting_date between ${from}::date and ${to}::date
-       and c.expense_account_id = fn_resolve_account(${companyId}, 'COGS', null, null, null)
+       and dl.foc_reason_id is null
+       and i.is_stocked
        ${branch}
-     group by 1, 2, 3`;
+     group by 1`;
+  const unmatchedBy = new Map(
+    (unmatched as unknown as Array<{ key: string; unmatched: string }>)
+      .map((u) => [u.key, Number(u.unmatched)]));
 
   const costBy = new Map((cost as unknown as Array<{ key: string; cost: string }>)
     .map((c) => [c.key, Number(c.cost)]));
@@ -7581,10 +7478,10 @@ export async function getSalesBreakdown(
     const q = Number(r?.qty ?? 0);
     return {
       key: k.key, code: k.code, name: k.name,
-      qty: q, matchedQty: q, freeQty: Number(r?.free_qty ?? 0),
+      qty: q, freeQty: Number(r?.free_qty ?? 0),
       invoices: r?.invoices ?? 0,
       gross: Number(r?.gross ?? 0), discount: Number(r?.discount ?? 0),
-      revenue: rev, unmatched: 0,
+      revenue: rev, unmatched: unmatchedBy.get(k.key) ?? 0,
       returned: returnBy.get(k.key) ?? 0,
       cost, margin: rev - cost,
       // No revenue means no margin to express as a share of it. A row that
@@ -7607,7 +7504,6 @@ export async function getSalesBreakdown(
  */
 export async function getSalesOverview(
   companyId: string, from: string, to: string, branchId?: string | null,
-  basis: SalesBasis = "period",
 ) {
   const branch = (alias: ReturnType<typeof sql>) => salesBranch(alias, branchId);
 
@@ -7623,17 +7519,7 @@ export async function getSalesOverview(
            to_char(${from}::date - 1, 'YYYY-MM-DD') as prev_to`) as unknown as
     Array<{ days: number; prev_from: string; prev_to: string }>;
 
-  /* On the profitability basis every figure but returns comes out of the
-     match, so it is run once per window and read several ways rather than
-     asked for again per number. */
-  const matched = basis === "profitability"
-    ? await Promise.all([
-        matchInvoicedSales(companyId, from, to, "item", branchId),
-        matchInvoicedSales(companyId, span.prev_from, span.prev_to, "item", branchId),
-      ])
-    : [null, null];
-
-  const totals = async (a: string, b: string, lines: MatchedSale[] | null) => {
+  const totals = async (a: string, b: string) => {
     const [ret] = (await sql`
       select coalesce(sum(dl.net_amount), 0) as returned
         from document_line dl
@@ -7643,46 +7529,46 @@ export async function getSalesOverview(
          and d.posting_date between ${a}::date and ${b}::date
          ${branch(sql`d.location_id`)}`) as unknown as Array<{ returned: string }>;
 
-    let net: number, units: number, c: number, discount: number, unmatched: number;
+    const [rev] = (await sql`
+      select coalesce(sum(case when dl.foc_reason_id is null then dl.net_amount else 0 end), 0) as net,
+             coalesce(sum(case when dl.foc_reason_id is null then dl.base_qty else 0 end), 0) as units,
+             coalesce(sum(coalesce(dl.discount_amount, 0)
+                        + coalesce(dl.volume_discount_amount, 0)
+                        + coalesce(dl.invoice_discount_amount, 0)), 0) as discount,
+             coalesce(sum(case when dl.foc_reason_id is null and i.is_stocked
+                  then dl.net_amount * (1 - least(
+                    case when dl.base_qty > 0
+                         then coalesce(alloc.qty, 0) / dl.base_qty else 1 end, 1))
+                  else 0 end), 0) as unmatched
+        from document_line dl
+        join document d on d.id = dl.document_id
+        join item i on i.id = dl.item_id
+        left join lateral (
+          select sum(al.qty) as qty from sales_cost_allocation al
+           where al.invoice_line_id = dl.id
+        ) alloc on true
+       where d.company_id = ${companyId} and d.doc_type = 'SALES_INVOICE'
+         and d.status = 'POSTED'
+         and d.posting_date between ${a}::date and ${b}::date
+         ${branch(sql`d.location_id`)}`) as unknown as
+      Array<{ net: string; units: string; discount: string; unmatched: string }>;
 
-    if (lines) {
-      net = lines.reduce((t, l) => t + l.matchedRevenue, 0);
-      units = lines.reduce((t, l) => t + l.matchedQty, 0);
-      c = lines.reduce((t, l) => t + l.matchedCost, 0);
-      discount = lines.reduce((t, l) => t + l.discount, 0);
-      unmatched = lines.reduce((t, l) => t + (l.revenue - l.matchedRevenue), 0);
-    } else {
-      const [rev] = (await sql`
-        select coalesce(sum(case when dl.foc_reason_id is null then dl.net_amount else 0 end), 0) as net,
-               coalesce(sum(case when dl.foc_reason_id is null then dl.base_qty else 0 end), 0) as units,
-               coalesce(sum(coalesce(dl.discount_amount, 0)
-                          + coalesce(dl.volume_discount_amount, 0)
-                          + coalesce(dl.invoice_discount_amount, 0)), 0) as discount
-          from document_line dl
-          join document d on d.id = dl.document_id
-         where d.company_id = ${companyId} and d.doc_type = 'SALES_INVOICE'
-           and d.status = 'POSTED'
-           and d.posting_date between ${a}::date and ${b}::date
-           ${branch(sql`d.location_id`)}`) as unknown as
-        Array<{ net: string; units: string; discount: string }>;
+    /* What hit cost of sales in the window, from the claims that carried
+       it there. Cost of sales is recognised by the invoice now, so the
+       deliveries' consumption is no longer the same question. */
+    const [cost] = (await sql`
+      select coalesce(sum(al.qty * al.unit_cost), 0) as cost
+        from sales_cost_allocation al
+        join document pd on pd.id = al.posted_by_document_id
+       where al.company_id = ${companyId}
+         and pd.posting_date between ${a}::date and ${b}::date
+         ${branch(sql`pd.location_id`)}`) as unknown as Array<{ cost: string }>;
 
-      const [cost] = (await sql`
-        select coalesce(sum(c.qty * c.unit_cost), 0) as cost
-          from stock_lot_consumption c
-          join stock_movement sm on sm.id = c.stock_movement_id
-          join document d on d.id = sm.document_id
-         where c.company_id = ${companyId} and d.doc_type = 'DELIVERY'
-           and d.status = 'POSTED'
-           and d.posting_date between ${a}::date and ${b}::date
-           and c.expense_account_id = fn_resolve_account(${companyId}, 'COGS', null, null, null)
-           ${branch(sql`d.location_id`)}`) as unknown as Array<{ cost: string }>;
-
-      net = Number(rev.net);
-      units = Number(rev.units);
-      c = Number(cost.cost);
-      discount = Number(rev.discount);
-      unmatched = 0;
-    }
+    const net = Number(rev.net);
+    const units = Number(rev.units);
+    const c = Number(cost.cost);
+    const discount = Number(rev.discount);
+    const unmatched = Number(rev.unmatched);
 
     return {
       net, units, cost: c, profit: net - c,
@@ -7694,35 +7580,14 @@ export async function getSalesOverview(
   };
 
   const [now, before] = await Promise.all([
-    totals(from, to, matched[0]),
-    totals(span.prev_from, span.prev_to, matched[1]),
+    totals(from, to),
+    totals(span.prev_from, span.prev_to),
   ]);
 
   /* Month by month across the period, for the two charts. Months with no
      trade keep their place at zero: a gap is information, and a chart that
      drops the month says the opposite of what happened. */
-  const months = (await sql`
-    select to_char(generate_series(date_trunc('month', ${from}::date),
-                                   date_trunc('month', ${to}::date),
-                                   interval '1 month'), 'YYYY-MM') as month`) as unknown as
-    Array<{ month: string }>;
-
-  let series: Array<{ month: string; net: string; profit: string }>;
-
-  if (matched[0]) {
-    const acc = new Map<string, { net: number; cost: number }>();
-    for (const l of matched[0]) {
-      const m = acc.get(l.month) ?? { net: 0, cost: 0 };
-      m.net += l.matchedRevenue;
-      m.cost += l.matchedCost;
-      acc.set(l.month, m);
-    }
-    series = months.map(({ month }) => {
-      const m = acc.get(month) ?? { net: 0, cost: 0 };
-      return { month, net: String(m.net), profit: String(m.net - m.cost) };
-    });
-  } else {
-    series = (await sql`
+  const series = (await sql`
       with months as (
         select to_char(generate_series(date_trunc('month', ${from}::date),
                                        date_trunc('month', ${to}::date),
@@ -7740,16 +7605,13 @@ export async function getSalesOverview(
          group by 1
       ),
       cst as (
-        select to_char(d.posting_date, 'YYYY-MM') as month,
-               sum(c.qty * c.unit_cost) as cost
-          from stock_lot_consumption c
-          join stock_movement sm on sm.id = c.stock_movement_id
-          join document d on d.id = sm.document_id
-         where c.company_id = ${companyId} and d.doc_type = 'DELIVERY'
-           and d.status = 'POSTED'
-           and d.posting_date between ${from}::date and ${to}::date
-           and c.expense_account_id = fn_resolve_account(${companyId}, 'COGS', null, null, null)
-           ${branch(sql`d.location_id`)}
+        select to_char(pd.posting_date, 'YYYY-MM') as month,
+               sum(al.qty * al.unit_cost) as cost
+          from sales_cost_allocation al
+          join document pd on pd.id = al.posted_by_document_id
+         where al.company_id = ${companyId}
+           and pd.posting_date between ${from}::date and ${to}::date
+           ${branch(sql`pd.location_id`)}
          group by 1
       )
       select m.month,
@@ -7759,7 +7621,6 @@ export async function getSalesOverview(
         left join rev on rev.month = m.month
         left join cst on cst.month = m.month
        order by m.month`) as unknown as Array<{ month: string; net: string; profit: string }>;
-  }
 
   return {
     now, before, series,
@@ -7791,149 +7652,87 @@ export type ShippedNotInvoicedRow = {
   items: number;
   qty: number;
   value: number;
+  /** The delivery opened up, so a row can be checked rather than trusted. */
+  lines: Array<{ itemCode: string; itemName: string; qty: number; value: number }>;
 };
 
 /**
  * Goods that left and were never billed, aged by how long ago they left.
  *
+ * Read straight from `v_delivery_cost_unclaimed`, which is the same thing
+ * account 1090 holds — delivered FIFO cost no invoice has claimed. That is
+ * deliberate: the report, the view and the account are one figure seen three
+ * ways, and a report that worked it out its own way could disagree with the
+ * ledger and leave nobody knowing which to believe.
+ *
+ * What the view leaves out, it leaves out for cause. A free-of-charge line
+ * was never going to be billed and its cost went to the reason's account
+ * when the goods left. A consignment line moves goods somebody else owns.
+ * Neither is waiting for an invoice, so neither belongs in a worklist of
+ * sales nobody has asked to be paid for.
+ *
  * The operational question is "what did we ship and forget to invoice", and
- * the longer the answer sits the less likely anyone remembers the sale. The
- * deliveries screen already lists unbilled deliveries, but flat and at
- * selling value; this ages them and values them at what the goods cost,
- * because that is the figure the books carry.
- *
- * Useful before anything about posting changes, and more so afterwards: once
- * cost of sales moves to the invoice (docs/03-decisions.md, D8) this total is
- * the balance of 1090 Goods Shipped Not Invoiced, and a balance nobody ages
- * is a balance nobody clears. It is the sales mirror of the GR/IR worklist.
- *
- * Unbilled quantity is worked out the same way the profitability basis works
- * it out, and for the same reason: an invoice and a delivery find each other
- * four ways, deliveries are drawn down oldest first, and every invoice takes
- * its turn in posting order so one delivery billed across two invoices is not
- * counted as unbilled twice.
- *
- * Two kinds of line are left out, because neither is waiting for an invoice.
- * A free-of-charge line was never going to be billed and its cost went to
- * promotion expense when it left. A consignment line moves goods somebody
- * else still owns, so there is no cost of ours sitting anywhere.
+ * the longer a row sits the less likely anyone remembers the sale. Valued at
+ * what the goods cost rather than what they would fetch, because that is the
+ * figure the books carry.
  */
 export async function getShippedNotInvoiced(
   companyId: string, branchId?: string | null,
 ) {
-  const pairs = salesInvoiceDeliveryPairs(companyId);
+  const branch = branchId
+    ? sql`and (v.location_id = ${branchId} or exists (
+        select 1 from location l where l.id = v.location_id
+         and l.parent_id = ${branchId}))`
+    : sql``;
 
-  /* What left, per delivery and item, with what those goods cost. Only
-     consumption charged to cost of sales: a giveaway's cost went elsewhere
-     and is not waiting on anybody's invoice. */
-  const delivered = (await sql`
-    select dl.document_id as delivery_id, dl.item_id,
-           d.doc_no,
-           to_char(d.posting_date, 'YYYY-MM-DD') as posting_date,
-           (current_date - d.posting_date)::int as days,
+  /* One row per delivery and item, so a delivery can be opened up and read
+     line by line rather than taken on trust. */
+  const rows = (await sql`
+    select v.document_id as delivery_id,
+           v.doc_no,
+           to_char(v.posting_date, 'YYYY-MM-DD') as posting_date,
+           (current_date - v.posting_date)::int as days,
            p.code as partner_code, p.name as partner_name,
-           sum(dl.base_qty) as qty,
-           coalesce(sum(cc.cost), 0) as cost
-      from document_line dl
-      join document d on d.id = dl.document_id
-      left join business_partner p on p.id = d.partner_id
-      left join lateral (
-        select sum(c.qty * c.unit_cost) as cost
-          from stock_lot_consumption c
-          join stock_movement sm on sm.id = c.stock_movement_id
-         where sm.document_line_id = dl.id
-           and c.expense_account_id = fn_resolve_account(${companyId}, 'COGS', null, null, null)
-      ) cc on true
-     where d.company_id = ${companyId}
-       and d.doc_type = 'DELIVERY' and d.status = 'POSTED'
-       and dl.foc_reason_id is null
-       and coalesce(dl.is_consignment, false) = false
-       ${salesBranch(sql`d.location_id`, branchId)}
-     group by 1, 2, 3, 4, 5, 6, 7`) as unknown as Array<{
-       delivery_id: string; item_id: string; doc_no: string; posting_date: string;
-       days: number; partner_code: string | null; partner_name: string | null;
-       qty: string; cost: string;
+           v.item_id, i.code as item_code, i.name as item_name,
+           sum(v.qty_unclaimed) as qty,
+           sum(v.value_unclaimed) as value
+      from v_delivery_cost_unclaimed v
+      join item i on i.id = v.item_id
+      left join business_partner p on p.id = v.partner_id
+     where v.company_id = ${companyId}
+       ${branch}
+     group by 1, 2, 3, 4, 5, 6, 7, 8, 9
+     -- By position: posting_date itself is not grouped, only the two
+     -- expressions built from it, so naming the column here is an error.
+     order by 3, 2, 8`) as unknown as Array<{
+       delivery_id: string; doc_no: string; posting_date: string; days: number;
+       partner_code: string | null; partner_name: string | null;
+       item_id: string; item_code: string; item_name: string;
+       qty: string; value: string;
      }>;
 
-  if (delivered.length === 0) {
-    return {
-      rows: [] as ShippedNotInvoicedRow[],
-      buckets: SHIPPED_BUCKETS.map((bucket) => ({ bucket, deliveries: 0, qty: 0, value: 0 })),
-      total: 0, qty: 0, deliveries: 0, oldestDays: 0,
-    };
-  }
-
-  /** Goods still unspoken for, per delivery and item. */
-  const pool = new Map<string, { left: number; unit: number }>();
-  for (const d of delivered) {
-    const q = Number(d.qty);
-    if (q <= 0) continue;
-    pool.set(`${d.delivery_id}|${d.item_id}`, { left: q, unit: Number(d.cost) / q });
-  }
-
-  const links = (await sql`
-    with ${pairs}
-    select p.invoice_id, p.delivery_id
-      from pairs p
-      join document si on si.id = p.invoice_id
-      join document dv on dv.id = p.delivery_id
-     order by si.posting_date, si.doc_no, dv.posting_date, dv.doc_no`) as unknown as
-    Array<{ invoice_id: string; delivery_id: string }>;
-
-  const byInvoice = new Map<string, string[]>();
-  for (const l of links) {
-    const list = byInvoice.get(l.invoice_id) ?? [];
-    list.push(l.delivery_id);
-    byInvoice.set(l.invoice_id, list);
-  }
-
-  /* Every posted invoice, oldest first, so the order goods are claimed in is
-     the order they were billed in. */
-  const invoiced = (await sql`
-    select d.id as invoice_id, dl.item_id, sum(dl.base_qty) as qty
-      from document_line dl
-      join document d on d.id = dl.document_id
-     where d.company_id = ${companyId}
-       and d.doc_type = 'SALES_INVOICE' and d.status = 'POSTED'
-       and dl.foc_reason_id is null
-     group by 1, 2, d.posting_date, d.doc_no
-     order by d.posting_date, d.doc_no`) as unknown as
-    Array<{ invoice_id: string; item_id: string; qty: string }>;
-
-  for (const line of invoiced) {
-    let need = Number(line.qty);
-    for (const dvId of byInvoice.get(line.invoice_id) ?? []) {
-      if (need <= 1e-9) break;
-      const p = pool.get(`${dvId}|${line.item_id}`);
-      if (!p || p.left <= 1e-9) continue;
-      const take = Math.min(need, p.left);
-      p.left -= take;
-      need -= take;
-    }
-  }
-
-  /* What is left, gathered back up per delivery. */
   const byDelivery = new Map<string, ShippedNotInvoicedRow>();
-  for (const d of delivered) {
-    const p = pool.get(`${d.delivery_id}|${d.item_id}`);
-    const left = p ? Math.round(p.left * 10000) / 10000 : 0;
-    if (left <= 0) continue;
-    const row = byDelivery.get(d.delivery_id) ?? {
-      deliveryId: d.delivery_id, docNo: d.doc_no, postingDate: d.posting_date,
-      days: Number(d.days), bucket: shippedBucketOf(Number(d.days)),
-      partnerCode: d.partner_code, partnerName: d.partner_name,
-      items: 0, qty: 0, value: 0,
+  for (const r of rows) {
+    const row = byDelivery.get(r.delivery_id) ?? {
+      deliveryId: r.delivery_id, docNo: r.doc_no, postingDate: r.posting_date,
+      days: Number(r.days), bucket: shippedBucketOf(Number(r.days)),
+      partnerCode: r.partner_code, partnerName: r.partner_name,
+      items: 0, qty: 0, value: 0, lines: [],
     };
     row.items += 1;
-    row.qty += left;
-    row.value += left * (p?.unit ?? 0);
-    byDelivery.set(d.delivery_id, row);
+    row.qty += Number(r.qty);
+    row.value += Number(r.value);
+    row.lines.push({
+      itemCode: r.item_code, itemName: r.item_name,
+      qty: Number(r.qty), value: Number(r.value),
+    });
+    byDelivery.set(r.delivery_id, row);
   }
 
-  const rows = [...byDelivery.values()].sort((a, b) => b.days - a.days || b.value - a.value);
+  const out = [...byDelivery.values()].sort((a, b) => b.days - a.days || b.value - a.value);
 
   const buckets = SHIPPED_BUCKETS.map((bucket) => {
-    const inBand = rows.filter((r) => r.bucket === bucket);
+    const inBand = out.filter((r) => r.bucket === bucket);
     return {
       bucket,
       deliveries: inBand.length,
@@ -7943,12 +7742,12 @@ export async function getShippedNotInvoiced(
   });
 
   return {
-    rows,
+    rows: out,
     buckets,
-    total: rows.reduce((t, r) => t + r.value, 0),
-    qty: rows.reduce((t, r) => t + r.qty, 0),
-    deliveries: rows.length,
-    oldestDays: rows.reduce((t, r) => Math.max(t, r.days), 0),
+    total: out.reduce((t, r) => t + r.value, 0),
+    qty: out.reduce((t, r) => t + r.qty, 0),
+    deliveries: out.length,
+    oldestDays: out.reduce((t, r) => Math.max(t, r.days), 0),
   };
 }
 

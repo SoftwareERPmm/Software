@@ -298,7 +298,35 @@ part-way through.
 needs aging, or it accumulates unnoticed — the sales mirror of the problem
 `GRIR_AGE_DAYS` and the GR/IR collision report exist to catch.
 
-**Direction chosen 2026-10-03; not built.** Cost moves to the sales invoice.
+**Built 2026-10-04.** Cost of sales is now recognised by the sales invoice.
+A delivery debits 1090 Goods Shipped Not Invoiced and credits inventory; the
+invoice claims the exact FIFO layers the delivery drew, debits cost of sales
+and clears 1090. The reporting-basis toggle this change was going to be
+measured with has been removed: with both halves of a sale recognised on one
+document the two readings converge, and the only residual difference —
+revenue invoiced with no goods out behind it — is now a figure on the single
+report rather than a second view of it.
+
+Five defects surfaced during the build, four of them found by suites written
+long before any of this and one by the scenario matrix:
+
+1. Cost corrections followed the consumption's recorded account into 1090.
+   Fixed by keeping two facts apart: the consumption records where cost is
+   *destined* (cost of sales, so a correction finds the account the sale used
+   even after a re-chart), the journal records where it *sits*.
+2. Goods issued before they were received have no lot, so no consumption row,
+   so nothing could ever claim their cost. It now goes straight to cost of
+   sales rather than being stranded in 1090.
+3. The claim drew layers in a non-deterministic order: two receipts on one day
+   tie on date and microsecond, leaving a random uuid to decide which cost an
+   invoice took. Ordered by the lot now, exactly as the FIFO planner does.
+4. An invoice raised from a sales order claimed nothing, because an invoice's
+   source_document_id is its delivery and the link to the order lives on each
+   line. An order shipped in two loads left its whole cost in 1090.
+5. The reconciliation compared releases against all of cost of sales, which
+   also receives corrections, returns and negative-stock cost.
+
+**Direction chosen 2026-10-03.** Cost moves to the sales invoice.
 Before building it, measure: the reporting-basis toggle on Sales → Sales
 report sizes this exactly, because the gap between *Accounting period* and
 *Profitability* for a month **is** the error this change removes. On seeded
@@ -328,12 +356,75 @@ months on pilot decide whether the work earns its risk.
    cost of sales; the sales report's *Accounting period* basis converges on
    *Profitability* once this lands, which is the point, but both need
    re-checking rather than assuming.
-9. A deferred-balance aging report, as above.
-10. Around 35 test suites mention COGS or account 5000. Each needs reading
+9. A deferred-balance aging report. Built already — Finance → Shipped Not
+   Invoiced ages the same goods today from the documents, and reads 1090's
+   balance so it begins reconciling the two the day this lands.
+10. **The invariant that must not break: inventory is relieved exactly
+   once.** Verified by trace on 2026-10-03 — today a delivery of 4 units at
+   1,000 posts `Dr 5000 Cost of Goods Sold 4,000 / Cr 1040 Inventory 4,000`
+   alongside a stock movement of −4, and the sales invoice posts `Dr 1030 /
+   Cr 4000` and touches neither 1040 nor 5000.
+   Afterwards the delivery must post `Dr 1090 / Cr 1040` — the same credit,
+   the same moment, the same amount — and the invoice `Dr 5000 / Cr 1090`,
+   touching 1040 not at all. The failure mode is writing the invoice entry
+   as `Dr 5000 / Cr 1040` by copying the delivery's: that relieves inventory
+   twice, taking 8,000 of stock out for 4,000 of goods. It balances, so
+   nothing refuses it, and the trial balance still nets to zero. Only a test
+   that sums every credit to 1040 for one sale and compares it against the
+   FIFO cost will catch it — write that test before step 4.
+11. Around 35 test suites mention COGS or account 5000. Each needs reading
     rather than blanket updating: some are asserting the very thing being
     changed, and some are asserting something else and merely touch it in
     passing. `test-inventory-cogs.mjs` and `test-sales-profitability.mjs`
     are the two that are wholly about this behaviour.
+
+**Acceptance conditions, agreed 2026-10-03.** The switch is not done until
+all six hold, and each is a way the change fails quietly rather than loudly:
+
+1. **Cost release uses the stored claim rows, never a recalculated
+   average.** The allocation is a ledger fact. Recomputing it at release
+   time can give a different answer, because other invoices may have
+   claimed the same delivery since and the result depends on claim order.
+2. **A partial invoice releases only the cost of the quantity it bills.**
+   Billing 4 of a 10-unit delivery moves four units of cost out of 1090 and
+   leaves six.
+3. **Void and amend write negative allocation rows** and reverse exactly
+   the 1090 amount previously claimed — not a fresh calculation of what
+   that invoice "should" have taken.
+4. **Delivery reversals restore inventory and reverse 1090** where the
+   delivery put cost there. A delivery whose cost has already been claimed
+   by an invoice cannot be voided while that invoice stands, which the
+   existing blocker already enforces.
+5. **Free-of-charge lines keep their own expense treatment.** A giveaway's
+   cost goes to the reason's account when the goods leave and never passes
+   through 1090 or cost of sales, because no invoice is ever coming.
+6. **1090 reconciles exactly to `v_delivery_cost_unclaimed`.**
+
+The invariant that tests all six at once:
+
+> **1090 balance = total delivered FIFO cost not yet claimed by invoices**
+
+**One defect this already found, fixed in 0115.** As 0114 defined it, the
+view counted every consumed layer in the company, so the invariant could
+never have held: receive 100 at 100, give 5 away and deliver 10 against a
+sale, and it reported 1,500 — the 1,000 genuinely waiting on an invoice
+plus 500 of promotion expense that was settled when the goods left.
+`recordFifoConsumption` is called by stock adjustments, transfers and
+purchase returns as well as deliveries, so write-offs and internal moves
+leaked in the same way. The view is now scoped to posted deliveries,
+excluding free-of-charge and consignment lines, and scoped by document and
+line rather than by expense account — that account is 5000 today and 1090
+afterwards, and a view defined on it would need rewriting halfway through
+the transition it exists to verify. `test-cost-allocation.mjs` holds the
+figure still across a giveaway, a write-off and a transfer.
+
+**What the invariant means before the switch.** It does not hold yet, and
+should not: 1090 is empty because cost still goes straight to 5000, while
+the view reports everything delivered, because no allocation rows exist to
+claim it. Until the switch the Shipped Not Invoiced report is the honest
+figure — it works the unbilled quantity out from the document links rather
+than from allocations. Afterwards all three must agree: account balance,
+view total, and report total.
 
 **Needs.** A month or two of real pilot trading to size the gap, and an
 auditor's view on whether Myanmar practice expects cost at shipment or at

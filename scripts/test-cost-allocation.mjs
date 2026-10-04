@@ -85,7 +85,7 @@ try {
      where s.company_id = ${co.id} and s.role = 'SHIPPED_NOT_INVOICED'`;
   check("the role points at it", role?.account_id === acct?.id);
 
-  console.log("\n  and nothing posts to it yet\n");
+  console.log("\n  and a delivery puts the cost of the goods there\n");
   // Two layers at different costs, so a claim that averaged them would be
   // visibly wrong rather than accidentally right.
   await P.postGoodsReceipt({ companyId: co.id, partnerId: supp.id, locationId: loc.id,
@@ -99,7 +99,9 @@ try {
   const [posted] = await sql`
     select coalesce(sum(jl.base_amount), 0) as v
       from journal_line jl where jl.account_id = ${acct.id}`;
-  check("the delivery still posts nothing to 1090", n(posted.v) === 0, String(posted.v));
+  // 10 at 1,000 then 5 at 1,500, drawn oldest first for 15 units.
+  check("the delivery debits 1090 with what the goods cost",
+    n(posted.v) === 10 * 1000 + 5 * 1500, String(posted.v));
 
   const consumption = await sql`
     select c.id, c.qty, c.unit_cost
@@ -113,10 +115,15 @@ try {
   const [invLine] = await sql`
     select dl.id from document_line dl where dl.document_id = ${delivery.id} limit 1`;
   const first = consumption[0];
+  /* posted_by_document_id names the entry that carried the cost to 5000.
+     Nothing is being posted here — this suite exercises the table's own
+     guards — so the delivery stands in for it. */
   const claim = (qty, reverses = null) => sql`
     insert into sales_cost_allocation
-      (company_id, invoice_line_id, consumption_id, qty, unit_cost, reverses_id)
-    values (${co.id}, ${invLine.id}, ${first.id}, ${qty}, ${first.unit_cost}, ${reverses})
+      (company_id, invoice_line_id, consumption_id, qty, unit_cost, reverses_id,
+       posted_by_document_id)
+    values (${co.id}, ${invLine.id}, ${first.id}, ${qty}, ${first.unit_cost}, ${reverses},
+            ${delivery.id})
     returning id`;
 
   // ------------------------------------------------------- claiming the cost
@@ -175,6 +182,47 @@ try {
     n(unclaimed[0].qty) === 7, String(unclaimed[0].qty));
   check("  valued at the layers it actually came from",
     n(unclaimed[0].val) === 2 * 1000 + 5 * 1500, String(unclaimed[0].val));
+
+  // ------------------------------------------- what the view must not count
+  console.log("\n  and counts only cost that is waiting on an invoice\n");
+  // The view exists for one invariant: once cost of sales moves to the
+  // invoice, 1090 must equal it. Anything in here that will never reach
+  // 1090 breaks that before it is ever tested.
+  const viewFor = async () => {
+    const [r] = await sql`
+      select coalesce(sum(value_unclaimed), 0) as v
+        from v_delivery_cost_unclaimed where item_id = ${item.id}`;
+    return n(r.v);
+  };
+
+  // Enough on the shelf for the three movements below. A receipt adds a
+  // layer and consumes nothing, so it cannot move the figure being watched.
+  await P.postGoodsReceipt({ companyId: co.id, partnerId: supp.id, locationId: loc.id,
+    docDate: DAY, lines: [{ itemId: item.id, qty: 20, unitCost: 1200 }] });
+
+  const before = await viewFor();
+
+  const [promo2] = await sql`
+    select id from foc_reason where company_id = ${co.id} and code = 'PROMOTION'`;
+  await P.postDelivery({ companyId: co.id, partnerId: cust.id, locationId: loc.id,
+    docDate: DAY, lines: [{ itemId: item.id, qty: 2, focReasonId: promo2.id }] });
+  check("a giveaway is not waiting on a bill", (await viewFor()) === before,
+    `${await viewFor()} vs ${before}`);
+
+  await P.postStockAdjustment({ companyId: co.id, locationId: loc.id, docDate: DAY,
+    lines: [{ itemId: item.id, qty: -2, reason: "damaged" }] });
+  check("nor is a write-off", (await viewFor()) === before, `${await viewFor()}`);
+
+  const elsewhere = await sql`
+    select id from location where company_id = ${co.id} and is_stock_location
+       and id <> ${loc.id} limit 1`;
+  if (elsewhere.length > 0) {
+    await P.postStockTransfer({ companyId: co.id, fromLocationId: loc.id,
+      toLocationId: elsewhere[0].id, docDate: DAY,
+      lines: [{ itemId: item.id, qty: 2 }] });
+    check("nor are goods moved between our own shelves",
+      (await viewFor()) === before, `${await viewFor()}`);
+  }
 
   console.log(`\n${failures === 0 ? "All checks passed." : `${failures} check(s) failed.`}\n`);
 } finally {

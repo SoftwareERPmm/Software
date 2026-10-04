@@ -102,7 +102,25 @@ export default async function ShippedNotInvoiced({
           {r.partnerName ?? "—"}
           {r.partnerCode && <div className="subline">{r.partnerCode}</div>}
         </td>
-        <td className="r">{r.items}</td>
+        {/* Opened up rather than taken on trust: a figure somebody is about
+            to invoice against should be checkable without leaving the page. */}
+        <td className="r">
+          <details className="drill">
+            <summary>{r.items}</summary>
+            <table className="drilltable">
+              <tbody>
+                {r.lines.map((l) => (
+                  <tr key={l.itemCode}>
+                    <td className="code">{l.itemCode}</td>
+                    <td className="wrap">{l.itemName}</td>
+                    <td className="r">{qty(l.qty)}</td>
+                    <td className="r">{money(String(l.value))}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        </td>
         <td className="r">{qty(r.qty)}</td>
         <td className="r"><strong>{money(String(r.value))}</strong></td>
         <td className="r">

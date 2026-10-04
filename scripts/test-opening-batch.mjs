@@ -178,13 +178,18 @@ try {
     docDate: "2026-09-04", dueDate: null,
     lines: [{ itemId: item.id, qty: 50, unitPrice: 1500 }],
   });
+  /* The cost the goods were relieved at, which a delivery now parks in
+     1090 until an invoice bills them — docs/03-decisions.md, D8. The figure
+     is the same; only the account it waits in has changed. */
   const cogs = await one(sql`
     select coalesce(sum(jl.base_amount), 0) as v
       from journal_line jl
       join account a on a.id = jl.account_id
       join journal_entry je on je.id = jl.journal_entry_id
       join document d on d.id = je.source_id
-     where jl.company_id = ${co.id} and a.account_type = 'COGS'
+     where jl.company_id = ${co.id}
+       and (a.account_type = 'COGS'
+            or a.id = fn_system_account(${co.id}, 'SHIPPED_NOT_INVOICED'))
        and d.doc_type = 'DELIVERY'`);
   check("selling out of opening stock draws its real cost",
     n(cogs.v) === 30000, `${fmt(cogs.v)} for 50 at 600`);

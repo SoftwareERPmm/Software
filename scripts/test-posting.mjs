@@ -118,6 +118,10 @@ try {
   const COGS = await acct.forItem("COGS", item.id);
   const REVENUE = await acct.forItem("REVENUE", item.id);
   const GRIR = await acct.role("GRIR_CLEARING");
+  /* Cost of sales is recognised by the invoice now, so the delivery relieves
+     inventory into this holding account and the invoice moves it on — see
+     docs/03-decisions.md, D8. */
+  const HELD = await acct.role("SHIPPED_NOT_INVOICED");
   const AR = await acct.control("AR_CONTROL", cust.id);
   const AP = await acct.control("AP_CONTROL", supp.id);
 
@@ -184,10 +188,12 @@ try {
   check("delivery reduces stock", (await onHand(co.id, item.id, loc.id)) === 50);
 
   const delJ = await journalOf(del.id);
-  const cogs = delJ.find((l) => l.account_code === COGS);
-  check("delivery debits COGS", Boolean(cogs));
-  check("COGS is FIFO: oldest layer first", Math.abs(n(cogs?.debit) - 175000) < 1,
-    `${n(cogs?.debit)} (expected 175,000; average would be 187,500)`);
+  const held = delJ.find((l) => l.account_code === HELD);
+  check("delivery debits goods shipped not invoiced", Boolean(held));
+  check("the cost is FIFO: oldest layer first", Math.abs(n(held?.debit) - 175000) < 1,
+    `${n(held?.debit)} (expected 175,000; average would be 187,500)`);
+  check("and not cost of sales — nobody has been billed yet",
+    !delJ.some((l) => l.account_code === COGS));
   check("delivery credits inventory for the same",
     delJ.some((l) => Math.abs(n(l.credit) - 175000) < 1 && l.account_code === INVENTORY));
   check("delivery raises no revenue", !delJ.some((l) => l.account_code === REVENUE));
@@ -206,8 +212,11 @@ try {
   const siJ = await journalOf(si.id);
   check("invoice debits receivables", siJ.some((l) => n(l.debit) === 375000 && l.account_code === AR));
   check("invoice credits revenue", siJ.some((l) => n(l.credit) === 375000 && l.account_code === REVENUE));
-  check("invoice posts no COGS — the delivery already did",
-    !siJ.some((l) => l.account_code === COGS));
+  check("invoice debits COGS at the cost the delivery drew",
+    siJ.some((l) => Math.abs(n(l.debit) - 175000) < 1 && l.account_code === COGS),
+    siJ.filter((l) => l.account_code === COGS).map((l) => n(l.debit)).join(","));
+  check("  and clears the holding account as it goes",
+    siJ.some((l) => Math.abs(n(l.credit) - 175000) < 1 && l.account_code === HELD));
 
   // ---- Counter sale: one step, both effects ------------------------------
 

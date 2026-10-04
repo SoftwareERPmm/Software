@@ -4448,42 +4448,21 @@ tbody tr.row-selected > td:first-child { box-shadow: inset 2px 0 0 var(--brand);
 .reportpage { display: flex; flex-direction: column; gap: var(--s3); }
 .reportpage > .reporthead { margin-bottom: 0; }
 
-/* ------ the reporting basis ------
 
-   Two answers to "what did we make", both true, differing by real money
-   whenever goods and bills fall in different months. A reader who does not
-   know which one is on screen will read one as the other, so the switch is
-   not a quiet filter in the toolbar: it is a named choice with the sentence
-   that explains it sitting next to it, above the figures it governs.
 
-   --brand, not --dr. The accent here is interface chrome; --dr is the debit
-   colour and belongs to the ledger. */
-.basisbar {
-  display: flex; align-items: center; gap: var(--s3);
-  flex-wrap: wrap;
+/* ------ a figure opened up in place ------
+   A worklist row that somebody is about to act on should be checkable
+   without leaving the page: the line count opens into the lines behind it,
+   rather than sending the reader to the document and back. */
+.drill > summary {
+  cursor: pointer; list-style: none;
+  text-decoration: underline; text-decoration-style: dotted;
+  text-underline-offset: 2px;
 }
-.basisswitch {
-  display: inline-flex; flex: none;
-  border: 1px solid var(--line); border-radius: var(--r-md);
-  background: var(--surface); padding: 2px; gap: 2px;
+.drill > summary::-webkit-details-marker { display: none; }
+.drilltable {
+  margin-top: var(--s2); width: max-content; min-width: 100%;
+  font-size: var(--t-xs); text-align: left;
 }
-.basisopt {
-  padding: 0.34rem 0.8rem; border-radius: var(--r-sm);
-  font-size: var(--t-xs); color: var(--muted);
-  text-decoration: none; white-space: nowrap;
-}
-.basisopt:hover { color: var(--ink); background: var(--brand-weak); }
-.basisopt.here {
-  background: var(--brand); color: var(--brand-fg); font-weight: 500;
-}
-.basisopt.here:hover { background: var(--brand); color: var(--brand-fg); }
-/* The sentence earns its place by being read once, so it is quiet and it
-   stops before it becomes a paragraph nobody finishes. */
-.basisnote {
-  margin: 0; flex: 1 1 24rem; min-width: 0;
-  font-size: var(--t-xs); color: var(--muted); line-height: 1.5;
-}
-
-@media (max-width: 720px) {
-  .basisbar { align-items: flex-start; }
-}
+.drilltable td { padding: 0.2rem 0.5rem 0.2rem 0; white-space: nowrap; }
+.drilltable td.wrap { white-space: normal; max-width: 18ch; }
