@@ -2836,12 +2836,12 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
    */
   if (input.sourceDocumentId) {
     const [billedBy] = await tx`
-      select id from document
+      select id, to_deliver from document
        where id = ${input.sourceDocumentId} and company_id = ${companyId}
          and doc_type = 'SALES_INVOICE' and status = 'POSTED'`;
     if (billedBy) {
       const owing = await tx`
-        select dl.id, dl.item_id, dl.base_qty,
+        select dl.id, dl.item_id, dl.base_qty, dl.net_amount,
                coalesce((select sum(a.qty) from sales_cost_allocation a
                           where a.invoice_line_id = dl.id), 0) as claimed
           from document_line dl
@@ -2852,20 +2852,58 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
          order by dl.line_no`;
 
       const costByAccount = new Map<string, number>();
+      /* Revenue the invoice parked because the goods had not gone. It comes
+         out of the liability as the goods go, in the same proportion as the
+         cost — see docs/03-decisions.md, D9. Keyed by the revenue account
+         the item resolves to, so two items on one bill can earn into
+         different lines. */
+      const earnedByAccount = new Map<string, number>();
       let claimed = 0;
+      let recognised = 0;
+      const deferred = billedBy.to_deliver === true;
+
       for (const l of owing as unknown as Array<{
-        id: string; item_id: string; base_qty: string; claimed: string;
+        id: string; item_id: string; base_qty: string; net_amount: string;
+        claimed: string;
       }>) {
         const need = round4(Number(l.base_qty) - Number(l.claimed));
         if (need <= 0) continue;
-        const { cost } = await claimDeliveredCost(
+        const { cost, taken } = await claimDeliveredCost(
           tx, companyId, [doc.id], l.id, l.item_id, need, doc.id);
+
+        /* The share of this line that just went out. Measured by what the
+           claim actually took, not by what it was asked for: a delivery
+           covering six of ten earns six tenths, and one that covers
+           nothing earns nothing even though the line was offered to it. */
+        if (deferred) {
+          const lineQty = Number(l.base_qty);
+          const share = lineQty > 0 ? Math.min(taken / lineQty, 1) : 0;
+          const earn = roundMoney(Number(l.net_amount) * share, 2);
+          if (earn !== 0) {
+            const rev = await tx`
+              select fn_resolve_account_for_item(
+                ${companyId}, 'REVENUE', ${l.item_id}) as a`;
+            const racct = rev[0].a as string;
+            earnedByAccount.set(racct, round4((earnedByAccount.get(racct) ?? 0) + earn));
+            recognised = round4(recognised + earn);
+          }
+        }
+
         if (cost === 0) continue;
         const cogs = await tx`
           select fn_resolve_account_for_item(${companyId}, 'COGS', ${l.item_id}) as a`;
         const acct = cogs[0].a as string;
         costByAccount.set(acct, round4((costByAccount.get(acct) ?? 0) + cost));
         claimed = round4(claimed + cost);
+      }
+
+      if (recognised !== 0) {
+        const def = await tx`
+          select fn_system_account(${companyId}, 'DEFERRED_REVENUE') as a`;
+        journal.push({ accountId: def[0].a as string, amount: recognised, locationId });
+        for (const [accountId, amount] of earnedByAccount) {
+          if (amount !== 0) journal.push({ accountId, amount: -amount, locationId });
+        }
       }
       if (claimed !== 0) {
         for (const [accountId, amount] of costByAccount) {
@@ -3227,8 +3265,8 @@ async function claimDeliveredCost(
   qty: number,
   /** Whose journal entry carries the cost to 5000 — see migration 0116. */
   postedByDocumentId: string,
-): Promise<{ cost: number }> {
-  if (deliveryIds.length === 0 || qty <= 0) return { cost: 0 };
+): Promise<{ cost: number; taken: number }> {
+  if (deliveryIds.length === 0 || qty <= 0) return { cost: 0, taken: 0 };
 
   /* Unclaimed layers from the deliveries behind this invoice, oldest lot
      first so the claim follows the same order the goods did. Read through
@@ -3269,7 +3307,7 @@ async function claimDeliveredCost(
     need = round4(need - take);
   }
 
-  return { cost };
+  return { cost, taken: round4(qty - need) };
 }
 
 /**
@@ -3579,9 +3617,27 @@ async function _postSalesInvoice(
       : roundMoney(discountGross * (net / chargedBeforeTaxSplit), scale);
 
     if (net !== 0 || discount !== 0) {
-      const revenue = await tx`
-        select fn_resolve_account_for_item(${companyId}, 'REVENUE', ${line.itemId}) as a`;
-      journal.push({ accountId: revenue[0].a, amount: -round4(net + discount) });
+      /* Billed is not the same as earned.
+         An invoice raised ahead of its goods has not earned anything yet —
+         see docs/03-decisions.md, D9. The customer owes the money and the
+         receivable says so, but the revenue waits in a liability until the
+         delivery that follows recognises it, against the cost of the same
+         goods. Posting it to Sales here would put revenue in a month with
+         no cost beside it, which is the mismatch the whole change exists
+         to remove.
+         The discount still lands where it always did. It is a reduction of
+         what was charged, settled when the price was agreed, not something
+         the goods leaving can change. */
+      const earned = input.toDeliver
+        ? await tx`select fn_system_account(${companyId}, 'DEFERRED_REVENUE') as a`
+        : await tx`select fn_resolve_account_for_item(
+            ${companyId}, 'REVENUE', ${line.itemId}) as a`;
+      if (!earned[0]?.a) {
+        throw new Error(
+          "No account is set for revenue billed ahead of the goods. "
+          + "Migration 0117 adds 2070 and the DEFERRED_REVENUE role.");
+      }
+      journal.push({ accountId: earned[0].a, amount: -round4(net + discount) });
       if (discount !== 0) {
         const allowed = await tx`
           select fn_system_account(${companyId}, 'SALES_DISCOUNT_ALLOWED') as a`;

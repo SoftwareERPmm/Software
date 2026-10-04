@@ -42,7 +42,7 @@ const local = url.includes("localhost") || url.includes("127.0.0.1");
 const pooled = url.includes("-pooler.") || url.includes("pgbouncer=true");
 const sql = postgres(url, { ssl: local ? false : "require", prepare: !pooled, onnotice: () => {}, max: 1 });
 
-await takeTestLock(sql, "test-sales-profitability.mjs");
+await takeTestLock(sql, "test-sales-report.mjs");
 let failures = 0;
 const check = (label, ok, detail = "") => {
   if (!ok) failures++;
@@ -153,19 +153,22 @@ try {
     lines: [{ itemId: item.id, qty: 8, unitPrice: 3000 }] });
 
   r = await totals(Q3);
-  check("the revenue counts, because it was invoiced",
-    r.revenue === 50000 + 24000, `${r.revenue}`);
-  check("but it is flagged as not yet shipped", r.unmatched === 24000, `${r.unmatched}`);
+  /* Billed is not earned — docs/03-decisions.md, D9. The receivable stands
+     but the revenue waits in Deferred Revenue until the goods go, so it is
+     not in July's sales at all; it shows only as owed goods. */
+  check("the revenue is not counted — it has not been earned",
+    r.revenue === 50000, `${r.revenue}`);
+  check("it shows as not yet shipped", r.unmatched === 24000, `${r.unmatched}`);
   check("and no cost is invented for it", r.cost === 20000, `${r.cost}`);
   const unbilled = r.cuts.customer.rows.find((x) => x.code === "SPB-D");
   /* The books say this customer owes 24,000 and nothing has cost us
      anything yet, which reads as a perfect margin. That is true and
      misleading in equal measure, which is exactly why the row carries its
      own "not yet shipped" figure rather than being quietly left out. */
-  check("the customer shows revenue with no cost behind it",
-    unbilled && unbilled.revenue === 24000 && unbilled.cost === 0,
+  check("the customer is still on the report, with nothing earned yet",
+    unbilled && unbilled.revenue === 0 && unbilled.cost === 0,
     `${unbilled?.revenue} / ${unbilled?.cost}`);
-  check("  and the whole of it flagged as unshipped",
+  check("  and the whole of it owed as goods",
     unbilled && unbilled.unmatched === 24000, `${unbilled?.unmatched}`);
   agrees(r, "undelivered bill");
 
@@ -179,8 +182,8 @@ try {
     lines: [{ itemId: item.id, qty: 6, unitPrice: 3000 }] });
 
   r = await totals(Q3);
-  check("the revenue is unchanged — it was always invoiced",
-    r.revenue === 74000, `${r.revenue}`);
+  check("six eighths of it is now earned",
+    r.revenue === 50000 + 18000, `${r.revenue}`);
   check("two eighths of it is still owed as goods",
     r.unmatched === 6000, `${r.unmatched}`);
   check("and the cost of the six has been recognised",
@@ -201,7 +204,7 @@ try {
   check("the goods are costed once, not once per invoice",
     after.cost === 26000 + 10000, `${after.cost}`);
   check("and both invoices count as revenue",
-    after.revenue === 74000 + 25000 && after.unmatched === 6000,
+    after.revenue === 68000 + 25000 && after.unmatched === 6000,
     `${after.revenue} / ${after.unmatched}`);
   agrees(after, "split billing");
 
@@ -220,7 +223,7 @@ try {
   // --------------------------------------------------- the whole year ties
   console.log("\n  over a window wide enough to hold all of it\n");
   const year = await totals(YEAR);
-  check("every invoice is counted", year.revenue === 124000, `${year.revenue}`);
+  check("everything earned is counted", year.revenue === 118000, `${year.revenue}`);
   check("the cost released against them is too", year.cost === 46000, `${year.cost}`);
   check("and what has still not shipped is flagged",
     year.unmatched === 6000, `${year.unmatched}`);
@@ -237,8 +240,8 @@ try {
   check("the monthly series adds up to the period",
     monthNet === year.revenue, `${monthNet} vs ${year.revenue}`);
   const july = ov.series.find((m) => m.month === "2026-07");
-  check("July carries the revenue that was billed in July",
-    r4(july.net) === 99000, `${r4(july.net)}`);
+  check("July carries the revenue earned in July",
+    r4(july.net) === 93000, `${r4(july.net)}`);
 
   console.log(`\n${failures === 0 ? "All checks passed." : `${failures} check(s) failed.`}\n`);
 } finally {

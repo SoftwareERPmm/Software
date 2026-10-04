@@ -77,10 +77,11 @@ export default async function IncomeStatement({
         subtotals={subtotals}
       />
 
-      {/* Cost of sales is recognised per delivery from the layers consumed,
-          so this statement never computes opening + purchases - closing.
-          A reader checking it that way needs to see the releases that are
-          not sales, or the two will never agree and neither is wrong. */}
+      {/* Cost of sales is recognised by the invoice that bills the goods,
+          from the layers the delivery drew — docs/03-decisions.md, D8 — so
+          this statement never computes opening + purchases - closing. A
+          reader checking it that way needs to see the releases that are not
+          sales, or the two will never agree and neither is wrong. */}
       {cogsBreakdown && cogsBreakdown.total > 0 && (
         <details className="card cogsnote">
           <summary>

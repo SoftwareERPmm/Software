@@ -7322,6 +7322,45 @@ async function matchInvoicedSales(
 }
 
 /**
+ * When each sales invoice line's revenue was recognised, and how much of it.
+ *
+ * Usually all of it, on the invoice's own date. But an invoice raised ahead
+ * of its goods earns nothing until they go — docs/03-decisions.md, D9 — so
+ * its revenue sits in Deferred Revenue and is released by each delivery, in
+ * proportion to what that delivery carried, on the delivery's date.
+ *
+ * Read from the claim rows, which already record how many units each
+ * delivery took against each invoice line and which document posted them.
+ * A release (a void) is a negative row, so a cancelled sale nets to nothing
+ * without a special case, and each half lands in the period it was posted.
+ *
+ * Returned as a CTE of (line_id, at, frac), so the sales report can weight
+ * every figure on a line by how much of it had been earned by a given date
+ * and stay tied to the income statement.
+ */
+function revenueRecognised(companyId: string) {
+  return sql`
+    recognised as (
+      select dl.id as line_id, d.posting_date as at, 1.0::numeric as frac
+        from document_line dl
+        join document d on d.id = dl.document_id
+       where d.company_id = ${companyId}
+         and d.doc_type = 'SALES_INVOICE'
+         and d.status = 'POSTED'
+         and not coalesce(d.to_deliver, false)
+      union all
+      select dl.id, pd.posting_date, a.qty / nullif(dl.base_qty, 0)
+        from sales_cost_allocation a
+        join document_line dl on dl.id = a.invoice_line_id
+        join document d on d.id = dl.document_id
+        join document pd on pd.id = a.posted_by_document_id
+       where d.company_id = ${companyId}
+         and d.doc_type = 'SALES_INVOICE'
+         and coalesce(d.to_deliver, false)
+    )`;
+}
+
+/**
  * Sales for a period, cut whichever way the reader needs, on whichever
  * basis the question calls for.
  *
@@ -7361,24 +7400,29 @@ export async function getSalesBreakdown(
      group by 1`) as unknown as Array<{ key: string; returned: string }>;
   const returnBy = new Map(returned.map((c) => [c.key, Number(c.returned)]));
 
+  /* Revenue as the books recognise it, weighted by how much of each line
+     had been earned inside the period. An invoice raised ahead of its goods
+     contributes nothing on its own date and its share on each delivery's —
+     docs/03-decisions.md, D9 — so this ties to the income statement the
+     same way cost does. Quantity, gross and discount follow the same weight,
+     so Net sales still reads as Gross less Discounts on every row. */
   const revenue = await sql`
+    with ${revenueRecognised(companyId)}
     select ${dim} as key, ${code} as code, ${name} as name,
-           sum(case when dl.foc_reason_id is null then dl.base_qty else 0 end) as qty,
-           sum(case when dl.foc_reason_id is null then dl.base_qty else 0 end
+           sum(case when dl.foc_reason_id is null then dl.base_qty * r.frac else 0 end) as qty,
+           sum(case when dl.foc_reason_id is null then dl.base_qty * r.frac else 0 end
                * coalesce(dl.unit_price, 0)) as gross,
-           sum(coalesce(dl.discount_amount, 0)
-             + coalesce(dl.volume_discount_amount, 0)
-             + coalesce(dl.invoice_discount_amount, 0)) as discount,
-           sum(case when dl.foc_reason_id is null then dl.net_amount else 0 end) as revenue,
-           sum(case when dl.foc_reason_id is not null then dl.base_qty else 0 end) as free_qty,
+           sum((coalesce(dl.discount_amount, 0)
+              + coalesce(dl.volume_discount_amount, 0)
+              + coalesce(dl.invoice_discount_amount, 0)) * r.frac) as discount,
+           sum(case when dl.foc_reason_id is null then dl.net_amount * r.frac else 0 end) as revenue,
+           sum(case when dl.foc_reason_id is not null then dl.base_qty * r.frac else 0 end) as free_qty,
            count(distinct d.id)::int as invoices
-      from document_line dl
+      from recognised r
+      join document_line dl on dl.id = r.line_id
       join document d on d.id = dl.document_id
       ${joins}
-     where d.company_id = ${companyId}
-       and d.doc_type = 'SALES_INVOICE'
-       and d.status = 'POSTED'
-       and d.posting_date between ${from}::date and ${to}::date
+     where r.at between ${from}::date and ${to}::date
        ${branch}
      group by 1, 2, 3`;
 
@@ -7420,7 +7464,7 @@ export async function getSalesBreakdown(
      Goods that are not stocked are never awaiting shipment, so they are
      left out rather than reported as permanently unmatched. */
   const unmatched = await sql`
-    select ${dim} as key,
+    select ${dim} as key, ${code} as code, ${name} as name,
            sum(dl.net_amount * (1 - least(
              case when dl.base_qty > 0
                   then coalesce(alloc.qty, 0) / dl.base_qty else 1 end, 1))) as unmatched
@@ -7438,7 +7482,7 @@ export async function getSalesBreakdown(
        and dl.foc_reason_id is null
        and i.is_stocked
        ${branch}
-     group by 1`;
+     group by 1, 2, 3`;
   const unmatchedBy = new Map(
     (unmatched as unknown as Array<{ key: string; unmatched: string }>)
       .map((u) => [u.key, Number(u.unmatched)]));
@@ -7468,6 +7512,15 @@ export async function getSalesBreakdown(
   for (const r of revRows) rows.set(r.key, { key: r.key, code: r.code, name: r.name });
   for (const c of costRows) {
     if (!rows.has(c.key)) rows.set(c.key, { key: c.key, code: c.code, name: c.name });
+  }
+  /* And every key with nothing earned yet but goods still owed. A customer
+     whose only invoice is waiting on its goods has no revenue to report —
+     it is deferred — but leaving them off the report would make the
+     deferral vanish with them. */
+  for (const u of unmatched as unknown as Array<{ key: string; code: string; name: string; unmatched: string }>) {
+    if (Number(u.unmatched) > 0 && !rows.has(u.key)) {
+      rows.set(u.key, { key: u.key, code: u.code, name: u.name });
+    }
   }
   const revBy = new Map(revRows.map((r) => [r.key, r]));
 
@@ -7529,6 +7582,24 @@ export async function getSalesOverview(
          and d.posting_date between ${a}::date and ${b}::date
          ${branch(sql`d.location_id`)}`) as unknown as Array<{ returned: string }>;
 
+    /* Recognised revenue, weighted the same way the breakdown weights it,
+       so the overview's figures are the same figures. */
+    const [earned] = (await sql`
+      with ${revenueRecognised(companyId)}
+      select coalesce(sum(case when dl.foc_reason_id is null
+                               then dl.net_amount * r.frac else 0 end), 0) as net,
+             coalesce(sum(case when dl.foc_reason_id is null
+                               then dl.base_qty * r.frac else 0 end), 0) as units,
+             coalesce(sum((coalesce(dl.discount_amount, 0)
+                         + coalesce(dl.volume_discount_amount, 0)
+                         + coalesce(dl.invoice_discount_amount, 0)) * r.frac), 0) as discount
+        from recognised r
+        join document_line dl on dl.id = r.line_id
+        join document d on d.id = dl.document_id
+       where r.at between ${a}::date and ${b}::date
+         ${branch(sql`d.location_id`)}`) as unknown as
+      Array<{ net: string; units: string; discount: string }>;
+
     const [rev] = (await sql`
       select coalesce(sum(case when dl.foc_reason_id is null then dl.net_amount else 0 end), 0) as net,
              coalesce(sum(case when dl.foc_reason_id is null then dl.base_qty else 0 end), 0) as units,
@@ -7564,10 +7635,10 @@ export async function getSalesOverview(
          and pd.posting_date between ${a}::date and ${b}::date
          ${branch(sql`pd.location_id`)}`) as unknown as Array<{ cost: string }>;
 
-    const net = Number(rev.net);
-    const units = Number(rev.units);
+    const net = Number(earned.net);
+    const units = Number(earned.units);
     const c = Number(cost.cost);
-    const discount = Number(rev.discount);
+    const discount = Number(earned.discount);
     const unmatched = Number(rev.unmatched);
 
     return {
@@ -7593,14 +7664,15 @@ export async function getSalesOverview(
                                        date_trunc('month', ${to}::date),
                                        interval '1 month'), 'YYYY-MM') as month
       ),
+      ${revenueRecognised(companyId)},
       rev as (
-        select to_char(d.posting_date, 'YYYY-MM') as month,
-               sum(case when dl.foc_reason_id is null then dl.net_amount else 0 end) as net
-          from document_line dl
+        select to_char(r.at, 'YYYY-MM') as month,
+               sum(case when dl.foc_reason_id is null
+                        then dl.net_amount * r.frac else 0 end) as net
+          from recognised r
+          join document_line dl on dl.id = r.line_id
           join document d on d.id = dl.document_id
-         where d.company_id = ${companyId} and d.doc_type = 'SALES_INVOICE'
-           and d.status = 'POSTED'
-           and d.posting_date between ${from}::date and ${to}::date
+         where r.at between ${from}::date and ${to}::date
            ${branch(sql`d.location_id`)}
          group by 1
       ),

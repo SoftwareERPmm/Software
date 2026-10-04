@@ -91,8 +91,9 @@ export default async function NewDelivery({
           dropped at a shop to be billed later, or samples given away with no
           sale at all. An order is optional: if there is one open, delivering
           against it keeps track of what is still owed. Stock leaves at its
-          FIFO cost and the cost is recognised; revenue and the receivable
-          belong to the invoice, whenever it is raised.
+          FIFO cost, which waits in Goods Shipped Not Invoiced until an
+          invoice bills these goods and turns it into cost of sales. Revenue
+          and the receivable belong to that invoice, whenever it is raised.
         </HelpHint>
         <Link href="/sales/deliver" className="btn ghost">Back to deliveries</Link>
       </div>

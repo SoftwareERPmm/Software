@@ -72,10 +72,13 @@ export default async function NewSalesInvoice({
       <div className="page-head">
         <h1>Sales voucher</h1>
         <HelpHint>
-          ကုန်ပစ္စည်းများသည် FIFO ကုန်ကျစရိတ်ဖြင့် ထွက်ခွာပြီး၊ ဝင်ငွေကို
-          အသိအမှတ်ပြုကာ လက်ကျန်ငွေကို ဤ Invoice တွင် ဖွင့်ပေးပါသည်။
+          ကုန်ပစ္စည်းထွက်ခွာချိန်တွင် FIFO ကုန်ကျစရိတ်နှင့် ဝင်ငွေကို အတူတကွ
+          အသိအမှတ်ပြုပါသည်။ နောက်မှပို့ဆောင်မည်ဆိုပါက ကုန်ပစ္စည်းထွက်ချိန်မှသာ
+          အသိအမှတ်ပြုမည်ဖြစ်ပြီး၊ လက်ကျန်ငွေကိုမူ ဤ Invoice တွင် ဖွင့်ပေးပါသည်။
           <div className="subline" style={{ marginTop: "0.15rem" }}>
-            Stock leaves at its FIFO cost, revenue is recognised, and the balance opens against this invoice.
+            Revenue and FIFO cost are recognised together, when the goods go.
+            Choose &ldquo;Deliver later&rdquo; and both wait for the delivery;
+            the balance opens against this invoice either way.
           </div>
         </HelpHint>
       </div>
