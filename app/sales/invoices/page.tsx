@@ -139,23 +139,29 @@ export default async function SalesInvoices({
 
   return (
     <>
-      <div className="page-head">
-        <span className="eyebrow">Sales</span>
-        <h1>Sales Invoices</h1>
-        <HelpHint>
-          {customerName ? (
-            <>
-              Filtered to <strong>{customerName}</strong>.{" "}
-              <Link href="/sales/invoices" style={{ color: "var(--brand)" }}>Clear</Link>
-            </>
-          ) : (
-            "Manage sales invoices."
-          )}
-        </HelpHint>
-      </div>
-
-      <div className="actions">
-        <Link href="/sales/new" className="btn">+ New Sales Invoice</Link>
+      {/* Title and the primary action share one row, the action rightmost,
+          the same way the orders pages lay it out. Below the title it read as
+          a separate block somebody scrolled past on the way to the list. */}
+      <div className="orders-head">
+        <div className="orders-head-row">
+          <div className="page-head">
+            <span className="eyebrow">Sales</span>
+            <h1>Sales Invoices</h1>
+            <HelpHint>
+              {customerName ? (
+                <>
+                  Filtered to <strong>{customerName}</strong>.{" "}
+                  <Link href="/sales/invoices" style={{ color: "var(--brand)" }}>Clear</Link>
+                </>
+              ) : (
+                "Manage sales invoices."
+              )}
+            </HelpHint>
+          </div>
+          <div className="actions">
+            <Link href="/sales/new" className="btn">+ New Sales Invoice</Link>
+          </div>
+        </div>
       </div>
 
       <div className="kpis">

@@ -5,8 +5,7 @@ import { DataTable, type DataRow } from "@/components/data-table";
 import { HelpHint } from "@/components/help-hint";
 import { AgingBands, SHIPPED_BANDS } from "@/components/aging-bands";
 import {
-  getCompany, getBranches, getShippedNotInvoiced,
-  getShippedNotInvoicedBalance, UNASSIGNED_BRANCH,
+  getCompany, getBranches, getShippedNotInvoiced, UNASSIGNED_BRANCH,
 } from "@/lib/queries";
 
 const qty = (v: number) => v.toLocaleString("en-US", { maximumFractionDigits: 4 });
@@ -39,16 +38,7 @@ export default async function ShippedNotInvoiced({
   const [asOfRow] = await sql`select to_char(current_date, 'DD Mon YYYY') as d`;
   const asOf = String(asOfRow?.d ?? "");
 
-  const [report, account] = await Promise.all([
-    getShippedNotInvoiced(company.id, branchId),
-    getShippedNotInvoicedBalance(company.id),
-  ]);
-  /* The account is only expected to agree with the report once cost of sales
-     is recognised on the invoice. Until then it is empty by design, and the
-     page says which of the two situations it is in rather than asserting the
-     one that was true when it was written. */
-  const held = account?.balance ?? 0;
-  const gap = Math.round((held - report.total) * 10000) / 10000;
+  const report = await getShippedNotInvoiced(company.id, branchId);
 
   const band = SHIPPED_BANDS.find((b) => b.bucket === p.band)?.bucket ?? null;
   const shown = band ? report.rows.filter((r) => r.bucket === band) : report.rows;
@@ -65,7 +55,7 @@ export default async function ShippedNotInvoiced({
     const all = { branch: branchId ?? undefined, band: band ?? undefined, ...over };
     for (const [k, v] of Object.entries(all)) if (v) q.set(k, String(v));
     const s = q.toString();
-    return `/finance/shipped-not-invoiced${s ? `?${s}` : ""}`;
+    return `/sales/shipped-not-invoiced${s ? `?${s}` : ""}`;
   };
 
   const table: DataRow[] = shown.map((r) => ({
@@ -133,7 +123,7 @@ export default async function ShippedNotInvoiced({
   return (
     <div className="reportpage">
       <div className="page-head">
-        <span className="eyebrow">Finance</span>
+        <span className="eyebrow">Sales</span>
         <h1>Goods shipped not invoiced</h1>
         <HelpHint label="What this counts">
           Goods that have left the building with no sales invoice behind them,
@@ -189,59 +179,12 @@ export default async function ShippedNotInvoiced({
               sub={report.oldestDays === 0 ? "nothing outstanding" : "since the goods left"} />
       </div>
 
-      <section className="grid2">
-        <AgingBands
-          title="By age"
-          bands={SHIPPED_BANDS}
-          buckets={bandBuckets}
-          subtitle={<>as at {asOf}</>}
-        />
-
-        <div className="card">
-          <div className="card-head">
-            <h2>Why this matters</h2>
-            <span className="page-sub">1090</span>
-          </div>
-          <div className="card-body">
-            <p className="page-sub" style={{ margin: 0, lineHeight: 1.6 }}>
-              Every row here is a sale that has happened physically and not
-              financially: the stock is gone, the customer has the goods, and
-              nobody has been asked to pay. The older a row is, the less
-              likely anyone still remembers the arrangement.
-            </p>
-            {held === 0 ? (
-              <p className="page-sub" style={{ marginBottom: 0, lineHeight: 1.6 }}>
-                Nothing is sitting in 1090 — every delivery has been billed.
-                When one has not, its cost waits here until the invoice
-                follows, and a clearing balance nobody ages is a balance
-                nobody clears.
-              </p>
-            ) : (
-              <p className="page-sub" style={{ marginBottom: 0, lineHeight: 1.6 }}>
-                1090 holds <strong style={{ color: "var(--ink)" }}>{money(String(held))}</strong>,
-                and this report accounts for{" "}
-                <strong style={{ color: "var(--ink)" }}>{money(String(report.total))}</strong>
-                {gap === 0 ? (
-                  <> — they agree.</>
-                ) : (
-                  <>, a difference of{" "}
-                    <strong style={{ color: "var(--bad)" }}>{money(String(gap))}</strong>{" "}
-                    that belongs to neither. Something relieved the account
-                    without billing the goods, or billed goods it never held.
-                  </>
-                )}
-              </p>
-            )}
-            <p className="page-sub" style={{ marginBottom: 0 }}>
-              <Link href="/sales/deliver?open=uninvoiced">
-                The deliveries screen
-              </Link>{" "}
-              lists the same goods flat and at selling price, next to the
-              button that bills them.
-            </p>
-          </div>
-        </div>
-      </section>
+      <AgingBands
+        title="By age"
+        bands={SHIPPED_BANDS}
+        buckets={bandBuckets}
+        subtitle={<>as at {asOf}</>}
+      />
 
       <section>
         <div className="card">

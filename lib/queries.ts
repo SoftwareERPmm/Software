@@ -1290,6 +1290,26 @@ export async function getBillsRaisedFromOrders(companyId: string) {
 }
 
 /**
+ * Deliveries that were given away outright: every line free of charge.
+ *
+ * Nothing will ever bill them and nothing should. Named separately from
+ * "awaiting invoice" and "fully invoiced" because both of those would be
+ * false — one says somebody still has to raise an invoice, the other that
+ * somebody did.
+ */
+export async function getGiveawayDeliveryIds(companyId: string): Promise<Set<string>> {
+  const rows = await sql`
+    select d.id from document d
+     where d.company_id = ${companyId}
+       and d.doc_type = 'DELIVERY'
+       and exists (select 1 from document_line dl where dl.document_id = d.id)
+       and not exists (
+         select 1 from document_line dl
+          where dl.document_id = d.id and dl.foc_reason_id is null)`;
+  return new Set((rows as unknown as Array<{ id: string }>).map((r) => r.id));
+}
+
+/**
  * Deliveries no sales invoice has been written against yet — the sales-side
  * mirror of getOpenGoodsReceipts, for when stock left before the bill did.
  * Unlike a goods receipt, a delivery carries no price (it moves stock at
@@ -1410,7 +1430,15 @@ export async function getOpenDeliveries(companyId: string, limit: number | null 
     })
     // Fully billed — including a delivery raised to fulfil an invoice that
     // covered everything on it.
-    .filter((d: any) => d.lines.length > 0);
+    /* Only deliveries with something left to bill. A delivery whose every
+       remaining line is free of charge is not waiting for an invoice — a
+       giveaway is settled when the goods leave, its cost already sent to the
+       reason's account, and an invoice for nothing is refused when posted.
+       Offering one led to a "Create sales invoice — 0" button that went
+       nowhere. Free lines still ride along on an invoice that bills paid
+       ones; they just cannot hold a delivery open on their own. */
+    .filter((d: any) => d.lines.length > 0
+      && d.lines.some((l: any) => !l.focReasonId));
 }
 
 export async function getDocument(id: string) {
@@ -7821,24 +7849,4 @@ export async function getShippedNotInvoiced(
     deliveries: out.length,
     oldestDays: out.reduce((t, r) => Math.max(t, r.days), 0),
   };
-}
-
-/**
- * What 1090 Goods Shipped Not Invoiced actually holds.
- *
- * Read rather than assumed, so the page that reports unbilled deliveries
- * cannot go on claiming the account is empty after the day it stops being
- * empty. Once cost of sales moves to the invoice the two should agree, and
- * the difference is then worth showing rather than hiding.
- */
-export async function getShippedNotInvoicedBalance(companyId: string) {
-  const [row] = (await sql`
-    select a.id, a.code, a.name,
-           coalesce((select sum(jl.base_amount) from journal_line jl
-                      where jl.account_id = a.id), 0) as balance
-      from account a
-     where a.company_id = ${companyId} and a.code = '1090'`) as unknown as
-    Array<{ id: string; code: string; name: string; balance: string }>;
-  if (!row) return null;
-  return { ...row, balance: Number(row.balance) };
 }

@@ -3,7 +3,7 @@ import { Truck, FileText, Clock, Plus } from "lucide-react";
 import { money, shortDate } from "@/lib/db";
 import {
   getCompany, getOpenSalesOrders, getPendingDeliveries, getStockByLocation,
-  getDeliveryHistory, getOpenDeliveries,
+  getDeliveryHistory, getOpenDeliveries, getGiveawayDeliveryIds,
 } from "@/lib/queries";
 import { sql } from "@/lib/db";
 import { createDelivery, deliverPendingInvoice } from "@/lib/actions";
@@ -92,6 +92,8 @@ export default async function Deliver({
   const posted = history.filter((d) => d.status === "POSTED");
   const deliveredValue = posted.reduce((s, d) => s + Number(d.gross_total), 0);
   const unbilled = new Set(stillToBill.map((d) => d.id));
+  /* Given away outright: neither waiting for an invoice nor invoiced. */
+  const giveaways = await getGiveawayDeliveryIds(company.id);
   const notInvoiced = posted.filter((d) => unbilled.has(d.id)).length;
 
   /**
@@ -207,11 +209,12 @@ export default async function Deliver({
   const rows: DataRow[] = shown.map((d) => {
     const voided = d.status !== "POSTED";
     const short = unbilled.has(d.id);
+    const gift = !voided && giveaways.has(d.id);
     return {
       key: d.id,
       searchText: [d.doc_no, d.partner_name, d.source_no, d.location_code]
         .filter(Boolean).join(" "),
-      facet: { status: voided ? "voided" : short ? "awaiting" : "invoiced" },
+      facet: { status: voided ? "voided" : gift ? "given" : short ? "awaiting" : "invoiced" },
       sort: {
         doc_no: d.doc_no ?? "",
         doc_date: toTime(d.doc_date),
@@ -219,7 +222,7 @@ export default async function Deliver({
         location_code: d.location_code ?? "",
         source_no: d.source_no ?? "",
         gross_total: Number(d.gross_total),
-        invoiced: voided ? 2 : short ? 1 : 0,
+        invoiced: voided ? 3 : gift ? 2 : short ? 1 : 0,
       },
       node: (
         <tr className="link">
@@ -244,6 +247,8 @@ export default async function Deliver({
           <td>
             {voided ? (
               <span className="pill draft">Voided</span>
+            ) : gift ? (
+              <span className="pill">Given away</span>
             ) : short ? (
               <span className="pill warn">Awaiting invoice</span>
             ) : (
@@ -416,6 +421,7 @@ export default async function Deliver({
               options: [
                 { value: "invoiced", label: "Fully invoiced" },
                 { value: "awaiting", label: "Awaiting invoice" },
+                { value: "given", label: "Given away" },
                 { value: "voided", label: "Voided" },
               ],
             }]}
