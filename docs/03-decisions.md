@@ -429,3 +429,68 @@ view total, and report total.
 **Needs.** A month or two of real pilot trading to size the gap, and an
 auditor's view on whether Myanmar practice expects cost at shipment or at
 invoice.
+
+---
+
+## D9 — When revenue is recognised
+
+**Question.** D8 moved cost of sales to the invoice so that both halves of a
+sale land together. It did so for three of the four ways an invoice meets
+its goods. Should the fourth follow?
+
+**The one that does not.** Invoice now, deliver later. The invoice posts
+revenue in full and no cost, because nothing has moved; the delivery that
+follows posts the cost. That is the timing mismatch D8 exists to remove,
+left standing in the one path where the goods arrive second.
+
+The sales report papers over it with a "not yet shipped" column — revenue
+flagged as having no cost behind it. Useful as a warning, but a warning
+about a thing the books should not be saying in the first place.
+
+**Resolved 2026-10-04 — revenue waits for the goods, and the tax does not.**
+
+```
+Invoice (deliver later)   Dr Accounts Receivable      gross
+                          Cr Deferred Revenue           net
+                          Cr Output Commercial Tax      tax
+
+Delivery                  Dr Deferred Revenue           net
+                          Cr Sales                      net
+                          Dr Goods Shipped Not Invoiced cost
+                          Cr Inventory                  cost
+                          Dr Cost of Goods Sold         cost
+                          Cr Goods Shipped Not Invoiced cost
+```
+
+The symmetry is the point. 1090 holds cost for goods that have gone and not
+been billed; 2070 holds revenue for goods that have been billed and not
+gone. Every sale passes through one or neither, never both, and both empty
+as soon as the other half of the sale arrives.
+
+**The tax does not wait.** Commercial tax is due because an invoice was
+raised, not because goods moved, so it posts to Output Commercial Tax at
+invoice and stays there. Deferring it with the revenue would understate what
+is owed to the revenue department for as long as the goods take to leave.
+
+**Part shipments release part of it.** Ship six of ten and six tenths of the
+deferred revenue becomes revenue, against the cost of those six. The
+quantity is the one the cost claim already works out, so the two halves
+cannot disagree about how much of the sale has happened.
+
+**What this is not.** Not a change to when the customer owes money: the
+receivable is created by the invoice either way, ages from the invoice, and
+is settled against the invoice. Only the revenue line waits.
+
+**What it costs.** The same shape of work D8 needed, and D8 produced five
+defects, four of them caught by suites written years earlier. A new account
+and role, both posting paths, void and amend unwinding the deferral,
+customer returns against an invoice whose revenue has not been recognised,
+and a matrix that covers part shipment and over-delivery. The income
+statement will show less revenue than the invoice book whenever something is
+unshipped, which is correct and will need saying out loud to anyone who
+reconciles the two.
+
+**What it removes.** The "not yet shipped" column on the sales report, and
+the explanation that goes with it. Revenue invoiced with nothing behind it
+stops being revenue, so there is nothing left to warn about — it is a
+liability on the balance sheet, where a reader expects to find it.

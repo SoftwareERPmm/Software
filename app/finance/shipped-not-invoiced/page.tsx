@@ -211,11 +211,10 @@ export default async function ShippedNotInvoiced({
             </p>
             {held === 0 ? (
               <p className="page-sub" style={{ marginBottom: 0, lineHeight: 1.6 }}>
-                Cost of sales is recognised on the delivery today, so these
-                goods are already expensed and <strong>1090 holds nothing</strong>.
-                If cost moves to the invoice, this total becomes that
-                account&rsquo;s balance — and a clearing balance nobody ages
-                is a balance nobody clears.
+                Nothing is sitting in 1090 — every delivery has been billed.
+                When one has not, its cost waits here until the invoice
+                follows, and a clearing balance nobody ages is a balance
+                nobody clears.
               </p>
             ) : (
               <p className="page-sub" style={{ marginBottom: 0, lineHeight: 1.6 }}>

@@ -57,6 +57,11 @@ export const CHART = [
   ["2030",  "Accrued Expenses",                  "LIABILITY", true],
   // Taken from a customer before we billed them. Theirs until we do.
   ["2060",  "Customer Advances",                 "LIABILITY", true,  { added: true }],
+  // Billed before the goods went. The mirror of 1090: that holds cost for
+  // goods gone and not billed, this holds revenue for goods billed and not
+  // gone. Not the same as a customer advance, which is money in before any
+  // invoice. See docs/03-decisions.md, D9.
+  ["2070",  "Deferred Revenue",                  "LIABILITY", true,  { added: true }],
   ["2-LT", "Long-Term Liabilities",             "LIABILITY", false],
   ["2040",  "Loan Payable – Short Term",         "LIABILITY", true],
   ["2050",  "Loan Payable – Long Term",          "LIABILITY", true],
@@ -143,10 +148,10 @@ export const SYSTEM = {
   FX_GAIN: "4100", FX_LOSS: "6400", ROUNDING_DIFFERENCE: "6110",
   DELIVERY_INCOME: "4030",
 
-  // Reserved. Cost of sales is still recognised on the delivery, so nothing
-  // resolves this role yet; it exists so the account and the role land
-  // together rather than in two migrations months apart.
   SHIPPED_NOT_INVOICED: "1090",
+
+  // Revenue invoiced ahead of the goods, waiting for them.
+  DEFERRED_REVENUE: "2070",
 
   // Money that moved before the invoice did. Deliberately not the control
   // accounts: an advance has no open item, so parking it in receivables would

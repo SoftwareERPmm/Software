@@ -945,7 +945,7 @@ export function SalesVoucher({
                 icon: <Clock size={18} aria-hidden="true" />,
                 title: "Deliver later",
                 lead: "Invoice now, deliver later.",
-                note: "Stock leaves when you create the delivery",
+                note: "Earned when the goods go, not when the bill is raised",
                 disabled: false,
               },
               {
@@ -1010,12 +1010,18 @@ export function SalesVoucher({
                       ? "No transport charge — nobody carried the goods."
                       : "A transport charge can be added below."}
                 </li>
+                {/* What reaches the books, which is the part that changed
+                    when cost of sales moved to the invoice. Revenue and cost
+                    now arrive together on whichever document completes the
+                    sale — see docs/03-decisions.md, D8 and D9. */}
                 <li>
                   {fulfilMode === "later"
-                    ? "Revenue and the receivable post now."
+                    ? "The customer owes it now, but it is not earned yet — "
+                      + "revenue and cost both post when the goods go."
                     : fulfilMode === "match"
-                      ? "Revenue posts now; the cost was taken by the delivery."
-                      : "A delivery is recorded for you — no separate step."}
+                      ? "Revenue posts now, and the cost of that delivery with it."
+                      : "Revenue and cost both post now, and a delivery is "
+                        + "recorded for you — no separate step."}
                 </li>
               </ul>
             </div>

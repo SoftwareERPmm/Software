@@ -538,8 +538,9 @@ export function DeliveryForm({
             ? "Owned stock leaves at its FIFO cost. Consigned stock is not yours, "
               + "so your inventory does not move — what you owe the consignor is "
               + "recognised when the sale is invoiced."
-            : "Stock leaves at its FIFO cost and the cost is recognised. No revenue "
-              + "and no receivable — those belong to the invoice, whenever it is raised."}
+            : "Stock leaves at its FIFO cost, which waits in Goods Shipped Not "
+              + "Invoiced until an invoice bills it. No revenue and no receivable "
+              + "— those belong to the invoice, whenever it is raised."}
         </span>
       </div>
     </form>
