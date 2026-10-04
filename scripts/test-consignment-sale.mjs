@@ -124,8 +124,12 @@ try {
 
   const j1 = await sql`select a.code, jl.amount from journal_line jl join account a on a.id = jl.account_id
     join journal_entry je on je.id = jl.journal_entry_id where je.source_id = ${settlement1[0]?.id}`;
-  check("posts Dr COGS / Cr AP, no Inventory line",
-    j1.some((l) => n(l.amount) === 16000) && j1.some((l) => n(l.amount) === -16000) && j1.length === 2,
+  // A commission, not a purchase (migration 0120): the 20,000 billed comes
+  // out of Sales, 4,000 is kept, 16,000 is owed through 2080. No cost of
+  // sales and no inventory — the goods were never ours.
+  const amt = (code) => j1.filter((l) => l.code === code).reduce((t, l) => t + n(l.amount), 0);
+  check("posts Dr Sales / Cr Commission / Cr Payable to Consignors, nothing else",
+    amt("4000") === 20000 && amt("4040") === -4000 && amt("2080") === -16000 && j1.length === 3,
     j1.map((l) => `${l.code}:${n(l.amount)}`).join(" "));
 
   const [openAfter1] = await sql`select coalesce(outstanding, 0) as v from v_open_item

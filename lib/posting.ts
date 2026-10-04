@@ -1252,6 +1252,51 @@ type FifoPlan = {
  * can't both plan
  * against the same remaining quantity.
  */
+/**
+ * Lock every stock row a posting is going to touch, up front, in one order.
+ *
+ * Each posting used to lock an item's lots when it reached that line, so a
+ * delivery of iPhone then Charger locked iPhone first, and a transfer of
+ * Charger then iPhone locked Charger first. Run together, each held what the
+ * other was waiting for: a deadlock, which Postgres breaks by cancelling one
+ * of them, and somebody's posting fails for no reason they could see.
+ *
+ * Taken here, before anything else, and always in the same order — by item,
+ * then location, then age, the same for every kind of document and every
+ * table — no two postings can ever wait on each other in a circle. The
+ * per-line locks that follow find their rows already held and go straight
+ * through.
+ *
+ * Tables in a fixed order too: owned lots, then consigned lots, then
+ * negative-stock rows. A location narrows it to one warehouse; null takes
+ * the item everywhere, for documents that reach across warehouses.
+ */
+async function lockStockInOrder(
+  tx: TransactionSql,
+  companyId: string,
+  itemIds: readonly string[],
+  locationId: string | null,
+): Promise<void> {
+  const items = [...new Set(itemIds.filter(Boolean))];
+  if (items.length === 0) return;
+  const where = locationId ? tx`and location_id = ${locationId}` : tx``;
+  await tx`
+    select id from stock_lot
+     where company_id = ${companyId} and item_id = any(${items}::uuid[]) ${where}
+     order by item_id, location_id, received_date, created_at, id
+       for update`;
+  await tx`
+    select id from consignment_lot
+     where company_id = ${companyId} and item_id = any(${items}::uuid[]) ${where}
+     order by item_id, location_id, received_date, created_at, id
+       for update`;
+  await tx`
+    select id from negative_stock
+     where company_id = ${companyId} and item_id = any(${items}::uuid[]) ${where}
+     order by item_id, location_id, created_at, id
+       for update`;
+}
+
 async function planFifoConsumption(
   tx: TransactionSql, companyId: string, itemId: string, locationId: string, qty: number,
   /**
@@ -2452,6 +2497,7 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
   }
 
   const { companyId, partnerId, locationId, docDate } = input;
+  await lockStockInOrder(tx, companyId, input.lines.map((l) => l.itemId), locationId);
 
   const fyRows = await tx`select fn_fiscal_year_for(${companyId}, ${docDate}::date) as fy`;
   const fiscalYear = fyRows[0]?.fy ?? null;
@@ -3968,6 +4014,7 @@ export async function postSaleWithDelivery(input: SalesInvoiceInput, outer?: Tra
 async function _postGoodsReceipt(tx: TransactionSql, input: FulfillmentInput) {
   if (input.lines.length === 0) throw new Error("A goods receipt needs at least one line");
   assertLines(input.lines);
+  await lockStockInOrder(tx, input.companyId, input.lines.map((l) => l.itemId), input.locationId);
 
   // Refused before anything is written, so a carton with a missing IMEI is
   // rejected whole rather than half-received.
@@ -5057,6 +5104,9 @@ async function _postPurchaseInvoice(
 ) {
   if (input.lines.length === 0) throw new Error("An invoice needs at least one line");
   assertLines(input.lines);
+  // A bill can correct what its receipt's lots cost, and follow them across
+  // transfers, so the item in every warehouse.
+  await lockStockInOrder(tx, input.companyId, input.lines.map((l) => l.itemId), null);
 
   const cashOut = round4(input.cashOut ?? 0);
   if (cashOut > 0 && !input.cashAccountId) {
@@ -5574,6 +5624,7 @@ async function _postStockAdjustment(
   if (lines.length === 0) throw new Error("An adjustment needs at least one line");
   // Signed: a stock loss is a negative quantity by design.
   assertLines(lines, { signedQty: true });
+  await lockStockInOrder(tx, input.companyId, lines.map((l) => l.itemId), input.locationId);
 
   {
     const { companyId, locationId, docDate } = input;
@@ -5756,6 +5807,9 @@ export async function postStockTransfer(input: TransferInput) {
   if (input.fromLocationId === input.toLocationId) throw new Error("Choose two different locations");
 
   return sql.begin(async (tx) => {
+    // Both ends: the goods leave one warehouse and may settle a shortfall
+    // at the other.
+    await lockStockInOrder(tx, input.companyId, lines.map((l) => l.itemId), null);
     const { companyId, fromLocationId, toLocationId, docDate } = input;
     const receivedAt = input.receivedAt || docDate;
 
@@ -6398,6 +6452,7 @@ export async function postPurchaseReturn(input: ReturnInput, outer?: Transaction
 
   return inTransaction(outer, async (tx) => {
     const { companyId, partnerId, locationId, docDate } = input;
+    await lockStockInOrder(tx, companyId, input.lines.map((l) => l.itemId), locationId);
 
     const fyRows = await tx`select fn_fiscal_year_for(${companyId}, ${docDate}::date) as fy`;
     const fiscalYear = fyRows[0]?.fy ?? null;

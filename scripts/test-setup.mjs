@@ -121,6 +121,11 @@ try {
   console.log(bad === 0 ? "\n  a bare database bootstraps cleanly\n" : `\n  ${bad} failed\n`);
 } catch (e) {
   console.error(`\n  error: ${e.message}\n`); bad++;
-} finally { await sql.end({ timeout: 5 }); }
+} finally {
+  // Released whatever happened. Leaving it held turned one refusal into every
+  // later suite in a sweep being turned away as "another test is running".
+  await releaseTestLock(sql);
+  await sql.end({ timeout: 5 });
+}
 
 process.exit(bad === 0 ? 0 : 1);

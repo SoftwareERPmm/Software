@@ -98,7 +98,7 @@ try {
   const delta = (a, b) => ({
     sales: r2(a.sales - b.sales), comm: r2(a.comm - b.comm), cogs: r2(b.cogs - a.cogs),
     owed: r2(b.owed - a.owed), c2080: r2(a.c2080 - b.c2080), ap: r2(a.ap - b.ap),
-    def: r2(a.def - b.def), held: r2(b.held - a.held), inv: r2(b.inv - a.inv),
+    def: r2(a.def - b.def), held: r2(b.held - a.held), inv: r2(a.inv - b.inv),
     disc: r2(b.disc - a.disc),
   });
   const agentChecks = (d, price, kept) => {
@@ -296,10 +296,11 @@ try {
   check("it clears 2080, not 2000", r2(s1.c2080 - s0.c2080) === 500 && s1.ap === s0.ap,
     `2080 ${r2(s1.c2080 - s0.c2080)} 2000 ${r2(s1.ap - s0.ap)}`);
 
+  // The view lists discrepancies only: no row is agreement.
   const [rec] = await sql`select side, gl_balance::float g, sub_balance::float s
     from v_check_control_reconciliation where company_id = ${co.id} and side = 'AP'`;
-  check("\n  payables ledger and subledger agree", rec && r2(rec.g) === r2(rec.s),
-    rec ? `GL ${rec.g} / sub ${rec.s}` : "no row");
+  check("\n  payables ledger and subledger agree", !rec,
+    rec ? `GL ${rec.g} / sub ${rec.s}` : "");
 
   const [tb] = await sql`select coalesce(sum(base_amount),0) v from journal_line where company_id = ${co.id}`;
   check("\n  trial balance nets to zero", r2(tb.v) === 0, `${r2(tb.v)}`);

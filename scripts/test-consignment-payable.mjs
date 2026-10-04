@@ -92,15 +92,17 @@ try {
 
   console.log(`\n  ${co.name}`);
 
-  // The subledger and the control account, the way the invariant view reads
-  // them. Kept as one function so every step below asks the same question.
+  // The subledger and the control accounts, the way the invariant view reads
+  // them: every payable control account, since a consignment settlement is
+  // owed through 2080 rather than 2000 (migration 0120). Kept as one function
+  // so every step below asks the same question.
   const apControl = async () => {
     const [r] = await sql`
       select coalesce(sum(jl.amount), 0) as v
         from journal_line jl
         join account a on a.id = jl.account_id
        where a.company_id = ${co.id}
-         and a.id = fn_resolve_control_account(${co.id}, 'AP_CONTROL', null)`;
+         and a.is_control and a.account_type = 'LIABILITY'`;
     return n(r?.v);
   };
   const apSubledger = async () => {
