@@ -5621,8 +5621,12 @@ export type AdvanceRow = {
   branch: string | null;
   taken: number;
   applied: number;
+  /** Handed back to the partner. Draws on the same balance as applying it. */
+  refunded: number;
   remaining: number;
   applications: AdvanceApplication[];
+  /** Each refund against this advance, in order. */
+  refunds: Array<{ id: string; doc_no: string; doc_date: string; amount: number }>;
 };
 
 /**
@@ -5681,7 +5685,12 @@ export async function getAdvanceLedger(
            l.name as branch,
            d.gross_total::float                                    as taken,
            coalesce(a.applied, 0)::float                           as applied,
-           (d.gross_total - coalesce(a.applied, 0))::float         as remaining
+           coalesce(rf.refunded, 0)::float                         as refunded,
+           -- What came in, less what bills claimed, less what was handed
+           -- back. Leaving the refund out showed money already returned as
+           -- still held for the customer.
+           (d.gross_total - coalesce(a.applied, 0)
+                          - coalesce(rf.refunded, 0))::float       as remaining
       from document d
       join business_partner p on p.id = d.partner_id
       left join location l on l.id = d.location_id
@@ -5694,6 +5703,14 @@ export async function getAdvanceLedger(
                and (pa.applied_by_document_id is null or app.status = 'POSTED')
              group by pa.payment_id
       ) a on a.payment_id = d.id
+      left join (
+            select r.source_document_id as payment_id, sum(r.gross_total) as refunded
+              from document r
+             where r.doc_type = 'ADVANCE_REFUND' and r.status = 'POSTED'
+               -- not the mirror a void leaves behind
+               and r.reverses_document_id is null
+             group by r.source_document_id
+      ) rf on rf.payment_id = d.id
      where d.id in (${advances})
      order by d.doc_date desc, d.doc_no desc`;
 
@@ -5723,8 +5740,26 @@ export async function getAdvanceLedger(
     byPayment.set(a.payment_id, list);
   }
 
+  const refunds = await sql`
+    select r.source_document_id as payment_id, r.id, r.doc_no,
+           to_char(r.doc_date, 'YYYY-MM-DD') as doc_date, r.gross_total::float as amount
+      from document r
+     where r.company_id = ${companyId}
+       and r.doc_type = 'ADVANCE_REFUND' and r.status = 'POSTED'
+       and r.reverses_document_id is null
+       and r.source_document_id in (${advances})
+     order by r.doc_date, r.doc_no`;
+  const refundsBy = new Map<string, AdvanceRow["refunds"]>();
+  for (const f of refunds as unknown as Array<AdvanceRow["refunds"][number] & { payment_id: string }>) {
+    const list = refundsBy.get(f.payment_id) ?? [];
+    list.push({ id: f.id, doc_no: f.doc_no, doc_date: f.doc_date, amount: f.amount });
+    refundsBy.set(f.payment_id, list);
+  }
+
   return (rows as unknown as AdvanceRow[]).map((r) => ({
-    ...r, applications: byPayment.get(r.id) ?? [],
+    ...r,
+    applications: byPayment.get(r.id) ?? [],
+    refunds: refundsBy.get(r.id) ?? [],
   }));
 }
 
@@ -7389,6 +7424,41 @@ function revenueRecognised(companyId: string) {
 }
 
 /**
+ * What consignment sales owed their consignors, dated by the settlement
+ * that recognised it — migration 0120.
+ *
+ * The invoice line says the customer paid the full price, and the line is
+ * right: they did. But the consignor's share was never the company's
+ * revenue. The settlement took it out of Sales into Payable to Consignors,
+ * so the report takes it out too, or it would show revenue the income
+ * statement does not. A voided settlement puts it back on the day it was
+ * voided, the same day the ledger does.
+ *
+ * Returned as a CTE of (amount, at, invoice_id, item_id), so each caller can
+ * attribute it through the sales invoice to whatever it is cutting by.
+ */
+function consignorShares(companyId: string) {
+  return sql`
+    shares as (
+      select sl.amount, sd.posting_date as at, sd.source_document_id as invoice_id,
+             cl.item_id
+        from consignment_settlement_line sl
+        join document sd on sd.id = sl.settlement_document_id
+        join consignment_lot_consumption c on c.id = sl.consumption_id
+        join consignment_lot cl on cl.id = c.lot_id
+       where sl.company_id = ${companyId}
+      union all
+      select -sl.amount, rv.posting_date, sd.source_document_id, cl.item_id
+        from consignment_settlement_line sl
+        join document sd on sd.id = sl.settlement_document_id
+        join document rv on rv.id = sd.reversed_by_document_id
+        join consignment_lot_consumption c on c.id = sl.consumption_id
+        join consignment_lot cl on cl.id = c.lot_id
+       where sl.company_id = ${companyId}
+    )`;
+}
+
+/**
  * Sales for a period, cut whichever way the reader needs, on whichever
  * basis the question calls for.
  *
@@ -7453,6 +7523,21 @@ export async function getSalesBreakdown(
      where r.at between ${from}::date and ${to}::date
        ${branch}
      group by 1, 2, 3`;
+
+  /* The consignor's part of consignment sales, out of revenue. `dl` is
+     stood in by the settled item so the same dimension joins apply. */
+  const shared = await sql`
+    with ${consignorShares(companyId)}
+    select ${dim} as key, ${code} as code, ${name} as name, sum(x.amount) as share
+      from shares x
+      join document d on d.id = x.invoice_id
+      cross join lateral (select x.item_id) dl
+      ${joins}
+     where x.at between ${from}::date and ${to}::date
+       ${branch}
+     group by 1, 2, 3`;
+  const shareBy = new Map((shared as unknown as Array<{ key: string; share: string }>)
+    .map((c) => [c.key, Number(c.share)]));
 
   /* What those sales cost, from the claims the invoices made on delivered
      goods.
@@ -7538,6 +7623,9 @@ export async function getSalesBreakdown(
     key: string; code: string; name: string; cost: string;
   }>;
   for (const r of revRows) rows.set(r.key, { key: r.key, code: r.code, name: r.name });
+  for (const c of shared as unknown as Array<{ key: string; code: string; name: string }>) {
+    if (!rows.has(c.key)) rows.set(c.key, { key: c.key, code: c.code, name: c.name });
+  }
   for (const c of costRows) {
     if (!rows.has(c.key)) rows.set(c.key, { key: c.key, code: c.code, name: c.name });
   }
@@ -7554,14 +7642,18 @@ export async function getSalesBreakdown(
 
   return [...rows.values()].map((k) => {
     const r = revBy.get(k.key);
-    const rev = Number(r?.revenue ?? 0);
+    /* Gross comes down with it, so Net sales still reads as Gross less
+       Discounts: what the company sold, less what it was only selling on
+       somebody else's behalf. */
+    const share = shareBy.get(k.key) ?? 0;
+    const rev = Number(r?.revenue ?? 0) - share;
     const cost = costBy.get(k.key) ?? 0;
     const q = Number(r?.qty ?? 0);
     return {
       key: k.key, code: k.code, name: k.name,
       qty: q, freeQty: Number(r?.free_qty ?? 0),
       invoices: r?.invoices ?? 0,
-      gross: Number(r?.gross ?? 0), discount: Number(r?.discount ?? 0),
+      gross: Number(r?.gross ?? 0) - share, discount: Number(r?.discount ?? 0),
       revenue: rev, unmatched: unmatchedBy.get(k.key) ?? 0,
       returned: returnBy.get(k.key) ?? 0,
       cost, margin: rev - cost,
@@ -7652,6 +7744,14 @@ export async function getSalesOverview(
          ${branch(sql`d.location_id`)}`) as unknown as
       Array<{ net: string; units: string; discount: string; unmatched: string }>;
 
+    const [owedOn] = (await sql`
+      with ${consignorShares(companyId)}
+      select coalesce(sum(x.amount), 0) as share
+        from shares x
+        join document d on d.id = x.invoice_id
+       where x.at between ${a}::date and ${b}::date
+         ${branch(sql`d.location_id`)}`) as unknown as Array<{ share: string }>;
+
     /* What hit cost of sales in the window, from the claims that carried
        it there. Cost of sales is recognised by the invoice now, so the
        deliveries' consumption is no longer the same question. */
@@ -7663,7 +7763,7 @@ export async function getSalesOverview(
          and pd.posting_date between ${a}::date and ${b}::date
          ${branch(sql`pd.location_id`)}`) as unknown as Array<{ cost: string }>;
 
-    const net = Number(earned.net);
+    const net = Number(earned.net) - Number(owedOn.share);
     const units = Number(earned.units);
     const c = Number(cost.cost);
     const discount = Number(earned.discount);
@@ -7693,15 +7793,24 @@ export async function getSalesOverview(
                                        interval '1 month'), 'YYYY-MM') as month
       ),
       ${revenueRecognised(companyId)},
+      ${consignorShares(companyId)},
       rev as (
-        select to_char(r.at, 'YYYY-MM') as month,
-               sum(case when dl.foc_reason_id is null
-                        then dl.net_amount * r.frac else 0 end) as net
-          from recognised r
-          join document_line dl on dl.id = r.line_id
-          join document d on d.id = dl.document_id
-         where r.at between ${from}::date and ${to}::date
-           ${branch(sql`d.location_id`)}
+        select month, sum(net) as net from (
+          select to_char(r.at, 'YYYY-MM') as month,
+                 case when dl.foc_reason_id is null
+                      then dl.net_amount * r.frac else 0 end as net
+            from recognised r
+            join document_line dl on dl.id = r.line_id
+            join document d on d.id = dl.document_id
+           where r.at between ${from}::date and ${to}::date
+             ${branch(sql`d.location_id`)}
+          union all
+          select to_char(x.at, 'YYYY-MM'), -x.amount
+            from shares x
+            join document d on d.id = x.invoice_id
+           where x.at between ${from}::date and ${to}::date
+             ${branch(sql`d.location_id`)}
+        ) t
          group by 1
       ),
       cst as (

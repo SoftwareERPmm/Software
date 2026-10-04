@@ -2,11 +2,20 @@ import Link from "next/link";
 import { money, shortDate } from "@/lib/format";
 import { DataTable, type DataRow } from "@/components/data-table";
 import type { AdvanceRow } from "@/lib/queries";
+import { RefundAdvance } from "@/components/refund-advance";
 
-const TABS: Array<["" | "open" | "spent", string]> = [
+type State = "unapplied" | "partial" | "spent" | "refunded";
+
+/* The four things that can have happened to an advance. Applying and
+   refunding draw on the same balance, so an advance closed by a refund is
+   told apart from one closed by bills — otherwise money handed back reads
+   as money spent against invoices. */
+const TABS: Array<["" | State, string]> = [
   ["", "All"],
-  ["open", "Still on account"],
+  ["unapplied", "Unapplied"],
+  ["partial", "Partly applied"],
   ["spent", "Fully applied"],
+  ["refunded", "Refunded"],
 ];
 
 /**
@@ -23,25 +32,33 @@ const TABS: Array<["" | "open" | "spent", string]> = [
  * So each advance keeps its row after it is spent, with its applications
  * underneath: the invoice each went to, the application that did it, and the
  * date. Nothing here is stored — taken is the document, applied is the sum of
- * allocations that still stand, and what is left is the difference.
+ * allocations that still stand, refunded is the posted refunds, and what is
+ * left is taken less both.
  */
 export function AdvanceLedger({
-  side, advances, status,
+  side, advances, status, cashAccounts, today,
 }: {
   side: "CUSTOMER" | "SUPPLIER";
   advances: AdvanceRow[];
   status?: string;
+  /** Where a refund can be paid from or received into. */
+  cashAccounts: { id: string; code: string; name: string }[];
+  today: string;
 }) {
   const sales = side === "CUSTOMER";
   const base = sales ? "/receivables/advances" : "/payables/advances";
   const who = sales ? "Customer" : "Supplier";
 
-  const state = (r: AdvanceRow) => (r.remaining > 0.0001 ? "open" : "spent");
+  const state = (r: AdvanceRow): State =>
+    r.remaining > 0.0001
+      ? (r.applied > 0.0001 || r.refunded > 0.0001 ? "partial" : "unapplied")
+      : r.refunded > 0.0001 ? "refunded" : "spent";
   const shown = status ? advances.filter((r) => state(r) === status) : advances;
 
   const onAccount = advances.reduce((s, r) => s + r.remaining, 0);
   const taken = advances.reduce((s, r) => s + r.taken, 0);
   const applied = advances.reduce((s, r) => s + r.applied, 0);
+  const refunded = advances.reduce((s, r) => s + r.refunded, 0);
 
   const rows: DataRow[] = shown.map((r) => ({
     key: r.id,
@@ -53,6 +70,7 @@ export function AdvanceLedger({
       partner_name: r.partner_name ?? "",
       taken: r.taken,
       applied: r.applied,
+      refunded: r.refunded,
       remaining: r.remaining,
     },
     csv: {
@@ -63,7 +81,9 @@ export function AdvanceLedger({
       branch: r.branch ?? "",
       taken: r.taken,
       applied: r.applied,
+      refunded: r.refunded,
       remaining: r.remaining,
+      state: state(r),
     },
     node: (
       <>
@@ -80,10 +100,17 @@ export function AdvanceLedger({
           </td>
           <td className="r">{money(r.taken)}</td>
           <td className="r">{r.applied > 0 ? money(r.applied) : "—"}</td>
+          <td className="r">{r.refunded > 0 ? money(r.refunded) : "—"}</td>
           <td className="r">
             {r.remaining > 0.0001
               ? <strong>{money(r.remaining)}</strong>
               : <span style={{ color: "var(--muted)" }}>nothing left</span>}
+          </td>
+          <td className="r">
+            {r.remaining > 0.0001 && (
+              <RefundAdvance paymentId={r.id} remaining={r.remaining}
+                customer={sales} cashAccounts={cashAccounts} today={today} />
+            )}
           </td>
         </tr>
         {/* Where it went, under the money it came from — so the two are read
@@ -107,6 +134,24 @@ export function AdvanceLedger({
               <Link href={`/documents/${a.invoice_id}`} className="m">{a.invoice_no}</Link>
             </td>
             <td className="r">{money(a.amount)}</td>
+            <td />
+            <td />
+            <td />
+          </tr>
+        ))}
+        {/* And what was handed back, under the same money. */}
+        {r.refunds.map((f) => (
+          <tr key={f.id} className="adv-applied">
+            <td />
+            <td colSpan={3}>
+              <span className="adv-mark" aria-hidden="true">↳</span>
+              <span className="adv-when">{shortDate(f.doc_date)}</span>{" "}
+              <Link href={`/documents/${f.id}`} className="m">{f.doc_no}</Link>
+              <span className="adv-note"> {sales ? "refunded to the customer" : "returned by the supplier"}</span>
+            </td>
+            <td />
+            <td className="r">{money(f.amount)}</td>
+            <td />
             <td />
           </tr>
         ))}
@@ -134,6 +179,13 @@ export function AdvanceLedger({
           <span className="kpi-value">{money(applied)}</span>
           <span className="kpi-note">
             {taken > 0 ? `${Math.round((applied / taken) * 100)}% of it` : "none yet"}
+          </span>
+        </div>
+        <div className="kpi">
+          <span className="kpi-label">{sales ? "Refunded" : "Returned to us"}</span>
+          <span className="kpi-value">{money(refunded)}</span>
+          <span className="kpi-note">
+            {refunded > 0 ? (sales ? "handed back to customers" : "deposits returned") : "none"}
           </span>
         </div>
       </div>
@@ -165,7 +217,9 @@ export function AdvanceLedger({
             rows={rows}
             emptyLabel={
               status === "spent" ? "None fully applied yet"
-                : status === "open" ? "Nothing on account"
+                : status === "refunded" ? "Nothing refunded"
+                : status === "partial" ? "Nothing partly applied"
+                : status === "unapplied" ? "Nothing unapplied"
                   : `No ${sales ? "customer" : "supplier"} advances yet`
             }
             searchPlaceholder={`Search ${sales ? "customers" : "suppliers"}, documents…`}
@@ -176,14 +230,18 @@ export function AdvanceLedger({
               { key: "partner_name", label: who, sortable: true },
               { key: "taken", label: sales ? "Taken" : "Paid", sortable: true, align: "r" },
               { key: "applied", label: "Applied", sortable: true, align: "r" },
+              { key: "refunded", label: "Refunded", sortable: true, align: "r" },
               { key: "remaining", label: "Left", sortable: true, align: "r" },
+              { key: "action", label: "" },
             ]}
             footer={
               <tr>
                 <td colSpan={3}>Total</td>
                 <td className="r">{money(taken)}</td>
                 <td className="r">{money(applied)}</td>
+                <td className="r">{money(refunded)}</td>
                 <td className="r">{money(onAccount)}</td>
+                <td />
               </tr>
             }
           />

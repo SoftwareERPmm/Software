@@ -62,6 +62,10 @@ export const CHART = [
   // gone. Not the same as a customer advance, which is money in before any
   // invoice. See docs/03-decisions.md, D9.
   ["2070",  "Deferred Revenue",                  "LIABILITY", true,  { added: true }],
+  // What a consignment sale owes the consignor. Its own control account, not
+  // 2000, so consignors are never mixed into ordinary supplier bills — even
+  // when the same partner is both. See migration 0120.
+  ["2080",  "Payable to Consignors",             "LIABILITY", true,  { control: true, added: true }],
   ["2-LT", "Long-Term Liabilities",             "LIABILITY", false],
   ["2040",  "Loan Payable – Short Term",         "LIABILITY", true],
   ["2050",  "Loan Payable – Long Term",          "LIABILITY", true],
@@ -79,6 +83,10 @@ export const CHART = [
   // because the sale did. It sat in Other Income, which put money earned from
   // trading below the operating-profit line.
   ["4030",  "Delivery Income",                   "REVENUE",   true,  { added: true }],
+  // What the company keeps from selling goods it never owned. A consignment
+  // sale is not a sale of stock: the consignor's share was never ours, so
+  // only the difference is revenue.
+  ["4040",  "Commission Revenue",                "REVENUE",   true,  { added: true }],
   // Not trading income, so not part of revenue. Kept in a group of its own so
   // the income statement can show what the business earned by trading before
   // adding what it earned some other way — a delivery charge or an exchange
@@ -152,6 +160,9 @@ export const SYSTEM = {
 
   // Revenue invoiced ahead of the goods, waiting for them.
   DEFERRED_REVENUE: "2070",
+
+  // A consignment sale: what we keep, and what we hold for the consignor.
+  COMMISSION_REVENUE: "4040", CONSIGNOR_PAYABLE: "2080",
 
   // Money that moved before the invoice did. Deliberately not the control
   // accounts: an advance has no open item, so parking it in receivables would
