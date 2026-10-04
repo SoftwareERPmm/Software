@@ -36,6 +36,10 @@ export const CHART = [
   // sales. An asset while it is still owed back to us, not an expense — a
   // trader who expenses it pays it twice.
   ["1080",  "Input Commercial Tax",              "ASSET",     true,  { added: true }],
+  // The sales mirror of GR/IR. Goods have left and nobody has been billed
+  // for them, so their cost is out of inventory and not yet cost of sales.
+  // Nothing posts here yet — see docs/03-decisions.md, D8.
+  ["1090",  "Goods Shipped Not Invoiced",        "ASSET",     true,  { added: true }],
   ["1-FA",  "Non-Current Assets (Fixed Assets)", "ASSET",     false],
   ["1100",  "Land",                              "ASSET",     true],
   ["1110",  "Building",                          "ASSET",     true],
@@ -138,6 +142,11 @@ export const SYSTEM = {
   // account of its own instead of hiding inside Miscellaneous Expenses.
   FX_GAIN: "4100", FX_LOSS: "6400", ROUNDING_DIFFERENCE: "6110",
   DELIVERY_INCOME: "4030",
+
+  // Reserved. Cost of sales is still recognised on the delivery, so nothing
+  // resolves this role yet; it exists so the account and the role land
+  // together rather than in two migrations months apart.
+  SHIPPED_NOT_INVOICED: "1090",
 
   // Money that moved before the invoice did. Deliberately not the control
   // accounts: an advance has no open item, so parking it in receivables would

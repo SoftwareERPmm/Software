@@ -85,17 +85,16 @@ try {
     ...base, partnerId: supp.id, docDate: day,
     lines: [{ itemId: item.id, qty, unitCost: cost }] });
 
-  /** Every cut of the report, on one basis, as one set of totals. */
-  const totals = async (basis, [from, to]) => {
+  /** Every cut of the report, as one set of totals. */
+  const totals = async ([from, to]) => {
     const cuts = {};
     for (const by of ["item", "customer", "category", "brand"]) {
-      const rows = await getSalesBreakdown(co.id, from, to, by, null, basis);
+      const rows = await getSalesBreakdown(co.id, from, to, by, null);
       cuts[by] = {
         revenue: r4(rows.reduce((t, r) => t + r.revenue, 0)),
         cost: r4(rows.reduce((t, r) => t + r.cost, 0)),
         unmatched: r4(rows.reduce((t, r) => t + r.unmatched, 0)),
         qty: r4(rows.reduce((t, r) => t + r.qty, 0)),
-        matchedQty: r4(rows.reduce((t, r) => t + r.matchedQty, 0)),
         freeQty: r4(rows.reduce((t, r) => t + r.freeQty, 0)),
         rows,
       };
@@ -105,7 +104,7 @@ try {
 
   /** The same figure however the report is sliced, or the report is lying. */
   const agrees = (t, label) => {
-    const keys = ["revenue", "cost", "unmatched", "qty", "matchedQty"];
+    const keys = ["revenue", "cost", "unmatched", "qty"];
     const bad = Object.entries(t.cuts).filter(([, c]) =>
       keys.some((k) => c[k] !== t.cuts.item[k]));
     check(`${label}: every cut shows the same totals`, bad.length === 0,
@@ -118,14 +117,11 @@ try {
   await P.postSaleWithDelivery({ ...base, partnerId: cust.id, docDate: JUNE, dueDate: JUNE,
     paymentType: "CREDIT", lines: [{ itemId: item.id, qty: 10, unitPrice: 2500 }] });
 
-  let per = await totals("period", Q2);
-  let pro = await totals("profitability", Q2);
-  check("both bases see the revenue", per.revenue === 25000 && pro.revenue === 25000,
-    `${per.revenue} / ${pro.revenue}`);
-  check("both bases see the cost", per.cost === 10000 && pro.cost === 10000,
-    `${per.cost} / ${pro.cost}`);
-  check("nothing is unmatched", pro.unmatched === 0, `${pro.unmatched}`);
-  agrees(pro, "counter sale");
+  let r = await totals(Q2);
+  check("the revenue is there", r.revenue === 25000, `${r.revenue}`);
+  check("and the cost of the goods behind it", r.cost === 10000, `${r.cost}`);
+  check("nothing is waiting to be shipped", r.unmatched === 0, `${r.unmatched}`);
+  agrees(r, "counter sale");
 
   // ------------------------------------------- goods in June, bill in July
   console.log("\n  goods out in June, billed in July\n");
@@ -135,21 +131,20 @@ try {
     paymentType: "CREDIT", deliveryId: juneDelivery.id,
     lines: [{ itemId: item.id, qty: 20, unitPrice: 2500 }] });
 
-  per = await totals("period", Q3);
-  pro = await totals("profitability", Q3);
-  check("the period basis books July's revenue with no cost behind it",
-    per.revenue === 50000 && per.cost === 0, `${per.revenue} / ${per.cost}`);
-  check("the profitability basis reaches back for June's cost",
-    pro.revenue === 50000 && pro.cost === 20000, `${pro.revenue} / ${pro.cost}`);
-  check("and counts none of it unmatched", pro.unmatched === 0, `${pro.unmatched}`);
+  r = await totals(Q3);
+  /* The case the report used to need two readings for. Cost was recognised
+     when the goods left, so June carried the cost and July the revenue and
+     neither month told the truth on its own. Cost of sales moved to the
+     invoice (docs/03-decisions.md, D8), so both halves now land in July
+     together and one reading is enough. */
+  check("July has the cost behind its revenue",
+    r.revenue === 50000 && r.cost === 20000, `${r.revenue} / ${r.cost}`);
+  check("and nothing of it is waiting to ship", r.unmatched === 0, `${r.unmatched}`);
 
-  per = await totals("period", Q2);
-  pro = await totals("profitability", Q2);
-  check("the period basis leaves June holding cost it never earned on",
-    per.revenue === 25000 && per.cost === 30000, `${per.revenue} / ${per.cost}`);
-  check("the profitability basis gives June only its own sale",
-    pro.revenue === 25000 && pro.cost === 10000, `${pro.revenue} / ${pro.cost}`);
-  agrees(pro, "June");
+  r = await totals(Q2);
+  check("June keeps only its own sale, not July's cost",
+    r.revenue === 25000 && r.cost === 10000, `${r.revenue} / ${r.cost}`);
+  agrees(r, "June");
 
   // ---------------------------------------------- a bill with nothing sent
   console.log("\n  a bill with nothing shipped against it\n");
@@ -157,17 +152,22 @@ try {
     paymentType: "CREDIT", toDeliver: true,
     lines: [{ itemId: item.id, qty: 8, unitPrice: 3000 }] });
 
-  pro = await totals("profitability", Q3);
-  check("the revenue is held outside the margin", pro.revenue === 50000 && pro.unmatched === 24000,
-    `matched ${pro.revenue} unmatched ${pro.unmatched}`);
-  check("no cost is invented for it", pro.cost === 20000, `${pro.cost}`);
-  check("the units are counted but not matched",
-    pro.qty === 28 && pro.matchedQty === 20, `${pro.qty} / ${pro.matchedQty}`);
-  const unbilled = pro.cuts.customer.rows.find((r) => r.code === "SPB-D");
-  check("the customer who was billed shows no margin at all",
-    unbilled && unbilled.revenue === 0 && unbilled.marginPct === null,
-    `${unbilled?.revenue} ${unbilled?.marginPct}`);
-  agrees(pro, "undelivered bill");
+  r = await totals(Q3);
+  check("the revenue counts, because it was invoiced",
+    r.revenue === 50000 + 24000, `${r.revenue}`);
+  check("but it is flagged as not yet shipped", r.unmatched === 24000, `${r.unmatched}`);
+  check("and no cost is invented for it", r.cost === 20000, `${r.cost}`);
+  const unbilled = r.cuts.customer.rows.find((x) => x.code === "SPB-D");
+  /* The books say this customer owes 24,000 and nothing has cost us
+     anything yet, which reads as a perfect margin. That is true and
+     misleading in equal measure, which is exactly why the row carries its
+     own "not yet shipped" figure rather than being quietly left out. */
+  check("the customer shows revenue with no cost behind it",
+    unbilled && unbilled.revenue === 24000 && unbilled.cost === 0,
+    `${unbilled?.revenue} / ${unbilled?.cost}`);
+  check("  and the whole of it flagged as unshipped",
+    unbilled && unbilled.unmatched === 24000, `${unbilled?.unmatched}`);
+  agrees(r, "undelivered bill");
 
   // ------------------------------------------------------- a part shipment
   console.log("\n  half the goods go out\n");
@@ -178,13 +178,14 @@ try {
     sourceDocumentId: pending.id,
     lines: [{ itemId: item.id, qty: 6, unitPrice: 3000 }] });
 
-  pro = await totals("profitability", Q3);
-  check("six eighths of what was charged is earned",
-    pro.revenue === 50000 + 18000, `${pro.revenue}`);
+  r = await totals(Q3);
+  check("the revenue is unchanged — it was always invoiced",
+    r.revenue === 74000, `${r.revenue}`);
   check("two eighths of it is still owed as goods",
-    pro.unmatched === 6000, `${pro.unmatched}`);
-  check("and the cost is the cost of the six", pro.cost === 20000 + 6000, `${pro.cost}`);
-  agrees(pro, "part shipment");
+    r.unmatched === 6000, `${r.unmatched}`);
+  check("and the cost of the six has been recognised",
+    r.cost === 20000 + 6000, `${r.cost}`);
+  agrees(r, "part shipment");
 
   // --------------------------------------------- one delivery, two invoices
   console.log("\n  one delivery billed across two invoices\n");
@@ -196,11 +197,11 @@ try {
       lines: [{ itemId: item.id, qty, unitPrice: 2500 }] });
   }
 
-  const after = await totals("profitability", Q3);
+  const after = await totals(Q3);
   check("the goods are costed once, not once per invoice",
     after.cost === 26000 + 10000, `${after.cost}`);
-  check("and both invoices are earned in full",
-    after.revenue === 68000 + 25000 && after.unmatched === 6000,
+  check("and both invoices count as revenue",
+    after.revenue === 74000 + 25000 && after.unmatched === 6000,
     `${after.revenue} / ${after.unmatched}`);
   agrees(after, "split billing");
 
@@ -211,46 +212,33 @@ try {
   await P.postDelivery({ ...base, partnerId: cust.id, docDate: JULY,
     lines: [{ itemId: item.id, qty: 5, focReasonId: promo.id }] });
 
-  const gift = await totals("profitability", Q3);
+  const gift = await totals(Q3);
   check("it changes neither revenue nor cost of sales",
     gift.revenue === after.revenue && gift.cost === after.cost,
     `${gift.revenue} / ${gift.cost}`);
 
   // --------------------------------------------------- the whole year ties
-  console.log("\n  over a window wide enough to hold both halves\n");
-  const yearPer = await totals("period", YEAR);
-  const yearPro = await totals("profitability", YEAR);
-  check("the period basis counts every invoice and every delivery",
-    yearPer.revenue === 124000 && yearPer.cost === 46000,
-    `${yearPer.revenue} / ${yearPer.cost}`);
-  check("the profitability basis earns all but the undelivered two",
-    yearPro.revenue === 118000 && yearPro.unmatched === 6000,
-    `${yearPro.revenue} / ${yearPro.unmatched}`);
-  check("the two bases differ by exactly what has not shipped",
-    r4(yearPer.revenue - yearPro.revenue) === yearPro.unmatched,
-    `${yearPer.revenue} - ${yearPro.revenue} vs ${yearPro.unmatched}`);
-  check("and the profitability cost is the period cost less the giveaway",
-    yearPro.cost === 46000, `${yearPro.cost}`);
-  agrees(yearPro, "year");
+  console.log("\n  over a window wide enough to hold all of it\n");
+  const year = await totals(YEAR);
+  check("every invoice is counted", year.revenue === 124000, `${year.revenue}`);
+  check("the cost released against them is too", year.cost === 46000, `${year.cost}`);
+  check("and what has still not shipped is flagged",
+    year.unmatched === 6000, `${year.unmatched}`);
+  agrees(year, "year");
 
   // ------------------------------------------------------------- overview
-  console.log("\n  the overview reads the same basis as the tables\n");
-  const ovPer = await getSalesOverview(co.id, YEAR[0], YEAR[1], null, "period");
-  const ovPro = await getSalesOverview(co.id, YEAR[0], YEAR[1], null, "profitability");
-  check("the period overview matches the period tables",
-    r4(ovPer.now.net) === yearPer.revenue && r4(ovPer.now.cost) === yearPer.cost,
-    `${r4(ovPer.now.net)} / ${r4(ovPer.now.cost)}`);
-  check("the profitability overview matches the profitability tables",
-    r4(ovPro.now.net) === yearPro.revenue && r4(ovPro.now.cost) === yearPro.cost,
-    `${r4(ovPro.now.net)} / ${r4(ovPro.now.cost)}`);
-  check("and carries the unmatched revenue with it",
-    r4(ovPro.now.unmatched) === yearPro.unmatched, `${r4(ovPro.now.unmatched)}`);
-  const monthNet = r4(ovPro.series.reduce((t, m) => t + n(m.net), 0));
+  console.log("\n  the overview agrees with the tables\n");
+  const ov = await getSalesOverview(co.id, YEAR[0], YEAR[1], null);
+  check("net sales match", r4(ov.now.net) === year.revenue, `${r4(ov.now.net)}`);
+  check("cost matches", r4(ov.now.cost) === year.cost, `${r4(ov.now.cost)}`);
+  check("and so does what has not shipped",
+    r4(ov.now.unmatched) === year.unmatched, `${r4(ov.now.unmatched)}`);
+  const monthNet = r4(ov.series.reduce((t, m) => t + n(m.net), 0));
   check("the monthly series adds up to the period",
-    monthNet === yearPro.revenue, `${monthNet} vs ${yearPro.revenue}`);
-  const july = ovPro.series.find((m) => m.month === "2026-07");
+    monthNet === year.revenue, `${monthNet} vs ${year.revenue}`);
+  const july = ov.series.find((m) => m.month === "2026-07");
   check("July carries the revenue that was billed in July",
-    r4(july.net) === 93000, `${r4(july.net)}`);
+    r4(july.net) === 99000, `${r4(july.net)}`);
 
   console.log(`\n${failures === 0 ? "All checks passed." : `${failures} check(s) failed.`}\n`);
 } finally {

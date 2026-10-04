@@ -2710,6 +2710,9 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
     // to come back to the same place.
     let expenseAccountId: string;
     if (line.focReasonId) {
+      // A giveaway is settled the moment it leaves. No invoice is coming, so
+      // its cost goes to the reason's own account and never passes through
+      // the holding account below.
       const [foc] = await tx`select account_id from foc_reason where id = ${line.focReasonId}`;
       expenseAccountId = foc.account_id as string;
     } else {
@@ -2745,7 +2748,53 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
     const inventory = await tx`
       select fn_resolve_account_for_item(${companyId}, 'INVENTORY', ${line.itemId}) as a`;
     journal.push({ accountId: inventory[0].a, amount: -totalCost, locationId });
-    journal.push({ accountId: expenseAccountId, amount: totalCost, locationId });
+
+    /* Where the cost sits, which is not the same question as where it is
+       destined.
+       The consumption above records cost of sales, because that is what
+       these goods will cost the business and because a later correction has
+       to find the account the sale actually used rather than whatever the
+       item maps to by then (0060). But cost of sales is recognised by the
+       invoice now — docs/03-decisions.md, D8 — so until one is raised the
+       money waits in the holding account, which is an asset: goods have
+       left and nobody has been asked to pay.
+       A giveaway is settled on departure and keeps its own account, because
+       no invoice is ever coming for it.
+       Inventory is credited once, above, for the same amount either way.
+       An invoice that credited inventory again rather than the holding
+       account would relieve stock twice, balance perfectly and never be
+       refused — which is why test-posting-switch.mjs sums every credit to
+       inventory for one sale and compares it with the FIFO cost. */
+    /* Only the part a layer actually covered can wait in the holding
+       account.
+       Goods issued before they were received have no lot and therefore no
+       consumption row, so there is nothing for an invoice to claim against
+       them — and `v_delivery_cost_unclaimed`, which reads consumption, can
+       never see them either. Sending their provisional cost to 1090 would
+       strand it there for ever and break the one invariant this whole
+       change is checked by: that the holding account equals the delivered
+       cost no invoice has claimed.
+       So the shortfall goes straight to cost of sales, where it went before
+       any of this, and the negative-stock reconciliation trues it up there
+       when the receipt finally arrives. */
+    const provisional = round4(plan.uncoveredQty * plan.provisionalUnitCost);
+    const claimable = round4(totalCost - provisional);
+
+    if (!line.focReasonId && claimable !== 0) {
+      const held = await tx`
+        select fn_system_account(${companyId}, 'SHIPPED_NOT_INVOICED') as a`;
+      if (!held[0]?.a) {
+        throw new Error(
+          "No account is set for goods shipped and not invoiced. "
+          + "Migration 0114 adds 1090 and the SHIPPED_NOT_INVOICED role.");
+      }
+      journal.push({ accountId: held[0].a as string, amount: claimable, locationId });
+      if (provisional !== 0) {
+        journal.push({ accountId: expenseAccountId, amount: provisional, locationId });
+      }
+    } else {
+      journal.push({ accountId: expenseAccountId, amount: totalCost, locationId });
+    }
   }
 
   deliveredValue = round4(deliveredValue);
@@ -2764,6 +2813,71 @@ async function _postDelivery(tx: TransactionSql, input: FulfillmentInput) {
      nothing go without an entry, the way an all-consigned one already
      does; the cost reaches the ledger when a receipt arrives and the
      negative-stock reconciliation carries it back here. */
+  /**
+   * Goods sent against a bill that was already raised.
+   *
+   * The ordinary way round is delivery first, invoice second, and the
+   * invoice claims the cost. This is the other way: somebody invoiced and
+   * promised to send the goods later, so by the time they leave there is
+   * nothing left to raise. Without this the cost would sit in 1090 for
+   * ever — an invoice exists, so no future invoice will come to claim it,
+   * and the holding account would carry a balance for goods that were
+   * billed months ago.
+   *
+   * So the delivery claims on the invoice's behalf, against the invoice's
+   * own lines, and posts the same two legs the invoice would have: cost of
+   * sales debited, the holding account credited. The entry shows the goods
+   * leaving and being costed in one breath, which is what happened.
+   *
+   * Only what the invoice has not already been costed for. An invoice part
+   * delivered twice claims the first load on the first delivery and the
+   * rest on the second, which is also why this reads what is already
+   * claimed rather than assuming nothing is.
+   */
+  if (input.sourceDocumentId) {
+    const [billedBy] = await tx`
+      select id from document
+       where id = ${input.sourceDocumentId} and company_id = ${companyId}
+         and doc_type = 'SALES_INVOICE' and status = 'POSTED'`;
+    if (billedBy) {
+      const owing = await tx`
+        select dl.id, dl.item_id, dl.base_qty,
+               coalesce((select sum(a.qty) from sales_cost_allocation a
+                          where a.invoice_line_id = dl.id), 0) as claimed
+          from document_line dl
+          join item i on i.id = dl.item_id
+         where dl.document_id = ${billedBy.id}
+           and dl.foc_reason_id is null
+           and i.is_stocked
+         order by dl.line_no`;
+
+      const costByAccount = new Map<string, number>();
+      let claimed = 0;
+      for (const l of owing as unknown as Array<{
+        id: string; item_id: string; base_qty: string; claimed: string;
+      }>) {
+        const need = round4(Number(l.base_qty) - Number(l.claimed));
+        if (need <= 0) continue;
+        const { cost } = await claimDeliveredCost(
+          tx, companyId, [doc.id], l.id, l.item_id, need, doc.id);
+        if (cost === 0) continue;
+        const cogs = await tx`
+          select fn_resolve_account_for_item(${companyId}, 'COGS', ${l.item_id}) as a`;
+        const acct = cogs[0].a as string;
+        costByAccount.set(acct, round4((costByAccount.get(acct) ?? 0) + cost));
+        claimed = round4(claimed + cost);
+      }
+      if (claimed !== 0) {
+        for (const [accountId, amount] of costByAccount) {
+          if (amount !== 0) journal.push({ accountId, amount, locationId });
+        }
+        const heldAcct = await tx`
+          select fn_system_account(${companyId}, 'SHIPPED_NOT_INVOICED') as a`;
+        journal.push({ accountId: heldAcct[0].a as string, amount: -claimed, locationId });
+      }
+    }
+  }
+
   const hasValue = journal.some((j) => round4(j.amount) !== 0);
   const entryId = hasValue
     ? await writeJournal(tx, companyId, docDate, "DELIVERY", doc.id, `${docNo} delivery`, journal, locationId)
@@ -3037,6 +3151,128 @@ async function settleConsignmentSales(
 }
 
 /**
+ * Which deliveries an invoice is billing.
+ *
+ * Usually the one it names. But an invoice raised from a sales order bills
+ * whatever went out against that order, which may be several deliveries and
+ * none of them named on the invoice — and a sale that shipped in two loads
+ * and was billed once has to find both, or half its cost stays in the
+ * holding account for ever.
+ *
+ * Only posted deliveries, and only ones that still have cost to claim; a
+ * delivery already claimed in full is returned anyway and simply yields
+ * nothing, which is cheaper than excluding it here.
+ */
+async function deliveriesBilledBy(
+  tx: TransactionSql,
+  companyId: string,
+  invoiceId: string,
+  namedDeliveryId: string | null,
+): Promise<string[]> {
+  const found = new Set<string>();
+  if (namedDeliveryId) found.add(namedDeliveryId);
+
+  /* Deliveries raised against the same sales order this invoice bills.
+     Found through the invoice's lines, not its header: an invoice's
+     source_document_id is the delivery it was raised from, and an invoice
+     raised from an order has none — the link to the order is on each line,
+     as source_line_id. Looking at the header found nothing, so an invoice
+     billing an order that shipped in two loads claimed no cost at all and
+     left the lot sitting in the holding account.
+     Ordered oldest first, so a part-billed order claims the cost of the
+     goods that went out first. */
+  const shared = await tx`
+    select distinct dv.id, dv.posting_date, dv.doc_no
+      from document_line il
+      join document_line ol on ol.id = il.source_line_id
+      join document o on o.id = ol.document_id and o.doc_type = 'SALES_ORDER'
+      join document dv on dv.source_document_id = o.id
+                      and dv.doc_type = 'DELIVERY' and dv.status = 'POSTED'
+     where il.document_id = ${invoiceId}
+       and o.company_id = ${companyId}
+     order by dv.posting_date, dv.doc_no`;
+  for (const r of shared as unknown as Array<{ id: string }>) found.add(r.id);
+
+  return [...found];
+}
+
+/**
+ * Move the cost of the goods an invoice bills out of the holding account
+ * and into cost of sales.
+ *
+ * The delivery already drew the FIFO layers and recorded what each one cost
+ * — that happened when the goods left and cannot be improved on later. This
+ * claims those exact layers for the quantity being billed, writes a row per
+ * claim so the claim can be released again, and reports what to post.
+ *
+ * Nothing is averaged. Bill four units of a delivery that drew two layers
+ * at 1,000 and 1,500 and the four come off the 1,000 layer first, because
+ * that is the order the goods actually left in. Averaging would hand this
+ * invoice 1,250 a unit and leave the next one holding the difference.
+ *
+ * Partial billing needs no special case: the claim takes what it needs and
+ * stops, and `v_delivery_cost_unclaimed` shows the rest still sitting in
+ * 1090 waiting for the invoice that bills it.
+ *
+ * Returns nothing to post when there is nothing to claim — goods delivered
+ * on negative stock have no layers behind them, so there is no cost in the
+ * holding account for this invoice to take.
+ */
+async function claimDeliveredCost(
+  tx: TransactionSql,
+  companyId: string,
+  deliveryIds: readonly string[],
+  invoiceLineId: string,
+  itemId: string,
+  qty: number,
+  /** Whose journal entry carries the cost to 5000 — see migration 0116. */
+  postedByDocumentId: string,
+): Promise<{ cost: number }> {
+  if (deliveryIds.length === 0 || qty <= 0) return { cost: 0 };
+
+  /* Unclaimed layers from the deliveries behind this invoice, oldest lot
+     first so the claim follows the same order the goods did. Read through
+     the view, so "unclaimed" means one thing in the engine and in the
+     reconciliation that checks the engine. */
+  const layers = await tx`
+    select v.consumption_id, v.qty_unclaimed, v.unit_cost
+      from v_delivery_cost_unclaimed v
+      join stock_lot_consumption c on c.id = v.consumption_id
+      join stock_lot l on l.id = c.lot_id
+     where v.company_id = ${companyId}
+       and v.document_id = any(${deliveryIds as string[]})
+       and v.item_id = ${itemId}
+     -- The lot's own order, which is the order the FIFO planner drew in:
+     -- received_date then created_at. Ordering by the consumption instead
+     -- left two receipts made on one day tied on both date and microsecond,
+     -- so a random uuid decided which layer an invoice claimed. It took the
+     -- dearer layer first often enough to pass for a while and then fail.
+     order by l.received_date, l.created_at, l.id, c.id`;
+
+  let need = qty;
+  let cost = 0;
+  for (const layer of layers as unknown as Array<{
+    consumption_id: string; qty_unclaimed: string; unit_cost: string;
+  }>) {
+    if (need <= 1e-9) break;
+    const available = Number(layer.qty_unclaimed);
+    if (available <= 0) continue;
+    const take = Math.min(need, available);
+    const unit = Number(layer.unit_cost);
+    await tx`
+      insert into sales_cost_allocation
+        (company_id, invoice_line_id, consumption_id, qty, unit_cost,
+         posted_by_document_id)
+      values (${companyId}, ${invoiceLineId}, ${layer.consumption_id}, ${take}, ${unit},
+              ${postedByDocumentId})`;
+    cost = round4(cost + take * unit);
+    need = round4(need - take);
+  }
+
+  return { cost };
+}
+
+/**
  * Sales invoice: revenue is recognised and the customer owes money. Stock
  * does not move here — that already happened on delivery (or happens in the
  * same breath via postSaleWithDelivery, for the common "sell it and it
@@ -3255,6 +3491,8 @@ async function _postSalesInvoice(
     returning id`;
 
   const journal: JournalLine[] = [];
+  /** What this invoice bills, for the cost claim once every line exists. */
+  const billedLines: Array<{ lineId: string; itemId: string; qty: number }> = [];
   let lineNo = 0;
 
   for (const line of input.lines) {
@@ -3276,7 +3514,7 @@ async function _postSalesInvoice(
     const net = line.focReasonId ? 0 : round4(t?.net ?? d?.net ?? line.qty * line.unitPrice);
     const lineTax = line.focReasonId ? 0 : round4(t?.tax ?? 0);
 
-    await tx`
+    const [invLine] = await tx`
       insert into document_line
         (company_id, document_id, line_no, item_id, location_id,
          entered_qty, entered_uom_id, conversion_factor, base_qty, unit_price,
@@ -3303,10 +3541,23 @@ async function _postSalesInvoice(
          -- It records a relationship and nothing more. Fulfilment is counted
          -- from deliveries and receipts, never from invoices, so nothing that
          -- adds up quantities starts counting this.
-         ${line.sourceLineId ?? null})`;
+         ${line.sourceLineId ?? null})
+      returning id`;
 
-    /* Revenue only — stock and COGS belong to the delivery, not the
-       invoice.
+    /* Which units this line bills, for the cost claim after the loop. Free
+       lines are left out: a giveaway's cost went to its reason's account
+       when the goods left and is not waiting here to be recognised. */
+    if (!line.focReasonId && item.is_stocked) {
+      billedLines.push({ lineId: invLine.id as string, itemId: line.itemId, qty: baseQty });
+    }
+
+    /* Revenue, and the cost of the goods it bills.
+
+       Revenue is recognised here as it always was. Cost of sales is now
+       recognised here too — see docs/03-decisions.md, D8 — but not computed
+       here: the delivery already drew the FIFO layers and put their cost in
+       1090, and this invoice claims the exact layers for the quantity it
+       bills. Nothing is averaged and no historical FIFO is recomputed.
 
        Gross to Sales and the discount to its own account, rather than one
        netted credit. The customer owes the same either way and profit is
@@ -3378,6 +3629,37 @@ async function _postSalesInvoice(
     const ar = await tx`
       select fn_resolve_control_account(${companyId}, 'AR_CONTROL', ${partnerId}) as a`;
     journal.push({ accountId: ar[0].a, amount: grossTotal, partnerId });
+  }
+
+  /* The cost of what is being billed, claimed off the deliveries behind
+     this invoice and moved from 1090 to cost of sales.
+
+     Inventory is not touched. It was credited once, by the delivery, when
+     the goods left; crediting it again here would relieve stock twice,
+     balance perfectly and never be refused. The only accounts that move are
+     the holding account and cost of sales. */
+  const deliveriesBehind = await deliveriesBilledBy(tx, companyId, doc.id, input.deliveryId ?? null);
+  if (deliveriesBehind.length > 0) {
+    const costByAccount = new Map<string, number>();
+    let held = 0;
+    for (const b of billedLines) {
+      const { cost } = await claimDeliveredCost(
+        tx, companyId, deliveriesBehind, b.lineId, b.itemId, b.qty, doc.id);
+      if (cost === 0) continue;
+      const cogs = await tx`
+        select fn_resolve_account_for_item(${companyId}, 'COGS', ${b.itemId}) as a`;
+      const acct = cogs[0].a as string;
+      costByAccount.set(acct, round4((costByAccount.get(acct) ?? 0) + cost));
+      held = round4(held + cost);
+    }
+    if (held !== 0) {
+      for (const [accountId, amount] of costByAccount) {
+        if (amount !== 0) journal.push({ accountId, amount, locationId });
+      }
+      const heldAcct = await tx`
+        select fn_system_account(${companyId}, 'SHIPPED_NOT_INVOICED') as a`;
+      journal.push({ accountId: heldAcct[0].a as string, amount: -held, locationId });
+    }
   }
 
   const entryId = await writeJournal(
@@ -7911,6 +8193,50 @@ async function voidDocumentIn(
      * went out, with trade done on top of them, still do not come back by
      * paperwork.
      */
+    /**
+     * And cost an invoice claimed goes back to the holding account.
+     *
+     * The ledger half of this needs nothing: the reversal negates every
+     * line of the original entry, so `Dr 5000 / Cr 1090` becomes
+     * `Cr 5000 / Dr 1090` on its own. What the ledger cannot do is give the
+     * goods back to `v_delivery_cost_unclaimed` — the claim rows are still
+     * there, still saying these units are spoken for, and 1090 would hold
+     * cost the view insisted had been claimed.
+     *
+     * Released rather than deleted. A claim that was posted happened, and
+     * the table is append-only for the same reason the ledger is: the
+     * release names the claim it undoes and carries its quantity negated,
+     * so what is currently claimed is the net and how it got there survives.
+     *
+     * Only this invoice's own claims, and only ones not already released —
+     * an amendment that runs twice must not hand the same goods back twice,
+     * which the table's own guard would refuse anyway.
+     */
+    if (doc.doc_type === "SALES_INVOICE") {
+      const claims = await tx`
+        select a.id, a.invoice_line_id, a.consumption_id, a.qty, a.unit_cost
+          from sales_cost_allocation a
+          join document_line dl on dl.id = a.invoice_line_id
+         where dl.document_id = ${doc.id}
+           and a.reverses_id is null
+           and not exists (
+             select 1 from sales_cost_allocation r where r.reverses_id = a.id)
+         order by a.created_at, a.id`;
+
+      for (const c of claims as unknown as Array<{
+        id: string; invoice_line_id: string; consumption_id: string;
+        qty: string; unit_cost: string;
+      }>) {
+        await tx`
+          insert into sales_cost_allocation
+            (company_id, invoice_line_id, consumption_id, qty, unit_cost, reverses_id,
+             posted_by_document_id)
+          values (${doc.company_id}, ${c.invoice_line_id}, ${c.consumption_id},
+                  ${-Number(c.qty)}, ${Number(c.unit_cost)}, ${c.id},
+                  ${reversal.id})`;
+      }
+    }
+
     if (doc.doc_type === "DELIVERY") {
       // received_date comes too: the layer goes back where it was in the
       // queue, not to the back of it. For a counter sale undone in the same

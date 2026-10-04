@@ -114,7 +114,16 @@ try {
     Boolean(salesLine) && n(salesLine.base_amount) === -20000,
     salesLine ? String(n(salesLine.base_amount)) : "no line");
 
-  const arTotal = jl.filter((l) => l.account_type === 'ASSET').reduce((s, l) => s + n(l.base_amount), 0);
+  /* The receivable by name, not "whatever asset the invoice touched". Since
+     cost of sales moved to the invoice (docs/03-decisions.md, D8) it also
+     credits 1090 Goods Shipped Not Invoiced, which is an asset too — so
+     summing the type now nets the cost of the goods off what the customer
+     owes. */
+  const [arAcct] = await sql`
+    select code from account
+     where id = fn_resolve_control_account(${co.id}, 'AR_CONTROL', ${cust.id})`;
+  const arTotal = jl.filter((l) => l.code === arAcct.code)
+    .reduce((s, l) => s + n(l.base_amount), 0);
   check("the customer owes the goods plus the carriage as one sum",
     arTotal === 25000, String(arTotal));
 

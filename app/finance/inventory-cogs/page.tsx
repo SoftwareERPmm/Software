@@ -218,17 +218,74 @@ export default async function InventoryCogs({
               hrefLabel="inventory aging"
             />
             <Check
-              title="Cost recorded against cost posted"
-              left="From the layers consumed" leftValue={fmt(data.calculatedCogs)}
-              right="Posted to the ledger" rightValue={fmt(data.postedCogs)}
+              title="Cost released against cost posted"
+              left="Released from 1090 by invoices" leftValue={fmt(data.calculatedCogs)}
+              right="Posted to cost of sales" rightValue={fmt(data.postedCogs)}
               gap={data.cogsGap}
               note={
-                "The stock ledger records where every consumption was charged, "
-                + "so sales separate from giveaways by what was written at the "
-                + "time. Returns are netted off both sides."
+                "Cost of sales is recognised by the invoice that bills the "
+                + "goods, so every credit to 1090 is a debit to 5000 in the "
+                + "same entry. Returns credit cost of sales and are netted "
+                + "off the posted side."
               }
               href={{ pathname: "/finance/general-ledger", query: q({}) }}
               hrefLabel="general ledger"
+            />
+          </section>
+
+          {/* The step that did not exist before: goods leave inventory, wait
+              in the holding account, and reach cost of sales when somebody
+              bills them. Shown as the three movements it is, because a month
+              that shipped more than it billed otherwise looks like inventory
+              that went nowhere. */}
+          <section>
+            <div className="card">
+              <div className="card-head">
+                <h2>Inventory &rarr; shipped not invoiced &rarr; cost of sales</h2>
+                <span className="page-sub">{data.range.from} to {data.range.to}</span>
+              </div>
+              <div className="card-body">
+                <div className="kpis">
+                  <Tile label="Shipped into 1090" value={fmt(data.heldIn)}
+                        sub="cost of goods that left in the period" />
+                  <Tile label="Released to cost of sales" value={fmt(data.heldOut)}
+                        sub="claimed by the invoices that billed them" />
+                  <Tile label="Still held at 1090" value={fmt(data.heldClosing)}
+                        sub="shipped, nobody billed yet" />
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section className="grid2">
+            <Check
+              title="Goods shipped against the holding account"
+              left="Layers consumed by deliveries" leftValue={fmt(data.shippedCost)}
+              right="Debited to 1090" rightValue={fmt(data.heldIn)}
+              gap={data.shippedGap}
+              note={
+                "Both are the delivery's own doing — the stock ledger says "
+                + "what left and the journal says what it cost — so they tie "
+                + "unless a delivery moved stock without posting, or posted "
+                + "without moving it. Giveaways are in neither: their cost "
+                + "goes straight to the reason's own account."
+              }
+              href={{ pathname: "/finance/general-ledger", query: q({}) }}
+              hrefLabel="general ledger"
+            />
+            <Check
+              title="The holding account against what is unclaimed"
+              left="Balance of 1090" leftValue={fmt(data.heldClosing)}
+              right="Delivered cost no invoice has claimed" rightValue={fmt(data.heldUnclaimed)}
+              gap={data.heldGap}
+              note={
+                "The same fact counted from opposite ends: what the ledger "
+                + "holds, and what the claim rows say is still unspoken for. "
+                + "A gap means cost reached the account by a route nothing "
+                + "claimed, or a claim exists for cost that never arrived."
+              }
+              href={{ pathname: "/finance/shipped-not-invoiced", query: {} }}
+              hrefLabel="shipped not invoiced"
             />
           </section>
         </>

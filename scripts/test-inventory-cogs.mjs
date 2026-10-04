@@ -123,14 +123,22 @@ try {
 
   r = await recon();
   const cogsCode = (await sql`select code from account where id = ${r.cogsId}`)[0].code;
-  const toCogs = released(r, cogsCode);
+  /* The stock ledger still records cost of sales against every issue — that
+     is where the cost is destined, and where a later correction must find
+     it. What changed is where it waits: a delivery debits the holding
+     account until an invoice bills the goods (docs/03-decisions.md, D8), so
+     the counter-account the journal shows on an issue is 1090 even though
+     the consumption says 5000. */
+  const heldCode = (await sql`select code from account where id = ${r.heldId}`)[0].code;
+  const toHeld = released(r, heldCode);
   const toPromo = released(r, "6320");
   check("the giveaway leaves stock", r4(toPromo) === 5000, `${toPromo}`);
-  check("and is not counted as cost of sales", r4(toCogs) === 30000, `COGS still ${toCogs}`);
+  check("and is not counted as the cost of goods sold",
+    r4(toHeld) === 30000, `shipped-not-invoiced still ${toHeld}`);
   check("so the naive formula overstates COGS by the giveaway",
     r4(n(r.bal.opening) + r.movement.reduce((s, m) => s + n(m.into_stock), 0)
-       - n(r.bal.closing)) === r4(toCogs + toPromo),
-    `${toCogs} + ${toPromo}`);
+       - n(r.bal.closing)) === r4(toHeld + toPromo),
+    `${toHeld} + ${toPromo}`);
 
   // ---------------------------------------------------------- invoice-first
   console.log("\n  an invoice with no receipt behind it yet\n");
@@ -150,7 +158,7 @@ try {
   r = await recon();
   const toAdj = released(r, "5300");
   check("the write-off leaves stock", toAdj > 0, `${toAdj}`);
-  check("and is not cost of sales", r4(released(r, cogsCode)) === 30000);
+  check("and is not the cost of goods sold", r4(released(r, heldCode)) === 30000);
 
   // ----------------------------------------------------------- sales return
   console.log("\n  a customer returns goods\n");
@@ -178,8 +186,8 @@ try {
   // Against Accounts Payable, not a purchase-return account: the goods go
   // back and so does the debt. Either way it is not cost of sales.
   check("it leaves stock against the supplier, not cost of sales",
-    released(r, "2000") > 0 && r4(released(r, cogsCode)) === 30000,
-    `to AP ${released(r, "2000")}, COGS still ${released(r, cogsCode)}`);
+    released(r, "2000") > 0 && r4(released(r, heldCode)) === 30000,
+    `to AP ${released(r, "2000")}, sold still ${released(r, heldCode)}`);
 
   // -------------------------------------------------------------- transfers
   if (other) {
@@ -205,11 +213,20 @@ try {
   check("FIFO value still equals the inventory account",
     r4(n(r.fifo.value) - n(r.negative.value)) === r4(closing),
     `FIFO ${r4(n(r.fifo.value) - n(r.negative.value))} vs GL ${r4(closing)}`);
+  /* The layers the sales consumed, which now carry the holding account
+     rather than cost of sales, less what came back on the return. Equal to
+     the ledger's cost of sales because every sale here is a counter sale:
+     the goods and the bill move together, so everything that reached 1090
+     left it again in the same breath. Where they do not move together, the
+     two steps separate — which is what test-posting-switch.mjs covers. */
   const calc = r4(
     r.consumption.filter((c) => c.code === cogsCode).reduce((s, c) => s + n(c.value), 0)
     - n(r.returnedToCogs.value));
   check("calculated cost of sales still equals the ledger's",
     calc === r4(n(r.postedCogs.value)), `${calc} vs ${r4(n(r.postedCogs.value))}`);
+
+  check("and nothing is left waiting in the holding account",
+    r4(n(r.held.closing)) === 0, `1090 holds ${r4(n(r.held.closing))}`);
 
   console.log(failures === 0
     ? "\n  all inventory/COGS reconciliation tests pass\n"

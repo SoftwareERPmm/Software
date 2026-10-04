@@ -5,7 +5,7 @@ import { MeasureBars } from "@/components/charts";
 
 export type Row = {
   key: string; code: string; name: string;
-  qty: number; matchedQty: number; revenue: number; unmatched: number;
+  qty: number; revenue: number; unmatched: number;
   cost: number; margin: number;
   marginPct: number | null; discount: number; returned: number;
 };
@@ -19,11 +19,6 @@ export type Row = {
  * which also makes the comparison honest, because the bars stay in the same
  * order whichever measure is showing.
  */
-/*
- * The measures change with the basis, because the figures do. Offering
- * "Net sales" on a report that is showing matched revenue would put the
- * right bars under the wrong word.
- */
 const PERIOD = [
   ["revenue", "Net sales", "money"],
   ["cost", "COGS", "money"],
@@ -32,26 +27,15 @@ const PERIOD = [
   ["qty", "Units", "plain"],
   ["discount", "Discounts given", "money"],
   ["returned", "Returns", "money"],
+  ["unmatched", "Not yet shipped", "money"],
 ] as const;
 
-const PROFITABILITY = [
-  ["revenue", "Matched revenue", "money"],
-  ["cost", "Matched COGS", "money"],
-  ["margin", "Gross profit", "money"],
-  ["marginPct", "Margin %", "percent"],
-  ["unmatched", "Unmatched revenue", "money"],
-  ["matchedQty", "Units delivered", "plain"],
-  ["qty", "Units invoiced", "plain"],
-  ["returned", "Returns", "money"],
-] as const;
+type Measure = (typeof PERIOD)[number][0];
 
-type Measure = (typeof PERIOD)[number][0] | (typeof PROFITABILITY)[number][0];
-
-export function BreakdownPerformance({ rows, label, basis = "period" }: {
-  rows: Row[]; label: string; basis?: "profitability" | "period";
+export function BreakdownPerformance({ rows, label }: {
+  rows: Row[]; label: string;
 }) {
-  const MEASURES: readonly (readonly [Measure, string, "money" | "percent" | "plain"])[] =
-    basis === "profitability" ? PROFITABILITY : PERIOD;
+  const MEASURES = PERIOD;
   const [measure, setMeasure] = useState<Measure>("revenue");
   /* Switching basis drops whichever measure the other one had and this one
      does not, so the fallback is what keeps the chart on screen instead of
