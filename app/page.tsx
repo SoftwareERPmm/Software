@@ -1,6 +1,7 @@
 import Link from "next/link";
+import { NewDocumentMenu } from "@/components/new-document-menu";
 import {
-  ArrowRight, ArrowUpRight, Check, AlertTriangle, ChevronRight,
+  ArrowRight, ArrowUpRight, Check, AlertTriangle,
 } from "lucide-react";
 import { money } from "@/lib/db";
 import {
@@ -434,9 +435,7 @@ export default async function Dashboard({
         <div className="dash-actions">
           {/* No page-wide period any more — each card carries its own, in its
               own header, next to the figure it changes. */}
-          <Link href="/documents" className="dash-chip solid">
-            New document <ChevronRight size={14} aria-hidden="true" />
-          </Link>
+          <NewDocumentMenu />
         </div>
       </div>
 
