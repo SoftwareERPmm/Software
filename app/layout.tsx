@@ -11,6 +11,10 @@ import { Toast } from "@/components/toast";
 import {
   LayoutDashboard, ShoppingCart, Package, Wallet, BookOpen, Boxes, Database, Truck } from "lucide-react";
 import { DatePickerFix } from "@/components/date-picker-fix";
+import { headers } from "next/headers";
+import { currentUser } from "@/lib/session";
+import { canSeePath, ROLE_LABEL } from "@/lib/auth";
+import { signOut } from "@/lib/auth-actions";
 
 // One face for the whole product, chosen for the thing an ERP does most:
 // show a column of numbers.
@@ -66,6 +70,24 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     dbError = e instanceof Error ? e.message : String(e);
   }
 
+  // Signing in, and choosing a first password, stand on their own: no rail
+  // of links the person cannot use yet. Middleware tells us the path.
+  const path = (await headers()).get("x-pathname") ?? "";
+  if (path === "/login" || path === "/account/password") {
+    return (
+      <html lang="en" className={`${inter.variable} ${notoMyanmar.variable}`}>
+        <body>{children}<Toast /></body>
+      </html>
+    );
+  }
+
+  // Links a person's roles do not reach are left out. A courtesy only —
+  // middleware refuses the page and every action checks again.
+  const me = dbError ? null : await currentUser().catch(() => null);
+  const roles = me?.roles ?? [];
+  const can = (href: string) => canSeePath(roles, href);
+  const canAny = (hrefs: string[]) => hrefs.some(can);
+
   return (
     <html lang="en" className={`${inter.variable} ${notoMyanmar.variable}`}>
       <body>
@@ -94,56 +116,72 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 
             <SidebarCollapse />
 
+            {canAny(["/", "/documents", "/documents/history"]) && (
+
             <NavGroup label="Overview" icon={<LayoutDashboard size={14} />} match={["/"]}>
-              <NavLink href="/">Dashboard</NavLink>
-              <NavLink href="/documents" exact>All documents</NavLink>
-              <NavLink href="/documents/history">History log</NavLink>
+              {can("/") && <NavLink href="/">Dashboard</NavLink>}
+              {can("/documents") && <NavLink href="/documents" exact>All documents</NavLink>}
+              {can("/documents/history") && <NavLink href="/documents/history">History log</NavLink>}
             </NavGroup>
+
+            )}
+
+            {canAny(["/sales/orders", "/sales/deliver", "/sales/shipped-not-invoiced", "/sales/invoices", "/sales/consignment", "/sales/returns", "/sales/credit-notes", "/sales/discounts", "/sales/discounts-given", "/sales/reports", "/receivables", "/receivables/advances", "/receivables/receive"]) && (
 
             <NavGroup label="Sales" icon={<ShoppingCart size={14} />} match={["/sales", "/receivables"]}>
-              <NavLink href="/sales/orders" exact>Sales orders</NavLink>
-              <NavLink href="/sales/deliver">Deliveries</NavLink>
-              <NavLink href="/sales/shipped-not-invoiced">Shipped not invoiced</NavLink>
-              <NavLink href="/sales/invoices" exact>Sales invoices</NavLink>
-              <NavLink href="/sales/consignment">Consignment sale</NavLink>
-              <NavLink href="/sales/returns" exact>Customer returns</NavLink>
-              <NavLink href="/sales/credit-notes" exact>Credit notes</NavLink>
-              <NavLink href="/sales/discounts" exact>Volume discounts</NavLink>
-              <NavLink href="/sales/discounts-given" exact>Discounts given</NavLink>
-              <NavLink href="/sales/reports">Sales report</NavLink>
-              <NavLink href="/receivables" exact>Receivables</NavLink>
-              <NavLink href="/receivables/advances">Customer advances</NavLink>
-              <NavLink href="/receivables/receive">Receive payment</NavLink>
+              {can("/sales/orders") && <NavLink href="/sales/orders" exact>Sales orders</NavLink>}
+              {can("/sales/deliver") && <NavLink href="/sales/deliver">Deliveries</NavLink>}
+              {can("/sales/shipped-not-invoiced") && <NavLink href="/sales/shipped-not-invoiced">Shipped not invoiced</NavLink>}
+              {can("/sales/invoices") && <NavLink href="/sales/invoices" exact>Sales invoices</NavLink>}
+              {can("/sales/consignment") && <NavLink href="/sales/consignment">Consignment sale</NavLink>}
+              {can("/sales/returns") && <NavLink href="/sales/returns" exact>Customer returns</NavLink>}
+              {can("/sales/credit-notes") && <NavLink href="/sales/credit-notes" exact>Credit notes</NavLink>}
+              {can("/sales/discounts") && <NavLink href="/sales/discounts" exact>Volume discounts</NavLink>}
+              {can("/sales/discounts-given") && <NavLink href="/sales/discounts-given" exact>Discounts given</NavLink>}
+              {can("/sales/reports") && <NavLink href="/sales/reports">Sales report</NavLink>}
+              {can("/receivables") && <NavLink href="/receivables" exact>Receivables</NavLink>}
+              {can("/receivables/advances") && <NavLink href="/receivables/advances">Customer advances</NavLink>}
+              {can("/receivables/receive") && <NavLink href="/receivables/receive">Receive payment</NavLink>}
             </NavGroup>
 
+            )}
+
+            {canAny(["/purchases/orders", "/purchases/receive", "/purchases/invoices", "/purchases/returns", "/purchases/supplier-performance", "/purchases/debit-notes", "/payables", "/payables/advances", "/payables/pay"]) && (
+
             <NavGroup label="Purchases" icon={<Package size={14} />} match={["/purchases", "/payables"]}>
-              <NavLink href="/purchases/orders" exact>Purchase orders</NavLink>
-              <NavLink href="/purchases/receive" exact>Goods receipts</NavLink>
-              <NavLink href="/purchases/invoices" exact>Purchase invoices</NavLink>
-              <NavLink href="/purchases/returns" exact>Supplier returns</NavLink>
+              {can("/purchases/orders") && <NavLink href="/purchases/orders" exact>Purchase orders</NavLink>}
+              {can("/purchases/receive") && <NavLink href="/purchases/receive" exact>Goods receipts</NavLink>}
+              {can("/purchases/invoices") && <NavLink href="/purchases/invoices" exact>Purchase invoices</NavLink>}
+              {can("/purchases/returns") && <NavLink href="/purchases/returns" exact>Supplier returns</NavLink>}
               {/* Business and above. Hiding the link withholds an upsell; it
                   is not access control, because there is nobody to
                   authenticate — see lib/plans.ts. */}
-              {company && planIncludes(company.plan, "supplier_performance") && (
+              {company && planIncludes(company.plan, "supplier_performance") && can("/purchases/supplier-performance") && (
                 <NavLink href="/purchases/supplier-performance" exact>
                   Supplier performance
                 </NavLink>
               )}
-              <NavLink href="/purchases/debit-notes" exact>Debit notes</NavLink>
-              <NavLink href="/payables" exact>Payables</NavLink>
-              <NavLink href="/payables/advances">Supplier advances</NavLink>
-              <NavLink href="/payables/pay">Pay supplier</NavLink>
+              {can("/purchases/debit-notes") && <NavLink href="/purchases/debit-notes" exact>Debit notes</NavLink>}
+              {can("/payables") && <NavLink href="/payables" exact>Payables</NavLink>}
+              {can("/payables/advances") && <NavLink href="/payables/advances">Supplier advances</NavLink>}
+              {can("/payables/pay") && <NavLink href="/payables/pay">Pay supplier</NavLink>}
             </NavGroup>
+
+            )}
 
             {/* Its own group rather than a tail on Sales: a trip is a yard
                 operation with its own masters, and step two adds route plans
                 beside it. */}
+            {canAny(["/logistics/routes", "/logistics/trips", "/logistics/vehicles", "/logistics/drivers"]) && (
             <NavGroup label="Logistics" icon={<Truck size={14} />} match={["/logistics"]}>
-              <NavLink href="/logistics/routes" exact>Routes</NavLink>
-              <NavLink href="/logistics/trips" exact>Delivery trips</NavLink>
-              <NavLink href="/logistics/vehicles" exact>Vehicles</NavLink>
-              <NavLink href="/logistics/drivers" exact>Drivers</NavLink>
+              {can("/logistics/routes") && <NavLink href="/logistics/routes" exact>Routes</NavLink>}
+              {can("/logistics/trips") && <NavLink href="/logistics/trips" exact>Delivery trips</NavLink>}
+              {can("/logistics/vehicles") && <NavLink href="/logistics/vehicles" exact>Vehicles</NavLink>}
+              {can("/logistics/drivers") && <NavLink href="/logistics/drivers" exact>Drivers</NavLink>}
             </NavGroup>
+            )}
+
+            {canAny(["/finance/cash-detail", "/finance/bank-detail", "/finance/cash-receipt", "/finance/cash-payment", "/finance/bank-receipt", "/finance/bank-payment", "/finance/bank-reconciliation", "/finance/transfer"]) && (
 
             <NavGroup label="Cash &amp; Bank" icon={<Wallet size={14} />} match={[
               "/finance/cash-detail", "/finance/bank-detail",
@@ -151,80 +189,114 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               "/finance/bank-receipt", "/finance/bank-payment",
               "/finance/transfer",
             ]}>
-              <NavLink href="/finance/cash-detail">Cash book</NavLink>
-              <NavLink href="/finance/bank-detail">Bank book</NavLink>
-              <NavLink href="/finance/cash-receipt">Cash receipt</NavLink>
-              <NavLink href="/finance/cash-payment">Cash payment</NavLink>
-              <NavLink href="/finance/bank-receipt">Bank receipt</NavLink>
-              <NavLink href="/finance/bank-payment">Bank payment</NavLink>
-              <NavLink href="/finance/bank-reconciliation">Bank reconciliation</NavLink>
-              <NavLink href="/finance/transfer">Interbranch transfer</NavLink>
+              {can("/finance/cash-detail") && <NavLink href="/finance/cash-detail">Cash book</NavLink>}
+              {can("/finance/bank-detail") && <NavLink href="/finance/bank-detail">Bank book</NavLink>}
+              {can("/finance/cash-receipt") && <NavLink href="/finance/cash-receipt">Cash receipt</NavLink>}
+              {can("/finance/cash-payment") && <NavLink href="/finance/cash-payment">Cash payment</NavLink>}
+              {can("/finance/bank-receipt") && <NavLink href="/finance/bank-receipt">Bank receipt</NavLink>}
+              {can("/finance/bank-payment") && <NavLink href="/finance/bank-payment">Bank payment</NavLink>}
+              {can("/finance/bank-reconciliation") && <NavLink href="/finance/bank-reconciliation">Bank reconciliation</NavLink>}
+              {can("/finance/transfer") && <NavLink href="/finance/transfer">Interbranch transfer</NavLink>}
             </NavGroup>
+
+            )}
+
+            {canAny(["/finance/journal", "/finance/year-end", "/finance/opening", "/finance/general-ledger", "/ledger", "/finance/income-statement", "/finance/balance-sheet", "/finance/cash-flow", "/finance/inventory-cogs", "/finance/cash-cycle", "/finance/aging"]) && (
 
             <NavGroup label="Accounting" icon={<BookOpen size={14} />} match={[
               "/finance/journal", "/finance/opening", "/finance/general-ledger", "/ledger",
               "/finance/income-statement", "/finance/balance-sheet", "/finance/cash-flow",
               "/finance/aging",
             ]}>
+              {canAny(["/finance/journal", "/finance/year-end", "/finance/opening"]) && (
               <NavSubGroup label="Transactions" match={["/finance/journal", "/finance/opening"]}>
-                <NavLink href="/finance/journal" sub>Journal Voucher</NavLink>
-                <NavLink href="/finance/year-end" sub>Year end</NavLink>
-                <NavLink href="/finance/opening" sub>Opening Balances</NavLink>
+                {can("/finance/journal") && <NavLink href="/finance/journal" sub>Journal Voucher</NavLink>}
+                {can("/finance/year-end") && <NavLink href="/finance/year-end" sub>Year end</NavLink>}
+                {can("/finance/opening") && <NavLink href="/finance/opening" sub>Opening Balances</NavLink>}
               </NavSubGroup>
+              )}
+              {canAny(["/finance/general-ledger", "/ledger"]) && (
               <NavSubGroup label="Ledgers" match={["/finance/general-ledger", "/ledger"]}>
-                <NavLink href="/finance/general-ledger" sub>General Ledger</NavLink>
-                <NavLink href="/ledger" sub>Trial Balance</NavLink>
+                {can("/finance/general-ledger") && <NavLink href="/finance/general-ledger" sub>General Ledger</NavLink>}
+                {can("/ledger") && <NavLink href="/ledger" sub>Trial Balance</NavLink>}
               </NavSubGroup>
+              )}
+              {canAny(["/finance/income-statement", "/finance/balance-sheet", "/finance/cash-flow", "/finance/inventory-cogs", "/finance/cash-cycle"]) && (
               <NavSubGroup label="Financial Reports" match={[
                 "/finance/income-statement", "/finance/balance-sheet", "/finance/cash-flow",
                 "/finance/inventory-cogs",
               ]}>
-                <NavLink href="/finance/income-statement" sub>Income Statement</NavLink>
-                <NavLink href="/finance/balance-sheet" sub>Balance Sheet</NavLink>
-                <NavLink href="/finance/cash-flow" sub>Cash Flow</NavLink>
-                <NavLink href="/finance/inventory-cogs" sub>Inventory &amp; COGS</NavLink>
-                <NavLink href="/finance/cash-cycle" sub>Cash Conversion Cycle</NavLink>
+                {can("/finance/income-statement") && <NavLink href="/finance/income-statement" sub>Income Statement</NavLink>}
+                {can("/finance/balance-sheet") && <NavLink href="/finance/balance-sheet" sub>Balance Sheet</NavLink>}
+                {can("/finance/cash-flow") && <NavLink href="/finance/cash-flow" sub>Cash Flow</NavLink>}
+                {can("/finance/inventory-cogs") && <NavLink href="/finance/inventory-cogs" sub>Inventory &amp; COGS</NavLink>}
+                {can("/finance/cash-cycle") && <NavLink href="/finance/cash-cycle" sub>Cash Conversion Cycle</NavLink>}
               </NavSubGroup>
+              )}
               {/* Not under Financial Reports. Aging answers "who owes us and
                   how late", which is a working question asked while chasing
                   money — not a statement drawn up at a period end beside the
                   income statement and the balance sheet. */}
-              <NavLink href="/finance/aging">AR / AP Aging</NavLink>
+              {can("/finance/aging") && <NavLink href="/finance/aging">AR / AP Aging</NavLink>}
             </NavGroup>
 
+            )}
+
+            {canAny(["/items/stock", "/inventory/consignment", "/inventory/replenishment", "/inventory/intelligence", "/inventory/movements", "/inventory/adjustments", "/inventory/negative-stock", "/inventory/transfer"]) && (
+
             <NavGroup label="Inventory" icon={<Boxes size={14} />} match={["/items/stock", "/inventory"]}>
-              <NavLink href="/items/stock">Stock overview</NavLink>
-              <NavLink href="/inventory/consignment" exact>Consignment</NavLink>
-              <NavLink href="/inventory/replenishment">Replenishment</NavLink>
-              <NavLink href="/inventory/intelligence">Intelligence</NavLink>
-              <NavLink href="/inventory/movements">Stock movements</NavLink>
-              <NavLink href="/inventory/adjustments">Adjustments</NavLink>
-              <NavLink href="/inventory/negative-stock">Negative stock</NavLink>
-              <NavLink href="/inventory/transfer">Transfer</NavLink>
+              {can("/items/stock") && <NavLink href="/items/stock">Stock overview</NavLink>}
+              {can("/inventory/consignment") && <NavLink href="/inventory/consignment" exact>Consignment</NavLink>}
+              {can("/inventory/replenishment") && <NavLink href="/inventory/replenishment">Replenishment</NavLink>}
+              {can("/inventory/intelligence") && <NavLink href="/inventory/intelligence">Intelligence</NavLink>}
+              {can("/inventory/movements") && <NavLink href="/inventory/movements">Stock movements</NavLink>}
+              {can("/inventory/adjustments") && <NavLink href="/inventory/adjustments">Adjustments</NavLink>}
+              {can("/inventory/negative-stock") && <NavLink href="/inventory/negative-stock">Negative stock</NavLink>}
+              {can("/inventory/transfer") && <NavLink href="/inventory/transfer">Transfer</NavLink>}
             </NavGroup>
+
+            )}
+
+            {canAny(["/partners", "/partners/categories", "/partners?role=customer", "/partners?role=supplier", "/items", "/items/categories", "/items/subcategories", "/items/brands", "/items/attributes", "/items/units", "/items/purchasing", "/items/prices", "/warehouses", "/salespersons", "/settings/accounts", "/settings/tax-codes", "/settings/plan", "/settings/users"]) && (
 
             <NavGroup label="Master data" icon={<Database size={14} />} match={[
               "/partners", "/items", "/warehouses", "/salespersons", "/settings",
             ]}>
-              <NavLink href="/partners" exact clearParams={["role", "category"]}>Partners</NavLink>
-              <NavLink href="/partners/categories" exact>Partner categories</NavLink>
-              <NavLink href="/partners?role=customer" sub>Customers</NavLink>
-              <NavLink href="/partners?role=supplier" sub>Suppliers</NavLink>
-              <NavLink href="/items" exact>Items</NavLink>
-              <NavLink href="/items/categories">Categories</NavLink>
-              <NavLink href="/items/subcategories">Sub Categories</NavLink>
-              <NavLink href="/items/brands">Brands</NavLink>
-              <NavLink href="/items/attributes">Variant attributes</NavLink>
-              <NavLink href="/items/units">Units</NavLink>
-              <NavLink href="/items/purchasing">Purchasing terms</NavLink>
-              <NavLink href="/items/prices">Price levels</NavLink>
-              <NavLink href="/warehouses">Branches &amp; warehouses</NavLink>
-              <NavLink href="/salespersons">Salespersons</NavLink>
-              <NavLink href="/settings/accounts">Chart of Accounts</NavLink>
-              <NavLink href="/settings/tax-codes">Tax codes</NavLink>
-              <NavLink href="/settings/plan">Package</NavLink>
+              {can("/partners") && <NavLink href="/partners" exact clearParams={["role", "category"]}>Partners</NavLink>}
+              {can("/partners/categories") && <NavLink href="/partners/categories" exact>Partner categories</NavLink>}
+              {can("/partners?role=customer") && <NavLink href="/partners?role=customer" sub>Customers</NavLink>}
+              {can("/partners?role=supplier") && <NavLink href="/partners?role=supplier" sub>Suppliers</NavLink>}
+              {can("/items") && <NavLink href="/items" exact>Items</NavLink>}
+              {can("/items/categories") && <NavLink href="/items/categories">Categories</NavLink>}
+              {can("/items/subcategories") && <NavLink href="/items/subcategories">Sub Categories</NavLink>}
+              {can("/items/brands") && <NavLink href="/items/brands">Brands</NavLink>}
+              {can("/items/attributes") && <NavLink href="/items/attributes">Variant attributes</NavLink>}
+              {can("/items/units") && <NavLink href="/items/units">Units</NavLink>}
+              {can("/items/purchasing") && <NavLink href="/items/purchasing">Purchasing terms</NavLink>}
+              {can("/items/prices") && <NavLink href="/items/prices">Price levels</NavLink>}
+              {can("/warehouses") && <NavLink href="/warehouses">Branches &amp; warehouses</NavLink>}
+              {can("/salespersons") && <NavLink href="/salespersons">Salespersons</NavLink>}
+              {can("/settings/accounts") && <NavLink href="/settings/accounts">Chart of Accounts</NavLink>}
+              {can("/settings/tax-codes") && <NavLink href="/settings/tax-codes">Tax codes</NavLink>}
+              {can("/settings/plan") && <NavLink href="/settings/plan">Package</NavLink>}
+              {can("/settings/users") && <NavLink href="/settings/users">Users &amp; roles</NavLink>}
             </NavGroup>
 
+            )}
+
+            {me && (
+              <div className="whoami">
+                <span className="whoami-mark" aria-hidden="true">{me.initials}</span>
+                <span className="whoami-who">
+                  <span className="whoami-name">{me.name}</span>
+                  <span className="whoami-roles">{me.roles.map((r) => ROLE_LABEL[r]).join(" · ")}</span>
+                </span>
+                <div className="whoami-actions">
+                  <Link href="/account/password">Change password</Link>
+                  <form action={signOut}><button type="submit">Sign out</button></form>
+                </div>
+              </div>
+            )}
           </nav>
 
           <main className="main">
