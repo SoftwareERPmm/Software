@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { By } from "@/components/by";
 import { Package, FileText, FileClock, Plus } from "lucide-react";
 import { money, shortDate } from "@/lib/db";
 import {
@@ -16,7 +17,7 @@ import {
 type Receipt = {
   id: string; doc_no: string | null; doc_date: string; status: string;
   gross_total: string; partner_id: string | null; partner_name: string | null;
-  location_code: string | null; source_id: string | null;
+  location_code: string | null; by_name: string | null; by_initials: string | null; source_id: string | null;
   source_no: string | null; source_type: string | null;
   line_count: number; grir_open: string;
 };
@@ -222,6 +223,7 @@ export default async function Receive({
         doc_date: toTime(r.doc_date),
         partner_name: r.partner_name ?? "",
         location_code: r.location_code ?? "",
+        by: r.by_name ?? "",
         source_no: r.source_no ?? "",
         gross_total: Number(r.gross_total),
         billed: voided ? 2 : open ? 1 : 0,
@@ -236,6 +238,7 @@ export default async function Receive({
           <td className="code">{shortDate(r.doc_date)}</td>
           <td className="wrap">{r.partner_name ?? "—"}</td>
           <td className="code">{r.location_code ?? "—"}</td>
+          <td><By name={r.by_name} initials={r.by_initials} /></td>
           <td className="code">
             {r.source_no ? (
               <Link href={`/documents/${r.source_id}`} style={{ color: "inherit" }}>
@@ -370,6 +373,7 @@ export default async function Receive({
             { key: "doc_date", label: "Received date", sortable: true },
             { key: "partner_name", label: "Supplier", sortable: true },
             { key: "location_code", label: "Warehouse", sortable: true },
+            { key: "by", label: "By", sortable: true },
             { key: "source_no", label: "Source", sortable: true },
             { key: "gross_total", label: `Value (${company.base_currency})`,
               sortable: true, align: "r" as const },

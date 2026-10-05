@@ -3973,7 +3973,8 @@ table.stocktable tbody tr:nth-child(even) > td { background: transparent; }
 /* Two cards of equal weight in one row — the pair of share charts. */
 .dash-duo {
   display: grid; gap: var(--dash-gap); margin-bottom: var(--dash-gap);
-  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  /* Never wider than the screen: 380px is more than a phone has to give. */
+  grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr));
 }
 
 /* Period picker ---------------------------------------------------------- *
@@ -4642,30 +4643,6 @@ tbody tr.row-selected > td:first-child { box-shadow: inset 2px 0 0 var(--brand);
   .auth-main { align-items: flex-start; padding-top: 2.25rem; }
 }
 
-/* Who is signed in, at the foot of the rail. */
-.whoami {
-  margin-top: auto; padding: 0.75rem 0.65rem 0;
-  border-top: 1px solid rgb(255 255 255 / 0.08);
-  display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 0.65rem; row-gap: 0.5rem;
-  align-items: center;
-}
-.whoami-mark {
-  width: 32px; height: 32px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  background: rgb(255 255 255 / 0.1); color: #fff; font-size: var(--t-xs); font-weight: 700;
-}
-.whoami-who { display: flex; flex-direction: column; min-width: 0; }
-.whoami-name { color: #fff; font-size: var(--t-sm); font-weight: 600; overflow-wrap: anywhere; }
-.whoami-roles { color: var(--rail-muted, #8C9B93); font-size: var(--t-2xs); }
-.whoami-actions { grid-column: 1 / -1; display: flex; gap: 0.25rem; flex-wrap: wrap; }
-.whoami-actions a, .whoami-actions button {
-  font: inherit; font-size: var(--t-xs); color: var(--rail-muted, #8C9B93);
-  background: transparent; border: 0; padding: 0.3rem 0.45rem; border-radius: var(--r-sm);
-  cursor: pointer; text-decoration: none;
-}
-.whoami-actions a:hover, .whoami-actions button:hover { color: #fff; background: rgb(255 255 255 / 0.06); }
-body[data-nav-collapsed="true"] .whoami-who,
-body[data-nav-collapsed="true"] .whoami-actions { display: none; }
 
 /* Not found, and not allowed: one quiet panel, a reason, a way back. */
 .gate { display: flex; justify-content: center; padding: clamp(2rem, 8vh, 5rem) 0; }
@@ -4707,3 +4684,178 @@ body[data-nav-collapsed="true"] .whoami-actions { display: none; }
   background: color-mix(in srgb, var(--ok) 8%, transparent); color: var(--ok);
   border-radius: var(--r-md); padding: var(--s2) var(--s3); font-size: var(--t-md);
 }
+
+
+/* Who posted, raised, replaced or voided a document. */
+.who-list { list-style: none; margin: 0 0 0.75rem; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.who-list li { display: flex; align-items: center; gap: 0.55rem; font-size: var(--t-sm); }
+.who-list .avatar { flex: none; }
+.who-void strong { color: var(--bad); }
+.by-chip {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 26px; height: 22px; padding: 0 0.35rem; border-radius: 999px;
+  background: color-mix(in srgb, var(--brand) 12%, var(--surface)); color: var(--brand);
+  font-size: 11px; font-weight: 700; letter-spacing: 0.02em; cursor: default;
+}
+.by-none { color: var(--muted); }
+
+/* ===========================================================================
+   The foot of the rail: notifications, then the person signed in
+   ===========================================================================
+
+   Two quiet rows under a hairline, in the rail's own colours. The panel the
+   notifications row opens sits beside the rail and points back at the row,
+   so it reads as coming from there rather than appearing from nowhere. */
+
+.rail-foot {
+  margin-top: auto; padding-top: 0.6rem;
+  border-top: 1px solid rgb(255 255 255 / 0.08);
+  display: flex; flex-direction: column; gap: 0.35rem;
+}
+
+.notif-trigger {
+  position: relative; display: flex; align-items: center; gap: 0.6rem;
+  border: 0; cursor: pointer; font: inherit; text-align: left;
+}
+.notif-rail {
+  width: 100%; padding: 0.55rem 0.65rem; border-radius: 10px;
+  background: transparent; color: var(--rail-ink, #E7EDE9); font-size: var(--t-sm);
+}
+.notif-rail:hover, .notif-rail[aria-expanded="true"] { background: rgb(255 255 255 / 0.06); }
+.notif-rail:focus-visible, .acct-btn:focus-visible { outline: 2px solid #5FCB98; outline-offset: 1px; }
+.notif-bar {
+  width: 36px; height: 36px; justify-content: center; border-radius: 9px;
+  background: transparent; color: #E7EDE9;
+}
+.notif-bar:hover { background: rgb(255 255 255 / 0.08); }
+.notif-trigger[data-off="true"] { color: var(--rail-muted, #8C9B93); }
+.notif-icon { position: relative; display: inline-flex; }
+.notif-label { flex: 1; }
+.notif-dot {
+  position: absolute; top: -1px; right: -2px; width: 7px; height: 7px; border-radius: 50%;
+  background: #5FCB98; box-shadow: 0 0 0 2px #101613;
+}
+.notif-count {
+  min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: #1B5E43; color: #fff; font-size: 11px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.notif-bar .notif-count {
+  position: absolute; top: 2px; right: 0; min-width: 16px; height: 16px; padding: 0 4px;
+  font-size: 10px; background: #2E9B6A; box-shadow: 0 0 0 2px #101613;
+}
+.notif-bar .notif-dot { display: none; }
+body[data-nav-collapsed="true"] .notif-rail { justify-content: center; padding: 0.55rem 0; }
+body[data-nav-collapsed="true"] .notif-rail .notif-label,
+body[data-nav-collapsed="true"] .notif-rail .notif-count { display: none; }
+
+/* The panel. */
+.notif-panel {
+  z-index: 60; max-width: calc(100vw - 16px);
+  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 14px;
+  box-shadow: 0 18px 40px rgb(16 22 19 / 0.18), 0 2px 8px rgb(16 22 19 / 0.08);
+  animation: notif-in 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.notif-panel.from-rail { transform-origin: left bottom; }
+/* The pointer, toward the row it came from. */
+.notif-panel.from-rail::before {
+  content: ""; position: absolute; left: -7px; bottom: var(--tail, 20px);
+  width: 13px; height: 13px; transform: rotate(45deg);
+  background: var(--surface); border-left: 1px solid var(--line); border-bottom: 1px solid var(--line);
+}
+@keyframes notif-in { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: none; } }
+.notif-panel.from-bar { animation-name: notif-down; }
+@keyframes notif-down { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .notif-panel { animation: none; } }
+
+.notif-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
+  padding: 0.95rem 1.1rem 0.8rem; border-bottom: 1px solid var(--line-soft);
+}
+.notif-title { font-weight: 700; font-size: var(--t-base); letter-spacing: -0.01em; }
+.notif-all { font-size: var(--t-sm); font-weight: 600; color: var(--brand); text-decoration: none; }
+.notif-all:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+.notif-list {
+  max-height: min(62vh, 30rem); overflow-y: auto; overscroll-behavior: contain;
+  border-radius: 0 0 14px 14px;
+}
+.notif-empty { margin: 0; padding: 1.4rem 1.1rem; color: var(--muted); font-size: var(--t-sm); line-height: 1.55; }
+.notif-item {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 0.85rem; align-items: start;
+  padding: 0.85rem 1.1rem; text-decoration: none; color: inherit;
+  border-bottom: 1px solid var(--line-soft);
+}
+.notif-item:last-child { border-bottom: 0; }
+.notif-item:hover, .notif-item:focus-visible { background: var(--ground); outline: none; }
+.notif-item[data-unread="true"] { background: color-mix(in srgb, var(--brand) 5%, var(--surface)); }
+.notif-mark {
+  width: 38px; height: 38px; border-radius: 50%; margin-top: 2px;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--brand) 12%, var(--surface)); color: var(--brand);
+  font-size: var(--t-sm); font-weight: 700;
+}
+.notif-body { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+.notif-text { font-size: var(--t-sm); color: var(--ink); }
+.notif-verb { color: var(--muted); }
+.notif-verb.bad { color: var(--bad); font-weight: 600; }
+.notif-no { font-weight: 700; font-size: var(--t-md); font-variant-numeric: tabular-nums; letter-spacing: 0.01em; }
+.notif-meta { font-size: var(--t-xs); color: var(--muted); line-height: 1.45; overflow-wrap: anywhere; }
+.notif-when { font-size: var(--t-xs); color: var(--muted); white-space: nowrap; padding-top: 2px; }
+
+.notif-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
+  padding: 0.65rem 1.1rem; border-top: 1px solid var(--line-soft);
+  font-size: var(--t-xs); color: var(--muted); cursor: pointer;
+}
+.notif-switch { position: relative; display: inline-flex; }
+.notif-switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.notif-track {
+  width: 30px; height: 18px; border-radius: 999px; background: var(--line);
+  position: relative; transition: background 150ms;
+}
+.notif-track > span {
+  position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / 0.25); transition: transform 150ms;
+}
+.notif-switch input:checked + .notif-track { background: var(--brand); }
+.notif-switch input:checked + .notif-track > span { transform: translateX(12px); }
+.notif-switch input:focus-visible + .notif-track { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+/* The person signed in. */
+.acct { position: relative; }
+.acct-btn {
+  width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center;
+  column-gap: 0.7rem; padding: 0.5rem 0.55rem; border: 0; border-radius: 10px;
+  background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.acct-btn:hover, .acct-btn[aria-expanded="true"] { background: rgb(255 255 255 / 0.06); }
+.acct-mark {
+  width: 38px; height: 38px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: #1B5E43; color: #fff; font-size: var(--t-sm); font-weight: 700;
+}
+.acct-who { display: flex; flex-direction: column; min-width: 0; }
+.acct-name { color: #fff; font-size: var(--t-sm); font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-roles { color: var(--rail-muted, #8C9B93); font-size: var(--t-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-chev { color: var(--rail-muted, #8C9B93); }
+.acct-menu {
+  position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 20;
+  padding: 0.3rem; border-radius: 10px;
+  background: #1A221E; border: 1px solid rgb(255 255 255 / 0.08);
+  box-shadow: 0 12px 28px rgb(0 0 0 / 0.35);
+}
+.acct-menu a, .acct-menu button {
+  display: flex; align-items: center; gap: 0.55rem; width: 100%;
+  padding: 0.5rem 0.6rem; border: 0; border-radius: 7px; background: transparent;
+  color: #E7EDE9; font: inherit; font-size: var(--t-sm); text-decoration: none; cursor: pointer;
+}
+.acct-menu a:hover, .acct-menu button:hover { background: rgb(255 255 255 / 0.07); }
+.acct-menu form { margin: 0; }
+body[data-nav-collapsed="true"] .acct-btn { grid-template-columns: auto; justify-content: center; padding: 0.4rem 0; }
+body[data-nav-collapsed="true"] .acct-who,
+body[data-nav-collapsed="true"] .acct-chev { display: none; }
+body[data-nav-collapsed="true"] .acct-menu { right: auto; width: 13rem; }
+.navbar-actions { margin-left: auto; display: inline-flex; align-items: center; }

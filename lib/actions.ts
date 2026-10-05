@@ -1,6 +1,7 @@
 "use server";
 
 import { requireAccess } from "./session";
+import { DOC_TYPE_MODULES } from "./auth";
 import { revalidatePath } from "next/cache";
 import { sanitizeAxes } from "./supplier-metrics";
 import { redirect } from "next/navigation";
@@ -63,15 +64,6 @@ function dateTime(fd: FormData, dateKey: string, timeKey: string): string {
   return time ? `${date}T${time}` : date;
 }
 
-/** Who may void each kind of document: whoever could have posted it. */
-const VOID_MODULES: Record<string, ("sales" | "purchasing" | "inventory" | "accounting")[]> = {
-  SALES_ORDER: ["sales"], SALES_INVOICE: ["sales"], SALES_RETURN: ["sales"], CREDIT_NOTE: ["sales"],
-  DELIVERY: ["sales", "inventory"], CUSTOMER_RECEIPT: ["sales", "accounting"],
-  PURCHASE_ORDER: ["purchasing"], PURCHASE_INVOICE: ["purchasing"], PURCHASE_RETURN: ["purchasing"],
-  DEBIT_NOTE: ["purchasing"], GOODS_RECEIPT: ["purchasing", "inventory"],
-  SUPPLIER_PAYMENT: ["purchasing", "accounting"],
-  STOCK_ADJUSTMENT: ["inventory"], STOCK_TRANSFER: ["inventory"], CONSIGNMENT_RECEIPT: ["purchasing", "inventory"],
-};
 
 async function companyId(): Promise<string> {
   // A backstop under the per-action checks: whatever an action forgot to
@@ -6461,7 +6453,7 @@ export async function voidDocumentAction(_prev: unknown, fd: FormData): Promise<
       select id, doc_type from document where id = ${docId} and company_id = ${co}`;
     if (!owned) return { error: "That document no longer exists" };
     // Voiding undoes a posting, so it needs the role that could have made it.
-    await requireAccess(VOID_MODULES[owned.doc_type as string] ?? ["accounting"]);
+    await requireAccess(DOC_TYPE_MODULES[owned.doc_type as string] ?? ["accounting"]);
 
     // A void is a posting: it writes a reversal document, a journal entry and,
     // for a receipt, the stock coming back off the shelf. A resent

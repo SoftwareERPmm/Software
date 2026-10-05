@@ -28,12 +28,14 @@ const time = (v: unknown) =>
     { hour: "2-digit", minute: "2-digit" }) : "";
 
 export function DocumentFooter({
-  activity, related, createdBy, postedBy, postedAt,
+  activity, related, createdBy, postedBy, postedAt, voided, amended,
 }: {
   activity: DocEvent[];
   related: React.ReactNode;
   createdBy: Person;
   postedBy: Person;
+  voided?: { name: string | null; at: string; reason: string | null } | null;
+  amended?: { name: string | null; at: string; version: number } | null;
   postedAt: string | null;
 }) {
   return (
@@ -46,13 +48,44 @@ export function DocumentFooter({
           <span className="page-sub">who did what, and when</span>
         </div>
         <div className="card-body">
-          {activity.length === 0 ? (
-            <p className="hint">
-              {postedBy.name
-                ? <>Posted by {postedBy.name}{postedAt ? ` · ${shortDate(postedAt)}` : ""}.</>
-                : <>Posted{postedAt ? ` ${shortDate(postedAt)}` : ""}.</>}
-            </p>
-          ) : (
+          {/* Who made it, and who undid or replaced it. A document posted
+              before anyone signed in has no name to give, and says so. */}
+          <ul className="who-list">
+            <li>
+              <span className="avatar">{postedBy.initials ?? <UserRound size={11} aria-hidden="true" />}</span>
+              <span>
+                {postedBy.name ? <>Posted by <strong>{postedBy.name}</strong></> : <>Posted</>}
+                {postedAt ? <span className="page-sub"> · {shortDate(postedAt)} {time(postedAt)}</span> : null}
+                {!postedBy.name && <span className="page-sub"> · before sign-in was recorded</span>}
+              </span>
+            </li>
+            {createdBy.name && createdBy.name !== postedBy.name && (
+              <li>
+                <span className="avatar">{createdBy.initials}</span>
+                <span>Raised by <strong>{createdBy.name}</strong></span>
+              </li>
+            )}
+            {amended && (
+              <li>
+                <span className="avatar">{amended.name ? amended.name.slice(0, 2).toUpperCase() : <UserRound size={11} aria-hidden="true" />}</span>
+                <span>
+                  Replaced by version {amended.version}{amended.name ? <> — <strong>{amended.name}</strong></> : null}
+                  <span className="page-sub"> · {shortDate(amended.at)} {time(amended.at)}</span>
+                </span>
+              </li>
+            )}
+            {voided && (
+              <li className="who-void">
+                <span className="avatar">{voided.name ? voided.name.slice(0, 2).toUpperCase() : <UserRound size={11} aria-hidden="true" />}</span>
+                <span>
+                  Voided{voided.name ? <> by <strong>{voided.name}</strong></> : null}
+                  <span className="page-sub"> · {shortDate(voided.at)} {time(voided.at)}</span>
+                  {voided.reason && <span className="page-sub"> — &ldquo;{voided.reason}&rdquo;</span>}
+                </span>
+              </li>
+            )}
+          </ul>
+          {activity.length === 0 ? null : (
             <ol className="timeline">
               {activity.map((e, i) => {
                 const Icon = ICON[e.kind] ?? CircleDot;
@@ -75,9 +108,6 @@ export function DocumentFooter({
                 );
               })}
             </ol>
-          )}
-          {createdBy.name && createdBy.name !== postedBy.name && (
-            <p className="hint" style={{ marginTop: "0.6rem" }}>Raised by {createdBy.name}.</p>
           )}
         </div>
       </section>

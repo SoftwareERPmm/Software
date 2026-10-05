@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { By } from "@/components/by";
 import { Truck, FileText, Clock, Plus } from "lucide-react";
 import { money, shortDate } from "@/lib/db";
 import {
@@ -17,6 +18,7 @@ import {
 type Delivery = {
   id: string; doc_no: string | null; doc_date: string; status: string;
   gross_total: string; partner_name: string | null; location_code: string | null;
+  by_name: string | null; by_initials: string | null;
   source_id: string | null; source_no: string | null;
   line_count: number;
 };
@@ -220,6 +222,7 @@ export default async function Deliver({
         doc_date: toTime(d.doc_date),
         partner_name: d.partner_name ?? "",
         location_code: d.location_code ?? "",
+        by: d.by_name ?? "",
         source_no: d.source_no ?? "",
         gross_total: Number(d.gross_total),
         invoiced: voided ? 3 : gift ? 2 : short ? 1 : 0,
@@ -234,6 +237,7 @@ export default async function Deliver({
           <td className="code">{shortDate(d.doc_date)}</td>
           <td className="wrap">{d.partner_name ?? "—"}</td>
           <td className="code">{d.location_code ?? "—"}</td>
+          <td><By name={d.by_name} initials={d.by_initials} /></td>
           <td className="code">
             {d.source_no ? (
               <Link href={`/documents/${d.source_id}`} style={{ color: "inherit" }}>
@@ -410,6 +414,7 @@ export default async function Deliver({
               { key: "doc_date", label: "Delivered date", sortable: true },
               { key: "partner_name", label: "Customer", sortable: true },
               { key: "location_code", label: "Warehouse", sortable: true },
+              { key: "by", label: "By", sortable: true },
               { key: "source_no", label: "Source", sortable: true },
               { key: "gross_total", label: `Value (${company.base_currency})`,
                 sortable: true, align: "r" as const },

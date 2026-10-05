@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { By } from "@/components/by";
 import { money, shortDate } from "@/lib/db";
 import {
   invoiceDisplayStatus, INVOICE_STATUS_LABEL, INVOICE_STATUS_PILL,
@@ -80,12 +81,13 @@ export default async function SalesInvoices({
 
   const rows: DataRow[] = invoices.map((i) => ({
     key: i.document_id,
-    searchText: [i.doc_no, i.partner_name].filter(Boolean).join(" "),
+    searchText: [i.doc_no, i.partner_name, i.by_name].filter(Boolean).join(" "),
     sort: {
       doc_no: i.doc_no ?? "",
       posting_date: toTime(i.posting_date),
       due_date: toTime(i.due_date),
       partner_name: i.partner_name ?? "",
+      by: (i.by_name ?? "") as string,
       gross_total: Number(i.gross_total),
       paid: Number(i.paid),
       outstanding: Number(i.outstanding),
@@ -118,6 +120,7 @@ export default async function SalesInvoices({
             </Link>
           )}
         </td>
+        <td><By name={i.by_name} initials={i.by_initials} /></td>
         <td className="r">{money(i.gross_total)}</td>
         <td className="r">{money(i.paid)}</td>
         <td className="r">{money(i.outstanding)}</td>
@@ -216,6 +219,7 @@ export default async function SalesInvoices({
               { key: "posting_date", label: "Date", sortable: true },
               { key: "due_date", label: "Due Date", sortable: true },
               { key: "partner_name", label: "Customer", sortable: true },
+              { key: "by", label: "By", sortable: true },
               { key: "gross_total", label: "Total", sortable: true, align: "r" },
               { key: "paid", label: "Paid", sortable: true, align: "r" },
               { key: "outstanding", label: "Balance", sortable: true, align: "r" },

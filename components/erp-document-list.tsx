@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { By } from "./by";
 import Link from "next/link";
 // From lib/format, not lib/db: lib/db also exports the postgres client, and
 // importing it into a client component pulls the driver into the browser
@@ -35,6 +36,8 @@ export type DocRow = {
   dueDate: string | null;
   sourceDocNo: string | null;
   grossTotal: number;
+  byName?: string | null;
+  byInitials?: string | null;
 };
 
 type SortKey = "docNo" | "docType" | "partnerName" | "postingDate" | "grossTotal";
@@ -77,7 +80,7 @@ export function ErpDocumentList({
     const needle = q.trim().toLowerCase();
     const matched = needle
       ? rows.filter((r) =>
-          [r.docNo, label(r.docType), r.partnerName, r.sourceDocNo]
+          [r.docNo, label(r.docType), r.partnerName, r.sourceDocNo, r.byName]
             .filter(Boolean).join(" ").toLowerCase().includes(needle))
       : rows;
 
@@ -156,6 +159,7 @@ export function ErpDocumentList({
               {head("docType", "Type")}
               {head("partnerName", "Partner")}
               <th className="erp-th">From</th>
+              <th className="erp-th">By</th>
               <th className="erp-th">Status</th>
               {head("grossTotal", "Amount", true)}
             </tr>
@@ -163,7 +167,7 @@ export function ErpDocumentList({
           <tbody>
             {shown.length === 0 && (
               <tr className="erp-tr">
-                <td className="erp-td" colSpan={7} style={{ color: "var(--erp-fg-muted)" }}>
+                <td className="erp-td" colSpan={8} style={{ color: "var(--erp-fg-muted)" }}>
                   {rows.length === 0 ? "No documents yet." : "Nothing matches that search."}
                 </td>
               </tr>
@@ -191,6 +195,7 @@ export function ErpDocumentList({
                 <td className="erp-td" style={{ fontFamily: "var(--erp-font-mono)", color: "var(--erp-fg-muted)" }}>
                   {r.sourceDocNo ?? "—"}
                 </td>
+                <td className="erp-td"><By name={r.byName} initials={r.byInitials} /></td>
                 <td className="erp-td">
                   <span className={`pill ${r.status.toLowerCase()}`}>{r.status}</span>
                 </td>
@@ -201,7 +206,7 @@ export function ErpDocumentList({
           {shown.length > 0 && (
             <tfoot>
               <tr className="erp-tr erp-total">
-                <td className="erp-td" colSpan={6}>
+                <td className="erp-td" colSpan={7}>
                   {shown.length === rows.length ? "Total" : `Total of ${shown.length} shown`}
                 </td>
                 <td className="erp-td erp-num">{money(total)}</td>

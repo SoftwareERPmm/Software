@@ -193,3 +193,49 @@ export function initialsOf(name: string): string {
   const s = (parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "");
   return (s || name.trim().slice(0, 2) || "?").toUpperCase().slice(0, 3);
 }
+
+// --------------------------------------------------------- document types --
+
+/**
+ * Which modules own each kind of document. Read by voiding (you need the
+ * role that could have posted it) and by notifications (you only hear about
+ * what your roles reach).
+ */
+export const DOC_TYPE_MODULES: Record<string, Exclude<Module, "users">[]> = {
+  SALES_ORDER: ["sales"], SALES_INVOICE: ["sales"], SALES_RETURN: ["sales"], CREDIT_NOTE: ["sales"],
+  DELIVERY: ["sales", "inventory"], CUSTOMER_RECEIPT: ["sales", "accounting"],
+  PURCHASE_ORDER: ["purchasing"], PURCHASE_INVOICE: ["purchasing"], PURCHASE_RETURN: ["purchasing"],
+  DEBIT_NOTE: ["purchasing"], GOODS_RECEIPT: ["purchasing", "inventory"],
+  SUPPLIER_PAYMENT: ["purchasing", "accounting"],
+  CONSIGNMENT_RECEIPT: ["purchasing", "inventory"], CONSIGNMENT_SETTLEMENT: ["purchasing", "accounting"],
+  STOCK_ADJUSTMENT: ["inventory"], STOCK_TRANSFER: ["inventory"],
+  CASH_VOUCHER: ["accounting"], BANK_VOUCHER: ["accounting"], JOURNAL_VOUCHER: ["accounting"],
+  CASH_TRANSFER: ["accounting"], OPENING_BALANCE: ["accounting"], YEAR_END_CLOSE: ["accounting"],
+  ADVANCE_APPLICATION: ["sales", "purchasing", "accounting"],
+  ADVANCE_REFUND: ["sales", "purchasing", "accounting"],
+};
+
+export const DOC_TYPE_LABEL: Record<string, string> = {
+  SALES_ORDER: "sales order", SALES_INVOICE: "sales invoice", SALES_RETURN: "customer return",
+  CREDIT_NOTE: "credit note", DELIVERY: "delivery", CUSTOMER_RECEIPT: "customer receipt",
+  PURCHASE_ORDER: "purchase order", PURCHASE_INVOICE: "purchase invoice",
+  PURCHASE_RETURN: "supplier return", DEBIT_NOTE: "debit note", GOODS_RECEIPT: "goods receipt",
+  SUPPLIER_PAYMENT: "supplier payment", CONSIGNMENT_RECEIPT: "consignment receipt",
+  CONSIGNMENT_SETTLEMENT: "consignment settlement", STOCK_ADJUSTMENT: "stock adjustment",
+  STOCK_TRANSFER: "stock transfer", CASH_VOUCHER: "cash voucher", BANK_VOUCHER: "bank voucher",
+  JOURNAL_VOUCHER: "journal voucher", CASH_TRANSFER: "interbranch transfer",
+  OPENING_BALANCE: "opening balance", YEAR_END_CLOSE: "year-end close",
+  ADVANCE_APPLICATION: "advance application", ADVANCE_REFUND: "advance refund",
+};
+
+/** The document types a person's roles reach. */
+export function docTypesFor(roles: readonly string[]): string[] {
+  return Object.entries(DOC_TYPE_MODULES)
+    .filter(([, mods]) => hasAny(roles, mods))
+    .map(([t]) => t);
+}
+
+/** On for Admin and Manager unless they turned it off; off for others unless they turned it on. */
+export function notificationsDefault(roles: readonly string[]): boolean {
+  return roles.includes("ADMIN") || roles.includes("MANAGER");
+}

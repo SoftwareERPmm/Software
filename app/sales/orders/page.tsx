@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { By } from "@/components/by";
 import { money, shortDate } from "@/lib/db";
 import {
   orderDisplayStatus, ORDER_STATUS_LABEL, ORDER_STATUS_PILL,
@@ -79,12 +80,13 @@ export default async function SalesOrders({
 
   const rows: DataRow[] = orders.map((o) => ({
     key: o.document_id,
-    searchText: [o.doc_no, o.partner_name].filter(Boolean).join(" "),
+    searchText: [o.doc_no, o.partner_name, o.by_name].filter(Boolean).join(" "),
     sort: {
       doc_no: o.doc_no ?? "",
       posting_date: toTime(o.posting_date),
       partner_name: o.partner_name ?? "",
       due_date: toTime(o.due_date),
+      by: (o.by_name ?? "") as string,
       gross_total: Number(o.gross_total),
       display: ORDER_STATUS_LABEL[o.display as OrderDisplayStatus],
     },
@@ -113,6 +115,7 @@ export default async function SalesOrders({
         <td className="code" style={isOverdue(o) ? { color: "var(--warn)", fontWeight: 600 } : undefined}>
           {o.due_date ? shortDate(o.due_date) : "—"}
         </td>
+        <td><By name={o.by_name} initials={o.by_initials} /></td>
         <td className="r">{money(o.gross_total)}</td>
         <td>
           {/* Overdue overrides the fulfilment pill rather than sitting beside
@@ -193,6 +196,7 @@ export default async function SalesOrders({
               { key: "posting_date", label: "Date", sortable: true },
               { key: "partner_name", label: "Customer", sortable: true },
               { key: "due_date", label: "Needed by", sortable: true },
+              { key: "by", label: "By", sortable: true },
               { key: "gross_total", label: "Total", sortable: true, align: "r" },
               { key: "display", label: "Status", sortable: true },
               { key: "actions", label: "" },

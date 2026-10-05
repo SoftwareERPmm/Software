@@ -361,6 +361,8 @@ export async function getInvoiceList(companyId: string, docType: "SALES_INVOICE"
   return sql`
     select document_id, doc_no, posting_date, due_date,
            partner_id, partner_code, partner_name,
+           (select u.name from app_user u join document x on x.created_by_id = u.id where x.id = v_invoice_status.document_id) as by_name,
+           (select u.initials from app_user u join document x on x.created_by_id = u.id where x.id = v_invoice_status.document_id) as by_initials,
            gross_total, paid, outstanding, 'POSTED' as doc_status,
            payment_status, days_overdue
       from v_invoice_status
@@ -370,7 +372,9 @@ export async function getInvoiceList(companyId: string, docType: "SALES_INVOICE"
 
      select d.id as document_id, d.doc_no, d.posting_date, d.due_date,
             d.partner_id, p.code as partner_code, p.name as partner_name,
-            d.gross_total, 0::numeric as paid, 0::numeric as outstanding,
+            (select u.name from app_user u join document x on x.created_by_id = u.id where x.id = d.id) as by_name,
+           (select u.initials from app_user u join document x on x.created_by_id = u.id where x.id = d.id) as by_initials,
+           d.gross_total, 0::numeric as paid, 0::numeric as outstanding,
             d.status as doc_status, null as payment_status, null::int as days_overdue
        from document d
        join business_partner p on p.id = d.partner_id
@@ -648,8 +652,10 @@ export async function getDocuments(companyId: string, docType?: string, openGrir
            p.name  as partner_name,
            l.code  as location_code,
            src.doc_no as source_doc_no,
-           je.entry_no
+           je.entry_no,
+           cu.name as by_name, cu.initials as by_initials
       from document d
+      left join app_user cu on cu.id = d.created_by_id
       left join business_partner p  on p.id = d.partner_id
       left join location         l  on l.id = d.location_id
       left join document        src on src.id = d.source_document_id
@@ -2183,6 +2189,8 @@ export async function getOrderList(
   return sql`
     select o.id as document_id, o.doc_no, o.posting_date, o.due_date,
            o.partner_id, p.code as partner_code, p.name as partner_name,
+           (select u.name from app_user u join document x on x.created_by_id = u.id where x.id = o.id) as by_name,
+           (select u.initials from app_user u join document x on x.created_by_id = u.id where x.id = o.id) as by_initials,
            o.gross_total, o.status as doc_status,
            coalesce(x.ordered, 0)   as ordered_qty,
            coalesce(x.fulfilled, 0) as fulfilled_qty,
@@ -2476,6 +2484,8 @@ export async function getGoodsReceiptHistory(companyId: string) {
            l.code as location_code,
            src.id as source_id, src.doc_no as source_no, src.doc_type as source_type,
            (select count(*)::int from document_line dl where dl.document_id = d.id) as line_count,
+           (select u.name from app_user u join document x on x.created_by_id = u.id where x.id = d.id) as by_name,
+           (select u.initials from app_user u join document x on x.created_by_id = u.id where x.id = d.id) as by_initials,
            coalesce(g.balance, 0) as grir_open
       from document d
       left join business_partner p on p.id = d.partner_id
@@ -2510,6 +2520,8 @@ export async function getDeliveryHistory(companyId: string) {
            d.partner_id, p.name as partner_name,
            l.code as location_code,
            src.id as source_id, src.doc_no as source_no, src.doc_type as source_type,
+           (select u.name from app_user u join document x on x.created_by_id = u.id where x.id = d.id) as by_name,
+           (select u.initials from app_user u join document x on x.created_by_id = u.id where x.id = d.id) as by_initials,
            (select count(*)::int from document_line dl where dl.document_id = d.id) as line_count
       from document d
       left join business_partner p on p.id = d.partner_id
@@ -2838,10 +2850,18 @@ export async function getDocumentPeople(documentId: string) {
     select d.id,
            cu.name as created_by, cu.initials as created_initials,
            pu.name as posted_by,  pu.initials as posted_initials,
-           d.posted_at, d.created_at
+           d.posted_at, d.created_at,
+           -- Who undid or replaced it: the person who made the reversal or
+           -- the next version, which migration 0123 records like any other.
+           vu.name as voided_by, rv.created_at as voided_at, d.void_reason,
+           au.name as amended_by, sv.created_at as amended_at, sv.version as amended_version
       from document d
       left join app_user cu on cu.id = d.created_by_id
       left join app_user pu on pu.id = d.posted_by_id
+      left join document rv on rv.id = d.reversed_by_document_id
+      left join app_user vu on vu.id = rv.created_by_id
+      left join document sv on sv.id = d.superseded_by_document_id
+      left join app_user au on au.id = sv.created_by_id
      where d.id = ${documentId}`;
 
   const tasks = await sql`

@@ -14,7 +14,9 @@ import { DatePickerFix } from "@/components/date-picker-fix";
 import { headers } from "next/headers";
 import { currentUser } from "@/lib/session";
 import { canSeePath, ROLE_LABEL } from "@/lib/auth";
-import { signOut } from "@/lib/auth-actions";
+import { getUnreadCount } from "@/lib/notification-actions";
+import { NotificationBell } from "@/components/notification-bell";
+import { AccountMenu } from "@/components/account-menu";
 
 // One face for the whole product, chosen for the thing an ERP does most:
 // show a column of numbers.
@@ -87,6 +89,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const roles = me?.roles ?? [];
   const can = (href: string) => canSeePath(roles, href);
   const canAny = (hrefs: string[]) => hrefs.some(can);
+  const bell = me ? await getUnreadCount().catch(() => ({ on: false, unread: 0 })) : null;
 
   return (
     <html lang="en" className={`${inter.variable} ${notoMyanmar.variable}`}>
@@ -107,6 +110,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           <MobileNav
             title={company?.name ?? "Myanmar ERP"}
             subtitle={company?.base_currency ?? "not set up"}
+            actions={bell ? <NotificationBell initial={bell} variant="bar" /> : null}
           />
           <nav className="sidebar" id="sidebar">
             <div className="brand">
@@ -285,16 +289,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             )}
 
             {me && (
-              <div className="whoami">
-                <span className="whoami-mark" aria-hidden="true">{me.initials}</span>
-                <span className="whoami-who">
-                  <span className="whoami-name">{me.name}</span>
-                  <span className="whoami-roles">{me.roles.map((r) => ROLE_LABEL[r]).join(" · ")}</span>
-                </span>
-                <div className="whoami-actions">
-                  <Link href="/account/password">Change password</Link>
-                  <form action={signOut}><button type="submit">Sign out</button></form>
-                </div>
+              <div className="rail-foot">
+                {bell && <NotificationBell initial={bell} variant="rail" />}
+                <AccountMenu name={me.name} initials={me.initials}
+                             roles={me.roles.map((r) => ROLE_LABEL[r]).join(" · ")} />
               </div>
             )}
           </nav>

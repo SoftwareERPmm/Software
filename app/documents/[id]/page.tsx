@@ -846,7 +846,7 @@ export default async function DocumentPage({
             {" · "}
             {people.doc?.posted_by
               ? <>by {String(people.doc.posted_by)}</>
-              : "no name recorded — nobody signs in to this system yet"}
+              : "no name recorded — posted before sign-in existed"}
           </div>
         </div>
       )}
@@ -870,6 +870,12 @@ export default async function DocumentPage({
       createdBy={{ name: people.doc?.created_by ?? null, initials: people.doc?.created_initials ?? null }}
       postedBy={{ name: people.doc?.posted_by ?? null, initials: people.doc?.posted_initials ?? null }}
       postedAt={people.doc?.posted_at ? String(people.doc.posted_at) : null}
+      voided={(people.doc?.voided_at ? {
+        name: people.doc.voided_by ?? null, at: String(people.doc.voided_at),
+        reason: people.doc.void_reason ?? null } : null)}
+      amended={people.doc?.amended_at ? {
+        name: people.doc.amended_by ?? null, at: String(people.doc.amended_at),
+        version: Number(people.doc.amended_version) } : null}
     />
   );
 

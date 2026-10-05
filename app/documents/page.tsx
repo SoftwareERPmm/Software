@@ -36,6 +36,8 @@ export default async function DocumentsPage({
     docType: d.doc_type,
     status: d.status,
     partnerName: d.partner_name ?? null,
+    byName: d.by_name ?? null,
+    byInitials: d.by_initials ?? null,
     postingDate: d.posting_date ? String(d.posting_date) : null,
     dueDate: d.due_date ? String(d.due_date) : null,
     sourceDocNo: d.source_doc_no ?? null,

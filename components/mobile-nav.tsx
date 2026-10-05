@@ -19,7 +19,7 @@ import { Menu, X } from "lucide-react";
  * the scrim are the only new elements, and both are display:none above the
  * breakpoint.
  */
-export function MobileNav({ title, subtitle }: { title: string; subtitle: string }) {
+export function MobileNav({ title, subtitle, actions }: { title: string; subtitle: string; actions?: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
 
@@ -61,6 +61,7 @@ export function MobileNav({ title, subtitle }: { title: string; subtitle: string
           <span className="navbar-name">{title}</span>
           <span className="navbar-sub">{subtitle}</span>
         </span>
+        {actions && <span className="navbar-actions">{actions}</span>}
       </header>
       {/* Not hidden when closed — it carries the fade, and a display swap
           cannot transition. Pointer events are what make it inert. */}

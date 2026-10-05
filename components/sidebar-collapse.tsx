@@ -54,11 +54,12 @@ export function useSidebarCollapsed() {
   return collapsed;
 }
 
-export function SidebarCollapse() {
+export function SidebarCollapse({ children }: { children?: React.ReactNode }) {
   const collapsed = useSidebarCollapsed();
 
   return (
     <div className="navcollapse-row">
+      {children}
       <button
         type="button"
         className="navcollapse"
